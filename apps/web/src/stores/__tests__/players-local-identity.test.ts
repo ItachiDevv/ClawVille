@@ -277,16 +277,29 @@ describe('players store readers (web-load T3): nobody reads position or activity
     }
     return edges;
   };
-  // A type-only import never reads the store at runtime.
+  // A type-only import / export (`import type`, `export type`, or braces
+  // holding only `type X` items) never reads the store at runtime.
+  const clauseNames = (clause: string) =>
+    clause.replace(/[{}]/g, '').split(',').map((s) => s.trim()).filter(Boolean);
   const typeOnly = (e: Edge) =>
-    e.kind === 'import' &&
+    (e.kind === 'import' || e.kind === 'export') &&
     (/^type\s/.test(e.clause) ||
-      /^\{[^}]*\}$/.test(e.clause.trim()) &&
-        e.clause.replace(/[{}]/g, '').split(',').map((s) => s.trim()).filter(Boolean).every((s) => s.startsWith('type ')));
+      (/^\{[^}]*\}$/.test(e.clause.trim()) && clauseNames(e.clause).every((s) => s.startsWith('type '))));
+  // A re-export that carries the store hook: `export * from`, `export * as X
+  // from`, or a named `usePlayerStore` (aliased or not). Unrelated or
+  // type-only re-exports from a store module do not.
+  const reExportsStore = (e: Edge) =>
+    e.kind === 'export' &&
+    !typeOnly(e) &&
+    (/^\*/.test(e.clause.trim()) ||
+      clauseNames(e.clause).some((s) => /^usePlayerStore(\s+as\s+\w+)?$/.test(s)));
+  // A runtime edge that reads (import / require / dynamic import) or passes
+  // the hook on. Unrelated re-exports are neither.
+  const runtimeEdge = (e: Edge) => (e.kind === 'export' ? reExportsStore(e) : !typeOnly(e));
 
   // Modules that expose the store: players.ts plus any barrel that re-exports
-  // it (`export * from`, `export { usePlayerStore } from`, or an imported
-  // binding exported again), to a fixpoint.
+  // the hook (`export * from`, `export { usePlayerStore } from`, or an
+  // imported usePlayerStore exported again), to a fixpoint.
   const storeModules = new Set<string>(['stores/players']);
   for (let grew = true; grew; ) {
     grew = false;
@@ -294,8 +307,8 @@ describe('players store readers (web-load T3): nobody reads position or activity
       if (storeModules.has(id)) continue;
       const edges = edgesOf(id).filter((e) => storeModules.has(e.target));
       const reExports =
-        edges.some((e) => e.kind === 'export') ||
-        (edges.some((e) => !typeOnly(e)) &&
+        edges.some(reExportsStore) ||
+        (edges.some((e) => e.kind !== 'export' && !typeOnly(e)) &&
           /\bexport\s*(?:\{[^}]*\busePlayerStore\b|default\s+usePlayerStore\b|(?:const|let|var)\s+\w+\s*=\s*usePlayerStore\b)/.test(code.get(id)!));
       if (reExports) {
         storeModules.add(id);
@@ -308,7 +321,7 @@ describe('players store readers (web-load T3): nobody reads position or activity
   const readers = new Map<string, { text: string; edges: Edge[] }>();
   for (const id of code.keys()) {
     if (id === 'stores/players') continue;
-    const edges = edgesOf(id).filter((e) => storeModules.has(e.target) && !typeOnly(e));
+    const edges = edgesOf(id).filter((e) => storeModules.has(e.target) && runtimeEdge(e));
     if (edges.length > 0) readers.set(fileOf.get(id)!, { text: code.get(id)!, edges });
   }
 
