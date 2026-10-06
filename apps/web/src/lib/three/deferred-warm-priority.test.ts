@@ -1,14 +1,18 @@
 // web-load T6: the deferred compile must not run as a continuation of an idle
 // callback. Per the WICG scheduling spec a requestIdleCallback callback runs
-// with a BACKGROUND scheduling state that propagates through promise
-// continuations, so three r185's `scheduler.yield()` inside compileAsync
-// became a background task and, on a saturated main thread, never resumed
-// (Nori's compile hit the 20 s escape and poisoned the renderer).
+// with a BACKGROUND scheduling state, and every `await` registered in a chain
+// that started there keeps it. The warm job started in the queue's idle
+// callback, so three r185's `scheduler.yield()` inside compileAsync became a
+// background task and, on a saturated main thread, never resumed (Nori's
+// compile hit the 20 s escape and poisoned the renderer).
 //
 // The fake event loop below models one task at a time: a task runs with a
 // priority, then its microtask checkpoint drains under the SAME priority,
 // then the next task runs. It records the priority current at the moment
-// compileAsync is called. No fake timers: tasks are pumped by hand.
+// compileAsync is called. This is an approximation of the spec rule (state
+// follows the registering context); for the base module both give
+// 'background', because the whole job started in an idle callback. No fake
+// timers: tasks are pumped by hand.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as THREE from 'three/webgpu';
 import {

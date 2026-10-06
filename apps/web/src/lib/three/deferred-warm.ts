@@ -62,14 +62,17 @@ type QueueEntry = {
 // Task priority (web-load T6, 2026-10-06). three r185 `compileAsync` yields
 // with `scheduler.yield()` between pipeline-build stages. Per the WICG
 // scheduling spec a `requestIdleCallback` callback runs with a BACKGROUND
-// scheduling state, and that state propagates through promise continuations.
-// The warm job used to start (and its upload slices resolve) inside idle
-// callbacks, so every yield inside the deferred compile was a background
+// scheduling state, and an `await` keeps the state of the code that
+// registered it (not the state of the task that resolves the promise). The
+// warm job used to START inside the queue's idle callback, so every await in
+// the job, and every yield inside the deferred compile, was a background
 // continuation: on a saturated main thread (CPU 4x proxy) the first yield
 // never resolved, Nori's compile hit the 20 s escape, and the renderer was
 // poisoned for every later building. A postTask callback sets its OWN
 // scheduling state, so the compile front now starts in a fresh user-visible
-// task and three's yields resume at user-visible priority.
+// task and three's yields resume at user-visible priority. (Timer, rAF and
+// MessageChannel tasks carry no state, so a chain started there is already
+// user-visible: WPT scheduler/tentative/yield/yield-scheduling-state-cleared.)
 // ---------------------------------------------------------------------------
 
 type PostTaskScheduler = {
