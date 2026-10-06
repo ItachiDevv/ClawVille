@@ -239,49 +239,128 @@ describe('players store readers (web-load T3): nobody reads position or activity
   };
   walk(SRC);
   const rel = (f: string) => relative(SRC, f).split('\\').join('/');
-  const readers = new Map<string, string>();
+  const moduleId = (f: string) => rel(f).replace(/\.(tsx?|jsx?)$/, '').replace(/\/index$/, '');
+  // Comments out (a comment that names usePlayerStore is not a reader).
+  const stripComments = (text: string) =>
+    text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+  const code = new Map<string, string>(); // module id -> comment-free source
+  const fileOf = new Map<string, string>(); // module id -> relative file
   for (const f of files) {
-    const text = readFileSync(f, 'utf8');
-    if (/stores\/players['"]/.test(text) && rel(f) !== 'stores/players.ts') readers.set(rel(f), text);
+    code.set(moduleId(f), stripComments(readFileSync(f, 'utf8')));
+    fileOf.set(moduleId(f), rel(f));
+  }
+  // Resolve an import specifier (`@/` alias or relative) to a module id.
+  const resolveSpec = (fromId: string, spec: string): string | null => {
+    let target: string;
+    if (spec.startsWith('@/')) target = spec.slice(2);
+    else if (spec.startsWith('.')) {
+      target = relative(SRC, resolve(SRC, fileOf.get(fromId)!, '..', spec)).split('\\').join('/');
+    } else return null;
+    return target.replace(/\.(tsx?|jsx?)$/, '').replace(/\/index$/, '');
+  };
+  type Edge = { spec: string; target: string; clause: string; kind: 'import' | 'export' | 'require' | 'dynamic' };
+  const edgesOf = (id: string): Edge[] => {
+    const src = code.get(id)!;
+    const edges: Edge[] = [];
+    const push = (kind: Edge['kind'], clause: string, spec: string) => {
+      const target = resolveSpec(id, spec);
+      if (target) edges.push({ spec, target, clause, kind });
+    };
+    for (const m of src.matchAll(/\b(import|export)\s+([^;]*?)\s+from\s*['"]([^'"]+)['"]/g)) {
+      push(m[1] as 'import' | 'export', m[2], m[3]);
+    }
+    for (const m of src.matchAll(/(?:\{([^{}]*)\}\s*=\s*)?\brequire\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+      push('require', m[1] ?? '*', m[2]);
+    }
+    for (const m of src.matchAll(/(typeof\s+)?\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+      if (!m[1]) push('dynamic', '*', m[2]);
+    }
+    return edges;
+  };
+  // A type-only import never reads the store at runtime.
+  const typeOnly = (e: Edge) =>
+    e.kind === 'import' &&
+    (/^type\s/.test(e.clause) ||
+      /^\{[^}]*\}$/.test(e.clause.trim()) &&
+        e.clause.replace(/[{}]/g, '').split(',').map((s) => s.trim()).filter(Boolean).every((s) => s.startsWith('type ')));
+
+  // Modules that expose the store: players.ts plus any barrel that re-exports
+  // it (`export * from`, `export { usePlayerStore } from`, or an imported
+  // binding exported again), to a fixpoint.
+  const storeModules = new Set<string>(['stores/players']);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const id of code.keys()) {
+      if (storeModules.has(id)) continue;
+      const edges = edgesOf(id).filter((e) => storeModules.has(e.target));
+      const reExports =
+        edges.some((e) => e.kind === 'export') ||
+        (edges.some((e) => !typeOnly(e)) &&
+          /\bexport\s*(?:\{[^}]*\busePlayerStore\b|default\s+usePlayerStore\b|(?:const|let|var)\s+\w+\s*=\s*usePlayerStore\b)/.test(code.get(id)!));
+      if (reExports) {
+        storeModules.add(id);
+        grew = true;
+      }
+    }
+  }
+  // Readers: any module with a runtime edge into a store module. A barrel is
+  // a reader too, so a new barrel fails the reader-set check below.
+  const readers = new Map<string, { text: string; edges: Edge[] }>();
+  for (const id of code.keys()) {
+    if (id === 'stores/players') continue;
+    const edges = edgesOf(id).filter((e) => storeModules.has(e.target) && !typeOnly(e));
+    if (edges.length > 0) readers.set(fileOf.get(id)!, { text: code.get(id)!, edges });
   }
 
-  test('the reader set is exactly the audited one', () => {
-    expect([...readers.keys()].sort()).toEqual([
-      'components/game/sidebar-menu.tsx',
-      'hooks/use-world-stream.ts',
-      'lib/clear-identity-state.ts',
-      'lib/three/remote-players.tsx',
-    ]);
+  test('the reader set is exactly the audited one (resolved imports, aliases, require, barrels)', () => {
+    expect({ storeModules: [...storeModules].sort(), readers: [...readers.keys()].sort() }).toEqual({
+      storeModules: ['stores/players'],
+      readers: [
+        'components/game/sidebar-menu.tsx',
+        'hooks/use-world-stream.ts',
+        'lib/clear-identity-state.ts',
+        'lib/three/remote-players.tsx',
+      ],
+    });
   });
 
-  test('every reactive selector reads a structural field or an action, never position/activity', () => {
-    const allowed: Record<string, string[]> = {
-      'components/game/sidebar-menu.tsx': ['roomId'],
-      'hooks/use-world-stream.ts': ['clear', 'clearRemote', 'setLocalSessionId', 'setRoomId', 'updateFromSnapshot'],
-      'lib/clear-identity-state.ts': [],
-      // The structural array: RemotePlayers renders only on a structural
-      // change, skips isLocal entries, and its bodies read positions live.
-      'lib/three/remote-players.tsx': ['players'],
+  test('every use of the store is an exact audited form: no alias, no member access past a structural field', () => {
+    // Per file, the ONLY allowed uses (whitespace removed). A selector must end
+    // right after the field: `(s)=>s.players.find(...).x` does not match.
+    const plain = (field: string) => new RegExp(`usePlayerStore\\(\\((\\w+)\\)=>\\1\\.${field},?\\)`, 'g');
+    const allowed: Record<string, RegExp[]> = {
+      'components/game/sidebar-menu.tsx': [plain('roomId')],
+      'hooks/use-world-stream.ts': ['updateFromSnapshot', 'setLocalSessionId', 'setRoomId', 'clear', 'clearRemote'].map(plain),
+      'lib/clear-identity-state.ts': [/usePlayerStore\.getState\(\)\.clear\(\)/g],
+      // The structural array, exactly: RemotePlayers renders only on a
+      // structural change, skips isLocal entries, and its bodies read live.
+      'lib/three/remote-players.tsx': [/usePlayerStore\(useShallow\(\((\w+)\)=>\1\.players\)\)/g],
     };
-    const selector = /usePlayerStore\(\s*(?:useShallow\(\s*)?\(\s*(\w+)\s*\)\s*=>\s*\1\.(\w+)/g;
-    for (const [file, text] of readers) {
-      const selected = [...text.matchAll(selector)].map((m) => m[2]);
-      const calls = (text.match(/usePlayerStore\(/g) ?? []).length;
-      // Every hook call is a recognised `(s) => s.field` selector: no bare
-      // usePlayerStore() that subscribes to the whole state.
-      expect({ file, recognised: selected.length }).toEqual({ file, recognised: calls });
-      expect({ file, selected: [...new Set(selected)].sort() }).toEqual({ file, selected: allowed[file] });
-      // No imperative subscription and no getState() read of players.
-      expect({
-        file,
-        subscribe: /usePlayerStore\.subscribe/.test(text),
-        getStatePlayers: /usePlayerStore\.getState\(\)\.players/.test(text),
-      }).toEqual({ file, subscribe: false, getStatePlayers: false });
+    for (const [file, { text, edges }] of readers) {
+      // Bindings: only the plain name, no alias / namespace / default import.
+      const bindingNames = edges.flatMap((e) =>
+        e.clause === '*' ? ['*'] : e.clause.replace(/^type\s+/, '').replace(/[{}]/g, '').split(',').map((s) => s.trim()).filter(Boolean),
+      );
+      const runtimeNames = bindingNames.filter((n) => !n.startsWith('type '));
+      const okBinding = (n: string) => n === 'usePlayerStore' || n === '*';
+      expect({ file, bindings: runtimeNames.filter((n) => !okBinding(n)) }).toEqual({ file, bindings: [] });
+      // A `*` edge (dynamic import / bare require) is allowed only as the
+      // audited `const { usePlayerStore } = require(...)` form.
+      if (runtimeNames.includes('*')) {
+        expect({ file, starEdge: true }).toEqual({ file, starEdge: file === 'lib/clear-identity-state.ts' });
+      }
+      // Every remaining mention of usePlayerStore is one of the allowed forms.
+      let compact = text.replace(/\s+/g, '');
+      compact = compact.replace(/import\{[^}]*\}from['"][^'"]+['"]/g, (m) => (m.includes('usePlayerStore') ? '' : m));
+      compact = compact.replace(/const\{usePlayerStore\}=require\(['"][^'"]+['"]\)/g, '');
+      for (const form of allowed[file]) compact = compact.replace(form, '');
+      const leftovers = compact.match(/.{0,40}usePlayerStore.{0,60}/g) ?? [];
+      expect({ file, leftovers }).toEqual({ file, leftovers: [] });
     }
   });
 
   test('the local body is player-avatar.tsx fed by avatarPositionRef; RemotePlayers skips the local entry', () => {
-    expect(readers.get('lib/three/remote-players.tsx')).toMatch(/if \(p\.isLocal\) return null;/);
+    expect(readers.get('lib/three/remote-players.tsx')!.text).toMatch(/if \(p\.isLocal\) return null;/);
     const avatar = readFileSync(join(SRC, 'lib/three/player-avatar.tsx'), 'utf8');
     expect(avatar).toMatch(/avatarPositionRef/);
     expect(avatar).not.toMatch(/stores\/players/);
