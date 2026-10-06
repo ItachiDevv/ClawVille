@@ -77,10 +77,36 @@ export const DECO_TYPES = [
   { model: '/models/building-lantern-ktx.glb?v=2', weight: 3, minSize: 40, maxSize: 120 },
   // Crayfish — scattered critters
   { model: '/models/crayfish-ktx.glb?v=2',    weight: 3, minSize: 30, maxSize: 100 },
-  // Tower2 — distinctive small towers, rare
-  { model: '/models/building-tower2.glb',     weight: 2, minSize: 40, maxSize: 140 },
+  // building-tower2.glb REMOVED 2026-10-06 (draw-call budget): 7 materials,
+  // so every grid cell it landed in cost 7 merged meshes.
   // Shipwrecks and submarines are FIXED LANDMARKS in arena-terrain.tsx (disabled).
 ];
+
+/**
+ * Budget cap on chests (building-chest.glb: 12,400 triangles + 4 materials
+ * each). With the cap and without tower2 the seed-12345 layout costs 52
+ * merged meshes / 148,444 triangles (budget: <= 56 / <= 150k, pinned by
+ * arena-terrain-decorations-bounds.test.ts). Lead decision 2026-10-06.
+ */
+export const DECO_MAX_CHESTS = 3;
+const CHEST_MODEL = '/models/building-chest.glb';
+
+// 3×3 spatial grid for chunk-merged frustum culling (arena-terrain.tsx merges
+// by (cell, material)). Half-extent 8000wu wraps the 3800wu band with margin.
+export const DECO_GRID_CELLS = 3;
+export const DECO_GRID_HALF = 8000; // ±8000wu total 16000wu; each cell = 16000/3 ≈ 5333wu
+
+/** Grid cell index (0..8) of a world X/Z position — the merge bucket's cell. */
+export function decoGridCell(worldX: number, worldZ: number): number {
+  // Map worldX/worldZ from [-HALF, +HALF] → [0, CELLS)
+  const col = Math.min(DECO_GRID_CELLS - 1, Math.max(0,
+    Math.floor((worldX + DECO_GRID_HALF) / (DECO_GRID_HALF * 2) * DECO_GRID_CELLS)
+  ));
+  const row = Math.min(DECO_GRID_CELLS - 1, Math.max(0,
+    Math.floor((worldZ + DECO_GRID_HALF) / (DECO_GRID_HALF * 2) * DECO_GRID_CELLS)
+  ));
+  return row * DECO_GRID_CELLS + col;
+}
 
 /** Largest target size in the table (wu). */
 export const DECO_MAX_SIZE = Math.max(...DECO_TYPES.map((t) => t.maxSize));
@@ -306,6 +332,7 @@ export function generateDecorations(): DecoEntry[] {
   const MIN_SPACING_SQ = 35 * 35;
 
   let attempts = 0;
+  let chests = 0;
   while (entries.length < TARGET_COUNT && attempts < 1200) {
     attempts++;
 
@@ -328,7 +355,10 @@ export function generateDecorations(): DecoEntry[] {
     });
     if (tooClose) continue;
 
-    const dt   = pickModel();
+    let dt = pickModel();
+    // Chest cap: redraw (deterministic, same RNG stream) once the cap is reached.
+    while (dt.model === CHEST_MODEL && chests >= DECO_MAX_CHESTS) dt = pickModel();
+    if (dt.model === CHEST_MODEL) chests++;
     const size = dt.minSize + rng() * (dt.maxSize - dt.minSize);
     entries.push({ model: dt.model, x, z, size, rotY: rng() * Math.PI * 2 });
   }

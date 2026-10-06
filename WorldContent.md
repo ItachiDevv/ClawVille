@@ -9,7 +9,9 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-10-06 (§5 placement rule: the whole prop footprint stays out of the walk lanes; layout, mesh and triangle counts updated).
+**Last edit:** 2026-10-06 (§5 draw-call budget: building-tower2.glb removed, chests capped at 3; 52 merged meshes / 148,444 triangles, pinned by test).
+
+**Prior Last edit:** 2026-10-06 (§5 placement rule: the whole prop footprint stays out of the walk lanes; layout, mesh and triangle counts updated).
 
 **Prior Last edit:** 2026-10-06 (§5 decorations after the ac36e4e1 staging check: props centred on their sites (kelp was 945–2363 wu off), footprint kept inside the band; the device profile mounts the scatter and the governor only toggles visibility; layout and mesh counts updated).
 
@@ -173,9 +175,9 @@ Code: `lib/three/arena-terrain.tsx`.
 - **Placement rule** (`isDecorationSiteClear` in `arena-terrain-decorations.ts`): a prop must be inside the band, ≥800 wu from the spawn point, outside every building exclusion circle (`isNearBuilding`, 896 wu), outside every client collider AABB + 200 wu (all 12 buildings + the town props: sign, bazaar, marketplace, pavilion, quest NPC, Nori), outside every land-parcel square + 200 wu, with its whole footprint outside the 400 wu half-width approach lane from the plaza to each of the 12 buildings (site ≥ 400 + 107 wu from the lane axis; 107 = the largest prop's reach), ≥460 wu from each building resident, and clear of the entrance prompt bands + 200 wu (kelp portal 360, Trading Floor door 400, cove tunnel exit 500).
 - Result with seed 12345 (2026-10-06, after the full-footprint lane rule): 60 props, sites at r 2133–3675 wu, in the wedges between the approach lanes; the plaza inside r ~2100 wu stays clear because the widened lanes converge there. The corner-only lane test had let 5 props cross a lane by up to 25 wu; `arena-terrain-decorations-bounds.test.ts` now checks each prop's full footprint circle.
 
-The 12 GLBs load through `MergedDecorationsInner` after the decorative release; the merged group joins the warm queue last (priority ∞), so the props appear after the rest of the deferred world: measured locally 2026-10-06 about 18 s after the loader is gone (with web-load T6; 52 s before T6).
+The 11 GLBs load through `MergedDecorationsInner` after the decorative release; the merged group joins the warm queue last (priority ∞), so the props appear after the rest of the deferred world: measured locally 2026-10-06 about 18 s after the loader is gone (with web-load T6; 52 s before T6).
 
-**Failure handling (2026-10-04):** the 12 GLBs load through `useOptionalGLTFWithKTX2`. A GLB whose own load fails is skipped: a request failure after the shared loader's 2 retries, or a corrupt file (never retried). Each skip logs one `console.error` naming the phase. The rest of the world stays up (`3dStructure.md` §9a).
+**Failure handling (2026-10-04):** the decoration GLBs (11 since 2026-10-06) load through `useOptionalGLTFWithKTX2`. A GLB whose own load fails is skipped: a request failure after the shared loader's 2 retries, or a corrupt file (never retried). Each skip logs one `console.error` naming the phase. The rest of the world stays up (`3dStructure.md` §9a).
 
 Code: `MergedDecorationsInner` + `generateDecorations` in `arena-terrain.tsx`.
 
@@ -190,12 +192,11 @@ Code: `MergedDecorationsInner` + `generateDecorations` in `arena-terrain.tsx`.
 | building-seashell-ktx.glb | 5 | 20–120 | 5.26 | 11–63 |
 | building-anchor.glb | 4 | 30–140 | 6.54 | 20–92 |
 | building-barrel.glb | 4 | 30–100 | 1.35 | 4–13 |
-| building-chest.glb | 4 | 30–120 | 0.43 | 1–5 |
+| building-chest.glb | 4 (capped at 3 per layout: `DECO_MAX_CHESTS`) | 30–120 | 0.43 | 1–5 |
 | building-lantern-ktx.glb | 3 | 40–120 | 0.93 | 4–11 |
 | crayfish-ktx.glb | 3 | 30–100 | 85.98 | 258–860 |
-| building-tower2.glb | 2 | 40–140 | 14.60 | 58–204 |
 
-**Render strategy:** all entries → bucketed by `(3×3 grid cell, material UUID)` → `mergeGeometries` per bucket → one Mesh per bucket. Static, `matrixAutoUpdate=false`, default frustum-cull (tight per-bucket AABB). With seed 12345: **76 merged meshes, 208,838 triangles in total** (computed from the layout and the GLB material / triangle counts; the same method gave 54 for the previous layout, which matched the live count; not yet re-measured live). The full-footprint lane rule reshuffled the random layout: 8 chests (12,400 triangles each) instead of 4, spread over more cells (36 of the 60 props fall in the centre cell). At the spawn view 25 of them (61,960 triangles) are in the frustum, mostly behind the town sign; a view of the whole band draws up to 57.
+**Render strategy:** all entries → bucketed by `(3×3 grid cell, material UUID)` → `mergeGeometries` per bucket → one Mesh per bucket. Static, `matrixAutoUpdate=false`, default frustum-cull (tight per-bucket AABB). With seed 12345: **52 merged meshes, 148,444 triangles in total** (budget ≤ 56 / ≤ 150k, the 81eb1901 cost; pinned with the exact values by `apps/web/src/lib/three/arena-terrain-decorations-bounds.test.ts`, computed from the native table (triangles and materials per GLB checked against the files) and the real `decoGridCell`). Lead decision 2026-10-06, performance first: **building-tower2.glb removed** from the mix and the GLB list (7 materials, so each grid cell it landed in cost 7 merged meshes; 11 decoration downloads now) and chests capped at 3 (12,400 triangles + 4 materials each). Largest share now: 9 coral-reef1 at 6,080 triangles each (54,720). Not re-measured live (no build).
 
 ---
 

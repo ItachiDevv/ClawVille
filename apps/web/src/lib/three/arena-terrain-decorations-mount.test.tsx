@@ -1,7 +1,7 @@
 /**
  * Mounted check of the seabed decoration gate (Codex E3 SHOULD-FIX 2026-10-06):
  * (a) with the gate OFF, ArenaTerrain makes no demand and no fetch for any of
- *     the 12 decoration GLB paths;
+ *     the 11 decoration GLB paths;
  * (b) governor toggles (tier 0/1, `decorationsVisible`) only flip visibility:
  *     0 new merged geometries, 0 disposals (staging ac36e4e1: a remount per
  *     recovery cost a merge + upload spike that latched tier 1 for the session);

@@ -6,6 +6,7 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import {
+  decoGridCell,
   decorationPlacement,
   generateDecorations,
   seededRandom,
@@ -166,7 +167,7 @@ function disposeClone(root: THREE.Object3D): void {
 // with geometry-merged draw calls bucketed by (spatialCell, materialUUID).
 //
 // Strategy:
-//   1. Load all 12 unique decoration models (fixed hook calls — count never changes).
+//   1. Load all 11 unique decoration models (fixed hook calls — count never changes).
 //   2. For each of the 60 DECORATIONS entries, determine its 3×3 spatial grid cell
 //      based on world-space X/Z position.
 //   3. For each mesh in that entry's source scene, apply the combined world transform
@@ -193,7 +194,9 @@ function disposeClone(root: THREE.Object3D): void {
 //     culling uses the actual tight AABB, not the default unset (infinite) box
 // ---------------------------------------------------------------------------
 
-// All 12 unique decoration model paths (must match DECO_TYPES exactly)
+// All 11 unique decoration model paths (must match DECO_TYPES exactly; the
+// mounted test checks the demanded set equals DECO_TYPES).
+// building-tower2.glb removed 2026-10-06 (draw-call budget).
 const DECO_MODEL_PATHS = [
   '/models/coral-reef1-ktx.glb?v=2',
   '/models/coral-reef2-ktx.glb?v=2',
@@ -206,24 +209,8 @@ const DECO_MODEL_PATHS = [
   '/models/building-chest.glb',
   '/models/building-lantern-ktx.glb?v=2',
   '/models/crayfish-ktx.glb?v=2',
-  '/models/building-tower2.glb',
 ] as const;
 
-// 3×3 spatial grid for chunk-merged frustum culling.
-// Half-extent 8000wu wraps the 3800wu scatter band with margin.
-const DECO_GRID_CELLS = 3;
-const DECO_GRID_HALF  = 8000; // ±8000wu total 16000wu; each cell = 16000/3 ≈ 5333wu
-
-function decoGridCell(worldX: number, worldZ: number): number {
-  // Map worldX/worldZ from [-HALF, +HALF] → [0, CELLS)
-  const col = Math.min(DECO_GRID_CELLS - 1, Math.max(0,
-    Math.floor((worldX + DECO_GRID_HALF) / (DECO_GRID_HALF * 2) * DECO_GRID_CELLS)
-  ));
-  const row = Math.min(DECO_GRID_CELLS - 1, Math.max(0,
-    Math.floor((worldZ + DECO_GRID_HALF) / (DECO_GRID_HALF * 2) * DECO_GRID_CELLS)
-  ));
-  return row * DECO_GRID_CELLS + col;
-}
 
 // Scratch matrix for baking world transforms into geometry vertices.
 // Module-scope to avoid GC allocations inside the useMemo.
@@ -235,7 +222,7 @@ interface MergedBucket {
   material: THREE.Material;
 }
 
-/** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks.
+/** Inner component — loaded inside a Suspense; receives all 11 scenes via hooks.
  *  `visible` is the governor tier switch: it flips an ancestor group only, so a
  *  tier toggle never re-merges, re-uploads or disposes. */
 function MergedDecorationsInner({ visible }: { visible: boolean }) {
@@ -254,19 +241,18 @@ function MergedDecorationsInner({ visible }: { visible: boolean }) {
   const s8  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[8])?.scene ?? null;
   const s9  = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[9])?.scene ?? null;
   const s10 = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[10])?.scene ?? null;
-  const s11 = useOptionalGLTFWithKTX2(DECO_MODEL_PATHS[11])?.scene ?? null;
 
   // Build a lookup: model path → GLTF scene
   const sceneMap = useMemo<Map<string, THREE.Object3D>>(() => {
     const m = new Map<string, THREE.Object3D>();
-    const scenes = [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11];
+    const scenes = [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10];
     DECO_MODEL_PATHS.forEach((p, i) => {
       const scene = scenes[i];
       if (scene) m.set(p, scene);
     });
     return m;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11]);
+  }, [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10]);
 
   // Compute spatially-chunked merged buckets — runs once when all scenes are loaded.
   const buckets = useMemo<MergedBucket[]>(() => {
@@ -400,7 +386,7 @@ function MergedDecorationsInner({ visible }: { visible: boolean }) {
 
 function UnderwaterDecorations({ visible }: { visible: boolean }) {
   // Rung-3 Lever 3: the parent stops BEFORE the child that calls
-  // useGLTFWithKTX2, so its 12 GLB fetches begin on this consumer's stagger
+  // useGLTFWithKTX2, so its 11 GLB fetches begin on this consumer's stagger
   // tick. MergedDecorationsInner then commits hidden and joins the one-at-a-
   // time GPU warm queue before attachment (timing-only deferral).
   // Post-release remounts initialize released (one-shot monotonic contract);
@@ -505,7 +491,7 @@ function FixedLandmarks() {
  * The seabed scatter follows the ground-cover switch, in two parts:
  * - `decorationsMounted` = the device profile's `ambientGroundCover` (false on
  *   phones and tablets): when false the scatter never mounts and demands none
- *   of its 12 GLBs;
+ *   of its 11 GLBs;
  * - `decorationsVisible` = `showGroundCover` (the adaptive governor clears it
  *   at tier 1): it only flips visibility. The scatter mounts once, keeps its
  *   merged meshes, and disposes them only on a real unmount, so a tier toggle
@@ -541,7 +527,7 @@ export default function ArenaTerrain({
 // ---------------------------------------------------------------------------
 // DeferredTerrainPreloads
 // Compatibility export retained for game/page.tsx. Scatter preloads are now
-// deliberately absent: MergedDecorationsInner must start all 12 demands only
+// deliberately absent: MergedDecorationsInner must start all 11 demands only
 // after its own stagger callback, otherwise a release-wide preload gets ahead
 // of the warm-before-attach consumer boundary.
 // ---------------------------------------------------------------------------

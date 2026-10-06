@@ -21,23 +21,26 @@ import { getAllColliders } from './collision/world-colliders';
 import { CHARACTER_POSITIONS, COVE_EXIT_WORLD_X, COVE_EXIT_WORLD_Z, TALK_RADIUS_WORLD } from './character-positions';
 import { TRADING_FLOOR_DOOR_WORLD, TRADING_FLOOR_PROMPT_RADIUS_WU } from './trading-floor/trading-floor-location';
 import * as deco from './arena-terrain-decorations';
+import type { Node } from '@gltf-transform/core';
 
-type Bounds = { min: [number, number, number]; max: [number, number, number] };
+type Bounds = { min: [number, number, number]; max: [number, number, number]; tris: number; materials: number };
 
-/** Native scene bounds (glTF units), read from the files by the first test. */
+/**
+ * Native scene bounds (glTF units), triangle count and distinct material count
+ * per GLB scene; the first test reads all three back from the files.
+ */
 const NATIVE_BOUNDS: Record<string, Bounds> = {
-  '/models/coral-reef1-ktx.glb?v=2': { min: [-3.747, -0.011, -0.45], max: [3.69, 0.641, 0.174] },
-  '/models/coral-reef2-ktx.glb?v=2': { min: [-3.416, -0.011, -0.498], max: [3.242, 1.047, 0.232] },
-  '/models/coral-reef3-ktx.glb?v=2': { min: [-3.85, -0.036, -3.042], max: [3.783, 2.108, 1.06] },
-  '/models/kelp.glb': { min: [-45.509, -15.891, -0.136], max: [-43.507, -13.066, 2.175] },
-  '/models/building-shell-ktx.glb?v=2': { min: [-0.299, -0.816, -0.745], max: [0.299, 0.658, 0.935] },
-  '/models/building-seashell-ktx.glb?v=2': { min: [-3.926, -2.528, -1.798], max: [1.337, 1.765, 1.367] },
-  '/models/building-anchor.glb': { min: [-2.344, -3.172, -2.577], max: [2.344, 3.367, -2.173] },
-  '/models/building-barrel.glb': { min: [-0.521, 0.006, -0.519], max: [0.521, 1.352, 0.515] },
-  '/models/building-chest.glb': { min: [-0.229, -0.245, -0.193], max: [0.132, 0.136, 0.237] },
-  '/models/building-lantern-ktx.glb?v=2': { min: [-0.32, 0, -0.32], max: [0.32, 0.925, 0.32] },
-  '/models/crayfish-ktx.glb?v=2': { min: [-22.81, 0.002, -42.99], max: [22.81, 19.261, 42.99] },
-  '/models/building-tower2.glb': { min: [-4.624, -0.096, -4.819], max: [4.813, 14.502, 4.156] },
+  '/models/coral-reef1-ktx.glb?v=2': { min: [-3.747, -0.011, -0.45], max: [3.69, 0.641, 0.174], tris: 6080, materials: 1 },
+  '/models/coral-reef2-ktx.glb?v=2': { min: [-3.416, -0.011, -0.498], max: [3.242, 1.047, 0.232], tris: 942, materials: 1 },
+  '/models/coral-reef3-ktx.glb?v=2': { min: [-3.85, -0.036, -3.042], max: [3.783, 2.108, 1.06], tris: 3200, materials: 1 },
+  '/models/kelp.glb': { min: [-45.509, -15.891, -0.136], max: [-43.507, -13.066, 2.175], tris: 888, materials: 1 },
+  '/models/building-shell-ktx.glb?v=2': { min: [-0.299, -0.816, -0.745], max: [0.299, 0.658, 0.935], tris: 396, materials: 1 },
+  '/models/building-seashell-ktx.glb?v=2': { min: [-3.926, -2.528, -1.798], max: [1.337, 1.765, 1.367], tris: 1416, materials: 2 },
+  '/models/building-anchor.glb': { min: [-2.344, -3.172, -2.577], max: [2.344, 3.367, -2.173], tris: 520, materials: 1 },
+  '/models/building-barrel.glb': { min: [-0.521, 0.006, -0.519], max: [0.521, 1.352, 0.515], tris: 1384, materials: 3 },
+  '/models/building-chest.glb': { min: [-0.229, -0.245, -0.193], max: [0.132, 0.136, 0.237], tris: 12400, materials: 4 },
+  '/models/building-lantern-ktx.glb?v=2': { min: [-0.32, 0, -0.32], max: [0.32, 0.925, 0.32], tris: 264, materials: 1 },
+  '/models/crayfish-ktx.glb?v=2': { min: [-22.81, 0.002, -42.99], max: [22.81, 19.261, 42.99], tris: 848, materials: 1 },
 };
 
 const FLOOR_Y = -2;
@@ -121,6 +124,20 @@ describe('decoration native bounds', () => {
         expect(Math.abs(b.min[i] - expected.min[i])).toBeLessThan(0.002);
         expect(Math.abs(b.max[i] - expected.max[i])).toBeLessThan(0.002);
       }
+      // Triangles and materials as the renderer sees them: one three Mesh per
+      // node primitive, one material object per glTF material.
+      let tris = 0;
+      const materials = new Set<unknown>();
+      const visit = (node: Node) => {
+        for (const prim of node.getMesh()?.listPrimitives() ?? []) {
+          const index = prim.getIndices();
+          tris += (index ? index.getCount() : prim.getAttribute('POSITION')!.getCount()) / 3;
+          materials.add(prim.getMaterial() ?? 'default');
+        }
+        node.listChildren().forEach(visit);
+      };
+      (root.getDefaultScene() ?? root.listScenes()[0]).listChildren().forEach(visit);
+      expect({ model, tris, materials: materials.size }).toEqual({ model, tris: expected.tris, materials: expected.materials });
     }
   }, 30_000);
 });
@@ -207,6 +224,30 @@ describe('placed decorations in world space', () => {
       }
     }
     expect(hits).toEqual([]);
+  });
+
+  // Lead decision 2026-10-06 (performance first): the scatter may not cost
+  // more than the 81eb1901 layout did: <= 56 merged meshes, <= 150k triangles.
+  // Merged meshes = distinct (grid cell, model material) buckets, exactly the
+  // renderer's key in arena-terrain.tsx, with the real decoGridCell.
+  it('stays within the draw-call and triangle budget', () => {
+    const buckets = new Set<string>();
+    let tris = 0;
+    for (const d of decorations) {
+      const t = NATIVE_BOUNDS[d.model];
+      tris += t.tris;
+      for (let m = 0; m < t.materials; m++) buckets.add(`${deco.decoGridCell(d.x, d.z)}|${d.model}|${m}`);
+    }
+    expect(decorations.length).toBe(60);
+    expect(buckets.size).toBeLessThanOrEqual(56);
+    expect(tris).toBeLessThanOrEqual(150_000);
+    // Pinned exact values for the seed-12345 layout (update with the docs).
+    expect({ meshes: buckets.size, tris }).toEqual({ meshes: 52, tris: 148_444 });
+  });
+
+  it('caps chests and excludes tower2', () => {
+    expect(decorations.filter((d) => d.model === '/models/building-chest.glb').length).toBeLessThanOrEqual(deco.DECO_MAX_CHESTS);
+    expect(deco.DECO_TYPES.some((t) => t.model.includes('building-tower2'))).toBe(false);
   });
 
   it('renders every prop at its target size (max dimension)', () => {

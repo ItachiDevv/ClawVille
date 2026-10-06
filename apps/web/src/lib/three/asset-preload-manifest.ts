@@ -55,11 +55,11 @@
  *   lazy chibi gating reverted 2026-05-22 because it hid chibi NPC species
  *   for non-chibi players when the wandering roster included them).
  *
- * TERRAIN DECORATIONS (12 models, arena-terrain.tsx DECO_MODEL_PATHS):
+ * TERRAIN DECORATIONS (11 models, arena-terrain.tsx DECO_MODEL_PATHS):
  *   coral-reef1-ktx.glb?v=2, coral-reef2-ktx.glb?v=2, coral-reef3-ktx.glb?v=2, kelp.glb,
  *   building-shell-ktx.glb?v=2, building-seashell-ktx.glb?v=2, building-anchor.glb,
  *   building-barrel.glb, building-chest.glb, building-lantern-ktx.glb?v=2,
- *   crayfish-ktx.glb?v=2, building-tower2.glb
+ *   crayfish-ktx.glb?v=2 (building-tower2.glb removed 2026-10-06: draw-call budget)
  *
  * LOCOMOTION ANIMATIONS (3 GLBs, vrm-character-animator.ts):
  *   /avatars/animations/idle.glb
@@ -190,7 +190,7 @@ export const LOCATION_NPC_GLBS: readonly string[] = [
 // Priority 4: Terrain decoration GLBs — scattered props, deferred
 // ---------------------------------------------------------------------------
 
-/** 12 scatter decoration GLBs from arena-terrain.tsx DECO_MODEL_PATHS */
+/** 11 scatter decoration GLBs from arena-terrain.tsx DECO_MODEL_PATHS */
 export const DECORATION_GLBS: readonly string[] = [
   '/models/coral-reef1-ktx.glb?v=2',
   '/models/coral-reef2-ktx.glb?v=2',
@@ -203,7 +203,6 @@ export const DECORATION_GLBS: readonly string[] = [
   '/models/building-chest.glb',
   '/models/building-lantern-ktx.glb?v=2',
   '/models/crayfish-ktx.glb?v=2',
-  '/models/building-tower2.glb',
 ] as const;
 
 /**
