@@ -120,11 +120,11 @@ type BootStreamedContentProps = {
    * dismissal (pair with a DeclareGuideRevealRequired/mode declaration so
    * the requirement matches what actually mounts). */
   revealRequired?: boolean;
-  /** web-load T7 (reveal-required lane only): the member's own NON-HOOK
-   * read of the model its child suspends on (same loader call, same cache
-   * key). The gate awaits it outside React before the release, so the
-   * release render never suspends into a starvable retry lane. MUST be
-   * referentially stable (module-level function). */
+  /** web-load T7 (boot-critical lane) + T10-C (post-reveal lane): the
+   * member's own NON-HOOK read of the model its child suspends on (same
+   * loader call, same cache key). The gate awaits it outside React before
+   * the release, so the release render never suspends into a starvable
+   * retry lane. MUST be referentially stable (module-level function). */
   warmRead?: () => unknown;
   children: ReactNode | ((ready: boolean) => ReactNode);
 };
@@ -132,7 +132,13 @@ type BootStreamedContentProps = {
 /** Post-reveal lane gate (the original slice-D path). Split into its own
  * component so each variant calls exactly one release hook. */
 function PostRevealGate(props: BootStreamedContentProps) {
-  const released = useBootStreamRelease(props.priority, props.cohortId);
+  // With `warmRead` the hook reports the cohort 'loading' state at admission
+  // (web-load T10-C), like the boot-critical hook.
+  const released = useBootStreamRelease(
+    props.priority,
+    props.cohortId,
+    props.warmRead,
+  );
   return <StreamedChain {...props} released={released} owner={null} />;
 }
 
@@ -155,6 +161,7 @@ function StreamedChain({
   priority,
   released,
   owner,
+  warmRead,
   children,
 }: BootStreamedContentProps & { released: boolean; owner: symbol | null }) {
   useEffect(() => {
@@ -165,12 +172,15 @@ function StreamedChain({
     return () => revokeBuildingInstance(cohortId, owner);
   }, [cohortId, owner]);
   useEffect(() => {
-    // Post-reveal lane only (owner === null). On the boot-critical lane the
-    // release hook reports 'loading' at admission; reporting it here would
-    // run AFTER the child probe's 'warm-pending' (child effects run first)
-    // now that the release render commits the content directly (T7).
-    if (released && owner === null) reportCohortState(cohortId, 'loading');
-  }, [released, cohortId, owner]);
+    // Post-reveal lane WITHOUT warmRead only. When the release hook warms
+    // (boot-critical lane, T7; post-reveal lane with warmRead, T10-C) it
+    // reports 'loading' at admission; reporting it here would run AFTER the
+    // child probe's 'warm-pending' (child effects run first) because the
+    // release render then commits the content directly.
+    if (released && owner === null && warmRead === undefined) {
+      reportCohortState(cohortId, 'loading');
+    }
+  }, [released, cohortId, owner, warmRead]);
 
   if (!released) return null;
   return (

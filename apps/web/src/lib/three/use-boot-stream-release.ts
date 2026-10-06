@@ -42,10 +42,21 @@ export function bootStreamPriority(
  * effect); a post-eligibility subscribe still delivers via the queue, so
  * this is correct in every interleaving. One-shot monotonic per mount;
  * post-eligibility remounts initialize released.
+ *
+ * web-load T10-C: with `warmRead` (the member's own non-hook model read;
+ * MUST be referentially stable; requires `memberId`, a cohort id), the
+ * admitted member reports the cohort `'loading'` state AT ADMISSION, loads +
+ * parses OUTSIDE React (warmSuspenseRead), and only then flips `released`.
+ * The release render reads a resolved cache entry and commits without a
+ * Suspense retry (retry lanes starve under the SyncLane stream renders).
+ * The consumer must then not report `'loading'` again on `released`.
+ * Unmount before the warm resolves cancels the flip. Without `warmRead` the
+ * behaviour is unchanged. No `bgr*` phase stamp (boot-critical lane only).
  */
 export function useBootStreamRelease(
   priority: number,
   memberId?: string,
+  warmRead?: () => unknown,
 ): boolean {
   // [I1-F5][I2-F2] instant initialization is allowed ONLY for a member whose
   // own stagger tick already delivered (a REMOUNT of released content — the
@@ -61,8 +72,25 @@ export function useBootStreamRelease(
   );
   useEffect(() => {
     if (released) return undefined;
-    return onBootStreamEligible(() => setReleased(true), priority, memberId);
-  }, [released, priority, memberId]);
+    if (warmRead === undefined || memberId === undefined) {
+      return onBootStreamEligible(() => setReleased(true), priority, memberId);
+    }
+    let cancelled = false;
+    const unsubscribe = onBootStreamEligible(
+      () => {
+        reportCohortState(memberId, 'loading');
+        void warmSuspenseRead(warmRead).then(() => {
+          if (!cancelled) setReleased(true);
+        });
+      },
+      priority,
+      memberId,
+    );
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [released, priority, memberId, warmRead]);
   return released;
 }
 

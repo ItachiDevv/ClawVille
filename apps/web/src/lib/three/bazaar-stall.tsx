@@ -24,13 +24,30 @@ import { useMemo, useEffect, memo } from 'react';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  preloadKTX2Bytes,
+  readGLTFWithKTX2,
+  useGLTFWithKTX2,
+} from '@/lib/three/use-gltf-ktx2';
 import {
   BOOT_STREAM_TIER_PROPS,
   onBootStreamEligible,
 } from '@/lib/three/decorative-release';
 import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
 import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
+
+/** The model path: ONE constant for the byte-warm, the render read
+ * (BazaarStallInner) and the warm read, so they hit the same cache entry. */
+const BAZAAR_STALL_MODEL = '/models/bazaar-merchant-stand-ktx.glb?v=3';
+
+/** web-load T10-C: NON-HOOK read of the exact cache entry BazaarStallInner's
+ * useGLTFWithKTX2 call reads (same drei call, path, flags and extender).
+ * BootStreamedContent awaits it outside React at post-reveal admission,
+ * so the release render never suspends into a starvable retry lane.
+ * Module-level, so it is referentially stable. */
+function readBazaarStallGltf(): unknown {
+  return readGLTFWithKTX2(BAZAAR_STALL_MODEL);
+}
 
 // ---------------------------------------------------------------------------
 // Rung-4 slice D (§3 preload demotion): byte-warm fires at boot-stream
@@ -39,7 +56,7 @@ import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 // ---------------------------------------------------------------------------
 if (typeof window !== 'undefined') {
   onBootStreamEligible(
-    () => preloadKTX2Bytes('/models/bazaar-merchant-stand-ktx.glb?v=3'),
+    () => preloadKTX2Bytes(BAZAAR_STALL_MODEL),
     Number.NEGATIVE_INFINITY,
   );
 }
@@ -79,7 +96,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const BazaarStallInner = memo(function BazaarStallInner() {
-  const { scene } = useGLTFWithKTX2('/models/bazaar-merchant-stand-ktx.glb?v=3');
+  const { scene } = useGLTFWithKTX2(BAZAAR_STALL_MODEL);
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);
@@ -152,6 +169,7 @@ export default function BazaarStall() {
   return (
     <BootStreamedContent
       cohortId="prop:bazaar-stall"
+      warmRead={readBazaarStallGltf}
       priority={bootStreamPriority(BOOT_STREAM_TIER_PROPS, STALL_X, STALL_Z)}
     >
       <BazaarStallInner />

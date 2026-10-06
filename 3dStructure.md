@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-06 14:07Z (web-load T9 + Codex E3 follow-ups: wandering NPC and remote player VRM figures are warm-read outside React before they mount; activity indicators share one material + geometry per look, released one tick after the last layer unmounts). Drift note: new "Ambient VRM figure warm read" and "Activity indicators share one material + geometry per look" bullets after "Seabed decoration warm read"; §13 T9 entry.
+**Last Audited: 2026-10-06 14:22Z (web-load T10-C: the post-reveal town props quest-npc, marketplace-stall, quest-bounty-pavilion and bazaar-stall are warm-read outside React before their release, like the stage-B members).** Drift note: new "Post-reveal town prop warm read" bullet after "Ambient VRM figure warm read"; §13 T10-C entry. The post-reveal lane reports the cohort `'loading'` state at admission when a member passes `warmRead`.
+
+**Prior Last Audited: 2026-10-06 14:07Z (web-load T9 + Codex E3 follow-ups: wandering NPC and remote player VRM figures are warm-read outside React before they mount; activity indicators share one material + geometry per look, released one tick after the last layer unmounts). Drift note: new "Ambient VRM figure warm read" and "Activity indicators share one material + geometry per look" bullets after "Seabed decoration warm read"; §13 T9 entry.
 
 **Prior Last Audited: 2026-10-06 13:15Z (web-load T8: the adaptive quality governor counts no frame until the loader is dismissed and post-load work is quiet; seaweed + kelp mount once and then only toggle visibility; seabed decoration GLBs are warm-read outside React).** Drift note: governor paragraph (§3) rewritten for the post-load gate + persistent governor; §8b kelp runtime-gate row; §5e decoration row (52 meshes / 148,444 triangles, the 57 / 145,810 there was stale; attach time); new "Seabed decoration warm read" bullet; §13 T8 entry.
 
@@ -463,6 +465,26 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   `perf:location-npcs` held 2 meshes at 114 s against 72 unthrottled.
   Pinned by `arena-location-npcs-warm-read.test.tsx`. Not measured live
   yet.
+- **Post-reveal town prop warm read** (`boot-streamed-content.tsx`
+  `PostRevealGate`, `use-boot-stream-release.ts` `useBootStreamRelease`,
+  web-load T10-C 2026-10-06). The stage-B pattern on the slice-D
+  post-reveal lane: `PostRevealGate` now passes `warmRead` to
+  `useBootStreamRelease` (before, it ignored it). With `warmRead`, the hook
+  reports the cohort `'loading'` state at admission, awaits
+  `warmSuspenseRead`, then flips `released`; `StreamedChain` reports
+  `'loading'` on `released` only when no `warmRead` is given (else it would
+  land after the content's `'warm-pending'`). No `bgr*` phase stamp on this
+  lane. Without `warmRead` the lane is unchanged (land trio). Users:
+  `quest-npc.tsx` (`readQuestNpcGltf`), `marketplace-stall.tsx`,
+  `quest-bounty-pavilion.tsx`, `bazaar-stall.tsx`: each reads
+  `readGLTFWithKTX2(<one module-level path constant>)`, the constant the
+  byte-warm and the render's `useGLTFWithKTX2` also use. Cause: CPU 4x run
+  N6 (T9 probe, at 114 s): quest-bounty-pavilion 0 meshes (unthrottled 27),
+  marketplace-stall 0 (3), quest-npc 0 (3). Pinned by
+  `post-reveal-warm-read.test.tsx` (the 4 real props on the real
+  post-reveal queue: warm read before the render read, same path + flags +
+  extender, 0 render suspensions; the lane without `warmRead` unchanged;
+  failure, unmount-cancel and StrictMode cases). Not measured live yet.
 - **Activity indicators share one material + geometry per look**
   (`activity-indicators.tsx`, web-load T9 2026-10-06). The cyan activity
   sphere and the grey typing dot each use one module-level
@@ -2931,6 +2953,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-10-06 — **Post-reveal town prop warm read** (commit pending, branch `perf/load-items`, web-load T10-C). Cause (CPU 4x run N6, per-root mesh probe at 114 s vs unthrottled): `perf:quest-bounty-pavilion` 0 vs 27, `perf:marketplace-stall` 0 vs 3, `perf:quest-npc` 0 vs 3; these props release on the post-reveal lane, their release render suspended on the GLB, and the content could commit only in a Suspense retry lane that the ~6/s SyncLane renders discard. `PostRevealGate` ignored `warmRead`. Fix: `useBootStreamRelease(priority, id, warmRead)` warms outside React at admission (reports `'loading'` there; `StreamedChain` skips its own `'loading'` when `warmRead` is set); quest-npc, marketplace-stall, quest-bounty-pavilion and bazaar-stall pass a module-level `readGLTFWithKTX2` reader of their one path constant. Tests failed first: `post-reveal-warm-read.test.tsx` 4/5 (each prop: 2 suspended render reads, no warm read); the no-`warmRead` lane test passes before and after. Mutations caught: a warm path without `?v=3` (path mismatch + 2 suspensions), the ungated `'loading'` report (cohort order). Needs measurement (CPU 4x), Codex E3 + staging.
 - 2026-10-06 — **Building residents warm-read before mount** (commit pending, branch `perf/load-items`, web-load T10-B). Cause (T9 probe run N6, local prod build, CPU 4x): `LocationNpc` mounted `NpcMesh` right after its stagger release, `NpcMesh`'s `useGLTF` suspended, and the resident could commit only in a Suspense retry lane that the R3F root's ~6/s SyncLane renders discard; `perf:location-npcs` held 2 meshes at 114 s (72 unthrottled). Fix: `LocationNpc` warm-reads the primary + companion GLB outside React (`warmSuspenseRead` + `readLocationNpcModel`, NpcMesh's exact drei call) and mounts `NpcMesh` only when `released && mounted && warmed`. Test `arena-location-npcs-warm-read.test.tsx` (real `ArenaLocationNpcs` in a real R3F root, recording `useGLTF`): on the base code 4/5 fail (every render read of the 12 models suspended, no warm read); after: 5/5 pass (0 suspended render reads, warm read first with identical path/flags/extender for all 12 models, StrictMode, unmount mid-warm leaves no render read/mount/error, a failed GLB rethrows the same cached Error). In the `gates.yml` separate-process suite list. Not measured live (no build); needs CPU 4x measurement + Codex E3 + staging.
 - 2026-10-06 — **VRM figure warm read + shared activity-indicator looks** (commit pending, branch `perf/load-items`, web-load T9). Cause 1 (T8 local runs T1-T3 at 9ec8bd50, TB1-TB2, CPU 4x WebGL2 desktop-low): `NpcEntry` mounted each wandering VRM figure through `<Suspense>` around `useVRMInstance`, so it could commit only in a Suspense retry lane that the 5 Hz SyncLane stream renders discard: 10/1/1/5/0 of 16 figures waited > 10 s from parse to commit (max 26.6 s), all 16 committed at 39.4-65.4 s. Fix: `useVRMWarmRead` (arena-npcs) resolves the entry outside React with `readVRMInstance` (the body of `useVRMInstance`) before `NpcEntry` / `DeferredRemoteBody` mount the figure; `VRMNpcMesh` uses `vrmPathForSpecies`. After (local, 5 runs): 0/16 in every run, parse -> commit median 70-95 ms, max 476 ms, all 16 at 38.3-39.4 s, 0 console errors. Cause 2: `activity-indicators.tsx` built new JSX materials per show (one sync WebGPU pipeline creation per show; 3/4/3/1 in 95 s, T8 runs A1-A3, H1) and allocated an array per frame in the typing dots. Fix: one module-level material + geometry per look, released when the last layer unmounts; three direct calls per frame. After (unthrottled WebGPU, 3 runs, 95 s, 11-12 shows each): 0 indicator pipeline creations. Tests failed first: warm-read 4/5 (suspended render reads, no warm read; the loader parity test fails on the HEAD loader), indicators 1/1 (3 materials for 3 dots). Codex E3 (APPROVE, 3 follow-ups, same branch): the indicator release is deferred one tick, then disposes and empties the cache (a later mount got disposed objects before); new tests: remote player leaving during a pending parse (0 instances, no commit, no error) and the boundary's clear of a failed VRM proven inside the dispose grace; each fails when its guard is removed (no `error.clear()`, no orphan bracket, warm reading after cleanup). Side finding, not changed here: under CPU 4x (1 run with a per-root mesh probe, N6) a different Suspense retry stays pending from 23.5 s to the end of the run (117 s), while at 114 s `perf:location-npcs` holds 2 meshes and `perf:quest-bounty-pavilion`, `perf:marketplace-stall`, `perf:quest-npc`, `perf:land-kit-pieces`, `perf:land-ring-decorations` hold 0 (unthrottled, same build, 3/3 runs: 72, 27, 3, 3, 1, 6). The building residents and these props did not appear in that run; likely the same retry-lane shape, other owners' files. Needs Codex E3 + staging.
 
