@@ -312,6 +312,26 @@ function npcState(id: string, species: string, index: number): NpcSpriteState {
   } as unknown as NpcSpriteState;
 }
 
+function remotePlayer(id: string, species: string): RemotePlayerState {
+  return {
+    id,
+    kind: 'human',
+    userId: null,
+    name: id,
+    x: 2_100,
+    y: 2_100,
+    prevX: 2_100,
+    prevY: 2_100,
+    ts: 0,
+    tsDelta: 200,
+    dirZ: 0,
+    species,
+    color: 0xffffff,
+    activity: 'idle',
+    isLocal: false,
+  } as RemotePlayerState;
+}
+
 const isVrmSpecies = (species: string) =>
   MODEL_REGISTRY[species as keyof typeof MODEL_REGISTRY]?.avatar_type === 'vrm';
 
@@ -417,12 +437,18 @@ describe('VRM figures commit without a Suspense retry (web-load T9)', () => {
     expect(committed(badPath)).toBeUndefined();
     expect(consoleErrors.filter((m) => m.includes('figure skipped'))).toHaveLength(1);
     expect(renderReads.filter((r) => r.suspended)).toEqual([]);
+    // The BOUNDARY evicted the failed entry on catch (error.clear()), long
+    // before any dispose grace: only the healthy figure's entry is cached.
+    expect(vrmLoader._vrmInstanceCount()).toBe(1);
 
-    // Remount after the network recovers: the figure requests and commits.
+    // Remount after the network recovers, INSIDE the 500 ms dispose grace
+    // (the orphan bracket's dispose is still pending, so only the boundary's
+    // clear can have removed the rejected entry): the figure requests again
+    // and commits.
     failingPaths.delete(badPath);
     const before = requests.get(badPath) ?? 0;
     useNpcStore.setState({ npcs: [npcState(okDef.id, okDef.species, 0)] });
-    await settle(DISPOSE_GRACE_PLUS_MS);
+    await settle(20);
     useNpcStore.setState({ npcs: [npcState(okDef.id, okDef.species, 0), npcState(badDef.id, badDef.species, 1)] });
     await waitFor(() => committed(badPath) !== undefined, 'the remounted figure committed');
     expect(requests.get(badPath) ?? 0).toBeGreaterThan(before);
@@ -494,23 +520,7 @@ describe('VRM figures commit without a Suspense retry (web-load T9)', () => {
     const species = 'milady_official_5';
     expect(isVrmSpecies(species)).toBe(true);
     const path = vrmPathForSpecies(species);
-    const player = {
-      id: 'remote-t9',
-      kind: 'human',
-      userId: null,
-      name: 'remote',
-      x: 2_100,
-      y: 2_100,
-      prevX: 2_100,
-      prevY: 2_100,
-      ts: 0,
-      tsDelta: 200,
-      dirZ: 0,
-      species,
-      color: 0xffffff,
-      activity: 'idle',
-      isLocal: false,
-    } as RemotePlayerState;
+    const player = remotePlayer('remote-t9', species);
     usePlayerStore.setState({ players: [player] });
     const { root, committed } = await mount(createElement(RemotePlayers));
     await waitFor(() => committed(path) !== undefined, 'the remote figure committed');
@@ -524,6 +534,41 @@ describe('VRM figures commit without a Suspense retry (web-load T9)', () => {
     usePlayerStore.setState({ players: [] });
     await settle(DISPOSE_GRACE_PLUS_MS);
     expect(vrmLoader._vrmInstanceCount()).toBe(0);
+    await r3f.act(async () => root.unmount());
+  }, 20_000);
+
+  test('a remote player LEAVING during a pending parse: 0 instances left, no late commit, no error', async () => {
+    vrmLoader._vrmClearAllCaches();
+    resetRecords();
+    let openGate: () => void = () => undefined;
+    parseGate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const species = 'milady_official_6';
+    expect(isVrmSpecies(species)).toBe(true);
+    const path = vrmPathForSpecies(species);
+    const player = remotePlayer('remote-t9-leaver', species);
+    const parsesBefore = parses;
+    usePlayerStore.setState({ players: [player] });
+    const { root, committed } = await mount(createElement(RemotePlayers));
+    await waitFor(() => parses > parsesBefore, 'the remote parse started');
+    expect(vrmLoader._vrmInstanceCount()).toBe(1);
+
+    // The player leaves while the parse is held open (inside act, so React's
+    // test-only "not wrapped in act" warning cannot pollute the error check).
+    await r3f.act(async () => {
+      usePlayerStore.setState({ players: [] });
+    });
+    await settle(DISPOSE_GRACE_PLUS_MS);
+    openGate();
+    parseGate = null;
+    await settle(100);
+    expect(vrmLoader._vrmInstanceCount()).toBe(0);
+    expect(committed(path)).toBeUndefined();
+    expect(parses - parsesBefore).toBe(1);
+    expect(renderReads.filter((r) => r.id === player.id)).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+    expect(reported).toEqual([]);
     await r3f.act(async () => root.unmount());
   }, 20_000);
 });

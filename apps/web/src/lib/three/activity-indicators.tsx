@@ -35,9 +35,10 @@ const TYPING_Y = 9;
 // stable for the whole session, so a look compiles once. The layer
 // (ActivityIndicators) holds the only user count: GPU resources are released
 // when the LAST mounted layer unmounts, never when one indicator hides (the
-// next show would then compile again). The JS objects stay valid after
-// dispose(); three re-uploads them on the next render, so a remount (and a
-// StrictMode setup/cleanup/setup) keeps the same identity.
+// next show would then compile again). The release is deferred one tick and
+// a retain cancels it, so a StrictMode setup/cleanup/setup keeps the same
+// objects; a real last unmount disposes them and empties the map, and the
+// next mount builds fresh objects.
 
 type IndicatorLook = 'activity' | 'typing-dot';
 type IndicatorLookResources = { geometry: THREE.BufferGeometry; material: THREE.Material };
@@ -65,18 +66,36 @@ function getIndicatorLook(look: IndicatorLook): IndicatorLookResources {
   return resources;
 }
 
+/** Pending teardown after the last layer unmounted (cancelled by a retain). */
+let pendingLookRelease: ReturnType<typeof setTimeout> | null = null;
+
 function retainIndicatorLooks(): void {
   sharedLookUsers += 1;
+  // A StrictMode re-setup (or a remount in the same tick) keeps the objects
+  // its render already holds: cancel the teardown instead of rebuilding.
+  if (pendingLookRelease !== null) {
+    clearTimeout(pendingLookRelease);
+    pendingLookRelease = null;
+  }
 }
 
 function releaseIndicatorLooks(): void {
-  sharedLookUsers -= 1;
-  if (sharedLookUsers > 0) return;
-  sharedLookUsers = 0;
-  for (const { geometry, material } of sharedLooks.values()) {
-    geometry.dispose();
-    material.dispose();
-  }
+  sharedLookUsers = Math.max(0, sharedLookUsers - 1);
+  if (sharedLookUsers > 0 || pendingLookRelease !== null) return;
+  // Deferred one tick (Codex E3 on 1ea42199): StrictMode runs cleanup and
+  // setup back to back with no re-render, so a synchronous teardown would
+  // dispose objects the mounted meshes still use. On a real last unmount
+  // the timer runs: dispose every resource once and DROP it from the map, so
+  // a later mount builds fresh objects instead of reusing disposed ones.
+  pendingLookRelease = setTimeout(() => {
+    pendingLookRelease = null;
+    if (sharedLookUsers > 0) return;
+    for (const { geometry, material } of sharedLooks.values()) {
+      geometry.dispose();
+      material.dispose();
+    }
+    sharedLooks.clear();
+  }, 0);
 }
 
 // ---------------------------------------------------------------------------

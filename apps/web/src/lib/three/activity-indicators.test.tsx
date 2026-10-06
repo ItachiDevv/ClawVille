@@ -17,7 +17,7 @@
  * Runs in its own process.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { createElement, type ReactNode } from 'react';
+import { StrictMode, createElement, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
 import type * as THREE from 'three';
 import type { NpcSpriteState } from '@/stores/npc';
@@ -126,22 +126,57 @@ function meshesByColor(scene: THREE.Object3D, color: number): THREE.Mesh[] {
   return out;
 }
 
+async function mountLayer(element: ReactNode) {
+  const canvas = testWindow.document.createElement('canvas');
+  testWindow.document.body.appendChild(canvas);
+  const root = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
+  await root.configure({
+    gl: fakeRenderer(canvas) as never,
+    size: { width: 320, height: 200, top: 0, left: 0 },
+    frameloop: 'never',
+  });
+  let store!: ReturnType<typeof root.render>;
+  await r3f.act(async () => {
+    store = root.render(element);
+  });
+  return { root, store, scene: () => store.getState().scene };
+}
+
+/** Unmount, then let the deferred release run (one timer tick). */
+async function unmountLayer(root: { unmount: () => void }): Promise<void> {
+  await r3f.act(async () => root.unmount());
+  await r3f.act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+}
+
+type LookSet = { activityMaterial: THREE.Material; activityGeometry: THREE.BufferGeometry; dotMaterial: THREE.Material; dotGeometry: THREE.BufferGeometry };
+
+function readLooks(scene: THREE.Object3D): LookSet {
+  const sphere = meshesByColor(scene, CYAN)[0]!;
+  const dot = meshesByColor(scene, DOT)[0]!;
+  return {
+    activityMaterial: sphere.material as THREE.Material,
+    activityGeometry: sphere.geometry,
+    dotMaterial: dot.material as THREE.Material,
+    dotGeometry: dot.geometry,
+  };
+}
+
+function countDisposes(looks: LookSet): Map<object, number> {
+  const disposed = new Map<object, number>();
+  for (const resource of Object.values(looks)) {
+    resource.addEventListener('dispose', () => disposed.set(resource, (disposed.get(resource) ?? 0) + 1));
+  }
+  return disposed;
+}
+
+let previousLooks: LookSet | null = null;
+
 describe('activity indicators share materials + geometry per look (web-load T9)', () => {
   test('stable identity across shows; one dispose per shared resource on layer unmount; dots bounce', async () => {
     await setNpcs([]);
-    const canvas = testWindow.document.createElement('canvas');
-    testWindow.document.body.appendChild(canvas);
-    const root = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
-    await root.configure({
-      gl: fakeRenderer(canvas) as never,
-      size: { width: 320, height: 200, top: 0, left: 0 },
-      frameloop: 'never',
-    });
-    let store!: ReturnType<typeof root.render>;
-    await r3f.act(async () => {
-      store = root.render(createElement(ActivityIndicators));
-    });
-    const scene = () => store.getState().scene;
+    const { root, store, scene } = await mountLayer(createElement(ActivityIndicators));
 
     // Show #1: one NPC talking -> one activity sphere + three typing dots.
     await setNpcs([npc('a', true, 0)]);
@@ -192,10 +227,49 @@ describe('activity indicators share materials + geometry per look (web-load T9)'
     expect(disposed.size).toBe(0);
 
     // The layer unmounts: each shared resource is disposed exactly once.
-    await r3f.act(async () => root.unmount());
+    await unmountLayer(root);
     for (const resource of [activityMaterial, activityGeometry, dotMaterial, dotGeometry]) {
       expect(disposed.get(resource)).toBe(1);
     }
+    previousLooks = { activityMaterial, activityGeometry, dotMaterial, dotGeometry };
+    await setNpcs([]);
+  }, 20_000);
+
+  test('after the last layer unmounted, a new mount gets FRESH objects (never disposed ones) and works', async () => {
+    expect(previousLooks).not.toBeNull();
+    const old = previousLooks!;
+    const oldDisposes = countDisposes(old);
+    await setNpcs([npc('a', true, 0)]);
+    const { root, scene } = await mountLayer(createElement(ActivityIndicators));
+    expect(meshesByColor(scene(), CYAN)).toHaveLength(1);
+    expect(meshesByColor(scene(), DOT)).toHaveLength(3);
+    const fresh = readLooks(scene());
+    for (const key of Object.keys(fresh) as (keyof LookSet)[]) {
+      expect(fresh[key]).not.toBe(old[key]);
+    }
+    const disposed = countDisposes(fresh);
+    await unmountLayer(root);
+    for (const resource of Object.values(fresh)) expect(disposed.get(resource)).toBe(1);
+    // The old (already disposed) objects were not disposed a second time.
+    expect(oldDisposes.size).toBe(0);
+    await setNpcs([]);
+  }, 20_000);
+
+  test('StrictMode setup/cleanup/setup keeps the rendered objects alive; the real unmount disposes them once', async () => {
+    await setNpcs([npc('a', true, 0)]);
+    const { root, scene } = await mountLayer(createElement(StrictMode, null, createElement(ActivityIndicators)));
+    const looks = readLooks(scene());
+    const disposed = countDisposes(looks);
+    await r3f.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(disposed.size).toBe(0);
+    // A second show while mounted reuses the rendered objects.
+    await setNpcs([npc('a', true, 0), npc('b', true, 1)]);
+    for (const mesh of meshesByColor(scene(), CYAN)) expect(mesh.material).toBe(looks.activityMaterial);
+    for (const mesh of meshesByColor(scene(), DOT)) expect(mesh.material).toBe(looks.dotMaterial);
+    await unmountLayer(root);
+    for (const resource of Object.values(looks)) expect(disposed.get(resource)).toBe(1);
     await setNpcs([]);
   }, 20_000);
 });
