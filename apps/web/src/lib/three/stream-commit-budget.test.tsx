@@ -29,9 +29,8 @@
  *   gap:     the bubble expiry -> exactly ONE bubble commit (the removal);
  *   phase 2: 5 s idle, no bubbles -> 0 commits (before T10: 5 tick commits
  *            + the 5 s cleanup interval re-rendered the indicators).
- * KNOWN source outside this task (owner T3, pinned by the second test): a
- * remote player that MOVES gets a new store object per snapshot (immutable
- * players store), so RemotePlayers commits on every snapshot.
+ * The second test pins T3: a remote player that MOVES commits nothing either
+ * (the players store mutates position in place, like the NPC store).
  * Runs in its own process (mock.module is process-global).
  */
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
@@ -475,14 +474,13 @@ describe('stream commit budget (web-load T10)', () => {
     60_000,
   );
 
-  // KNOWN commit source owned by T3 (RemotePlayers / players store): a remote
-  // player that moves gets a NEW store object per snapshot (immutable update,
-  // stores/players.ts), so useShallow(s => s.players) sees a changed element
-  // and RemotePlayers commits on every snapshot (measured: 20 commits for 10
-  // snapshots). The other layers must stay at 0. When T3 lands, change the
-  // last assertion to `toBe(0)`: this test then fails until it is updated.
+  // T3 (RemotePlayers / players store): before T3 a remote player that moved
+  // got a NEW store object per snapshot, so RemotePlayers committed on every
+  // snapshot (measured: 20 commits for 10 snapshots). Now position-only
+  // snapshots mutate the store object in place and the body reads it live
+  // (remote-players.test.tsx pins the motion), so every layer stays at 0.
   test(
-    'KNOWN (T3): a MOVING remote player commits RemotePlayers only; every other layer stays at 0',
+    'T3: a MOVING remote player commits nothing; every layer stays at 0',
     async () => {
       const { root } = await settledWorld(true);
       resetCommits();
@@ -497,7 +495,7 @@ describe('stream commit budget (web-load T10)', () => {
         bubbles: 0,
         indicators: 0,
       });
-      expect(counts.players).toBeGreaterThan(0);
+      expect(counts.players).toBe(0);
       expect(reported).toEqual([]);
     },
     30_000,

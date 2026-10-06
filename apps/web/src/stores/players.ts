@@ -10,6 +10,9 @@ import type { PlayerSnapshot } from '@clawville/shared';
  * pattern so the same lerp math in remote-players.tsx
  * smooths network jitter into perfectly visible motion. Render 1 server tick
  * BEHIND real-time — alpha = clamp((Date.now() - ts) / tsDelta, 0, 1).
+ * These fields (and x/y/dirZ/locomotion activity) are MUTATED IN PLACE on
+ * position-only snapshots (see updateFromSnapshot): read them live, never
+ * cache a copy keyed by object identity.
  *
  * `isLocal` is set during snapshot ingestion (the server doesn't know which
  * session is the viewer's — it broadcasts every session in the room). The
@@ -33,7 +36,7 @@ export interface RemotePlayerState {
   prevY: number;
   /** Wall-clock ms when this snapshot arrived. Drives entity interpolation. */
   ts: number;
-  /** ms between previous and current snapshot for this player (default 200). */
+  /** ms between previous and current snapshot for this player, clamped [120, 320] (first sight 200). */
   tsDelta: number;
   /** Heading in radians (atan2(dx, dy)). */
   dirZ: number;
@@ -69,7 +72,11 @@ interface PlayerStoreState {
   roomId: string | null;
   setLocalSessionId: (sessionId: string | null) => void;
   setRoomId: (roomId: string | null) => void;
-  /** Ingest a snapshot's `players[]` slice. Preserves prev fields for interp. */
+  /**
+   * Ingest a snapshot's `players[]` slice. Position-only changes mutate the
+   * existing objects in place and do not notify subscribers; joins, leaves,
+   * reorders and render-field changes replace the array (see the function).
+   */
   updateFromSnapshot: (incoming: PlayerSnapshot[]) => void;
   clear: () => void;
   /**
@@ -92,6 +99,24 @@ function fieldsEqual(a: RemotePlayerState, b: PlayerSnapshot): boolean {
     a.color === b.color
   );
 }
+
+/**
+ * Plain locomotion verbs. The renderer reads them only in its frame loop
+ * (idle vs walk vs run clip), so a flip between two of them is NOT a
+ * structural change. Every other verb (AT_COVE_ACTIVITY, AT_KELP_ACTIVITY,
+ * AT_ACTIVITY, or an unknown one) can change the rendered name label, so a
+ * change to or from it IS structural.
+ */
+const LOCOMOTION_ACTIVITIES: ReadonlySet<string> = new Set(['idle', 'walking', 'running']);
+
+function activityStructurallyEqual(prev: string, next: string): boolean {
+  return prev === next || (LOCOMOTION_ACTIVITIES.has(prev) && LOCOMOTION_ACTIVITIES.has(next));
+}
+
+/** Receipt-gap clamp, same rule and bounds as the NPC store (3dStructure §6z stage 3). */
+const TS_DELTA_MIN_MS = 120;
+const TS_DELTA_MAX_MS = 320;
+const TS_DELTA_FIRST_MS = 200;
 
 export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
   players: [],
@@ -141,57 +166,72 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
     const state = get();
     const now = Date.now();
     const localSessionIds = state.localSessionIds;
-    const prevMap = new Map(state.players.map((p) => [p.id, p]));
+    const prevPlayers = state.players;
+    const prevMap = new Map(prevPlayers.map((p) => [p.id, p]));
 
-    // IMMUTABLE update (2026-06-12, Codex finding #5). Unlike the NPC store —
-    // which MUTATES position on the previous object so its 18-NPC subtree never
-    // re-renders — remote players go through an adapter copy in
-    // remote-players.tsx (`adaptPlayer` is memoized by `player` identity). If we
-    // mutate the player object in place its identity never changes, so the
-    // adapter's `useMemo([player])` never recomputes and the entry's
-    // `npcRef.current` keeps the snapshot position taken at MOUNT — the remote
-    // mesh mounts once then FREEZES (the D3a Suspense-outside-memo fix cured the
-    // load deadlock but not this steady-state freeze). Replacing each MOVED
-    // player with a fresh object flips its identity, so:
-    //   - useShallow(s => s.players) sees changed contents → parent re-renders
-    //   - the memo'd RemotePlayerEntry sees a new `player` ref → recomputes the
-    //     adapter → refreshes npcRef.current with the latest prevX/x/ts/tsDelta
-    //   - the mesh's entity-interp lerps prevX→x over tsDelta exactly as designed
-    // Unchanged players keep their reference, so memo still bails for them — only
-    // the players who actually moved pay reconciliation, at the 5 Hz snapshot
-    // rate over the small co-present-session set. This is the correct React
-    // pattern and the freeze cannot recur.
+    // MUTATE-IN-PLACE for position-only changes (web-load T3, 2026-10-06) —
+    // the NPC store pattern (stores/npc.ts updateFromSnapshot).
+    //
+    // Why: the 2026-06-12 immutable update (Codex finding #5) gave every MOVED
+    // player a new object, so `useShallow(s => s.players)` re-rendered
+    // RemotePlayers at the 5 Hz stream rate per moving remote player; each such
+    // SyncLane render of the R3F root discards every pending Suspense retry
+    // lane in the scene (reconciler 0.31 retry lanes never expire).
+    //
+    // Now x/y/prevX/prevY/ts/tsDelta/dirZ and a locomotion-only activity flip
+    // are written onto the EXISTING object. The `players` array and every
+    // object keep their identity, and when nothing structural changed the
+    // store is not even notified (no `set`). The renderer reads these fields
+    // live every frame (remote-players.tsx RemotePlayerBody getters), which is
+    // what keeps the Codex #5 freeze from coming back: nothing may cache a
+    // COPY of them keyed by object identity.
+    //
+    // Structural changes still produce a new object and a new array: a join,
+    // a leave, a reorder, or a change to a field the render uses (identity
+    // fields in fieldsEqual, isLocal, or an activity change that can change
+    // the name label, see activityStructurallyEqual).
+    let structural = incoming.length !== prevPlayers.length;
     const next: RemotePlayerState[] = [];
-    for (const snap of incoming) {
+    for (let i = 0; i < incoming.length; i += 1) {
+      const snap = incoming[i];
       const prev = prevMap.get(snap.id);
-      // tsDelta measured from arrival times; floor at 16 ms to avoid
-      // divide-by-near-zero if two snapshots land in the same wall-clock tick.
-      const tsDelta = prev ? Math.max(16, now - prev.ts) : 200;
+      // Receipt gap, clamped [120, 320] ms like the NPC store: the renderer
+      // plays each position segment over tsDelta, so raw gaps (coalesced
+      // flushes near 0 ms, stalls of seconds) would modulate rendered speed.
+      const tsDelta = prev
+        ? Math.min(TS_DELTA_MAX_MS, Math.max(TS_DELTA_MIN_MS, now - prev.ts))
+        : TS_DELTA_FIRST_MS;
       // isLocal against the WHOLE former-selves set so an orphaned prior body
       // (different publicId, same browser) is filtered out, not rendered as a
       // trailing "Visitor". See localSessionIds.
       const isLocal = localSessionIds.has(snap.id);
 
-      // Skip allocation when NOTHING changed for this player (no movement, no
-      // identity change, same local flag) — keep the previous reference so memo
-      // bails and a perfectly still remote player costs zero reconciliation.
       if (
         prev &&
         fieldsEqual(prev, snap) &&
-        prev.x === snap.x &&
-        prev.y === snap.y &&
-        prev.dirZ === snap.dirZ &&
-        prev.activity === snap.activity &&
-        prev.isLocal === isLocal
+        prev.isLocal === isLocal &&
+        activityStructurallyEqual(prev.activity, snap.activity)
       ) {
+        // prevX/prevY carry the prior CURRENT position so the entity-interp
+        // lerps from where the player was to where they are. A still player
+        // gets prevX === x (no motion) and a fresh ts, so its next move
+        // starts from a nominal tsDelta instead of a multi-second one.
+        prev.prevX = prev.x;
+        prev.prevY = prev.y;
+        prev.x = snap.x;
+        prev.y = snap.y;
+        prev.ts = now;
+        prev.tsDelta = tsDelta;
+        prev.dirZ = snap.dirZ;
+        prev.activity = snap.activity;
         next.push(prev);
+        if (prevPlayers[i] !== prev) structural = true;
         continue;
       }
 
-      // Anything changed (position, heading, activity, identity, or local flag)
-      // → emit a NEW object so the renderer re-derives and the mesh sees fresh
-      // interpolation endpoints. prevX/prevY carry the prior CURRENT position so
-      // the entity-interp lerps from where the player was to where they are.
+      // Structural change → a NEW object, so React re-renders the entry and
+      // the body re-reads the render-time fields (name label, model, color).
+      structural = true;
       next.push({
         id: snap.id,
         kind: snap.kind,
@@ -211,7 +251,7 @@ export const usePlayerStore = create<PlayerStoreState>((set, get) => ({
       });
     }
 
-    set({ players: next });
+    if (structural) set({ players: next });
   },
 
   clear: () =>

@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-06 14:55Z (web-load T10-C Codex E3 BLOCKER fix: on both stream lanes a member with `warmRead` renders its content only after ITS OWN hook instance saw the warm read resolve; a remount during a pending warm no longer suspends into a retry lane).** Drift note: "Stage-B warm read" bullet (the remount sentence) and "Post-reveal town prop warm read" bullet updated; §13 entry.
+**Last Audited: 2026-10-06 14:57Z (web-load T3, Codex E3 BLOCKER fix: a moving remote player no longer renders `RemotePlayers` on every world snapshot; the players store mutates position in place like the NPC store and the remote body reads the live object every frame).** Drift note: new "Remote player position updates in place" bullet after "Stream commit budget" (whose KNOWN remaining source sentence now points to it); §13 T3 entry.
+
+**Prior Last Audited: 2026-10-06 14:55Z (web-load T10-C Codex E3 BLOCKER fix: on both stream lanes a member with `warmRead` renders its content only after ITS OWN hook instance saw the warm read resolve; a remount during a pending warm no longer suspends into a retry lane).** Drift note: "Stage-B warm read" bullet (the remount sentence) and "Post-reveal town prop warm read" bullet updated; §13 entry.
 
 **Prior Last Audited: 2026-10-06 14:50Z (web-load T10-A, incl. Codex E3: every mounted same-id body stays in the overlay registry; length-prefixed indicator key; position-only world-stream snapshots and idle time no longer commit the R3F root through ActivityIndicators or NpcSpeechBubbles; both overlays follow the rendered (smoothed) NPC body via `getNpcRenderGroup`, raw store position as fallback).** Drift note: new "Stream commit budget" bullet (incl. "Overlay position source") after "Ambient GLB wanderer warm read"; §13 T10-A entry.
 
@@ -573,11 +575,43 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   ActivityIndicators + RemotePlayers in one R3F root, real store write
   paths): 25 position-only snapshots over 5 s = 26 indicator + 5 bubble
   commits before, 0 after; bubble expiry = exactly 1 commit; 5 s idle = 6
-  bubble + 1 indicator commits before, 0 after. KNOWN remaining source
-  (pinned by the same file, not fixed here): a MOVING remote player commits
-  `RemotePlayers` on every snapshot (immutable players store, 20 commits
-  for 10 snapshots). Also pinned by `activity-indicators.test.tsx` and
-  `npc-speech-bubbles.test.tsx`. Not measured live yet.
+  bubble + 1 indicator commits before, 0 after. A MOVING remote player
+  committed `RemotePlayers` on every snapshot (20 commits for 10
+  snapshots); fixed by web-load T3, see "Remote player position updates in
+  place" below (same file pins 0). Also pinned by
+  `activity-indicators.test.tsx` and `npc-speech-bubbles.test.tsx`. Not
+  measured live yet.
+- **Remote player position updates in place (web-load T3, 2026-10-06)**:
+  `stores/players.ts updateFromSnapshot` uses the NPC store pattern. A
+  position-only snapshot writes `x/y/prevX/prevY/ts/tsDelta/dirZ` and a
+  locomotion-only activity flip (`idle`/`walking`/`running`) onto the
+  EXISTING player object; the `players` array and every object keep their
+  identity and the store is not notified (no `set`), so `RemotePlayers`
+  (`useShallow((s) => s.players)`) does not render. A new object and a new
+  array come only from a structural change: join, leave, reorder, a change
+  of `id/kind/userId/name/species/color`, an `isLocal` flip, or an
+  activity change to or from any non-locomotion verb (`at-cove`,
+  `at-kelp`, `at-activity`, unknown; they change the name label).
+  `tsDelta` = receipt gap clamped [120, 320] ms (first sight 200), the
+  §6z stage-3 rule (before: floor 16 ms, no ceiling, and a still player's
+  `ts` was not refreshed, so its next move played over a multi-second
+  segment). The body reads the live object: `remote-players.tsx`
+  `RemotePlayerBody` (one instance per player object, built in
+  `RemotePlayerEntry` `useMemo([player])`) exposes `x/y/prevX/prevY/ts/
+  tsDelta/direction/facingAngle/isRunning` as GETTERS on that object (no
+  per-frame allocation) and copies only render-time fields (id, name
+  label, species, color, isOpenClaw). Trap: a COPY of the frame-loop
+  fields cached by object identity freezes the body at its mount position
+  (the 2026-06-12 Codex #5 freeze); `remote-players.test.tsx` fails on
+  that. Render path unchanged (render 1 tick behind, damp toward the
+  confirmed target, no extrapolation). No wire or protocol change. Unit
+  evidence: `remote-players.test.tsx` (real RemotePlayers + VRMNpcMesh in
+  an R3F root, real store write path): 10 position-only snapshots of a
+  walking player = 10 commits before, 0 after; the body moves on every
+  40 ms frame and never passes the latest confirmed position; a join = 1
+  commit, then 0 again; a leave unmounts that body.
+  `players-local-identity.test.ts` pins the identity rules and the clamp.
+  Not measured live yet.
 - **Rig**: probe `--storage-state` (authenticated lane; landtest fixtures
   via `cold-load-auth-state.mjs`) + `--expect-boot-actor` +
   `phasesAtWindow`; paired gate `--slice-d` fail-closed schema (drift=0,
@@ -3032,6 +3066,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-10-06 — **Remote player position updates in place** (commit pending, branch `perf/load-items`, web-load T3, Codex E3 BLOCKER). Cause: `stores/players.ts` replaced a moved player's object on every snapshot (the 2026-06-12 Codex #5 immutable fix), so `RemotePlayers` rendered the R3F root at 5 Hz per moving remote player and discarded pending Suspense retry lanes. Fix: position-only snapshots mutate the existing object (array + identities kept, no store notification); structural changes (join, leave, reorder, identity fields, `isLocal`, non-locomotion activity) still replace; `tsDelta` clamped [120, 320] like the NPC store; `remote-players.tsx` `RemotePlayerBody` reads the frame-loop fields through getters on the live object (no identity-keyed copy, so no Codex #5 freeze). Tests failed first: `remote-players.test.tsx` (10 commits for 10 snapshots; with only the store change the body froze at its mount position), `players-local-identity.test.ts` 6/9; now green, plus `stream-commit-budget.test.tsx` remote-player assertion = 0. Needs live measurement + Codex E3 + staging.
 - 2026-10-06 — **Stream release waits for the instance's own warm read** (commit pending, branch `perf/load-items`, web-load T10-C, Codex E3 BLOCKER on 62ff1ae8). Cause: the stream queue records a member as delivered at admission, before its warm read resolves; an unmount + remount in that window started released, its content read the still-loading entry in render and suspended (2 suspended render reads in the test, both lanes), so the starvable retry lane came back. Fix: `use-boot-stream-release.ts` `useInstanceWarm` (both `useBootStreamRelease` and `useBootBuildingsStreamRelease`): `released = admitted && warmed`, where `warmed` belongs to the hook instance; the first render of an admitted remount checks the entry with one non-hook read (ready = release now), else the effect awaits `warmSuspenseRead` (joins the load in flight). Admission still starts the load on its own tick. Tests (`post-reveal-warm-read.test.tsx`, failed first 2/2): admit, unmount during the pending warm, remount: 0 suspensions, commits after the warm, one load (both lanes); remount after the warm: content in the first commit (passes before and after; catches a mutant without the instant check). Needs measurement (CPU 4x), Codex E3 re-review + staging.
 - 2026-10-06 — **Stream commit budget: indicators + speech bubbles** (commit pending, branch `perf/load-items`, web-load T10-A). Cause: the R3F root committed ~6/s forever (N6, 5.9/s at CPU 4x and unthrottled) and each commit discards pending Suspense retry work. `ActivityIndicators` selected new objects through `useShallow` (never bails) -> now one primitive key + frame-loop positioning; `NpcSpeechBubbles` 1 s interval tick -> one timeout to the earliest live expiry, live-at-last-render bubble selection, frame-loop positioning. Both overlays follow the rendered (smoothed) body through the new `arena-npcs.tsx` `getNpcRenderGroup` registry (raw store x/y fallback while no body is mounted). Unit: 25 position-only snapshots 26+5 commits -> 0; 5 s idle 6+1 -> 0; expiry exactly 1. Known remaining: moving remote players commit `RemotePlayers` per snapshot (T3). Tests: `stream-commit-budget.test.tsx`, `activity-indicators.test.tsx`, `npc-speech-bubbles.test.tsx`. Not measured live yet.
 - 2026-10-06 — **Post-reveal town prop warm read** (commit pending, branch `perf/load-items`, web-load T10-C). Cause (CPU 4x run N6, per-root mesh probe at 114 s vs unthrottled): `perf:quest-bounty-pavilion` 0 vs 27, `perf:marketplace-stall` 0 vs 3, `perf:quest-npc` 0 vs 3; these props release on the post-reveal lane, their release render suspended on the GLB, and the content could commit only in a Suspense retry lane that the ~6/s SyncLane renders discard. `PostRevealGate` ignored `warmRead`. Fix: `useBootStreamRelease(priority, id, warmRead)` warms outside React at admission (reports `'loading'` there; `StreamedChain` skips its own `'loading'` when `warmRead` is set); quest-npc, marketplace-stall, quest-bounty-pavilion and bazaar-stall pass a module-level `readGLTFWithKTX2` reader of their one path constant. Tests failed first: `post-reveal-warm-read.test.tsx` 4/5 (each prop: 2 suspended render reads, no warm read); the no-`warmRead` lane test passes before and after. Mutations caught: a warm path without `?v=3` (path mismatch + 2 suspensions), the ungated `'loading'` report (cohort order). Needs measurement (CPU 4x), Codex E3 + staging.
