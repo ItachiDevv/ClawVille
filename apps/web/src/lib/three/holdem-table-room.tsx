@@ -1164,7 +1164,9 @@ export function HoldemTableRoomScene({
               <ModelLoadBoundary
                 assetUrl={reg.path}
                 label={`holdem-seat:${seat.engineSeatIndex}`}
-                resetKey={figureId}
+                // Id AND path: one avatar id can keep its id after a model
+                // change; a failed first model must not hide the new one.
+                resetKey={`${figureId}|${reg.path}`}
                 onModelFailed={handSampleSeat === undefined
                   ? undefined
                   : () => onHandSample(handSampleSeat, null)}
