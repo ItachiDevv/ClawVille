@@ -763,6 +763,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## WORLD / 3D
 
+### October 6: seabed decorations are back (staging)
+
+- **Session:** tradeLead3, 2026-10-06.
+- **Where:** `https://staging.clawville.world/game` on a desktop; walk out from the plaza toward the buildings.
+- **Look at:** about 60 props (coral, kelp, shells, barrels, anchors, chests, lanterns, a crayfish, a tower) on the sand between the plaza and the building ring; none on paths, parcels, portals or spawn. Phones do not show them (ground-cover rule).
+- **Feedback wanted:** too many or too few, sizes, any prop in a bad spot (send a screenshot), and whether the land-ring decorations should also turn off on phones.
+
 ### One failed 3D model no longer kills the whole world (session tradeProd, 2026-10-05, STAGING)
 - **What changed:** before, ONE failed model download (a seabed prop, an NPC avatar, your own avatar) replaced the whole world with "This browser couldn't start the 3D view ... Reload". Now a failed download retries twice; if it still fails, only that prop or figure is missing and the world keeps running.
 - **Your own avatar:** if it cannot load you are shown as the default lobster body with one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." (if even the lobster fails: "Your avatar could not load. Reload to try again.", and you are invisible until reload).

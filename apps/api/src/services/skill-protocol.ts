@@ -835,6 +835,10 @@ import {
 //     forfeited on an early release (the USDC rent path is not available today).
 // Nori (town-guide.ts) and the shared orientation say the same. No `[ACTION:]` verb, signing,
 // bearer/TTL, cognition body, `hatcher:` namespace or leaderboard weight changed.
+// 2026-10-06 (web-load branch: Next.js 16.3.8, cached browser fingerprint, basis transcoder prefetch,
+// deferred compile priority, seabed decorations; the only apps/api change is a comment in
+// routes/cove-history.ts naming the `cv:fp:v1` key): manual and Nori orientation reviewed, no version
+// change. Client rendering and header caching only; agents never read them.
 export const PROTOCOL_VERSION = 83;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
