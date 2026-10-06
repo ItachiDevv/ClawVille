@@ -113,6 +113,20 @@ const WAVE_FADE   = 0.35;  // crossfade into/out of wave (sec)
 const BREATH_FREQ = 1.8;
 const BREATH_AMP  = 0.008;
 
+/** web-load T7: NON-HOOK read of the exact cache entry TownGuideInner's
+ * useGLTF call reads (same path, same extender; drei useGLTF calls no React
+ * hook). BootStreamedContent awaits it outside React at stage-B admission,
+ * so Nori's release render never suspends into a starvable retry lane.
+ * Module-level, so it is referentially stable. */
+function readNoriGltf(): unknown {
+  return useGLTF(
+    '/models/guide-rigged.glb',
+    undefined,
+    undefined,
+    extendLoaderWithTextureDeviceCap,
+  );
+}
+
 const TownGuideInner = memo(function TownGuideInner() {
   const { scene: gltfScene, animations } = useGLTF(
     '/models/guide-rigged.glb',
@@ -357,6 +371,7 @@ export default function TownGuide() {
     <BootStreamedContent
       cohortId="npc:town-guide"
       revealRequired
+      warmRead={readNoriGltf}
       priority={bootStreamPriority(BOOT_STREAM_TIER_GUIDE, NORI_WORLD_X, NORI_WORLD_Z)}
     >
       <TownGuideInner />

@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-06 09:51Z (web-load T6, Codex E3 re-check: no AbortSignal on the posted compile task; cancel before start via a per-job holder flag; a started compile is never aborted).** Drift note: "Warm-queue task priority" bullet and the §13 T6 entry updated.
+**Last Audited: 2026-10-06 10:48Z (web-load T7: boot-critical stage-B members load + parse outside React before their release, so their first render never suspends into a starvable Suspense retry lane).** Drift note: new "Stage-B warm read" bullet after "Warm-queue task priority"; §13 T7 entry added. The cohort `'loading'` state is now reported by the stage-B release hook at admission.
+
+**Prior Last Audited: 2026-10-06 09:51Z (web-load T6, Codex E3 re-check: no AbortSignal on the posted compile task; cancel before start via a per-job holder flag; a started compile is never aborted).** Drift note: "Warm-queue task priority" bullet and the §13 T6 entry updated.
 
 **Prior Last Audited: 2026-10-06 09:43Z (web-load T6, Codex E3 fixes: the deferred compile poisons the renderer only when compileAsync had started; the posted compile task carries an AbortSignal and is aborted on job cancel or a not-started escape).** Drift note: "Warm-queue task priority" bullet and the §13 T6 entry updated.
 
@@ -380,6 +382,31 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   The first job still starts from an idle callback (500 ms timeout); each
   NEXT job starts in a user-visible task when the previous one finishes.
   Upload slices, one-job-at-a-time and the 20 s escape are unchanged.
+- **Stage-B warm read: no Suspense retry for reveal-required members**
+  (`use-boot-stream-release.ts`, `suspense-cache-warm.ts`, web-load T7
+  2026-10-06). Before: a building (or Nori) mounted at stage-B admission,
+  its first render suspended on `useGLTFWithKTX2`, and its content could
+  commit only in a React Suspense RETRY lane. In react-reconciler 0.31 (R3F
+  9.5) retry lanes never expire, render time-sliced, and wait for the 300 ms
+  reveal throttle; the 5 Hz world-stream snapshots re-render the R3F root at
+  SyncLane (Zustand `useSyncExternalStore`), and each sync render discards
+  the retry work. On a CPU 4x proxy the 11 buildings stayed hidden > 100 s
+  in 2 of 6 staging runs (ac36e4e1 A2, B2). Now `useBootBuildingsStreamRelease`
+  takes an optional `warmRead` (the member's own NON-HOOK read of the same
+  cache entry: `readGLTFWithKTX2(path)` for buildings, `readNoriGltf()` in
+  `town-guide.tsx`). At admission the hook reports the cohort `'loading'`
+  state (the consumers no longer report it on `released`), awaits
+  `warmSuspenseRead` (await a thrown thenable, re-read, at most 2 retries;
+  a thrown Error resolves so the render rethrows it into the existing
+  boundary), then flips `released`. The release render reads a resolved
+  entry and commits in its own Default lane (one uninterrupted pass,
+  expires after 5 s). Parse start time is unchanged (admission). A key
+  mismatch or a remount of a delivered member falls back to the old path
+  (the `<Suspense>` stays as the safety net). Phase stamps (first write
+  wins): `bgrParsed:<cohort>` when the read resolved, `bgrMounted:<cohort>`
+  when the content tree committed (hidden). Wrapping stream updates in `startTransition`
+  would NOT help: `useSyncExternalStore` updates are forced to SyncLane, and
+  transition lanes outrank retry lanes too.
 - **Rig**: probe `--storage-state` (authenticated lane; landtest fixtures
   via `cold-load-auth-state.mjs`) + `--expect-boot-actor` +
   `phasesAtWindow`; paired gate `--slice-d` fail-closed schema (drift=0,
@@ -2834,6 +2861,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-10-06 — **Boot-critical members commit without a Suspense retry** (commit pending, branch `perf/load-items`, web-load T7). Cause (staging ac36e4e1 runs A2/B2, CPU 4x): the buildings' content could commit only in a React retry lane (pending bits 0x3C00000 for 100-101 s while the R3F root committed 6.0-6.3 times per second, gap p50 177 ms); react-reconciler 0.31 retry lanes never expire, render time-sliced, wait for the 300 ms reveal throttle, and every SyncLane render from the 5 Hz world-stream Zustand writes discards them. Fix: `warmSuspenseRead(warmRead)` at stage-B admission (`use-boot-stream-release.ts`), `readGLTFWithKTX2` (`use-gltf-ktx2.ts`), wired in `StreamedGLBBuilding` and Nori's `BootStreamedContent`; phase stamps `bgrParsed:` / `bgrMounted:`. Tests: `boot-critical-no-retry-mount.test.tsx` (real R3F root + real useLoader cache: 0 suspended renders, content committed in the release act, failed load caught by the boundary) fails on the base code (2 suspended renders) and passes after; `suspense-cache-warm.test.ts` (helper contract + drei `useGLTF` outside render throws a thenable and its cache key ignores the extender). Measurement: see the T7 report. Needs Codex E3 + staging.
 - 2026-10-06 — **Seabed decorations: centred placement + visibility-only governor toggle** (branch `perf/load-items`, web-load T2 part 5, staging check of ac36e4e1). (1) `decorationPlacement` puts each prop's rotated, scaled native box X/Z centre on its site (kelp.glb mesh at native x −44.5 had put kelp 945–2363 wu off, up to ~5040 wu from the plaza) and the band check keeps the 107 wu footprint inside; `arena-terrain-decorations-bounds.test.ts` failed first (kelp off 1751–2256 wu, corners at r 4783–5002), passes now. (2) `<ArenaTerrain decorationsMounted={profile.ambientGroundCover} decorationsVisible={showGroundCover}>`: phones/tablets never mount; desktop mounts once, the governor tier flips an ancestor group's `visible` outside `DeferredWarmAttachment` (compileAsync still warms while hidden); no merge/upload/dispose per toggle, dispose on real unmount only; the mounted test failed first, passes now, and fails again if the scatter mounts only while visible. Local prod build: one merged-geometry set all session, merged vertices r 1814–3660, y −2–141, 0 errors, 0 AttributeNode warnings. The staging B2 `AttributeNode "position" not found` warning came at +13.1 s, during the boot-core compile (warmup done 13.49 s) and before the decorative release, so it is not a decoration geometry.
 - 2026-10-06 — **Seabed decorations follow the ground-cover switch** (commit pending, branch `perf/load-items`, web-load T2 part 3, lead decision): `<ArenaTerrain showDecorations={seabedDecorationsEnabled(showGroundCover, CURRENT_WORLD_DEVICE_PROFILE)} />` (required prop), the same `groundCover` flag + `ambientGroundCover` gate as MergedSeaweed and the kelp forest, so the adaptive governor's tier 1 and the phone/tablet profiles unmount the scatter (no scatter GLB demand; merged geometry disposed per hide, pinned by the mounted test `arena-terrain-decorations-mount.test.tsx`; 8 of the 12 paths still load via ungated `land-ring-decorations.tsx`); `/perf` 'ground cover' toggles it too. Tests 19 pass (6 new, all failed first). No build run (unit tests only).
 - 2026-10-06 — **Seabed decoration sizes normalized** (commit pending, branch `perf/load-items`, web-load T2 part 2). Found while checking the restore: `DECO_TYPES` held raw scale factors that assumed ~5–10-unit models, but the measured native max-dims run 0.43 (chest) to 85.98 (crayfish), so props rendered 1–860 wu (4 chests at 12,400 triangles each were 1–5 wu, invisible; the crayfish was up to 860 wu, ~5× an avatar). Fix: `minSize`/`maxSize` = target world max-dim (old range × 10 wu, capped at the documented 150 wu); `decorationTransform(size, nativeMaxDim, nativeMinY)` gives scale and the y that puts the lowest point on the sand (the §2 grounding rule); `MergedDecorationsInner` measures each scene's `Box3` once inside the existing `useMemo` (module-scope scratch, no per-frame work). Positions, rotations, meshes (57) and triangles (145,810) are unchanged; the RNG sequence is the same. Tests 13 pass. Local (base 73dbe4f2 incl. T6, same probe as part 1, 3 runs): loader gone 14.1/10.8/10.7 s; decorations visible 20/18/18 s later; frame draws 301/314/295, triangles 945k/907k/940k, rAF 87.5/97.2/96.4 FPS, 0 console errors.

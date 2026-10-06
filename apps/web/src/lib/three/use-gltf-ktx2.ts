@@ -135,6 +135,20 @@ export function useGLTFWithKTX2(path: string | string[]): GLTFResult | GLTFResul
 }
 
 /**
+ * NON-HOOK read of the exact cache entry `useGLTFWithKTX2(path)` reads: the
+ * SAME drei call, so the same suspend-react key ([GLTFLoader, path]) and the
+ * same loader extender. For `warmSuspenseRead` (suspense-cache-warm.ts) only:
+ * it runs OUTSIDE render, before a boot-critical member's release, so the
+ * member's first render reads a resolved entry and never needs a Suspense
+ * retry (web-load T7). Safe outside render because drei useGLTF / R3F 9.5
+ * useLoader call no React hook (guarded by suspense-cache-warm.test.ts).
+ * Throws the entry promise while loading and the cached Error on failure.
+ */
+export function readGLTFWithKTX2(path: string): GLTFResult {
+  return useGLTF(path, true, true, extendLoaderForWorldTextures);
+}
+
+/**
  * R3F rejection errors whose cache entry was already evicted. suspend-react
  * stores ONE Error per failed entry and rethrows that same object on every
  * read, so the object identifies the entry. Only the FIRST clear() for it
