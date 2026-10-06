@@ -9,7 +9,9 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-10-06 (§5 decorations, web-load T8: the 11 GLBs are warm-read before the merged group mounts; the governor no longer drops ground cover during load, so on desktop the props stay visible after their warm attach; "12 GLBs" in the visibility line corrected to 11).
+**Last edit:** 2026-10-06 (§5 decorations, web-load T11: the scatter mounts on its first show, so a profile that starts at tier 1 (desktop-low) loads none of the 11 GLBs until the governor first reaches tier 0; the governor degrades only after 2 consecutive 2.5 s windows below 55 FPS).
+
+**Prior Last edit:** 2026-10-06 (§5 decorations, web-load T8: the 11 GLBs are warm-read before the merged group mounts; the governor no longer drops ground cover during load, so on desktop the props stay visible after their warm attach; "12 GLBs" in the visibility line corrected to 11).
 
 **Prior Last edit:** 2026-10-06 (§5 draw-call budget: building-tower2.glb removed, chests capped at 3; 52 merged meshes / 148,444 triangles, pinned by test).
 
@@ -258,6 +260,7 @@ Tracked here so they don't get lost across sessions:
 
 Compact log. Single line per change.
 
+- 2026-10-06 — §5 decorations **mount on first show** (branch `perf/load-items`, 58d7d91b + the Codex E3 fix commit, web-load T11): a tier-1-start profile (desktop-low) no longer loads the 11 decoration GLBs (staging 4fe13447 at CPU 4x: 10 requests + parse with 0.89-1.79 s long tasks and a 1.07-2.0 s warm compile, for props that never showed); they mount when the governor first reaches tier 0, then tier changes only toggle visibility. The governor now degrades after 2 consecutive windows below 55 FPS (was one below 58), so desktop sessions keep the decorations visible.
 - 2026-10-06 — §5 decorations **stay visible after load on desktop** (branch `perf/load-items`, commit pending, web-load T8): the adaptive governor no longer counts load-time frames and seaweed/kelp no longer remount on recovery, so the tier-1 latch that hid the props for the session is gone locally (decorations visible 163-165/175 polls, was 4/175); the 11 decoration GLBs are warm-read outside React before the merged group mounts (no Suspense retry). Needs Codex E3 + staging.
 - 2026-10-06 — §5 decoration **sizes normalized** (branch `perf/load-items`, commit pending): `DECO_TYPES` holds target world max-dims (20–150 wu) instead of raw scales; each GLB's native box sets the scale and grounds it on the sand. Before, chests rendered 1–5 wu, barrels 4–13 wu and the crayfish 258–860 wu. Same positions, meshes and triangles.
 - 2026-10-06 — §5 seabed decorations **restored, 0 → 60 props** (founder decision; branch `perf/load-items`, commit pending). Cluster centres now come from the 800–3800 wu band instead of `MAP_WIDTH` extents; new placement rule keeps buildings, approach lanes, residents, entrances, spawn, town props and parcels clear. Pure scatter moved to `arena-terrain-decorations.ts` + test. 57 merged meshes / 145,810 triangles; at the spawn view +24 draws / +60,184 triangles. Stale replica scripts/audit-decorations.mjs deleted.

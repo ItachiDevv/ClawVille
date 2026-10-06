@@ -13,7 +13,6 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
-  QUALITY_BUSY_SKIP_MAX_MS,
   QUALITY_DEGRADE_SAMPLES,
   QUALITY_FPS_DOWN,
   QUALITY_MAX_TIER,
@@ -261,8 +260,9 @@ describe('adaptive quality governor: gameplay rules unchanged once armed', () =>
  * frames. 9 of 13 trigger windows lost <= 9 frames (one short bucket or
  * scattered one-frame losses), and tier 1 did not lower the dip rate (2.5 s
  * windows < 58: 7.4% at tier 0, 11.8% at tier 1). The old rule latched in
- * 5/5 phase offsets on A2-A5, L2 and L3. New rule: 2 CONSECUTIVE counted windows
- * below 55 FPS; a window that overlapped post-load work is not counted.
+ * 5/5 phase offsets on A2-A5, L2 and L3. New rule: 2 CONSECUTIVE windows
+ * below 55 FPS. After arming, every window counts (the busy-window skip was
+ * removed after Codex E3 on 58d7d91b).
  */
 describe('adaptive quality governor: 2 consecutive low windows (web-load T11)', () => {
   /** Frames at `fps`, with one stall of `stallMs` (no frames) starting at `stallAt`. */
@@ -327,44 +327,18 @@ describe('adaptive quality governor: 2 consecutive low windows (web-load T11)', 
     expect(gov.tier).toBe(0);
   });
 
-  test('(d) a window that overlapped post-load work is skipped: not counted, run kept', () => {
+  test('(d) post-load work after arming never hides low windows: 40 FPS with a busy blip in every window degrades', () => {
+    // Codex E3 on 58d7d91b: a per-window busy skip could skip EVERY window when a
+    // brief job ran in each one, so a 40 FPS machine would never degrade.
+    // After arming, the busy signal is not read at all.
     const { gov, s, t } = armed();
-    expect(drive(gov, t, t + 10_000, 60)).toEqual([]);
-    // One low window while a post-load job runs for 300 ms (e.g. a wanderer
-    // warm read): skipped, so this low window alone and the next low window
-    // cannot form a run with it.
-    const w1 = t + 10_000;
-    const busyFrom = w1 + 1_000;
-    const w1Changes = drive(gov, w1, w1 + 2 * QUALITY_SAMPLE_MS + 10, 40, (now) => {
-      s.quiet = !(now >= busyFrom && now < busyFrom + 300);
-    });
-    // Window A (busy, skipped) + window B (low, counted: run 1): no degrade.
-    expect(w1Changes).toEqual([]);
-    s.quiet = true;
-    // Back to 60 FPS: the run resets.
-    const w2 = w1 + 2 * QUALITY_SAMPLE_MS + 10;
-    expect(drive(gov, w2, w2 + 10_000, 60)).toEqual([]);
-    // low (counted) -> low + busy (skipped) -> low (counted) = 2 consecutive counted.
-    const w3 = w2 + 10_000;
-    const changes = drive(gov, w3, w3 + 4 * QUALITY_SAMPLE_MS, 40, (now) => {
-      const busyAt = w3 + QUALITY_SAMPLE_MS + 1_000;
-      s.quiet = !(now >= busyAt && now < busyAt + 300);
+    const changes = drive(gov, t, t + 4 * QUALITY_SAMPLE_MS, 40, (now) => {
+      // A 100 ms busy blip every 1.25 s (at least one in every window).
+      s.quiet = (now - t) % 1250 >= 100;
     });
     expect(changes.length).toBe(1);
     expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
-    // Counting the busy window would have degraded one window earlier.
-    expect(changes[0]![0]).toBeGreaterThanOrEqual(w3 + 2 * QUALITY_SAMPLE_MS + QUALITY_SAMPLE_MS / 2);
-  });
-
-  test('(d2) post-load work that never ends cannot disable the governor', () => {
-    const { gov, s, t } = armed();
-    // A stuck busy signal (a job that never settles) at 30 FPS: windows are
-    // skipped for at most QUALITY_BUSY_SKIP_MAX_MS, then count again.
-    s.quiet = false;
-    const changes = drive(gov, t, t + QUALITY_BUSY_SKIP_MAX_MS + 3 * QUALITY_SAMPLE_MS + 100, 30);
-    expect(changes.length).toBe(1);
-    expect(changes[0]![1]).toBe(QUALITY_MAX_TIER);
-    expect(changes[0]![0]).toBeGreaterThanOrEqual(t + QUALITY_BUSY_SKIP_MAX_MS);
+    expect(changes[0]![0]).toBeLessThanOrEqual(t + 3 * QUALITY_SAMPLE_MS + 50);
   });
 
   test('(e) a slow series (5-20 FPS) degrades within 2 windows of arming', () => {

@@ -203,9 +203,9 @@ const WORLD_DPR_RANGE: [number, number] = [
 // loader is dismissed AND post-load work is quiet (every boot stream member
 // terminal + the deferred GPU warm queue empty + no seabed decoration warm
 // read pending) for the settle window; the ceiling counts from the loader's
-// own dismissal time. After arming, the same check runs every frame and a
-// 2.5 s window that overlapped busy post-load work is not counted (web-load
-// T11). One module-level object: the per-frame check allocates nothing.
+// own dismissal time. After arming the signal is not read (web-load T11: a
+// post-arming busy-window skip was removed after Codex E3). One module-level
+// object: the per-frame gate check allocates nothing.
 const QUALITY_GOVERNOR_SIGNALS: QualityGovernorSignals = worldQualitySignals({
   loadingDismissedAt: getLoadingDismissedAt,
   streamSettled: () => getStreamSettledAt() !== null,

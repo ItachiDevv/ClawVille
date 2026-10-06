@@ -64,6 +64,17 @@ function cachedGltf(path: string) {
   return { scene: entry.scene };
 }
 
+// Controlled loader completion (Codex E3 SHOULD-FIX on 58d7d91b): the first
+// warm read of each path throws a held thenable, like a suspend-react entry
+// that is still loading; `completeLoads()` resolves every held load. The read
+// is synchronous up to the throw, so a warm read that starts records its
+// demand and its held load inside the act() that rendered it.
+const heldLoads: Array<() => void> = [];
+const loaded = new Set<string>();
+function completeLoads(): void {
+  for (const resolve of heldLoads.splice(0)) resolve();
+}
+
 mock.module('./use-gltf-ktx2', () => ({
   useOptionalGLTFWithKTX2: (path: string) => {
     demands.push(path);
@@ -78,6 +89,14 @@ mock.module('./use-gltf-ktx2', () => ({
   // that nothing is read or fetched when the gate is off.
   readGLTFWithKTX2: (path: string) => {
     demands.push(path);
+    if (!loaded.has(path)) {
+      throw new Promise<void>((resolve) => {
+        heldLoads.push(() => {
+          loaded.add(path);
+          resolve();
+        });
+      });
+    }
     return cachedGltf(path);
   },
 }));
@@ -192,28 +211,46 @@ describe('ArenaTerrain decoration gate, mounted', () => {
       };
       const decoMeshes = () => meshes(store.getState().scene, 'arena-terrain-decoration');
       const decoDemands = () => demands.filter((p) => DECO_PATHS.has(p));
+      /** Complete every held load, then flush React (effects + microtasks). */
+      const completeAndFlush = async () => {
+        await r3f.act(async () => {
+          completeLoads();
+          for (let i = 0; i < 5; i++) await Promise.resolve();
+        });
+      };
 
       // (a) Device profile OFF (phones / tablets): sand only, no demand, no fetch,
       // whatever the governor says.
       await render(false, true);
       await waitFor(() => meshes(store.getState().scene).length > 0, 'sand floor mounted');
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(heldLoads.length).toBe(0); // no warm read started
+      await completeAndFlush();
       expect(decoMeshes().length).toBe(0);
       expect(decoDemands()).toEqual([]);
       expect(decoFetches).toEqual([]);
 
       // (a2) Desktop profile that starts at tier 1 (desktop-low): nothing is
       // demanded, fetched or mounted while the decorations were never shown.
+      // No timed wait: act() flushed the render and its effects, a started warm
+      // read would have recorded its demand and held load synchronously, and
+      // completing the loader + a second flush still mounts nothing.
       await render(true, false);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(heldLoads.length).toBe(0);
+      await completeAndFlush();
       await render(true, false);
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await completeAndFlush();
       expect(decoMeshes().length).toBe(0);
       expect(decoDemands()).toEqual([]);
+      expect(heldLoads.length).toBe(0);
       expect(decoFetches).toEqual([]);
 
-      // First show (the governor reaches tier 0): mount ONCE, visible.
+      // First show (the governor reaches tier 0): the 11 warm reads start in
+      // this act(), nothing mounts until the loader completes, then mount ONCE.
       await render(true, true);
+      expect(new Set(decoDemands())).toEqual(DECO_PATHS);
+      expect(heldLoads.length).toBe(DECO_PATHS.size);
+      expect(decoMeshes().length).toBe(0);
+      await completeAndFlush();
       await waitFor(() => decoMeshes().length > 0, 'decorations mounted on first show');
       expect(new Set(decoDemands())).toEqual(DECO_PATHS);
       const first = decoMeshes();
