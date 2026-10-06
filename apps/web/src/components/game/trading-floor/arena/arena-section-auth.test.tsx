@@ -5,6 +5,7 @@ import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
 import { FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
 
+import { FINGERPRINT_STORAGE_KEY } from '@/lib/fingerprint';
 import { useFloorArenaUi } from '@/stores/floor-arena-ui';
 
 // GET /api/floor/arena/me answers a guest or a logged-out visitor with 401 (a
@@ -94,6 +95,12 @@ async function render(element: ReturnType<typeof createElement>): Promise<HTMLEl
 
 beforeAll(async () => {
   installDom();
+  // GET /api/auth/me waits for getFingerprint() before its fetch (lib/api.ts).
+  // With no cached visitorId, that runs FingerprintJS, whose wall-clock time
+  // can outlast a test; the request then goes out in a LATER test and counts
+  // there (same race as arena-panels.test.tsx, CI run 37532238618). A cached
+  // visitorId, as a returning browser has, makes the header ready at once.
+  testWindow.localStorage.setItem(FINGERPRINT_STORAGE_KEY, '0123456789abcdef0123456789abcdef');
   ({ createRoot } = await import('react-dom/client'));
   ({ FloorArenaSection } = await import('./arena-section'));
   ({ useIsGuest } = await import('@/hooks/use-is-guest'));
