@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-04 23:10Z (§9c: avatar load failure notice and lobster fallback body; if that also fails, no body, the world keeps running, and the notice says so).** Drift note: §9c gains the avatar-load-failure line.
+**Last Audited: 2026-10-06 01:55Z (§9c: the avatar load failure fallback also covers the Cove body; a failed dealer or seated table figure is skipped).** Drift note: §9c avatar-load-failure line extended to the Cove and the table rooms.
+
+Prior — **Last Audited: 2026-10-04 23:10Z (§9c: avatar load failure notice and lobster fallback body; if that also fails, no body, the world keeps running, and the notice says so).** Drift note: §9c gains the avatar-load-failure line.
 
 **Prior Last Audited: 2026-10-04 (security pass answers a-d: daily faucet caps, protocol 83, M8 rent prepay non-refundable, earned refunds as earned; migration 0077_daily_reward_caps.sql; PROTOCOL_VERSION 82 -> 83).** Drift note: §5 said building visits and Nori chat pay on every turn (Nori only behind a 60 s cooldown) and activities had no daily total. Now each avatar has three daily caps per UTC day (10 paid visits, 10 paid Nori turns, 500 vCLAW from activities), shared by the human and every agent on that avatar (§5 "Daily faucet caps"). §2 gains protocol 83: event replay needs an owner-proven session and returns only events recorded for the current owner during its ownership period (Codex round 3: rows without an owner are not replayed), and `expectedPriceCt` is required on a land service buy (§18b.i). §18b.P2 and §5b: USDC rent prepay is non-refundable on an early release. §1e: a special-event refund now returns an EARNED burn as EARNED, not SOFT,.
 
@@ -1605,7 +1607,7 @@ Tested end-to-end 2026-04-12 — sign-up → create avatar → enter game works.
 | Milady VRM | `milady-official-1..8.vrm` | **No color tint** — MToon's toon-uniform system breaks under `.clone()`. Color customization disabled for VRM avatars. |
 | Hermes VRM | `hermes-female.vrm` ("Hermes"), `hermes-male.vrm` ("Tekk") | **No color tint** (same MToon constraint). Mixamo-style humanoid normalization; uses dedicated animation folders at `/avatars/animations/{hermes-female,tekk-male}/*.glb` rather than the generic Milady Mixamo set. |
 
-**Avatar load failure (2026-10-04):** if your VRM avatar fails to load after its request retries, in Player mode or in NPC mode, you are shown with the default lobster body and see one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." The world keeps running. If the default body also fails to load, your body is not shown, the world keeps running, and the one notice reads "Your avatar could not load. Reload to try again." Render-only: no state, economy or agent-surface change (PARITY n/a). Detail: `3dStructure.md` §9a.
+**Avatar load failure (2026-10-04):** if your VRM avatar fails to load after its request retries, in Player mode or in NPC mode, you are shown with the default lobster body and see one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." The world keeps running. If the default body also fails to load, your body is not shown, the world keeps running, and the one notice reads "Your avatar could not load. Reload to try again." Render-only: no state, economy or agent-surface change (PARITY n/a). Detail: `3dStructure.md` §9a. Since 2026-10-06 the same applies inside the Cove (your Cove body falls back to the lobster, with the same one notice per session; you can still walk to every game). A table dealer or a seated figure whose model fails is not shown; the table and every bet keep working.
 
 ### 9d. Agent avatar picker (`/create-agent`)
 
