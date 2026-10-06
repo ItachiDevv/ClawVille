@@ -58,6 +58,11 @@ beforeAll(async () => {
   r3f.extend(threeCjs as never);
   ActivityIndicators = (await import('./activity-indicators')).default as unknown as () => ReactNode;
   ({ useNpcStore } = await import('@/stores/npc'));
+  // Connected: stops the client demo-wander loop, a REAL-time 100 ms store
+  // write that moves every NPC 22 px (found 2026-10-06: under a slow runner a
+  // tick landed between setNpcs and the frame, and the exact-position
+  // asserts read 1100 + 21.93).
+  useNpcStore.getState().setConnected(true);
 });
 
 afterAll(async () => {

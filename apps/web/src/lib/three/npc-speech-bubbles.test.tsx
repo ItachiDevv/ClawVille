@@ -10,14 +10,24 @@
  *
  * Mounts the REAL NpcSpeechBubbles in a real R3F root (fake renderer,
  * frameloop 'never') inside a <Profiler>, with the real NPC store. Asserts:
- *   - no bubble: 0 commits over idle time;
+ *   - no bubble: 0 commits over idle time, and no timer armed;
  *   - a bubble: 1 commit to show, exactly 1 commit at its expiry, 0 for the
  *     store's later drop (cleanupExpired), 0 after;
  *   - two bubbles: one commit per expiry, earliest first; a NEW bubble that
  *     expires earlier re-arms the timer;
  *   - the bubble follows its walking speaker (in-place store moves) from the
  *     frame loop with 0 commits.
- * Runs in its own process.
+ *
+ * DETERMINISTIC TIME (CI flake, 2026-10-06 15:23Z: 2 of 4 failed once under
+ * CPU load). The old version waited REAL time and checked counts 120-150 ms
+ * either side of an expiry, so one slow act slice or a late timer moved the
+ * expiry commit into the wrong window. Now Date.now() is HELD and
+ * globalThis.setTimeout / setInterval (+ clear) are test timers that run only when
+ * the test advances the held clock. Both are swapped in AFTER the imports:
+ * React's scheduler and R3F captured the real setTimeout at module load, so
+ * only runtime callers (the bubble layer) see the test timers. The test's
+ * own waits and the rAF shim use the captured real functions. Runs in its
+ * own process.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { Profiler, createElement, type ReactNode } from 'react';
@@ -34,12 +44,80 @@ const saved = new Map<string, PropertyDescriptor | undefined>();
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const threeCjs = require('three') as typeof import('three');
 
+// Real time functions, captured before any swap.
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
+const realSetInterval = globalThis.setInterval;
+const realClearInterval = globalThis.clearInterval;
+const realDateNow = Date.now;
+
+// ---------------------------------------------------------------------------
+// Held clock + test timers
+// ---------------------------------------------------------------------------
+
+let heldNow = realDateNow();
+type TestTimer = { id: number; at: number; every: number | null; fn: (...args: unknown[]) => void; args: unknown[] };
+const testTimers = new Map<number, TestTimer>();
+let nextTimerId = 1_000_000;
+
+function testSetTimeout(fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]): number {
+  const id = (nextTimerId += 1);
+  testTimers.set(id, { id, at: heldNow + Math.max(0, ms ?? 0), every: null, fn, args });
+  return id;
+}
+
+function testSetInterval(fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]): number {
+  const id = (nextTimerId += 1);
+  const every = Math.max(1, ms ?? 0);
+  testTimers.set(id, { id, at: heldNow + every, every, fn, args });
+  return id;
+}
+
+function testClearTimeout(id: unknown): void {
+  if (typeof id === 'number' && testTimers.delete(id)) return;
+  realClearTimeout(id as Parameters<typeof clearTimeout>[0]);
+}
+
+function testClearInterval(id: unknown): void {
+  if (typeof id === 'number' && testTimers.delete(id)) return;
+  realClearInterval(id as Parameters<typeof clearInterval>[0]);
+}
+
 type R3F = typeof import('@react-three/fiber');
 let r3f: R3F;
 let NpcSpeechBubbles: () => ReactNode;
 let useNpcStore: typeof import('@/stores/npc').useNpcStore;
 let HALF_W = 0;
 let HALF_H = 0;
+
+/** Let React, microtasks and real 0 ms work finish (no time passes). */
+async function flush(): Promise<void> {
+  await r3f.act(async () => {
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+  });
+}
+
+/** Move the held clock by `ms`, running each due test timer in time order. */
+async function advance(ms: number): Promise<void> {
+  const target = heldNow + ms;
+  for (;;) {
+    let due: TestTimer | null = null;
+    for (const timer of testTimers.values()) {
+      if (timer.at > target) continue;
+      if (!due || timer.at < due.at || (timer.at === due.at && timer.id < due.id)) due = timer;
+    }
+    if (!due) break;
+    const timer = due;
+    if (timer.every === null) testTimers.delete(timer.id);
+    else timer.at += timer.every;
+    heldNow = Math.max(heldNow, timer.at - (timer.every ?? 0));
+    await r3f.act(async () => {
+      timer.fn(...timer.args);
+    });
+  }
+  heldNow = target;
+  await flush();
+}
 
 beforeAll(async () => {
   for (const name of globalNames) {
@@ -50,9 +128,9 @@ beforeAll(async () => {
         : name === 'window'
           ? testWindow
           : name === 'requestAnimationFrame'
-            ? (cb: (t: number) => void) => setTimeout(() => cb(0), 0) as unknown as number
+            ? (cb: (t: number) => void) => realSetTimeout(() => cb(0), 0) as unknown as number
             : name === 'cancelAnimationFrame'
-              ? (id: number) => clearTimeout(id)
+              ? (id: number) => realClearTimeout(id as unknown as Parameters<typeof clearTimeout>[0])
               : (testWindow as unknown as Record<string, unknown>)[name];
     Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
   }
@@ -65,9 +143,22 @@ beforeAll(async () => {
   HALF_H = MAP_HEIGHT / 2;
   // Connected: stops the client demo wander loop (a 100 ms store write).
   useNpcStore.getState().setConnected(true);
+
+  // Swap time AFTER the imports (see the header).
+  heldNow = realDateNow();
+  Date.now = () => heldNow;
+  globalThis.setTimeout = testSetTimeout as unknown as typeof setTimeout;
+  globalThis.clearTimeout = testClearTimeout as unknown as typeof clearTimeout;
+  globalThis.setInterval = testSetInterval as unknown as typeof setInterval;
+  globalThis.clearInterval = testClearInterval as unknown as typeof clearInterval;
 });
 
 afterAll(async () => {
+  globalThis.setTimeout = realSetTimeout;
+  globalThis.clearTimeout = realClearTimeout;
+  globalThis.setInterval = realSetInterval;
+  globalThis.clearInterval = realClearInterval;
+  Date.now = realDateNow;
   for (const [name, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else delete (globalThis as Record<string, unknown>)[name];
@@ -120,20 +211,6 @@ function bubble(npcId: string, text: string, ttlMs: number): NpcChatBubble {
   return { npcId, speaker: npcId, text, expiresAt: Date.now() + ttlMs };
 }
 
-/** Short act slices: one long act batches separate timer updates. */
-async function idle(ms: number): Promise<void> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    await r3f.act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-  }
-}
-
-async function waitUntil(at: number): Promise<void> {
-  await idle(Math.max(0, at - Date.now()));
-}
-
 let commits = 0;
 
 async function mountLayer() {
@@ -182,14 +259,21 @@ async function setStore(state: { npcs?: NpcSpriteState[]; chatBubbles?: NpcChatB
   });
 }
 
+async function unmount(root: { unmount: () => void }): Promise<void> {
+  await r3f.act(async () => root.unmount());
+  await setStore({ chatBubbles: [] });
+  testTimers.clear();
+}
+
 describe('npc speech bubbles commit only on bubble changes (web-load T10)', () => {
-  test('no bubble: 0 commits over idle time', async () => {
+  test('no bubble: 0 commits over idle time, no timer armed', async () => {
     await setStore({ npcs: [npc('a', 1_000)], chatBubbles: [] });
     const { root } = await mountLayer();
     commits = 0;
-    await idle(2_600);
+    for (let i = 0; i < 26; i += 1) await advance(100);
     expect(commits).toBe(0);
-    await r3f.act(async () => root.unmount());
+    expect(testTimers.size).toBe(0);
+    await unmount(root);
   }, 20_000);
 
   test('one bubble: 1 commit to show, 1 at expiry, 0 for the store drop and after', async () => {
@@ -200,16 +284,18 @@ describe('npc speech bubbles commit only on bubble changes (web-load T10)', () =
     await setStore({ chatBubbles: [b] });
     expect(commits).toBe(1);
     expect(anchors()).toHaveLength(1);
+    expect(testTimers.size).toBe(1);
 
-    // Before the expiry: nothing commits.
-    await waitUntil(b.expiresAt - 150);
+    // 1 ms before the expiry: nothing commits.
+    await advance(699);
     expect(commits).toBe(1);
     expect(anchors()).toHaveLength(1);
 
-    // The expiry: exactly one commit removes it, close to expiresAt.
-    await waitUntil(b.expiresAt + 120);
+    // The expiry: exactly one commit removes it.
+    await advance(2);
     expect(commits).toBe(2);
     expect(anchors()).toHaveLength(0);
+    expect(testTimers.size).toBe(0);
 
     // The store drops the expired bubble later (snapshot / cleanupExpired):
     // the layer already removed it, so nothing commits.
@@ -217,9 +303,9 @@ describe('npc speech bubbles commit only on bubble changes (web-load T10)', () =
       useNpcStore.getState().cleanupExpired();
     });
     expect(useNpcStore.getState().chatBubbles).toHaveLength(0);
-    await idle(1_200);
+    for (let i = 0; i < 12; i += 1) await advance(100);
     expect(commits).toBe(2);
-    await r3f.act(async () => root.unmount());
+    await unmount(root);
   }, 20_000);
 
   test('two bubbles expire in order; a new earlier bubble re-arms the timer', async () => {
@@ -231,23 +317,28 @@ describe('npc speech bubbles commit only on bubble changes (web-load T10)', () =
     expect(commits).toBe(1);
 
     // A second bubble that expires FIRST arrives after the timer was armed.
+    await advance(100);
     const early = bubble('b', 'early line', 500);
     await setStore({ chatBubbles: [late, early] });
     expect(commits).toBe(2);
     expect(anchors()).toHaveLength(2);
 
-    await waitUntil(early.expiresAt + 120);
+    await advance(early.expiresAt - Date.now() - 1);
+    expect(commits).toBe(2);
+    await advance(2);
     expect(commits).toBe(3);
     expect(anchors()).toHaveLength(1);
 
-    await waitUntil(late.expiresAt + 120);
+    await advance(late.expiresAt - Date.now() - 1);
+    expect(commits).toBe(3);
+    await advance(2);
     expect(commits).toBe(4);
     expect(anchors()).toHaveLength(0);
 
-    await idle(800);
+    for (let i = 0; i < 8; i += 1) await advance(100);
     expect(commits).toBe(4);
-    await r3f.act(async () => root.unmount());
-    await setStore({ chatBubbles: [] });
+    expect(testTimers.size).toBe(0);
+    await unmount(root);
   }, 20_000);
 
   test('the bubble follows its walking speaker from the frame loop with 0 commits', async () => {
@@ -266,12 +357,12 @@ describe('npc speech bubbles commit only on bubble changes (web-load T10)', () =
         npcs: [...useNpcStore.getState().npcs],
         chatBubbles: [...useNpcStore.getState().chatBubbles],
       });
+      await advance(200);
     }
     expect(commits).toBe(0);
     await frame();
     expect(anchors()[0]!.position.x).toBe(1_220 - HALF_W);
     expect(anchors()[0]!.position.z).toBe(2_050 - HALF_H);
-    await r3f.act(async () => root.unmount());
-    await setStore({ chatBubbles: [] });
+    await unmount(root);
   }, 20_000);
 });
