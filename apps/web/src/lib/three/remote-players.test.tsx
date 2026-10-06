@@ -14,7 +14,10 @@
  *     never passes the latest confirmed position (damp toward the confirmed
  *     target, no extrapolation). A frame read that froze on the mount
  *     position (the 2026-06-12 Codex #5 freeze) fails the "moves" half;
- *   - a join is a structural change -> exactly 1 commit at the join.
+ *   - a join is a structural change -> exactly 1 commit at the join;
+ *   - walking -> running -> idle flips (written in place, no render) still
+ *     switch the animator input (moving / running) and the heading still
+ *     turns the body, with 0 commits (Codex re-check).
  *
  * Mounts the REAL RemotePlayers -> DeferredRemoteBody -> RemotePlayerEntry ->
  * VRMNpcMesh in a real R3F root (fake renderer, frameloop 'never') and drives
@@ -66,6 +69,8 @@ mock.module('./deferred-warm-attachment', () => ({
 }));
 
 const reported: unknown[] = [];
+/** Last locomotion input each body's animator received, keyed by fake VRM scene name. */
+const mixerInputs = new Map<string, { moving: boolean; running: boolean }>();
 const reportErrorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'reportError');
 const originalConsoleError = console.error;
 const originalConsoleWarn = console.warn;
@@ -110,11 +115,22 @@ beforeAll(async () => {
 
   const realAnimator = await import('./vrm-character-animator');
   class StubAnimator {
+    private readonly scene: string;
+    constructor(vrm: { scene: { name: string } }) {
+      this.scene = vrm.scene.name;
+    }
     init(): Promise<void> {
       return Promise.resolve();
     }
     update(): void {}
-    updateMixerOnly(): void {}
+    updateMixerOnly(_dt: number, moving: boolean, running: boolean): void {
+      mixerInputs.set(this.scene, { moving, running });
+    }
+    updateSpringOnly(): void {}
+    cancelOneShot(): void {}
+    playOneShot(): Promise<void> {
+      return Promise.resolve();
+    }
     dispose(): void {}
     setSurfaceClip(): void {}
   }
@@ -249,7 +265,12 @@ const SPECIES_B = 'hermes_female';
 const START_X = 4_000;
 const STEP_PX = 30; // per 200 ms snapshot = 150 px/s, a walking player
 
-function remote(id: string, species: string, x: number): PlayerSnapshot {
+function remote(
+  id: string,
+  species: string,
+  x: number,
+  over: Partial<Pick<PlayerSnapshot, 'y' | 'dirZ' | 'activity'>> = {},
+): PlayerSnapshot {
   return {
     id,
     userId: null,
@@ -262,6 +283,7 @@ function remote(id: string, species: string, x: number): PlayerSnapshot {
     species,
     color: 0xffffff,
     ts: 0,
+    ...over,
   };
 }
 
@@ -355,6 +377,89 @@ describe('RemotePlayers: moving players commit nothing, the body still follows (
       await settle(50);
       expect(getNpcRenderGroup('t3-remote-b')).toBeUndefined();
       expect(getNpcRenderGroup('t3-remote-a')).toBe(body);
+
+      expect(reported).toEqual([]);
+      await r3f.act(async () => root.unmount());
+      await r3f.act(async () => usePlayerStore.getState().clear());
+      await settle(700);
+    },
+    60_000,
+  );
+
+  // Codex re-check: idle/walking/running flips are written IN PLACE too (no
+  // new object, no render). The animator must still switch on each flip, and
+  // the heading (dirZ, in place) must still turn the body.
+  test(
+    'walking -> running -> idle via position-only snapshots: the animator input switches each time, the body turns, 0 commits',
+    async () => {
+      usePlayerStore.getState().clear();
+      mixerInputs.clear();
+      // Near the map centre: the test camera sits at the world origin, and a
+      // body beyond the far-LOD distance does not tick its mixer at all.
+      const CX = HALF_W;
+      const CY = HALF_W; // MAP_HEIGHT === MAP_WIDTH
+      const id = 't3-remote-anim';
+      const scene = `fake-vrm:${vrmPathForSpecies(SPECIES_A)}`;
+      const { root, committed, frame } = await mountRemotePlayers();
+      await ingest([remote(id, SPECIES_A, CX, { y: CY, activity: 'idle' })]);
+      await waitFor(() => committed(vrmPathForSpecies(SPECIES_A)) !== undefined, 'remote player committed');
+      await settle(400);
+      const storeObject = usePlayerStore.getState().players[0];
+      const body = getNpcRenderGroup(id)!;
+      expect(body).toBeDefined();
+      await frame(40);
+
+      const seen: Array<{ phase: string; moving: boolean; running: boolean }> = [];
+      let x = CX;
+      let phaseCommits = -1;
+      const runPhase = async (
+        phase: string,
+        ticks: number,
+        stepPx: number,
+        activity: string,
+        dirZ: number,
+      ) => {
+        for (let tick = 0; tick < ticks; tick += 1) {
+          x += stepPx;
+          await ingest([remote(id, SPECIES_A, x, { y: CY, activity, dirZ })]);
+          for (let f = 0; f < 5; f += 1) {
+            advanceClock(40);
+            await frame(40);
+          }
+        }
+        const input = mixerInputs.get(scene);
+        seen.push({ phase, moving: input?.moving ?? false, running: input?.running ?? false });
+      };
+
+      holdClock();
+      try {
+        commits = 0;
+        await runPhase('walking', 10, 30, 'walking', Math.PI / 2);
+        await runPhase('running', 10, 60, 'running', Math.PI / 2);
+        await runPhase('idle', 15, 0, 'idle', -Math.PI / 2);
+        phaseCommits = commits;
+      } finally {
+        releaseClock();
+      }
+
+      expect({ phaseCommits, seen }).toEqual({
+        phaseCommits: 0,
+        seen: [
+          { phase: 'walking', moving: true, running: false },
+          { phase: 'running', moving: true, running: true },
+          { phase: 'idle', moving: false, running: false },
+        ],
+      });
+      // Same store object all along (in place), and it carries the last flip.
+      expect(usePlayerStore.getState().players[0]).toBe(storeObject);
+      expect(storeObject.activity).toBe('idle');
+      // The body turned to the in-place heading (-PI/2), shortest path.
+      let diff = body.rotation.y - -Math.PI / 2;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      expect(Math.abs(diff)).toBeLessThan(0.05);
+      // And it stopped where the store says.
+      expect(body.position.x).toBeCloseTo(x - HALF_W, 0);
 
       expect(reported).toEqual([]);
       await r3f.act(async () => root.unmount());

@@ -616,9 +616,15 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   an R3F root, real store write path): 10 position-only snapshots of a
   walking player = 10 commits before, 0 after; the body moves on every
   40 ms frame and never passes the latest confirmed position; a join = 1
-  commit, then 0 again; a leave unmounts that body.
-  `players-local-identity.test.ts` pins the identity rules and the clamp.
-  Not measured live yet.
+  commit, then 0 again; a leave unmounts that body; walking -> running ->
+  idle through position-only snapshots switches the animator input
+  (moving/running) each time and the in-place heading turns the body, 0
+  commits. `players-local-identity.test.ts` pins the identity rules, the
+  clamp, and (Codex re-check) every reader of the players store: no
+  consumer reads position or activity reactively (sidebar `roomId`,
+  world-stream actions, `clear()`, `RemotePlayers` structural array); the
+  local player's position source is `avatarPositionRef` (game store), and
+  `RemotePlayers` skips the `isLocal` entry. Not measured live yet.
 - **Rig**: probe `--storage-state` (authenticated lane; landtest fixtures
   via `cold-load-auth-state.mjs`) + `--expect-boot-actor` +
   `phasesAtWindow`; paired gate `--slice-d` fail-closed schema (drift=0,

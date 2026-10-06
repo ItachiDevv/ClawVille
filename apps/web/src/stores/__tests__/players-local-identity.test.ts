@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { usePlayerStore } from '../players';
 
 // Founder R5 (2026-09-18): leaving a Reef Race left a copy of your own avatar
@@ -212,5 +214,76 @@ describe('players store: position-only snapshots keep identity (web-load T3)', (
     ingest([snap('b', 230), snap('a', 130)]);
     expect(usePlayerStore.getState().players).toBe(restamped);
     expect(a.x).toBe(130);
+  });
+});
+
+// Codex re-check (web-load T3): position-only snapshots now notify NOBODY,
+// also for the LOCAL player's own entry. That is safe only while no consumer
+// reads player position/activity reactively from this store. The local
+// player's position source is `avatarPositionRef` / the game store
+// (player-avatar.tsx, minimap, heartbeat, world-stream uplink). This scan
+// pins every reader of the players store: a new reader fails here and must
+// show that it reads live fields (frame loop) or only structural state.
+describe('players store readers (web-load T3): nobody reads position or activity reactively', () => {
+  const SRC = resolve(import.meta.dir, '../..');
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        if (name !== 'node_modules' && name !== '__tests__') walk(full);
+      } else if (/\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name)) {
+        files.push(full);
+      }
+    }
+  };
+  walk(SRC);
+  const rel = (f: string) => relative(SRC, f).split('\\').join('/');
+  const readers = new Map<string, string>();
+  for (const f of files) {
+    const text = readFileSync(f, 'utf8');
+    if (/stores\/players['"]/.test(text) && rel(f) !== 'stores/players.ts') readers.set(rel(f), text);
+  }
+
+  test('the reader set is exactly the audited one', () => {
+    expect([...readers.keys()].sort()).toEqual([
+      'components/game/sidebar-menu.tsx',
+      'hooks/use-world-stream.ts',
+      'lib/clear-identity-state.ts',
+      'lib/three/remote-players.tsx',
+    ]);
+  });
+
+  test('every reactive selector reads a structural field or an action, never position/activity', () => {
+    const allowed: Record<string, string[]> = {
+      'components/game/sidebar-menu.tsx': ['roomId'],
+      'hooks/use-world-stream.ts': ['clear', 'clearRemote', 'setLocalSessionId', 'setRoomId', 'updateFromSnapshot'],
+      'lib/clear-identity-state.ts': [],
+      // The structural array: RemotePlayers renders only on a structural
+      // change, skips isLocal entries, and its bodies read positions live.
+      'lib/three/remote-players.tsx': ['players'],
+    };
+    const selector = /usePlayerStore\(\s*(?:useShallow\(\s*)?\(\s*(\w+)\s*\)\s*=>\s*\1\.(\w+)/g;
+    for (const [file, text] of readers) {
+      const selected = [...text.matchAll(selector)].map((m) => m[2]);
+      const calls = (text.match(/usePlayerStore\(/g) ?? []).length;
+      // Every hook call is a recognised `(s) => s.field` selector: no bare
+      // usePlayerStore() that subscribes to the whole state.
+      expect({ file, recognised: selected.length }).toEqual({ file, recognised: calls });
+      expect({ file, selected: [...new Set(selected)].sort() }).toEqual({ file, selected: allowed[file] });
+      // No imperative subscription and no getState() read of players.
+      expect({
+        file,
+        subscribe: /usePlayerStore\.subscribe/.test(text),
+        getStatePlayers: /usePlayerStore\.getState\(\)\.players/.test(text),
+      }).toEqual({ file, subscribe: false, getStatePlayers: false });
+    }
+  });
+
+  test('the local body is player-avatar.tsx fed by avatarPositionRef; RemotePlayers skips the local entry', () => {
+    expect(readers.get('lib/three/remote-players.tsx')).toMatch(/if \(p\.isLocal\) return null;/);
+    const avatar = readFileSync(join(SRC, 'lib/three/player-avatar.tsx'), 'utf8');
+    expect(avatar).toMatch(/avatarPositionRef/);
+    expect(avatar).not.toMatch(/stores\/players/);
   });
 });
