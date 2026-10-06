@@ -1,6 +1,6 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-06 14:39Z (web-load T10-A: position-only world-stream snapshots and idle time no longer commit the R3F root through ActivityIndicators or NpcSpeechBubbles; both overlays follow the rendered (smoothed) NPC body via `getNpcRenderGroup`, raw store position as fallback).** Drift note: new "Stream commit budget" bullet (incl. "Overlay position source") after "Ambient GLB wanderer warm read"; §13 T10-A entry.
+**Last Audited: 2026-10-06 14:50Z (web-load T10-A, incl. Codex E3: every mounted same-id body stays in the overlay registry; length-prefixed indicator key; position-only world-stream snapshots and idle time no longer commit the R3F root through ActivityIndicators or NpcSpeechBubbles; both overlays follow the rendered (smoothed) NPC body via `getNpcRenderGroup`, raw store position as fallback).** Drift note: new "Stream commit budget" bullet (incl. "Overlay position source") after "Ambient GLB wanderer warm read"; §13 T10-A entry.
 
 **Prior Last Audited: 2026-10-06 14:26Z (web-load T10-D: the GLB wanderer figure (`wanderer-driftwood`, lobster GLB) is warm-read outside React before it mounts, like the VRM wanderers).** Drift note: new "Ambient GLB wanderer warm read" bullet after "Activity indicators share one material + geometry per look"; §13 T10-D entry.
 
@@ -536,8 +536,9 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   Two sources fixed: (A) `ActivityIndicators` selected NEW snapshot objects
   through `useShallow`, which compares elements with `Object.is` and so
   never bailed (one render per 200 ms snapshot while any NPC talked). It now
-  selects ONE primitive key (`id` + flag bits isDead / inCombat /
-  inConversation per indicated NPC); each `NpcIndicator` moves itself in the
+  selects ONE primitive key (per indicated NPC a length-prefixed id plus one
+  flag digit for isDead / inCombat / inConversation; ids are free server
+  strings, so no separator character is used); each `NpcIndicator` moves itself in the
   frame loop (see "Overlay position source" below).
   (B) `NpcSpeechBubbles` ran a 1 s `setInterval` tick that committed even
   with no bubble. It now arms ONE `setTimeout` to the earliest live
@@ -547,11 +548,12 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   `SpeechBubble` follows its speaker from the frame loop. Overlay position
   source: `arena-npcs.tsx` keeps a module-level registry of each NPC body's
   rendered group by NPC id (`getNpcRenderGroup`; `GLBNpcMesh` and
-  `VRMNpcMesh` register in an effect, and the cleanup deletes the entry only
-  if it still points at that group, so a newer same-id remount / fallback
-  stays registered). Both overlays copy that group's `position.x/z` (the
-  damped position the mesh draws at, no extrapolation; one `Map.get` per
-  frame, no allocation) and fall back to the store object's raw `x/y` (the
+  `VRMNpcMesh` register in an effect). The registry keeps EVERY mounted body
+  per id (oldest first) and returns the newest one; an unmount removes only
+  its own group, so whichever same-id body (remount / fallback) unmounts
+  first, the other stays followed (Codex E3). Both overlays copy that
+  group's `position.x/z` (the damped position the mesh draws at, no
+  extrapolation; one `Map.get` per frame, no allocation) and fall back to the store object's raw `x/y` (the
   store mutates it in place) while no body is mounted (warm read pending,
   failed model). The overlays may read the body one frame before its own
   callback runs (frame-callback order). Unit evidence

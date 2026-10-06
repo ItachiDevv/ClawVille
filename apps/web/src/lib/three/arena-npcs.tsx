@@ -422,19 +422,32 @@ function computeLocalMinY(scene: THREE.Object3D): number {
 // Allocated once — never inside useFrame to avoid GC pressure.
 const _renderedBbox = new THREE.Box3();
 
-/** Rendered (smoothed) body group per NPC id. Overlays read it from their
- * frame loops without React state (web-load T10-A). */
-const npcRenderGroups = new Map<string, THREE.Object3D>();
+/** Rendered (smoothed) body groups per NPC id, oldest first. Overlays read
+ * the newest mounted one from their frame loops without React state
+ * (web-load T10-A). Every mounted body stays listed, so when a newer
+ * same-id body (remount / fallback) unmounts first, the older one is used
+ * again (Codex E3). */
+const npcRenderGroups = new Map<string, THREE.Object3D[]>();
 export function getNpcRenderGroup(id: string): THREE.Object3D | undefined {
-  return npcRenderGroups.get(id);
+  const groups = npcRenderGroups.get(id);
+  return groups ? groups[groups.length - 1] : undefined;
 }
 function useRegisterNpcRenderGroup(id: string, groupRef: { current: THREE.Group | null }): void {
   useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
-    npcRenderGroups.set(id, group);
+    let groups = npcRenderGroups.get(id);
+    if (!groups) {
+      groups = [];
+      npcRenderGroups.set(id, groups);
+    }
+    groups.push(group);
     return () => {
-      if (npcRenderGroups.get(id) === group) npcRenderGroups.delete(id);
+      const list = npcRenderGroups.get(id);
+      if (!list) return;
+      const index = list.lastIndexOf(group);
+      if (index >= 0) list.splice(index, 1);
+      if (list.length === 0) npcRenderGroups.delete(id);
     };
   }, [id, groupRef]);
 }

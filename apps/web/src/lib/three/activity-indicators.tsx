@@ -275,10 +275,10 @@ const TypingDots = memo(function TypingDots({
 // Positions are not in the key: each indicator follows its NPC from the frame
 // loop (NpcIndicator above).
 //
-// Key: one `<id><FIELD_SEP><flags>` entry per indicated NPC, joined by
-// ENTRY_SEP. Flags: 1 = isDead, 2 = inCombat, 4 = inConversation.
-const ENTRY_SEP = String.fromCharCode(1);
-const FIELD_SEP = String.fromCharCode(2);
+// Key: one length-prefixed entry per indicated NPC, `<id.length>:<id><flags>`,
+// concatenated. NPC ids are free server strings, so no separator character is
+// safe; the length prefix reads any id back exactly (Codex E3). Flags is ONE
+// digit: 1 = isDead, 2 = inCombat, 4 = inConversation (never 0 here).
 
 function selectIndicatorKey(s: NpcStoreState): string {
   const npcs = s.npcs;
@@ -288,7 +288,7 @@ function selectIndicatorKey(s: NpcStoreState): string {
     // Only NPCs that have an indicator to show
     if (!n.isDead && !n.inCombat && !n.inConversation) continue;
     const flags = (n.isDead ? 1 : 0) | (n.inCombat ? 2 : 0) | (n.inConversation ? 4 : 0);
-    key += (key.length > 0 ? ENTRY_SEP : '') + n.id + FIELD_SEP + flags;
+    key += n.id.length + ':' + n.id + flags;
   }
   return key;
 }
@@ -301,17 +301,22 @@ interface IndicatorEntry {
 }
 
 function parseIndicatorKey(key: string): IndicatorEntry[] {
-  if (key.length === 0) return [];
-  return key.split(ENTRY_SEP).map((entry) => {
-    const sep = entry.lastIndexOf(FIELD_SEP);
-    const flags = Number(entry.slice(sep + 1));
-    return {
-      id: entry.slice(0, sep),
+  const entries: IndicatorEntry[] = [];
+  let at = 0;
+  while (at < key.length) {
+    const colon = key.indexOf(':', at);
+    const idLength = Number(key.slice(at, colon));
+    const idStart = colon + 1;
+    const flags = Number(key[idStart + idLength]);
+    entries.push({
+      id: key.slice(idStart, idStart + idLength),
       isDead: (flags & 1) !== 0,
       inCombat: (flags & 2) !== 0,
       inConversation: (flags & 4) !== 0,
-    };
-  });
+    });
+    at = idStart + idLength + 1;
+  }
+  return entries;
 }
 
 function ActivityIndicators() {

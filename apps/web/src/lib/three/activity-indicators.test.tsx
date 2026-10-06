@@ -311,6 +311,33 @@ describe('activity indicators share materials + geometry per look (web-load T9)'
     }
   }, 20_000);
 
+  test('NPC ids with any characters (old key separators, colons, digits) map to the right indicator', async () => {
+    const { MAP_WIDTH } = await import('@/lib/pixi/tilemap-data');
+    // Contains the old separators (char 1 and char 2), a colon and digits.
+    const oddId = `odd${String.fromCharCode(1)}id${String.fromCharCode(2)}4:12`;
+    const talker = { ...npc('a', true, 0), x: 1_100 } as NpcSpriteState;
+    const dead = { ...npc(oddId, false, 1), x: 2_300, isDead: true } as NpcSpriteState;
+    await setNpcs([talker, dead]);
+    const { root, store, scene } = await mountLayer(createElement(ActivityIndicators));
+    try {
+      await r3f.act(async () => {
+        r3f.advance(performance.now(), true, store.getState());
+      });
+      // Two spheres (talker + dead), typing dots only for the talker.
+      const spheres = meshesByColor(scene(), CYAN);
+      expect(spheres).toHaveLength(2);
+      expect(meshesByColor(scene(), DOT)).toHaveLength(3);
+      // Each sphere sits at ITS NPC (the odd id resolved to the right object).
+      expect(spheres.map((m) => m.parent!.position.x).sort((p, q) => p - q)).toEqual([
+        1_100 - MAP_WIDTH / 2,
+        2_300 - MAP_WIDTH / 2,
+      ]);
+    } finally {
+      await unmountLayer(root);
+      await setNpcs([]);
+    }
+  }, 20_000);
+
   test('StrictMode setup/cleanup/setup keeps the rendered objects alive; the real unmount disposes them once', async () => {
     await setNpcs([npc('a', true, 0)]);
     const { root, scene } = await mountLayer(createElement(StrictMode, null, createElement(ActivityIndicators)));

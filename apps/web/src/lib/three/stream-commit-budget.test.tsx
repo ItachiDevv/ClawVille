@@ -573,30 +573,7 @@ describe('stream commit budget (web-load T10)', () => {
       const older = getNpcRenderGroup('t10-talker-a');
       expect(older).toBeDefined();
 
-      // A second body with the SAME id (a fallback / remount) in its own root;
-      // another species, so it is its own VRM instance.
-      const talker = useNpcStore.getState().npcs.find((n) => n.id === 't10-talker-a')!;
-      const { VRMNpcMesh } = await import('./arena-npcs');
-      const canvas = testWindow.document.createElement('canvas');
-      testWindow.document.body.appendChild(canvas);
-      const root2 = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
-      await root2.configure({
-        gl: fakeRenderer(canvas) as never,
-        size: { width: 320, height: 200, top: 0, left: 0 },
-        frameloop: 'never',
-      });
-      await r3f.act(async () => {
-        root2.render(
-          createElement(
-            Suspense,
-            { fallback: null },
-            createElement(VRMNpcMesh, { npc: { ...talker, species: 'milady_official_1' } }),
-          ),
-        );
-      });
-      await waitFor(() => getNpcRenderGroup('t10-talker-a') !== older, 'the newer same-id body registered');
-      const newer = getNpcRenderGroup('t10-talker-a')!;
-      expect(newer.getObjectByName(`fake-vrm:${vrmPathForSpecies('milady_official_1')}`)).toBeDefined();
+      const { root2, newer } = await mountSameIdBody(older!);
 
       // The OLDER body unmounts (the NPC leaves the store): the live entry stays.
       await r3f.act(async () => {
@@ -614,4 +591,59 @@ describe('stream commit budget (web-load T10)', () => {
     },
     30_000,
   );
+
+  test(
+    'registry: a newer same-id body unmounting FIRST leaves the older, still-mounted body registered',
+    async () => {
+      const { root } = await settledWorld(false);
+      const older = getNpcRenderGroup('t10-talker-a');
+      expect(older).toBeDefined();
+      const { root2, newer } = await mountSameIdBody(older!);
+      expect(getNpcRenderGroup('t10-talker-a')).toBe(newer);
+
+      // The NEWER body unmounts while the older one stays mounted: the
+      // overlays must keep following the older body, not drop to raw.
+      await r3f.act(async () => root2.unmount());
+      expect(older!.parent).not.toBeNull();
+      expect(getNpcRenderGroup('t10-talker-a')).toBe(older);
+
+      // The older body's own unmount removes the last entry.
+      await r3f.act(async () => {
+        useNpcStore.setState({ npcs: useNpcStore.getState().npcs.filter((n) => n.id !== 't10-talker-a') });
+      });
+      await settle(50);
+      expect(getNpcRenderGroup('t10-talker-a')).toBeUndefined();
+      expect(reported).toEqual([]);
+      await teardown(root);
+    },
+    30_000,
+  );
 });
+
+/** A second body with the SAME id as 't10-talker-a' (a fallback / remount)
+ * in its own root; another species, so it is its own VRM instance. */
+async function mountSameIdBody(older: THREE.Object3D) {
+  const talker = useNpcStore.getState().npcs.find((n) => n.id === 't10-talker-a')!;
+  const { VRMNpcMesh } = await import('./arena-npcs');
+  const canvas = testWindow.document.createElement('canvas');
+  testWindow.document.body.appendChild(canvas);
+  const root2 = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
+  await root2.configure({
+    gl: fakeRenderer(canvas) as never,
+    size: { width: 320, height: 200, top: 0, left: 0 },
+    frameloop: 'never',
+  });
+  await r3f.act(async () => {
+    root2.render(
+      createElement(
+        Suspense,
+        { fallback: null },
+        createElement(VRMNpcMesh, { npc: { ...talker, species: 'milady_official_1' } }),
+      ),
+    );
+  });
+  await waitFor(() => getNpcRenderGroup('t10-talker-a') !== older, 'the newer same-id body registered');
+  const newer = getNpcRenderGroup('t10-talker-a')!;
+  expect(newer.getObjectByName(`fake-vrm:${vrmPathForSpecies('milady_official_1')}`)).toBeDefined();
+  return { root2, newer };
+}
