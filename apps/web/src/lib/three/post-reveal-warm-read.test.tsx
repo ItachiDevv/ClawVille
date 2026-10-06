@@ -325,13 +325,14 @@ describe('BootStreamedContent post-reveal lane with the real useLoader cache', (
     cohortId: string,
     url: string,
     name: string,
-    opts: { warm: boolean; strict?: boolean },
+    opts: { warm: boolean; strict?: boolean; revealRequired?: boolean },
   ) {
     const root = await createTestRoot();
     const warmRead = opts.warm ? () => readModel(url) : undefined;
     const member = createElement(BootStreamedContent, {
       cohortId,
       priority: 0,
+      ...(opts.revealRequired ? { revealRequired: true } : {}),
       ...(warmRead ? { warmRead } : {}),
       children: createElement(Content, { url, name }),
     });
@@ -455,4 +456,81 @@ describe('BootStreamedContent post-reveal lane with the real useLoader cache', (
     },
     20_000,
   );
+
+  // Codex E3 BLOCKER (T10 batch, 14:41Z): the stream queue marks a member
+  // delivered at ADMISSION, before its warm read resolves. A remount in that
+  // window used to start released and read the still-loading entry in
+  // render (a suspension -> the starvable retry lane). Each hook instance
+  // must see its own resolved warm read before its content renders.
+  for (const lane of [
+    { name: 'post-reveal', revealRequired: false, ids: ['building:deployment-ops', 'building:claw-arcade'] },
+    { name: 'boot-critical', revealRequired: true, ids: ['building:visual-creation', 'building:code-development'] },
+  ] as const) {
+    test(
+      `${lane.name}: admit -> unmount during the pending warm -> remount: 0 suspensions, commits after the warm`,
+      async () => {
+        suspensions = 0;
+        reported.length = 0;
+        const url = `/models/t10c-remount-pending-${lane.name}.glb`;
+        const name = `t10c-remount-pending-${lane.name}`;
+        const opts = { warm: true, revealRequired: lane.revealRequired };
+        const first = await mountMember(lane.ids[0], url, name, opts);
+        await waitFor(() => loadFor(url) !== undefined, 'admission started the load');
+        await r3f.act(async () => first.root.unmount());
+
+        // The member is now delivered; its load is still pending.
+        const second = await mountMember(lane.ids[0], url, name, opts);
+        await r3f.act(async () => {
+          await flush();
+        });
+        expect(second.find()).toBeUndefined();
+        expect(suspensions).toBe(0);
+
+        await r3f.act(async () => {
+          loadFor(url)!.onLoad({});
+          await flush();
+        });
+        await waitFor(() => second.find() !== undefined, 'remounted content committed after the warm');
+        expect(suspensions).toBe(0);
+        expect(pendingLoads.filter((p) => p.url === url).length).toBe(1);
+        expect(reported).toEqual([]);
+        await r3f.act(async () => second.root.unmount());
+      },
+      20_000,
+    );
+
+    test(
+      `${lane.name}: remount after the warm finished releases at once with 0 suspensions`,
+      async () => {
+        suspensions = 0;
+        reported.length = 0;
+        const url = `/models/t10c-remount-warm-${lane.name}.glb`;
+        const name = `t10c-remount-warm-${lane.name}`;
+        const opts = { warm: true, revealRequired: lane.revealRequired };
+        const first = await mountMember(lane.ids[1], url, name, opts);
+        await waitFor(() => loadFor(url) !== undefined, 'admission started the load');
+        await r3f.act(async () => {
+          loadFor(url)!.onLoad({});
+          await flush();
+        });
+        await waitFor(() => first.find() !== undefined, 'first mount committed');
+        await r3f.act(async () => first.root.unmount());
+
+        // Content commits in the remount's FIRST commit: no queue tick, no
+        // load, no suspension, no extra render. Proof: child passive effects
+        // run before parent ones in one commit, so the content probe's
+        // 'warm-pending' precedes StreamedChain's 'mounted'. A release one
+        // render later would log 'mounted' first.
+        const logBefore = statesFor(lane.ids[1]).length;
+        const second = await mountMember(lane.ids[1], url, name, opts);
+        expect(second.find()).toBeDefined();
+        expect(statesFor(lane.ids[1]).slice(logBefore)).toEqual(['warm-pending', 'mounted']);
+        expect(suspensions).toBe(0);
+        expect(pendingLoads.filter((p) => p.url === url).length).toBe(1);
+        expect(reported).toEqual([]);
+        await r3f.act(async () => second.root.unmount());
+      },
+      20_000,
+    );
+  }
 });

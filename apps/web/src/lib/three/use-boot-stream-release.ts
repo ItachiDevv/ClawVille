@@ -44,14 +44,17 @@ export function bootStreamPriority(
  * post-eligibility remounts initialize released.
  *
  * web-load T10-C: with `warmRead` (the member's own non-hook model read;
- * MUST be referentially stable; requires `memberId`, a cohort id), the
- * admitted member reports the cohort `'loading'` state AT ADMISSION, loads +
- * parses OUTSIDE React (warmSuspenseRead), and only then flips `released`.
- * The release render reads a resolved cache entry and commits without a
+ * MUST be referentially stable, its presence static per mount; requires
+ * `memberId`, a cohort id), the admitted member reports the cohort
+ * `'loading'` state AT ADMISSION and starts the load there; `released` flips
+ * only after THIS hook instance saw the read resolve (useInstanceWarm). The
+ * release render reads a resolved cache entry and commits without a
  * Suspense retry (retry lanes starve under the SyncLane stream renders).
  * The consumer must then not report `'loading'` again on `released`.
- * Unmount before the warm resolves cancels the flip. Without `warmRead` the
- * behaviour is unchanged. No `bgr*` phase stamp (boot-critical lane only).
+ * Unmount before the warm resolves cancels the flip; a remount of a
+ * delivered member waits for its own warm (instant when the entry is
+ * resolved). Without `warmRead` the behaviour is unchanged. No `bgr*`
+ * phase stamp (boot-critical lane only).
  */
 export function useBootStreamRelease(
   priority: number,
@@ -63,35 +66,95 @@ export function useBootStreamRelease(
   // one-shot monotonic contract) while the tab is visible. Every NEW member
   // — even visible, even after global eligibility — enters the epoch queue
   // (priority ordering, one per idle tick, hidden parking).
-  const [released, setReleased] = useState(
+  const [admitted, setAdmitted] = useState(
     () =>
       isBootStreamEligible() &&
       memberId !== undefined &&
       isStreamMemberDelivered(memberId) &&
       (typeof document === 'undefined' || !document.hidden),
   );
+  // The warm needs a cohort id (the 'loading' report); without one the
+  // member releases unwarmed, as before.
+  const read = memberId === undefined ? undefined : warmRead;
+  const warmed = useInstanceWarm(admitted, read);
   useEffect(() => {
-    if (released) return undefined;
-    if (warmRead === undefined || memberId === undefined) {
-      return onBootStreamEligible(() => setReleased(true), priority, memberId);
-    }
-    let cancelled = false;
-    const unsubscribe = onBootStreamEligible(
+    if (admitted) return undefined;
+    return onBootStreamEligible(
       () => {
-        reportCohortState(memberId, 'loading');
-        void warmSuspenseRead(warmRead).then(() => {
-          if (!cancelled) setReleased(true);
-        });
+        if (read !== undefined && memberId !== undefined) {
+          reportCohortState(memberId, 'loading');
+          startCacheRead(read);
+        }
+        setAdmitted(true);
       },
       priority,
       memberId,
     );
+  }, [admitted, priority, memberId, read]);
+  return admitted && warmed;
+}
+
+function isThenable(value: unknown): boolean {
+  return (
+    (typeof value === 'object' || typeof value === 'function') &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
+/** Start (or join) the cache entry's load at admission, outside render, so
+ * the load starts on the admission tick and not one render later. The
+ * release is NOT tied to this warm: useInstanceWarm awaits the same entry
+ * in the hook instance (warmSuspenseRead never rejects). */
+function startCacheRead(read: () => unknown): void {
+  void warmSuspenseRead(read);
+}
+
+/** true when `read` does not suspend now: a resolved entry, or a cached
+ * failure (the render rethrows it into the boundary, as in
+ * warmSuspenseRead's contract). A thrown thenable (loading) is false. */
+function isCacheEntryReady(read: () => unknown): boolean {
+  try {
+    read();
+    return true;
+  } catch (thrown) {
+    return !isThenable(thrown);
+  }
+}
+
+/**
+ * Codex E3 BLOCKER (T10 batch, 2026-10-06): the stream queue records a
+ * member as DELIVERED at admission, before its warm read resolves, and a
+ * delivered member's remount initializes admitted. So the warm result
+ * belongs to the HOOK INSTANCE, never to the queue: content renders only
+ * after THIS instance saw `read` not suspend. A remount whose entry is
+ * already resolved is warmed in its first render (one non-hook cache read:
+ * instant reveal, as before). Otherwise, once admitted, the effect awaits
+ * warmSuspenseRead (it joins a load in flight) and flips `warmed`; an
+ * unmount before it resolves cancels the flip. `parsedStampKey`
+ * (boot-critical lane) is stamped first-write-wins when the warm resolves.
+ */
+function useInstanceWarm(
+  admitted: boolean,
+  read: (() => unknown) | undefined,
+  parsedStampKey?: string,
+): boolean {
+  const [warmed, setWarmed] = useState(
+    () => read === undefined || (admitted && isCacheEntryReady(read)),
+  );
+  useEffect(() => {
+    if (warmed || !admitted || read === undefined) return undefined;
+    let cancelled = false;
+    void warmSuspenseRead(read).then(() => {
+      if (cancelled) return;
+      if (parsedStampKey !== undefined) stampBgrPhase(parsedStampKey);
+      setWarmed(true);
+    });
     return () => {
       cancelled = true;
-      unsubscribe();
     };
-  }, [released, priority, memberId, warmRead]);
-  return released;
+  }, [warmed, admitted, read, parsedStampKey]);
+  return warmed || read === undefined;
 }
 
 /** First-write-wins phase stamp in `window.__W3D_PHASES` (a number write;
@@ -136,43 +199,34 @@ export function BgrMountedStamp({ cohortId }: { cohortId: string }): null {
  * stamps `bgrParsed:<member>`, and only then flips `released`, so its first
  * render reads a resolved cache entry and commits without a Suspense retry
  * (retry lanes starve under the 5 Hz SyncLane stream renders). Unmount
- * before the warm resolves cancels the flip.
+ * before the warm resolves cancels the flip. The warm result belongs to the
+ * hook instance (useInstanceWarm, Codex E3 T10): a remount of a delivered
+ * member waits for its own warm (instant when the entry is resolved).
  */
 export function useBootBuildingsStreamRelease(
   priority: number,
   memberId: string,
   warmRead?: () => unknown,
 ): boolean {
-  const [released, setReleased] = useState(
+  const [admitted, setAdmitted] = useState(
     () =>
       isBootBuildingsStreamEligible() &&
       isStreamMemberDelivered(memberId) &&
       (typeof document === 'undefined' || !document.hidden),
   );
+  // No phase for an instance that unmounted before its warm resolved.
+  const warmed = useInstanceWarm(admitted, warmRead, `bgrParsed:${memberId}`);
   useEffect(() => {
-    if (released) return undefined;
-    let cancelled = false;
-    const unsubscribe = onBootBuildingsStream(
+    if (admitted) return undefined;
+    return onBootBuildingsStream(
       () => {
         reportCohortState(memberId, 'loading');
-        if (warmRead === undefined) {
-          setReleased(true);
-          return;
-        }
-        void warmSuspenseRead(warmRead).then(() => {
-          // No phase for a member that unmounted before its warm resolved.
-          if (cancelled) return;
-          stampBgrPhase(`bgrParsed:${memberId}`);
-          setReleased(true);
-        });
+        if (warmRead !== undefined) startCacheRead(warmRead);
+        setAdmitted(true);
       },
       priority,
       memberId,
     );
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [released, priority, memberId, warmRead]);
-  return released;
+  }, [admitted, priority, memberId, warmRead]);
+  return admitted && warmed;
 }

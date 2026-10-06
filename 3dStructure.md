@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-06 14:50Z (web-load T10-A, incl. Codex E3: every mounted same-id body stays in the overlay registry; length-prefixed indicator key; position-only world-stream snapshots and idle time no longer commit the R3F root through ActivityIndicators or NpcSpeechBubbles; both overlays follow the rendered (smoothed) NPC body via `getNpcRenderGroup`, raw store position as fallback).** Drift note: new "Stream commit budget" bullet (incl. "Overlay position source") after "Ambient GLB wanderer warm read"; §13 T10-A entry.
+**Last Audited: 2026-10-06 14:55Z (web-load T10-C Codex E3 BLOCKER fix: on both stream lanes a member with `warmRead` renders its content only after ITS OWN hook instance saw the warm read resolve; a remount during a pending warm no longer suspends into a retry lane).** Drift note: "Stage-B warm read" bullet (the remount sentence) and "Post-reveal town prop warm read" bullet updated; §13 entry.
+
+**Prior Last Audited: 2026-10-06 14:50Z (web-load T10-A, incl. Codex E3: every mounted same-id body stays in the overlay registry; length-prefixed indicator key; position-only world-stream snapshots and idle time no longer commit the R3F root through ActivityIndicators or NpcSpeechBubbles; both overlays follow the rendered (smoothed) NPC body via `getNpcRenderGroup`, raw store position as fallback).** Drift note: new "Stream commit budget" bullet (incl. "Overlay position source") after "Ambient GLB wanderer warm read"; §13 T10-A entry.
 
 **Prior Last Audited: 2026-10-06 14:26Z (web-load T10-D: the GLB wanderer figure (`wanderer-driftwood`, lobster GLB) is warm-read outside React before it mounts, like the VRM wanderers).** Drift note: new "Ambient GLB wanderer warm read" bullet after "Activity indicators share one material + geometry per look"; §13 T10-D entry.
 
@@ -411,8 +413,13 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   boundary), then flips `released`. The release render reads a resolved
   entry and commits in its own Default lane (one uninterrupted pass,
   expires after 5 s). Parse start time is unchanged (admission). A key
-  mismatch or a remount of a delivered member falls back to the old path
-  (the `<Suspense>` stays as the safety net). Phase stamps (first write
+  mismatch falls back to the old path (the `<Suspense>` stays as the
+  safety net). The warm result belongs to the HOOK INSTANCE
+  (`useInstanceWarm`, Codex E3 T10): the queue marks a member delivered at
+  admission, so a remount during a pending warm starts admitted but
+  renders its content only after its own `warmSuspenseRead` resolved; a
+  remount whose entry is already resolved releases in its first render
+  (one non-hook cache read). Phase stamps (first write
   wins): `bgrParsed:<cohort>` when the read resolved, `bgrMounted:<cohort>`
   when the content tree committed (hidden). Wrapping stream updates in `startTransition`
   would NOT help: `useSyncExternalStore` updates are forced to SyncLane, and
@@ -480,8 +487,10 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   web-load T10-C 2026-10-06). The stage-B pattern on the slice-D
   post-reveal lane: `PostRevealGate` now passes `warmRead` to
   `useBootStreamRelease` (before, it ignored it). With `warmRead`, the hook
-  reports the cohort `'loading'` state at admission, awaits
-  `warmSuspenseRead`, then flips `released`; `StreamedChain` reports
+  reports the cohort `'loading'` state at admission and starts the load
+  there; `released` flips only after the same hook instance saw
+  `warmSuspenseRead` resolve (`useInstanceWarm`, shared with the stage-B
+  hook, so a remount during a pending warm waits too); `StreamedChain` reports
   `'loading'` on `released` only when no `warmRead` is given (else it would
   land after the content's `'warm-pending'`). No `bgr*` phase stamp on this
   lane. Without `warmRead` the lane is unchanged (land trio). Users:
@@ -494,7 +503,10 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   `post-reveal-warm-read.test.tsx` (the 4 real props on the real
   post-reveal queue: warm read before the render read, same path + flags +
   extender, 0 render suspensions; the lane without `warmRead` unchanged;
-  failure, unmount-cancel and StrictMode cases). Not measured live yet.
+  failure, unmount-cancel and StrictMode cases; on both lanes a remount
+  during the pending warm commits with 0 suspensions after the warm, and a
+  remount after the warm commits in its first commit). Not measured live
+  yet.
 - **Activity indicators share one material + geometry per look**
   (`activity-indicators.tsx`, web-load T9 2026-10-06). The cyan activity
   sphere and the grey typing dot each use one module-level
@@ -3020,6 +3032,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-10-06 — **Stream release waits for the instance's own warm read** (commit pending, branch `perf/load-items`, web-load T10-C, Codex E3 BLOCKER on 62ff1ae8). Cause: the stream queue records a member as delivered at admission, before its warm read resolves; an unmount + remount in that window started released, its content read the still-loading entry in render and suspended (2 suspended render reads in the test, both lanes), so the starvable retry lane came back. Fix: `use-boot-stream-release.ts` `useInstanceWarm` (both `useBootStreamRelease` and `useBootBuildingsStreamRelease`): `released = admitted && warmed`, where `warmed` belongs to the hook instance; the first render of an admitted remount checks the entry with one non-hook read (ready = release now), else the effect awaits `warmSuspenseRead` (joins the load in flight). Admission still starts the load on its own tick. Tests (`post-reveal-warm-read.test.tsx`, failed first 2/2): admit, unmount during the pending warm, remount: 0 suspensions, commits after the warm, one load (both lanes); remount after the warm: content in the first commit (passes before and after; catches a mutant without the instant check). Needs measurement (CPU 4x), Codex E3 re-review + staging.
 - 2026-10-06 — **Stream commit budget: indicators + speech bubbles** (commit pending, branch `perf/load-items`, web-load T10-A). Cause: the R3F root committed ~6/s forever (N6, 5.9/s at CPU 4x and unthrottled) and each commit discards pending Suspense retry work. `ActivityIndicators` selected new objects through `useShallow` (never bails) -> now one primitive key + frame-loop positioning; `NpcSpeechBubbles` 1 s interval tick -> one timeout to the earliest live expiry, live-at-last-render bubble selection, frame-loop positioning. Both overlays follow the rendered (smoothed) body through the new `arena-npcs.tsx` `getNpcRenderGroup` registry (raw store x/y fallback while no body is mounted). Unit: 25 position-only snapshots 26+5 commits -> 0; 5 s idle 6+1 -> 0; expiry exactly 1. Known remaining: moving remote players commit `RemotePlayers` per snapshot (T3). Tests: `stream-commit-budget.test.tsx`, `activity-indicators.test.tsx`, `npc-speech-bubbles.test.tsx`. Not measured live yet.
 - 2026-10-06 — **Post-reveal town prop warm read** (commit pending, branch `perf/load-items`, web-load T10-C). Cause (CPU 4x run N6, per-root mesh probe at 114 s vs unthrottled): `perf:quest-bounty-pavilion` 0 vs 27, `perf:marketplace-stall` 0 vs 3, `perf:quest-npc` 0 vs 3; these props release on the post-reveal lane, their release render suspended on the GLB, and the content could commit only in a Suspense retry lane that the ~6/s SyncLane renders discard. `PostRevealGate` ignored `warmRead`. Fix: `useBootStreamRelease(priority, id, warmRead)` warms outside React at admission (reports `'loading'` there; `StreamedChain` skips its own `'loading'` when `warmRead` is set); quest-npc, marketplace-stall, quest-bounty-pavilion and bazaar-stall pass a module-level `readGLTFWithKTX2` reader of their one path constant. Tests failed first: `post-reveal-warm-read.test.tsx` 4/5 (each prop: 2 suspended render reads, no warm read); the no-`warmRead` lane test passes before and after. Mutations caught: a warm path without `?v=3` (path mismatch + 2 suspensions), the ungated `'loading'` report (cohort order). Needs measurement (CPU 4x), Codex E3 + staging.
 - 2026-10-06 — **Building residents warm-read before mount** (commit pending, branch `perf/load-items`, web-load T10-B). Cause (T9 probe run N6, local prod build, CPU 4x): `LocationNpc` mounted `NpcMesh` right after its stagger release, `NpcMesh`'s `useGLTF` suspended, and the resident could commit only in a Suspense retry lane that the R3F root's ~6/s SyncLane renders discard; `perf:location-npcs` held 2 meshes at 114 s (72 unthrottled). Fix: `LocationNpc` warm-reads the primary + companion GLB outside React (`warmSuspenseRead` + `readLocationNpcModel`, NpcMesh's exact drei call) and mounts `NpcMesh` only when `released && mounted && warmed`. Test `arena-location-npcs-warm-read.test.tsx` (real `ArenaLocationNpcs` in a real R3F root, recording `useGLTF`): on the base code 4/5 fail (every render read of the 12 models suspended, no warm read); after: 5/5 pass (0 suspended render reads, warm read first with identical path/flags/extender for all 12 models, StrictMode, unmount mid-warm leaves no render read/mount/error, a failed GLB). Same task, lead decision: a failed resident GLB is now skipped by a per-model `ModelLoadBoundary` (tagged via the newly exported `tagGltfLoadRejection`) instead of reaching `StageCanvasErrorBoundary`; 3 more tests (skip with siblings rendered + one console.error + clear, canvas-remount retry, stream-out/in retry warm-read) failed 3/3 on e1b7fa24 and pass after; mutations (no tag, no re-arm) fail them. In the `gates.yml` separate-process suite list. Not measured live (no build); needs CPU 4x measurement + Codex E3 + staging.
