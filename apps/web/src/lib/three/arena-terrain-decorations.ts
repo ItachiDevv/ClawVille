@@ -235,7 +235,9 @@ export function isDecorationSiteClear(x: number, z: number): boolean {
   for (const lane of BUILDING_LANES) {
     const t = x * lane.ux + z * lane.uz;
     if (t <= 0 || t >= lane.len) continue;
-    if (Math.abs(x * lane.uz - z * lane.ux) < DECO_LANE_HALF_WIDTH) return false;
+    // The whole footprint stays out of the lane, not only the site: add the
+    // largest prop's reach (a site at 400 wu let props cross by up to 25 wu).
+    if (Math.abs(x * lane.uz - z * lane.ux) < DECO_LANE_HALF_WIDTH + DECO_MAX_REACH) return false;
   }
   const residentR = TALK_RADIUS_WORLD + pad;
   for (const r of Object.values(CHARACTER_POSITIONS)) {

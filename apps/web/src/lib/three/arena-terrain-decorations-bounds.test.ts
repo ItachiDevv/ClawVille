@@ -142,20 +142,51 @@ describe('placed decorations in world space', () => {
     }
   });
 
+  /**
+   * The prop's whole XZ footprint as a circle: centre = the world box centre,
+   * radius = the farthest footprint corner. The circle CONTAINS the oriented
+   * footprint rectangle, so a clear circle means no part of the prop crosses
+   * (a corners-only check misses an edge that crosses a lane or a small box).
+   */
+  function footprintCircle(d: deco.DecoEntry) {
+    const w = worldBox(d, NATIVE_BOUNDS[d.model]);
+    const r = Math.max(...w.corners.map(([x, z]) => Math.hypot(x - w.cx, z - w.cz)));
+    return { x: w.cx, z: w.cz, r };
+  }
+
   it('keeps every prop body inside the 800-3800 wu band', () => {
     const out: string[] = [];
     for (const d of decorations) {
-      for (const [x, z] of worldBox(d, NATIVE_BOUNDS[d.model]).corners) {
-        const r = Math.hypot(x, z);
-        if (r < INNER_R || r > OUTER_R) out.push(`${d.model} corner at r ${r.toFixed(0)}`);
-      }
+      const f = footprintCircle(d);
+      const rc = Math.hypot(f.x, f.z);
+      if (rc - f.r < INNER_R || rc + f.r > OUTER_R) out.push(`${d.model} spans r ${(rc - f.r).toFixed(0)}-${(rc + f.r).toFixed(0)}`);
     }
     expect(out).toEqual([]);
   });
 
-  it('keeps every prop body clear of colliders, parcels, lanes, residents and entrances', () => {
+  it('keeps every prop body out of the 400 wu walk lanes (full footprint)', () => {
     const hits: string[] = [];
     const lanes = getAllColliders().filter((c) => buildingZones.some((z) => z.id === c.id));
+    expect(lanes.length).toBe(buildingZones.length);
+    for (const d of decorations) {
+      const f = footprintCircle(d);
+      for (const l of lanes) {
+        // Lane = the rectangle 0 < t < len, |perp| < half-width along the
+        // plaza -> building radial. Distance from the circle centre to it:
+        const len = Math.hypot(l.centerX, l.centerZ);
+        const t = (f.x * l.centerX + f.z * l.centerZ) / len;
+        const perp = Math.abs(f.x * l.centerZ - f.z * l.centerX) / len;
+        const dt = t < 0 ? -t : t > len ? t - len : 0;
+        const dp = Math.max(perp - deco.DECO_LANE_HALF_WIDTH, 0);
+        const dist = Math.hypot(dt, dp);
+        if (dist < f.r) hits.push(`${d.model} at (${d.x.toFixed(0)}, ${d.z.toFixed(0)}) enters the ${l.id} lane by ${(f.r - dist).toFixed(0)} wu`);
+      }
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it('keeps every prop body clear of colliders, parcels, residents and entrances (full footprint)', () => {
+    const hits: string[] = [];
     const boxes = [
       ...getAllColliders(),
       ...LAND_PARCELS.map((p) => ({ id: p.id, centerX: p.cx, centerZ: p.cz, halfX: p.size / 2, halfZ: p.size / 2 })),
@@ -166,21 +197,16 @@ describe('placed decorations in world space', () => {
       { id: 'cove-tunnel', x: COVE_EXIT_WORLD_X, z: COVE_EXIT_WORLD_Z, r: 500 },
     ];
     for (const d of decorations) {
-      for (const [x, z] of worldBox(d, NATIVE_BOUNDS[d.model]).corners) {
-        for (const b of boxes) {
-          if (Math.abs(x - b.centerX) < b.halfX + BODY_GAP && Math.abs(z - b.centerZ) < b.halfZ + BODY_GAP) hits.push(`${d.model} in ${b.id}`);
-        }
-        for (const c of circles) if (Math.hypot(x - c.x, z - c.z) < c.r + BODY_GAP) hits.push(`${d.model} in ${c.id}`);
-        for (const l of lanes) {
-          const len = Math.hypot(l.centerX, l.centerZ);
-          const t = (x * l.centerX + z * l.centerZ) / len;
-          if (t > 0 && t < len && Math.abs(x * l.centerZ - z * l.centerX) / len < deco.DECO_LANE_HALF_WIDTH - MAX_REACH) {
-            hits.push(`${d.model} in ${l.id} lane`);
-          }
-        }
+      const f = footprintCircle(d);
+      for (const b of boxes) {
+        const dist = Math.hypot(Math.max(Math.abs(f.x - b.centerX) - b.halfX, 0), Math.max(Math.abs(f.z - b.centerZ) - b.halfZ, 0));
+        if (dist < f.r + BODY_GAP) hits.push(`${d.model} within ${BODY_GAP.toFixed(0)} wu of ${b.id}`);
+      }
+      for (const c of circles) {
+        if (Math.hypot(f.x - c.x, f.z - c.z) - c.r < f.r + BODY_GAP) hits.push(`${d.model} within ${BODY_GAP.toFixed(0)} wu of ${c.id}`);
       }
     }
-    expect([...new Set(hits)]).toEqual([]);
+    expect(hits).toEqual([]);
   });
 
   it('renders every prop at its target size (max dimension)', () => {
