@@ -10,7 +10,7 @@
  * - one plain-words notice per session.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { Component, act, createElement, type ReactNode } from 'react';
+import { Component, StrictMode, Suspense, act, createElement, useEffect, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
 
@@ -91,6 +91,18 @@ class OuterBoundary extends Component<{ onCatch: (error: unknown) => void; child
 function LobsterBody({ url }: { url: string }) {
   const gltf = useGLTFWithKTX2(url);
   return createElement('span', { id: 'lobster', 'data-node': gltf.scene.getObjectByName('lobster-root') ? 'ok' : 'empty' });
+}
+
+/** Stand-in for a real body (PlayerAvatarVRMInner / BootActorNpcBodyInner):
+ * registers its boot claim at render, suspends on its model, and commits the
+ * claim from a passive effect once the model resolved. */
+function ClaimingBody({ kind, path, url }: { kind: 'player-vrm' | 'npc-body'; path: string; url: string }) {
+  const token = bootActor.registerBootActorClaim(kind, path);
+  const gltf = useGLTFWithKTX2(url);
+  useEffect(() => {
+    bootActor.notifyBootActorCommitted(token);
+  }, [token]);
+  return createElement('span', { id: 'body', 'data-node': gltf.scene.getObjectByName('lobster-root') ? 'ok' : 'empty' });
 }
 
 type HappyErrorEvent = InstanceType<typeof testWindow.ErrorEvent>;
@@ -327,6 +339,112 @@ describe('LocalPlayerFallback', () => {
     });
     await settle(5);
     expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+  });
+
+  test('Codex E3 (1710e2b6): a body re-registers the SAME claim as the fallback unmounts: the stale unmount release never commits it; the body commit does', async () => {
+    const failedPath = '/avatars/lpf-player-rereg.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-rereg.glb?v=1';
+    const bodyUrl = 'http://localhost/models/lpf-body-rereg.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    replies.set(bodyUrl, 'valid-gated');
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const rootA = r3fLikeRoot(newContainer(), []);
+    await act(async () =>
+      rootA.render(
+        createElement(
+          fallbackModule.LocalPlayerFallback,
+          { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+          createElement(LobsterBody, { url: lobsterUrl }),
+        ),
+      ),
+    );
+    await settle(3);
+    // The fallback unmounts (deferred release armed) and, in the same
+    // commit, a plain body for the same kind + path registers the SAME claim
+    // (same epoch: registerBootActorClaim returns the existing token) and is
+    // still loading.
+    const containerB = newContainer();
+    const rootB = r3fLikeRoot(containerB, []);
+    await act(async () => {
+      rootA.unmount();
+      rootB.render(
+        createElement(Suspense, { fallback: null }, createElement(ClaimingBody, { kind: 'player-vrm', path: failedPath, url: bodyUrl })),
+      );
+    });
+    await settle(5); // the old deferred release would have fired by now
+    expect(containerB.querySelector('#body')).toBeNull();
+    expect(bootActor.getBootActorStamps().readyAt).toBeNull();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+
+    const openedAt = Math.round(performance.now());
+    openGate();
+    await settle();
+    expect(containerB.querySelector('#body')?.getAttribute('data-node')).toBe('ok');
+    // Committed by the body, after its model resolved, not by the old timer.
+    expect(bootActor.getBootActorStamps().readyAt).not.toBeNull();
+    expect(bootActor.getBootActorStamps().readyAt!).toBeGreaterThanOrEqual(openedAt);
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+    await act(async () => rootB.unmount());
+    await settle(3);
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+  });
+
+  test('StrictMode simulated unmount + re-mount does not release while the lobster loads', async () => {
+    const failedPath = '/avatars/lpf-player-strict.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-strict.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const root = r3fLikeRoot(newContainer(), []);
+    await act(async () =>
+      root.render(
+        createElement(
+          StrictMode,
+          null,
+          createElement(
+            fallbackModule.LocalPlayerFallback,
+            { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+            createElement(LobsterBody, { url: lobsterUrl }),
+          ),
+        ),
+      ),
+    );
+    await settle(5);
+    expect(bootActor.getBootActorStamps().readyAt).toBeNull();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+    openGate();
+    await settle();
+    expect(bootActor.getBootActorStamps().readyAt).not.toBeNull();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
+    await act(async () => root.unmount());
+  });
+
+  test('Codex E3 NIT: resetting only this module also forgets released claims (the same token object released again after a remount)', async () => {
+    const failedPath = '/avatars/lpf-player-nit.vrm';
+    const lobsterUrl = 'http://localhost/models/lpf-lobster-nit.glb?v=1';
+    replies.set(lobsterUrl, 'valid-gated');
+    openGate();
+    bootActor.resolveBootActor('player-vrm', failedPath);
+    const element = () =>
+      createElement(
+        fallbackModule.LocalPlayerFallback,
+        { kind: 'player-vrm', failedPath, fallbackUrl: lobsterUrl, label: 'player-avatar', addToast: () => {} },
+        createElement(LobsterBody, { url: lobsterUrl }),
+      );
+    const rootA = r3fLikeRoot(newContainer(), []);
+    await act(async () => rootA.render(element()));
+    await settle();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
+    await act(async () => rootA.unmount());
+    await settle(3);
+    // Reset THIS module only; the boot state (and so the claim token object)
+    // is kept.
+    fallbackModule.__resetLocalPlayerFallbackForTests();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(0);
+    const rootB = r3fLikeRoot(newContainer(), []);
+    await act(async () => rootB.render(element()));
+    await settle();
+    expect(fallbackModule.__getBootClaimReleaseCountForTests()).toBe(1);
+    await act(async () => rootB.unmount());
   });
 
   test('npc-body claim (possessed NPC) is released the same way', async () => {

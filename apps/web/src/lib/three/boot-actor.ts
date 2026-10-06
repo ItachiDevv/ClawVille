@@ -100,6 +100,9 @@ const claims = new Map<number, BootActorClaimToken>();
 /** token id → commit timestamp (page ms) [I1-F2]. */
 const commitTimes = new Map<number, number>();
 const fetchSettledTokenIds = new Set<number>();
+/** claim token -> deferred release (one tick). Any new registration of the
+ * claim cancels it (see `deferBootActorClaimRelease`). */
+const deferredReleases = new Map<BootActorClaimToken, ReturnType<typeof setTimeout>>();
 let resolvedAtMs: number | null = null;
 let readyAtMs: number | null = null;
 let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
@@ -251,7 +254,8 @@ if (typeof window !== 'undefined') {
  * Register an actor resource claim (render-time legal: replayable epoch
  * state keyed by token, never consumed one-shots [R2-F2]). Returns the token
  * the loader must pass to `notifyBootActorCommitted` from its post-Suspense
- * passive effect.
+ * passive effect. Re-registering an existing claim cancels its pending
+ * deferred release: a new owner of the claim now decides when it commits.
  */
 export function registerBootActorClaim(
   kind: BootActorKind,
@@ -265,6 +269,7 @@ export function registerBootActorClaim(
       claim.kind === kind &&
       claim.resourceKey === resourceKey
     ) {
+      cancelDeferredBootActorClaimRelease(claim);
       return claim;
     }
   }
@@ -276,6 +281,36 @@ export function registerBootActorClaim(
   };
   claims.set(token.id, token);
   return token;
+}
+
+/**
+ * Run `release` one tick from now unless the claim is registered again (or
+ * the release is cancelled) first. For an owner that gives a claim up on
+ * unmount (LocalPlayerFallback): a StrictMode re-mount, a new fallback
+ * instance, or a real body that re-registers the same claim while it is
+ * still loading cancels the release, so the reveal waits for that owner's
+ * own commit (or the epoch deadline). A newer deferral for the same token
+ * replaces the older one.
+ */
+export function deferBootActorClaimRelease(
+  token: BootActorClaimToken,
+  release: () => void,
+): void {
+  cancelDeferredBootActorClaimRelease(token);
+  const timer = setTimeout(() => {
+    if (deferredReleases.get(token) !== timer) return;
+    deferredReleases.delete(token);
+    release();
+  }, 0);
+  deferredReleases.set(token, timer);
+}
+
+/** Cancel the pending deferred release of `token`, if any. */
+export function cancelDeferredBootActorClaimRelease(token: BootActorClaimToken): void {
+  const timer = deferredReleases.get(token);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  deferredReleases.delete(token);
 }
 
 /** Commit a claim (post-Suspense passive effect — commit proves the resource
@@ -592,8 +627,15 @@ export function __classifyBootActorForTests(
   return classify(inputs);
 }
 
+/** TEST-ONLY: cancel every pending deferred claim release. */
+export function __cancelDeferredBootActorReleasesForTests(): void {
+  for (const timer of deferredReleases.values()) clearTimeout(timer);
+  deferredReleases.clear();
+}
+
 /** TEST-ONLY: reset module state between unit tests. */
 export function __resetBootActorForTests(): void {
+  __cancelDeferredBootActorReleasesForTests();
   tokenCounter = 0;
   pendingResolution = null;
   registrationClosed = false;
