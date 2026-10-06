@@ -1,14 +1,13 @@
 'use client';
 
-import { useRef, useEffect, memo } from 'react';
+import { useRef, useEffect, useMemo, memo } from 'react';
 import {
   useSceneActive,
   useSceneFrame,
 } from '@/components/three/world-stage/use-scene-frame';
 // Text removed
 import * as THREE from 'three';
-import { useNpcStore } from '@/stores/npc';
-import { useShallow } from 'zustand/react/shallow';
+import { useNpcStore, type NpcSpriteState, type NpcStoreState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
@@ -126,25 +125,39 @@ const ACTIVITY_EMOJIS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 interface NpcIndicatorProps {
-  x: number;
-  y: number;
+  npcId: string;
   activity?: string;
   isTyping: boolean;
-  inConversation: boolean;
+}
+
+/** Id lookup without a closure (runs once per store write, not per frame). */
+function findNpcById(npcs: readonly NpcSpriteState[], id: string): NpcSpriteState | null {
+  for (let i = 0; i < npcs.length; i += 1) {
+    if (npcs[i].id === id) return npcs[i];
+  }
+  return null;
 }
 
 const NpcIndicator = memo(function NpcIndicator({
-  x,
-  y,
+  npcId,
   activity,
   isTyping,
-  inConversation,
 }: NpcIndicatorProps) {
   const groupRef = useRef<THREE.Group>(null);
   const scaleRef = useRef(1);
+  // The NPC store MUTATES position in place on the same object
+  // (stores/npc.ts updateFromSnapshot / moveNpc), so the indicator follows its
+  // NPC from the frame loop and never needs a React render to move (web-load
+  // T10). The object is looked up again only when the store's npcs ARRAY
+  // changes (one id scan per store write): an identity change (conversation
+  // flip, rename, species swap) replaces the object.
+  const npcsSeenRef = useRef<readonly NpcSpriteState[] | null>(null);
+  const npcRef = useRef<NpcSpriteState | null>(null);
 
-  const worldX = x - HALF_W;
-  const worldZ = y - HALF_H;
+  // Render-time position, so the indicator is in place before the first frame.
+  const renderNpc = findNpcById(useNpcStore.getState().npcs, npcId);
+  const worldX = renderNpc ? renderNpc.x - HALF_W : 0;
+  const worldZ = renderNpc ? renderNpc.y - HALF_H : 0;
 
   const emoji = activity ? ACTIVITY_EMOJIS[activity] ?? '' : '';
   const activityLook = getIndicatorLook('activity');
@@ -152,6 +165,17 @@ const NpcIndicator = memo(function NpcIndicator({
   useSceneFrame((state) => {
     const group = groupRef.current;
     if (!group) return;
+
+    const npcs = useNpcStore.getState().npcs;
+    if (npcs !== npcsSeenRef.current) {
+      npcsSeenRef.current = npcs;
+      npcRef.current = findNpcById(npcs, npcId);
+    }
+    const npc = npcRef.current;
+    if (npc) {
+      group.position.x = npc.x - HALF_W;
+      group.position.z = npc.y - HALF_H;
+    }
 
     const elapsed = state.clock.elapsedTime;
     const pulse = PULSE_MIN + (PULSE_MAX - PULSE_MIN) * (0.5 + 0.5 * Math.sin(elapsed * PULSE_SPEED * Math.PI * 2));
@@ -232,22 +256,53 @@ const TypingDots = memo(function TypingDots({
 // ActivityIndicators — reads NPC store and renders indicators for all NPCs
 // ---------------------------------------------------------------------------
 
-// PERF: subscribe only to the activity-relevant NPC fields (isDead, inCombat,
-// inConversation, id, x, y) rather than the full NPC array. Full subscription
-// re-renders this component every 100ms SSE snapshot (NPC positions change
-// constantly), even though the emoji/typing state changes only rarely.
-// We use a shallow-equal selector on a derived array of activity snapshots.
-interface NpcActivitySnapshot {
+// PERF (web-load T10): the layer selects ONE primitive string, so its store
+// subscription bails (Object.is) on every position-only snapshot. Before, it
+// selected NEW snapshot objects through useShallow, which compares elements
+// with Object.is and so NEVER bailed: one SyncLane render of the R3F root per
+// 200 ms snapshot while any NPC talked, and each render discarded pending
+// Suspense retry work (gotchas/suspense-retry-lane-starvation-sync-store-updates.md).
+// Positions are not in the key: each indicator follows its NPC from the frame
+// loop (NpcIndicator above).
+//
+// Key: one `<id><FIELD_SEP><flags>` entry per indicated NPC, joined by
+// ENTRY_SEP. Flags: 1 = isDead, 2 = inCombat, 4 = inConversation.
+const ENTRY_SEP = String.fromCharCode(1);
+const FIELD_SEP = String.fromCharCode(2);
+
+function selectIndicatorKey(s: NpcStoreState): string {
+  const npcs = s.npcs;
+  let key = '';
+  for (let i = 0; i < npcs.length; i += 1) {
+    const n = npcs[i];
+    // Only NPCs that have an indicator to show
+    if (!n.isDead && !n.inCombat && !n.inConversation) continue;
+    const flags = (n.isDead ? 1 : 0) | (n.inCombat ? 2 : 0) | (n.inConversation ? 4 : 0);
+    key += (key.length > 0 ? ENTRY_SEP : '') + n.id + FIELD_SEP + flags;
+  }
+  return key;
+}
+
+interface IndicatorEntry {
   id: string;
-  x: number;
-  y: number;
   isDead: boolean;
   inCombat: boolean;
   inConversation: boolean;
 }
 
-// Stable empty array to avoid triggering re-renders when no NPCs are active
-const EMPTY_SNAPSHOTS: NpcActivitySnapshot[] = [];
+function parseIndicatorKey(key: string): IndicatorEntry[] {
+  if (key.length === 0) return [];
+  return key.split(ENTRY_SEP).map((entry) => {
+    const sep = entry.lastIndexOf(FIELD_SEP);
+    const flags = Number(entry.slice(sep + 1));
+    return {
+      id: entry.slice(0, sep),
+      isDead: (flags & 1) !== 0,
+      inCombat: (flags & 2) !== 0,
+      inConversation: (flags & 4) !== 0,
+    };
+  });
+}
 
 function ActivityIndicators() {
   const sceneActive = useSceneActive();
@@ -257,25 +312,8 @@ function ActivityIndicators() {
     retainIndicatorLooks();
     return releaseIndicatorLooks;
   }, []);
-  // Subscribe to a derived array that only contains the fields we care about.
-  // useShallow performs element-by-element shallow comparison on the returned
-  // array, so a new array with identical elements does NOT trigger a re-render.
-  // Without useShallow every SSE tick (10 Hz) caused a full re-render even when
-  // no activity indicators changed.
-  const npcSnapshots = useNpcStore(useShallow((s) => {
-    const arr = s.npcs;
-    if (arr.length === 0) return EMPTY_SNAPSHOTS;
-    // Only include NPCs that have a non-empty indicator to show
-    return arr.filter((n) => n.isDead || n.inCombat || n.inConversation)
-              .map((n): NpcActivitySnapshot => ({
-                id: n.id,
-                x: n.x,
-                y: n.y,
-                isDead: n.isDead,
-                inCombat: n.inCombat,
-                inConversation: n.inConversation,
-              }));
-  }));
+  const indicatorKey = useNpcStore(selectIndicatorKey);
+  const entries = useMemo(() => parseIndicatorKey(indicatorKey), [indicatorKey]);
 
   // Periodically evict expired chatBubbles / combatEvents / lootEvents.
   // cleanupExpired() is defined in the store but was never called — in demo
@@ -288,11 +326,11 @@ function ActivityIndicators() {
     return () => clearInterval(id);
   }, [sceneActive]);
 
-  if (npcSnapshots.length === 0) return null;
+  if (entries.length === 0) return null;
 
   return (
     <group>
-      {npcSnapshots.map((npc) => {
+      {entries.map((npc) => {
         // Derive simple activity from NPC state
         let activity: string | undefined;
         if (npc.isDead) activity = 'resting';
@@ -303,11 +341,9 @@ function ActivityIndicators() {
         return (
           <NpcIndicator
             key={npc.id}
-            x={npc.x}
-            y={npc.y}
+            npcId={npc.id}
             activity={activity}
             isTyping={npc.inConversation}
-            inConversation={npc.inConversation}
           />
         );
       })}

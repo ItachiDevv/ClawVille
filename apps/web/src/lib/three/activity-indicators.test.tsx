@@ -13,11 +13,14 @@
  *   - hide -> show again reuses the SAME material and geometry objects;
  *   - nothing shared is disposed while the layer stays mounted, and each
  *     shared material + geometry is disposed once when the layer unmounts;
- *   - the dots still bounce (staggered) on a manual frame.
+ *   - the dots still bounce (staggered) on a manual frame;
+ *   - web-load T10: position-only store writes (in-place moves, a new
+ *     object with the same flags) commit nothing, and the indicator follows
+ *     its NPC from the frame loop; a flag change renders once.
  * Runs in its own process.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { StrictMode, createElement, type ReactNode } from 'react';
+import { Profiler, StrictMode, createElement, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
 import type * as THREE from 'three';
 import type { NpcSpriteState } from '@/stores/npc';
@@ -253,6 +256,59 @@ describe('activity indicators share materials + geometry per look (web-load T9)'
     // The old (already disposed) objects were not disposed a second time.
     expect(oldDisposes.size).toBe(0);
     await setNpcs([]);
+  }, 20_000);
+
+  test('web-load T10: position-only store writes render nothing; the indicator follows its NPC from the frame loop', async () => {
+    const { MAP_WIDTH, MAP_HEIGHT } = await import('@/lib/pixi/tilemap-data');
+    let commits = 0;
+    const talker = npc('a', true, 0);
+    await setNpcs([talker, npc('quiet', false, 1)]);
+    const { root, store, scene } = await mountLayer(
+      createElement(Profiler, { id: 'indicators', onRender: () => { commits += 1; } }, createElement(ActivityIndicators)),
+    );
+    const groupX = () => meshesByColor(scene(), CYAN)[0]!.parent!.position.x;
+    const groupZ = () => meshesByColor(scene(), CYAN)[0]!.parent!.position.z;
+    const frame = async () => {
+      await r3f.act(async () => {
+        r3f.advance(performance.now(), true, store.getState());
+      });
+    };
+    try {
+      // Render-time position: in place before the first frame.
+      expect(groupX()).toBe(talker.x - MAP_WIDTH / 2);
+
+      // The store mutates position on the SAME object and writes a new array
+      // (stores/npc.ts updateFromSnapshot): no render, the frame moves it.
+      commits = 0;
+      for (let i = 1; i <= 5; i += 1) {
+        talker.x = 1_000 + i * 50;
+        talker.y = 1_200 + i * 10;
+        await setNpcs([...useNpcStore.getState().npcs]);
+      }
+      expect(commits).toBe(0);
+      await frame();
+      expect(groupX()).toBe(1_250 - MAP_WIDTH / 2);
+      expect(groupZ()).toBe(1_250 - MAP_HEIGHT / 2);
+
+      // An identity change with the same flags (new object, same id): still
+      // no render; the frame follows the NEW object.
+      const replaced = { ...npc('a', true, 0), x: 1_800, y: 900 } as NpcSpriteState;
+      await setNpcs([replaced, npc('quiet', false, 1)]);
+      expect(commits).toBe(0);
+      await frame();
+      expect(groupX()).toBe(1_800 - MAP_WIDTH / 2);
+      expect(groupZ()).toBe(900 - MAP_HEIGHT / 2);
+
+      // A flag change renders: dead -> resting sphere, no typing dots.
+      await setNpcs([{ ...replaced, inConversation: false, isDead: true } as NpcSpriteState]);
+      expect(commits).toBe(1);
+      expect(meshesByColor(scene(), CYAN)).toHaveLength(1);
+      expect(meshesByColor(scene(), DOT)).toHaveLength(0);
+    } finally {
+      // Never leak a mounted layer (and its look retain) into the next test.
+      await unmountLayer(root);
+      await setNpcs([]);
+    }
   }, 20_000);
 
   test('StrictMode setup/cleanup/setup keeps the rendered objects alive; the real unmount disposes them once', async () => {
