@@ -87,7 +87,10 @@ export const DECO_TYPES = [
  * (MergedSeaweed, the NE kelp forest): `showGroundCover` (the `groundCover`
  * perf flag, which the adaptive governor clears at tier 1) AND the device
  * profile's `ambientGroundCover` (false on phones and tablets). When false,
- * the decoration subtree is not mounted, so its 12 GLBs are not fetched.
+ * the decoration subtree is not mounted: the scatter demands none of its 12
+ * GLBs (pinned by arena-terrain-decorations-mount.test.tsx). The bytes can
+ * still arrive from other users of the same paths: land-ring-decorations.tsx
+ * (ungated) loads 8 of them, and crayfish-ktx is also an NPC species model.
  */
 export function seabedDecorationsEnabled(
   showGroundCover: boolean,

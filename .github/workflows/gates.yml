@@ -160,6 +160,7 @@ jobs:
           src/lib/three/local-player-model-fallback.test.tsx
           src/lib/three/cove-figure-model-load.test.tsx
           src/lib/three/arena-terrain-decorations.test.ts
+          src/lib/three/arena-terrain-decorations-mount.test.tsx
           SUITES
 
       - name: Run guest Nori chat regression suite in its own process
