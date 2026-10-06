@@ -3,7 +3,7 @@
 import { useRef, useMemo, useEffect, useState, memo, Suspense } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { preloadKTX2Bytes, readGLTFWithKTX2, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
@@ -485,6 +485,18 @@ function resolveSpecies(raw: string): string {
   return LEGACY_SPECIES_REMAP[raw] ?? raw;
 }
 
+/** GLB model (path incl. its ?v=, animator key) for a species. GLBNpcMesh
+ * reads its model with this function, so the warm read (useGLBWarmRead) and
+ * the render read always use the SAME path, and so one drei cache entry. */
+function glbModelForSpecies(species: string): { path: string; key: string } {
+  return SPECIES_MODEL[resolveSpecies(species)] ?? DEFAULT_SPECIES;
+}
+
+/** GLB model path for a species (see glbModelForSpecies). */
+export function glbPathForSpecies(species: string): string {
+  return glbModelForSpecies(species).path;
+}
+
 // Rung-4 slice D (§3 preload demotion [R2-F6]): the roaming-species byte-warm
 // fires at boot-stream eligibility, not module scope — wanderer bodies are
 // release-deferred (slice C), so nothing needs these bytes pre-reveal, and
@@ -647,8 +659,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({
   const smoothedSpeedRef = useRef(0);
   const locoPhaseRef = useRef(0);
 
-  const resolvedSpecies = resolveSpecies(npc.species);
-  const speciesInfo = SPECIES_MODEL[resolvedSpecies] ?? DEFAULT_SPECIES;
+  const speciesInfo = glbModelForSpecies(npc.species);
   const { scene } = useGLTFWithKTX2(speciesInfo.path);
 
   // Determine which animation system to use
@@ -1952,6 +1963,44 @@ export function useVRMWarmRead(
   return key === null || warmedKey === key;
 }
 
+/**
+ * Warm read for an ambient GLB figure (web-load T10-D; same pattern as
+ * useVRMWarmRead). After `enabled` (the stagger release), resolve the drei
+ * cache entry OUTSIDE React with readGLTFWithKTX2(glbPath) — the SAME drei
+ * call as GLBNpcMesh's useGLTFWithKTX2 (same path incl. ?v=, flags and
+ * extender, so the same [GLTFLoader, path] entry) — and report `true` only
+ * after. The caller mounts the figure only then, so its first render reads a
+ * resolved entry and never suspends into a starvable Suspense retry lane.
+ *
+ * Contract:
+ * - `glbPath === null` (a VRM figure): returns true at once, no read.
+ * - A failed load: the warm resolves on the cached Error, the figure mounts,
+ *   and its render rethrows it (tagged ModelLoadError) into the
+ *   ModelLoadBoundary: one console.error, only that figure skipped, clear()
+ *   evicts the entry so a remount loads again.
+ * - Ownership: the drei GLB cache is shared per path and never disposed per
+ *   figure, so no bracket is needed. A load the warm started keeps running
+ *   after an unmount (the same as a render read that suspended); after this
+ *   effect's cleanup the warm reads nothing more and sets no state.
+ * - Keyed by path: a species change warms the new path before the new figure
+ *   mounts.
+ */
+export function useGLBWarmRead(glbPath: string | null, enabled: boolean): boolean {
+  const [warmedPath, setWarmedPath] = useState<string | null>(null);
+  useEffect(() => {
+    if (!enabled || glbPath === null || warmedPath === glbPath) return undefined;
+    let cancelled = false;
+    void warmSuspenseRead(() => (cancelled ? undefined : readGLTFWithKTX2(glbPath))).then(() => {
+      // An unmount (or path change) before the warm resolved cancels the flip.
+      if (!cancelled) setWarmedPath(glbPath);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, glbPath, warmedPath]);
+  return glbPath === null || warmedPath === glbPath;
+}
+
 /** VRM path for a species. VRMNpcMesh derives its path with this function,
  * so every warm read (useVRMWarmRead) and orphan bracket that uses it reads
  * the SAME cache entry as the figure. */
@@ -1974,18 +2023,21 @@ const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
   const { released, priority } = useAmbientBodyRelease(npc.x, npc.y, false);
   const isVrm = regEntry?.avatar_type === 'vrm';
   const vrmPath = isVrm ? vrmPathForSpecies(npc.species) : null;
+  const glbPath = isVrm ? null : glbPathForSpecies(npc.species);
   // Order matters: the orphan bracket's retain runs before the warm starts.
   useVRMOrphanCancel(vrmPath, npc.id);
   // web-load T9: a VRM figure mounts only after its entry resolved outside
   // React (no Suspense retry lane; see useVRMWarmRead).
   const vrmWarmed = useVRMWarmRead(vrmPath, npc.id, released);
+  // web-load T10-D: the same for a GLB figure (see useGLBWarmRead).
+  const glbWarmed = useGLBWarmRead(glbPath, released);
 
   // Slice D [R2-F4]: the possessed/demo player body (PLAYER_NPC_ID) no
   // longer renders here — it moved to BootActorNpcBody below, mounted under
   // the whitelisted `perf:boot-actor` chunk. ArenaNpcs is ambient-only, so
   // hiding/compiling decisions on `perf:wandering-npcs` can never touch the
   // boot actor.
-  if (!released || !vrmWarmed) return null;
+  if (!released || !vrmWarmed || !glbWarmed) return null;
   // ModelLoadBoundary (2026-10-04): a wanderer whose model fails to load
   // (VRM rejected after its request retries, or a GLB error) renders nothing
   // and logs once, instead of crashing the whole world canvas. Below the
@@ -1993,7 +2045,7 @@ const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
   // rejected entry; a remount retries. Keyed reset on species change.
   return (
     <ModelLoadBoundary
-      assetUrl={vrmPath ?? regEntry?.path ?? npc.species}
+      assetUrl={vrmPath ?? glbPath ?? npc.species}
       label={`wanderer:${npc.id}`}
       resetKey={npc.species}
     >

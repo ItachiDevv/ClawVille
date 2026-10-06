@@ -30,6 +30,16 @@
  *       both leave 0 cached instances after the dispose grace;
  *   plus: a failed VRM skips only that figure with one console.error, and a
  *   remount loads it again.
+ *
+ * GLB wanderers (web-load T10-D): the lobster wanderer still revealed through
+ * <Suspense> around useGLTFWithKTX2 (no warm). NpcEntry now warm-reads it with
+ * useGLBWarmRead (warmSuspenseRead + readGLTFWithKTX2, the same drei call).
+ * drei's useGLTF is a recorder that emulates the suspend-react cache by path.
+ * For every GLB wanderer in NPC_DEFINITIONS: a warm read before the first
+ * render read, 0 suspended render reads, one load, identical (path, flags,
+ * extender), the same GLTF object; a failed GLB skips only that figure with
+ * one console.error and the boundary evicts the entry (a remount loads
+ * again); an unmount mid-warm reads nothing more; StrictMode loads once.
  * Runs in its own process (mock.module is process-global).
  */
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
@@ -37,6 +47,7 @@ import { Fragment, StrictMode, createElement, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
 import type * as THREE from 'three';
 import { NPC_DEFINITIONS } from '@clawville/shared';
+import { isModelLoadError } from './model-load-error';
 import type { NpcSpriteState } from '@/stores/npc';
 import type { RemotePlayerState } from '@/stores/players';
 
@@ -108,6 +119,104 @@ function recordRead(list: ReadRecord[], path: string, id: string, read: () => un
   }
 }
 
+// ---------------------------------------------------------------------------
+// GLB wanderer reads (web-load T10-D): drei's useGLTF is replaced by a
+// recorder that emulates the suspend-react cache BY PATH (R3F useLoader keys
+// [GLTFLoader, path]): the first read throws the load promise, later reads
+// return the cached GLTF (the same object), a failed load rethrows R3F's
+// cached `Could not load <path>: ...` Error until useGLTF.clear(path) evicts
+// the entry. Every read records its (path, draco, meshopt, extender) and
+// whether it ran inside warmSuspenseRead (warm) or in a React render.
+// ---------------------------------------------------------------------------
+
+type GlbRead = {
+  seq: number;
+  path: string;
+  draco: unknown;
+  meshopt: unknown;
+  extender: unknown;
+  warm: boolean;
+  suspended: boolean;
+  value: unknown;
+  error: unknown;
+};
+const glbReads: GlbRead[] = [];
+const glbCache = new Map<string, { scene: InstanceType<typeof threeCjs.Group> }>();
+const glbFailed = new Map<string, Error>();
+const glbLoading = new Map<string, Promise<void>>();
+const glbLoads = new Map<string, number>();
+const glbFailingPaths = new Set<string>();
+/** While set, every GLB load waits for it (to unmount mid-warm). */
+let glbGate: Promise<void> | null = null;
+
+/** drei's own defaults: an undefined flag means `true`. */
+const dreiFlag = (value: unknown) => (value === undefined ? true : value);
+
+function recordingUseGLTF(path: string, draco?: unknown, meshopt?: unknown, extender?: unknown): unknown {
+  const read: GlbRead = {
+    seq: (seq += 1),
+    path,
+    draco: dreiFlag(draco),
+    meshopt: dreiFlag(meshopt),
+    extender,
+    warm: (new Error().stack ?? '').includes('warmSuspenseRead'),
+    suspended: false,
+    value: undefined,
+    error: undefined,
+  };
+  glbReads.push(read);
+  const failure = glbFailed.get(path);
+  if (failure) {
+    read.error = failure;
+    throw failure; // R3F rethrows the SAME cached Error on every read.
+  }
+  const cached = glbCache.get(path);
+  if (cached) {
+    read.value = cached;
+    return cached;
+  }
+  let pending = glbLoading.get(path);
+  if (!pending) {
+    glbLoads.set(path, (glbLoads.get(path) ?? 0) + 1);
+    const gate = glbGate;
+    pending = new Promise<void>((resolve) => setTimeout(resolve, 2))
+      .then(() => gate ?? undefined)
+      .then(() => {
+        if (glbFailingPaths.has(path)) {
+          glbFailed.set(path, new Error(`Could not load ${path}: 404 test`));
+          return;
+        }
+        const scene = new threeCjs.Group();
+        scene.name = `fake-glb:${path}`;
+        scene.add(
+          new threeCjs.Mesh(new threeCjs.BoxGeometry(1, 1, 1), new threeCjs.MeshStandardMaterial()),
+        );
+        glbCache.set(path, { scene });
+      });
+    glbLoading.set(path, pending);
+  }
+  read.suspended = true;
+  throw pending;
+}
+
+function clearGlbEntry(path: string | string[]): void {
+  for (const p of typeof path === 'string' ? [path] : path) {
+    glbCache.delete(p);
+    glbFailed.delete(p);
+    glbLoading.delete(p);
+  }
+}
+
+function resetGlb(): void {
+  glbReads.length = 0;
+  glbCache.clear();
+  glbFailed.clear();
+  glbLoading.clear();
+  glbLoads.clear();
+  glbFailingPaths.clear();
+  glbGate = null;
+}
+
 /** R3F 9 reports boundary-CAUGHT render errors through `reportError`
  * (captured at module load); installed before the R3F import, records. */
 const reported: unknown[] = [];
@@ -121,6 +230,7 @@ let r3f: R3F;
 let ArenaNpcs: () => ReactNode;
 let RemotePlayers: () => ReactNode;
 let vrmPathForSpecies: (species: string) => string;
+let glbPathForSpecies: ((species: string) => string) | undefined;
 let useNpcStore: typeof import('@/stores/npc').useNpcStore;
 let usePlayerStore: typeof import('@/stores/players').usePlayerStore;
 let vrmLoader: typeof import('./vrm-loader');
@@ -161,6 +271,16 @@ beforeAll(async () => {
     }
     return new Response('missing', { status: 404 });
   }) as typeof fetch;
+
+  const realDrei = await import('@react-three/drei');
+  mock.module('@react-three/drei', () => ({
+    ...realDrei,
+    useGLTF: Object.assign(recordingUseGLTF, {
+      preload: () => undefined,
+      clear: clearGlbEntry,
+      setDecoderPath: () => undefined,
+    }),
+  }));
 
   const realAnimator = await import('./vrm-character-animator');
   class StubAnimator {
@@ -214,6 +334,9 @@ beforeAll(async () => {
   const npcs = await import('./arena-npcs');
   ArenaNpcs = npcs.default as unknown as () => ReactNode;
   vrmPathForSpecies = npcs.vrmPathForSpecies;
+  // Optional lookup so the fail-first run on the pre-T10-D module (no helper)
+  // fails on the behaviour assertions, not at import.
+  glbPathForSpecies = (npcs as Record<string, unknown>).glbPathForSpecies as typeof glbPathForSpecies;
   RemotePlayers = (await import('./remote-players')).default as unknown as () => ReactNode;
   ({ useNpcStore } = await import('@/stores/npc'));
   ({ usePlayerStore } = await import('@/stores/players'));
@@ -280,7 +403,10 @@ async function mount(element: ReactNode) {
   });
   const committed = (path: string) =>
     store.getState().scene.getObjectByName(`fake-vrm:${path}`) as THREE.Object3D | undefined;
-  return { root, committed };
+  // GLBNpcMesh mounts a SkeletonUtils clone; Object3D.clone keeps the name.
+  const committedGlb = (path: string) =>
+    store.getState().scene.getObjectByName(`fake-glb:${path}`) as THREE.Object3D | undefined;
+  return { root, committed, committedGlb };
 }
 
 function npcState(id: string, species: string, index: number): NpcSpriteState {
@@ -569,6 +695,184 @@ describe('VRM figures commit without a Suspense retry (web-load T9)', () => {
     expect(renderReads.filter((r) => r.id === player.id)).toEqual([]);
     expect(consoleErrors).toEqual([]);
     expect(reported).toEqual([]);
+    await r3f.act(async () => root.unmount());
+  }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// GLB wanderers (web-load T10-D)
+// ---------------------------------------------------------------------------
+
+const glbRoster = () => NPC_DEFINITIONS.filter((d) => !isVrmSpecies(d.species));
+/** The model path the registry names for a GLB species. */
+const registryGlbPath = (species: string) =>
+  MODEL_REGISTRY[species as keyof typeof MODEL_REGISTRY]?.path;
+
+describe('GLB wanderer figures commit without a Suspense retry (web-load T10-D)', () => {
+  test('glbPathForSpecies is the GLB path for every GLB wanderer (incl. its ?v=)', () => {
+    const roster = glbRoster();
+    expect(roster.length).toBeGreaterThanOrEqual(1);
+    expect(typeof glbPathForSpecies).toBe('function');
+    for (const d of roster) {
+      expect({ id: d.id, path: glbPathForSpecies!(d.species) }).toEqual({
+        id: d.id,
+        path: registryGlbPath(d.species)!,
+      });
+    }
+  });
+
+  test(
+    'every GLB wanderer in NPC_DEFINITIONS: warm read first, same entry (path, flags, extender), 0 suspended render reads',
+    async () => {
+      vrmLoader._vrmClearAllCaches();
+      resetRecords();
+      resetGlb();
+      const roster = glbRoster();
+      expect(roster.length).toBeGreaterThanOrEqual(1);
+      const paths = new Set<string>(roster.map((d) => registryGlbPath(d.species)!));
+      useNpcStore.setState({ npcs: roster.map((d, i) => npcState(d.id, d.species, i)) });
+      const { root, committedGlb } = await mount(createElement(ArenaNpcs));
+      await waitFor(
+        () => [...paths].every((p) => committedGlb(p) !== undefined),
+        'every GLB wanderer figure committed',
+      );
+
+      const problems: string[] = [];
+      for (const path of paths) {
+        const forPath = glbReads.filter((r) => r.path === path);
+        const firstRender = forPath.findIndex((r) => !r.warm);
+        if (firstRender === -1) {
+          problems.push(`${path}: never read by a render`);
+          continue;
+        }
+        const warmBefore = forPath.slice(0, firstRender);
+        if (warmBefore.length === 0) problems.push(`${path}: no warm read before the first render read`);
+        const suspended = forPath.filter((r) => !r.warm && r.suspended).length;
+        if (suspended > 0) problems.push(`${path}: ${suspended} render read(s) suspended`);
+        const flags = new Set(forPath.map((r) => `${String(r.draco)}|${String(r.meshopt)}`));
+        if (flags.size !== 1) problems.push(`${path}: loader flags differ ${[...flags].join(' vs ')}`);
+        const extenders = new Set(forPath.map((r) => r.extender));
+        if (extenders.size !== 1) problems.push(`${path}: ${extenders.size} different loader extenders`);
+        if (glbLoads.get(path) !== 1) problems.push(`${path}: ${glbLoads.get(path) ?? 0} loads (want 1)`);
+        // One cache entry: the warm's last read and the render read return
+        // the SAME GLTF object, whose scene the figure cloned.
+        const warmLast = warmBefore.at(-1);
+        const render = forPath[firstRender]!;
+        if (warmLast && render.value !== warmLast.value) problems.push(`${path}: warm and render read different entries`);
+        if (render.value === undefined) problems.push(`${path}: the first render read returned nothing`);
+      }
+      for (const r of glbReads) {
+        if (!paths.has(r.path)) problems.push(`${r.path}: read but not a GLB wanderer path`);
+      }
+      expect(problems).toEqual([]);
+      expect(reported).toEqual([]);
+      expect(consoleErrors).toEqual([]);
+
+      useNpcStore.setState({ npcs: [] });
+      await settle(20);
+      for (const p of paths) expect(committedGlb(p)).toBeUndefined();
+      await r3f.act(async () => root.unmount());
+    },
+    20_000,
+  );
+
+  test('a failed GLB wanderer skips only that figure (one console.error), the boundary clears its entry, a remount loads it again', async () => {
+    vrmLoader._vrmClearAllCaches();
+    resetRecords();
+    resetGlb();
+    const glbDef = glbRoster()[0]!;
+    const okDef = NPC_DEFINITIONS.find((d) => d.id === 'milady-miu')!;
+    const glbPath = registryGlbPath(glbDef.species)!;
+    const okPath = vrmPathForSpecies(okDef.species);
+    glbFailingPaths.add(glbPath);
+    useNpcStore.setState({ npcs: [npcState(okDef.id, okDef.species, 0), npcState(glbDef.id, glbDef.species, 1)] });
+    const { root, committed, committedGlb } = await mount(createElement(ArenaNpcs));
+    await waitFor(() => committed(okPath) !== undefined, 'the healthy VRM figure committed');
+    await waitFor(
+      () => consoleErrors.some((m) => m.includes('figure skipped') && m.includes(glbPath)),
+      'the failed GLB figure logged its skip',
+    );
+    await settle(20);
+    expect(committedGlb(glbPath)).toBeUndefined();
+    expect(consoleErrors.filter((m) => m.includes('figure skipped'))).toHaveLength(1);
+    expect(glbReads.filter((r) => !r.warm && r.suspended)).toEqual([]);
+    // The figure's render read the failed entry (it threw the cached Error
+    // into the boundary), and the boundary evicted it on catch.
+    expect(glbReads.some((r) => !r.warm && r.error instanceof Error)).toBe(true);
+    expect(glbFailed.has(glbPath)).toBe(false);
+    // R3F's caught-error report carries the TAGGED ModelLoadError for this
+    // path (in a browser the boundary cancels that window "error" event; this
+    // test's reportError stand-in dispatches no event, so it is recorded).
+    expect(reported.length).toBeGreaterThan(0);
+    for (const e of reported) {
+      expect(isModelLoadError(e) && e.url === glbPath).toBe(true);
+    }
+
+    // The network recovers; the figure remounts and loads again.
+    glbFailingPaths.delete(glbPath);
+    const loadsBefore = glbLoads.get(glbPath) ?? 0;
+    useNpcStore.setState({ npcs: [npcState(okDef.id, okDef.species, 0)] });
+    await settle(20);
+    useNpcStore.setState({ npcs: [npcState(okDef.id, okDef.species, 0), npcState(glbDef.id, glbDef.species, 1)] });
+    await waitFor(() => committedGlb(glbPath) !== undefined, 'the remounted GLB figure committed');
+    expect(glbLoads.get(glbPath) ?? 0).toBe(loadsBefore + 1);
+    expect(glbReads.filter((r) => !r.warm && r.suspended)).toEqual([]);
+    expect(consoleErrors.filter((m) => m.includes('figure skipped'))).toHaveLength(1);
+
+    useNpcStore.setState({ npcs: [] });
+    await settle(DISPOSE_GRACE_PLUS_MS);
+    expect(vrmLoader._vrmInstanceCount()).toBe(0);
+    await r3f.act(async () => root.unmount());
+  }, 20_000);
+
+  test('a GLB wanderer unmounted BEFORE its warm resolved: no render read, no commit, no read after cleanup, no error', async () => {
+    vrmLoader._vrmClearAllCaches();
+    resetRecords();
+    resetGlb();
+    let openGate: () => void = () => undefined;
+    glbGate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const def = glbRoster()[0]!;
+    const path = registryGlbPath(def.species)!;
+    useNpcStore.setState({ npcs: [npcState(def.id, def.species, 0)] });
+    const { root, committedGlb } = await mount(createElement(ArenaNpcs));
+    await waitFor(() => (glbLoads.get(path) ?? 0) === 1, 'the GLB load started');
+    expect(glbReads.every((r) => r.warm)).toBe(true);
+
+    await r3f.act(async () => {
+      useNpcStore.setState({ npcs: [] });
+    });
+    const readsAtUnmount = glbReads.length;
+    openGate();
+    glbGate = null;
+    await settle(50);
+    expect(committedGlb(path)).toBeUndefined();
+    expect(glbReads.filter((r) => !r.warm)).toEqual([]);
+    // The cancelled warm did not re-read after its effect cleanup.
+    expect(glbReads.length).toBe(readsAtUnmount);
+    expect(glbLoads.get(path)).toBe(1);
+    expect(consoleErrors).toEqual([]);
+    expect(reported).toEqual([]);
+    await r3f.act(async () => root.unmount());
+  }, 20_000);
+
+  test('StrictMode (effect setup/cleanup/setup): one GLB load, 0 suspended render reads, figure committed', async () => {
+    vrmLoader._vrmClearAllCaches();
+    resetRecords();
+    resetGlb();
+    const def = glbRoster()[0]!;
+    const path = registryGlbPath(def.species)!;
+    useNpcStore.setState({ npcs: [npcState(def.id, def.species, 0)] });
+    const { root, committedGlb } = await mount(createElement(StrictMode, null, createElement(ArenaNpcs)));
+    await waitFor(() => committedGlb(path) !== undefined, 'the StrictMode GLB figure committed');
+    expect(glbLoads.get(path)).toBe(1);
+    expect(glbReads.filter((r) => !r.warm && r.suspended)).toEqual([]);
+    expect(glbReads.some((r) => r.warm)).toBe(true);
+    expect(consoleErrors).toEqual([]);
+    useNpcStore.setState({ npcs: [] });
+    await settle(20);
+    expect(committedGlb(path)).toBeUndefined();
     await r3f.act(async () => root.unmount());
   }, 20_000);
 });
