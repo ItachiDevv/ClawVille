@@ -58,6 +58,54 @@ type QueueEntry = {
   sequence: number;
 };
 
+// ---------------------------------------------------------------------------
+// Task priority (web-load T6, 2026-10-06). three r185 `compileAsync` yields
+// with `scheduler.yield()` between pipeline-build stages. Per the WICG
+// scheduling spec a `requestIdleCallback` callback runs with a BACKGROUND
+// scheduling state, and that state propagates through promise continuations.
+// The warm job used to start (and its upload slices resolve) inside idle
+// callbacks, so every yield inside the deferred compile was a background
+// continuation: on a saturated main thread (CPU 4x proxy) the first yield
+// never resolved, Nori's compile hit the 20 s escape, and the renderer was
+// poisoned for every later building. A postTask callback sets its OWN
+// scheduling state, so the compile front now starts in a fresh user-visible
+// task and three's yields resume at user-visible priority.
+// ---------------------------------------------------------------------------
+
+type PostTaskScheduler = {
+  postTask: (
+    callback: () => unknown,
+    options?: { priority?: 'user-blocking' | 'user-visible' | 'background' },
+  ) => Promise<unknown>;
+};
+
+function getPostTaskScheduler(): PostTaskScheduler | undefined {
+  const candidate = (globalThis as { scheduler?: { postTask?: unknown } })
+    .scheduler;
+  return candidate && typeof candidate.postTask === 'function'
+    ? (candidate as PostTaskScheduler)
+    : undefined;
+}
+
+/**
+ * Runs `front` at the start of a new user-visible task and resolves with its
+ * (awaited) result. Without `scheduler.postTask` there is no
+ * `scheduler.yield` either (no shipping browser has one without the other),
+ * so three's yieldToMain uses requestAnimationFrame, which carries no
+ * priority; `front` then runs synchronously, exactly as before T6.
+ */
+function runInUserVisibleTask(front: () => unknown): Promise<unknown> {
+  const scheduler = getPostTaskScheduler();
+  if (scheduler) {
+    return scheduler.postTask(front, { priority: 'user-visible' });
+  }
+  try {
+    return Promise.resolve(front());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
 function browserWarmQueueSchedule(callback: () => void): () => void {
   if (typeof window === 'undefined') {
     queueMicrotask(callback);
@@ -74,12 +122,54 @@ function browserWarmQueueSchedule(callback: () => void): () => void {
 }
 
 /**
+ * Starts the NEXT job right after the previous one finished, in a normal
+ * user-visible task instead of a second idle callback. Under the CPU 4x
+ * proxy every phase-D idle callback fired only by its timeout (p50 532 ms),
+ * one per member transition. The task itself is tiny (pick the next entry,
+ * emit 'warming', start the job up to its first await); the job's texture
+ * uploads stay in idle-callback slices and the compile yields to frames, so
+ * this removes a wait, not a frame-budget guard.
+ */
+function browserWarmContinuationSchedule(callback: () => void): () => void {
+  const scheduler = getPostTaskScheduler();
+  if (scheduler) {
+    let live = true;
+    scheduler
+      .postTask(
+        () => {
+          if (live) callback();
+        },
+        { priority: 'user-visible' },
+      )
+      .catch((error: unknown) => {
+        console.warn('[DeferredWarm] queue continuation threw:', error);
+      });
+    return () => {
+      live = false;
+    };
+  }
+  if (typeof window === 'undefined') {
+    queueMicrotask(callback);
+    return () => {};
+  }
+  const handle = window.setTimeout(callback, 0);
+  return () => window.clearTimeout(handle);
+}
+
+/**
  * Priority/FIFO queue used by release-deferred consumers. Exactly one `warm`
  * promise owns the renderer at a time. Lower priorities run first and ties
  * preserve subscription order, matching the decorative stagger queue.
+ * `schedule` starts a job when the queue was idle; `scheduleContinuation`
+ * starts the next job when the previous one finished (defaults to
+ * `schedule`).
  */
 export function createDeferredWarmQueue(
   schedule: DeferredWarmQueueSchedule = browserWarmQueueSchedule,
+  scheduleContinuation: DeferredWarmQueueSchedule = schedule ===
+  browserWarmQueueSchedule
+    ? browserWarmContinuationSchedule
+    : schedule,
 ) {
   const queue: QueueEntry[] = [];
   let sequence = 0;
@@ -119,9 +209,9 @@ export function createDeferredWarmQueue(
     return queue.splice(best, 1)[0];
   };
 
-  const scheduleNext = () => {
+  const scheduleNext = (afterJob = false) => {
     if (activeEntry || cancelScheduled || queue.length === 0) return;
-    cancelScheduled = schedule(() => {
+    cancelScheduled = (afterJob ? scheduleContinuation : schedule)(() => {
       cancelScheduled = undefined;
       const entry = takeNext();
       if (!entry) return;
@@ -140,7 +230,7 @@ export function createDeferredWarmQueue(
         .finally(() => {
           if (entry.active) emit(entry, 'ready');
           activeEntry = undefined;
-          scheduleNext();
+          scheduleNext(true);
         });
     });
   };
@@ -530,22 +620,34 @@ async function compileDeferredObject({
     await renderer.init();
   }
   if (isCancelled()) return false;
-  object.updateWorldMatrix(true, true);
 
-  const result = await withDeferredFrustumCullingDisabled(object, async () => {
-    const wasVisible = object.visible;
-    let compilePromise: Promise<unknown>;
-    object.visible = true;
-    try {
-      compilePromise = Promise.resolve(
-        renderer.compileAsync!(object, camera, scene),
-      );
-    } finally {
-      object.visible = wasVisible;
-    }
-    return settleCompile(compilePromise);
-  });
+  // [T6] The compile front runs at the START of a fresh user-visible task,
+  // never inside the idle-callback continuation that reached this point (see
+  // runInUserVisibleTask). `abandoned` closes the gap between dispatch and
+  // that task: once the 20 s escape fired (or the job was cancelled) a late
+  // front must never start a compile, because the FIFO has already released
+  // and a second same-renderer compile would overlap (the r185 race class).
+  let abandoned = false;
+  let started = false;
+  const result = await withDeferredFrustumCullingDisabled(object, async () =>
+    settleCompile(
+      runInUserVisibleTask(() => {
+        if (abandoned || isCancelled()) return undefined;
+        started = true;
+        object.updateWorldMatrix(true, true);
+        const wasVisible = object.visible;
+        object.visible = true;
+        try {
+          return renderer.compileAsync!(object, camera, scene);
+        } finally {
+          object.visible = wasVisible;
+        }
+      }),
+    ),
+  );
+  abandoned = true;
 
+  if (!started && result.status !== 'timed-out') return false;
   if (result.status === 'rejected') {
     console.warn(
       `[DeferredWarm] ${label ?? 'object'}: compileAsync failed; continuing to direct warm:`,
