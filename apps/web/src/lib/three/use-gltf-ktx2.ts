@@ -176,8 +176,11 @@ const EVICTED_REJECTIONS = new WeakSet<Error>();
  *   string, or the whole array), once per failed entry (EVICTED_REJECTIONS),
  *   so an old error never evicts a newer entry another figure awaits.
  * Thrown promises (Suspense) and any other error pass through unchanged.
+ * Exported for a render read that calls plain useGLTF with its own loader
+ * extender (arena-location-npcs.tsx NpcMesh, web-load T10-B), so its
+ * ModelLoadBoundary sees the same tag and clear() as useGLTFWithKTX2.
  */
-function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown {
+export function tagGltfLoadRejection(thrown: unknown, path: string | string[]): unknown {
   if (!(thrown instanceof Error) || isModelLoadError(thrown)) return thrown;
   const paths = typeof path === 'string' ? [path] : path;
   const url = paths.find((p) => thrown.message.startsWith(`Could not load ${p}: `));

@@ -31,8 +31,11 @@
  *       (drei key [GLTFLoader, path]), draco, meshopt and extender;
  *   (c) an unmount during the warm: no render read and no mount afterwards,
  *       no error;
- *   plus StrictMode, and a failed model: the warm resolves and the render
- *   rethrows the SAME cached Error (never a suspension), as before the warm.
+ *   plus StrictMode, and a failed model: the warm resolves, the render
+ *   throws a tagged ModelLoadError into that resident's ModelLoadBoundary,
+ *   only that resident is skipped (one console.error, the cache entry
+ *   cleared), its siblings render, and a canvas remount or a stream-out +
+ *   stream-in warm-reads and loads it again (never a suspended render read).
  * Runs in its own process (mock.module is process-global).
  */
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
@@ -75,6 +78,17 @@ const cache = new Map<string, FakeGltf>();
 const failed = new Map<string, Error>();
 const loading = new Map<string, Promise<void>>();
 const failingPaths = new Set<string>();
+const loadStarts = new Map<string, number>();
+/** Paths evicted through useGLTF.clear (ModelLoadError.clear()). */
+const clears: string[] = [];
+function clearPath(input: string | string[]): void {
+  for (const p of typeof input === 'string' ? [input] : input) {
+    clears.push(p);
+    failed.delete(p);
+    loading.delete(p);
+    cache.delete(p);
+  }
+}
 /** While set, every pending load waits for it (to unmount mid-warm). */
 let loadGate: Promise<void> | null = null;
 
@@ -119,6 +133,7 @@ function recordingUseGLTF(path: string, draco?: unknown, meshopt?: unknown, exte
         else cannedGltf(path);
       });
     loading.set(path, pending);
+    loadStarts.set(path, (loadStarts.get(path) ?? 0) + 1);
   }
   read.suspended = true;
   throw pending;
@@ -130,6 +145,8 @@ function resetCache(): void {
   failed.clear();
   loading.clear();
   failingPaths.clear();
+  loadStarts.clear();
+  clears.length = 0;
   loadGate = null;
   reported.length = 0;
   consoleErrors.length = 0;
@@ -191,8 +208,10 @@ beforeAll(async () => {
   const realDevice = await import('./device-class');
   const profile = {
     ...realDevice.CURRENT_WORLD_DEVICE_PROFILE,
-    residentMountDistSq: Number.POSITIVE_INFINITY,
-    residentUnmountDistSq: Number.POSITIVE_INFINITY,
+    // 1,000,000 wu in / 1,100,000 wu out: every resident is in range of the
+    // default camera; moving the camera 10,000,000 wu away streams them out.
+    residentMountDistSq: 1e12,
+    residentUnmountDistSq: 1.21e12,
   };
   mock.module('./device-class', () => ({ ...realDevice, CURRENT_WORLD_DEVICE_PROFILE: profile }));
   const realDrei = await import('@react-three/drei');
@@ -200,7 +219,7 @@ beforeAll(async () => {
     ...realDrei,
     useGLTF: Object.assign(recordingUseGLTF, {
       preload: () => undefined,
-      clear: () => undefined,
+      clear: clearPath,
       setDecoderPath: () => undefined,
     }),
   }));
@@ -272,7 +291,7 @@ async function mount(element: ReactNode) {
   });
   const committed = (path: string) =>
     store.getState().scene.getObjectByName(`fake-gltf:${path}`) as THREE.Object3D | undefined;
-  return { root, committed };
+  return { root, store, committed };
 }
 
 /** Every (zone, model) the registry renders: the primary and its companion. */
@@ -395,22 +414,84 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     await r3f.act(async () => root.unmount());
   }, 20_000);
 
-  test('a failed model: the warm resolves and the render rethrows the SAME cached Error (never a suspension)', async () => {
+  test('a failed resident GLB: only that resident is skipped (one console.error), its siblings render', async () => {
     resetCache();
     const failing = LOCATION_NPCS['deployment-ops']!.model;
     failingPaths.add(failing);
     const caught: unknown[] = [];
-    const { root } = await mount(
+    const models = residentModels();
+    const { root, committed } = await mount(
       createElement(OuterBoundary, { onError: (e: unknown) => caught.push(e) }, createElement(ArenaLocationNpcs)),
     );
-    await waitFor(() => caught.length > 0, 'the failure reached the outer boundary');
+    await waitFor(
+      () => caught.length > 0 || models.every((m) => m.model === failing || committed(m.model) !== undefined),
+      'the siblings committed (or the failure escaped)',
+    );
+    await settle(30);
+    // Nothing reached the outer boundary (before T10-B: the world was replaced).
+    expect(caught).toEqual([]);
+    for (const { model } of models) {
+      if (model === failing) expect(committed(model)).toBeUndefined();
+      else expect(committed(model)).toBeDefined();
+    }
+    const skips = consoleErrors.filter((m) => m.includes('figure skipped'));
+    expect(skips.length).toBe(1);
+    expect(skips[0]).toContain('resident:deployment-ops');
+    expect(skips[0]).toContain(failing);
+    // The warm ran first and resolved on the failure; no render read suspended.
     const forPath = reads.filter((r) => r.path === failing);
     expect(forPath.some((r) => !r.inRender)).toBe(true);
-    const renderReads = forPath.filter((r) => r.inRender);
-    expect(renderReads.length).toBeGreaterThan(0);
-    expect(renderReads.filter((r) => r.suspended)).toEqual([]);
-    expect(caught[0]).toBe(failed.get(failing));
-    expect(renderReads.every((r) => r.error === failed.get(failing))).toBe(true);
+    expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
+    // The boundary's clear() evicted the failed entry (retry on remount).
+    expect(clears).toEqual([failing]);
+    await r3f.act(async () => root.unmount());
+  }, 20_000);
+
+  test('a canvas remount after a failure warm-reads and loads the resident again', async () => {
+    resetCache();
+    const failing = LOCATION_NPCS['deployment-ops']!.model;
+    failingPaths.add(failing);
+    const { root, committed } = await mount(createElement(ArenaLocationNpcs));
+    await waitFor(() => consoleErrors.some((m) => m.includes('figure skipped')), 'the failed resident was skipped');
+    await r3f.act(async () => {
+      root.render(null);
+    });
+    failingPaths.delete(failing);
+    await r3f.act(async () => {
+      root.render(createElement(ArenaLocationNpcs));
+    });
+    await waitFor(() => committed(failing) !== undefined, 'the resident committed after the remount');
+    expect(loadStarts.get(failing)).toBe(2);
+    expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
+    await r3f.act(async () => root.unmount());
+  }, 20_000);
+
+  test('a stream-out + stream-in after a failure warm-reads again (no suspended render read)', async () => {
+    resetCache();
+    const failing = LOCATION_NPCS['deployment-ops']!.model;
+    failingPaths.add(failing);
+    const { root, store, committed } = await mount(createElement(ArenaLocationNpcs));
+    await waitFor(() => consoleErrors.some((m) => m.includes('figure skipped')), 'the failed resident was skipped');
+    failingPaths.delete(failing);
+    const frames = async (n: number) => {
+      for (let k = 0; k < n; k += 1) {
+        await r3f.act(async () => {
+          store.getState().advance(performance.now());
+        });
+      }
+    };
+    const camera = store.getState().camera;
+    const sibling = LOCATION_NPCS['agent-security']!.model;
+    expect(committed(sibling)).toBeDefined();
+    camera.position.set(10_000_000, 0, 0);
+    await frames(30); // the stream check runs every 12 frames
+    expect(committed(sibling)).toBeUndefined();
+    camera.position.set(0, 0, 5);
+    await frames(30);
+    await waitFor(() => committed(failing) !== undefined, 'the resident committed after the stream-in');
+    expect(committed(sibling)).toBeDefined();
+    expect(loadStarts.get(failing)).toBe(2);
+    expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
     await r3f.act(async () => root.unmount());
   }, 20_000);
 });

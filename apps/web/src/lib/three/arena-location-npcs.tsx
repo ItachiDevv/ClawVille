@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense, useEffect, useState, type ReactElement } from 'react';
+import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
@@ -27,7 +27,8 @@ import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
-import { extendLoaderWithTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
+import { extendLoaderWithTextureDeviceCap, tagGltfLoadRejection } from '@/lib/three/use-gltf-ktx2';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import { warmSuspenseRead } from '@/lib/three/suspense-cache-warm';
@@ -477,7 +478,16 @@ const NpcMesh = memo(function NpcMesh({
   // MeshoptLoaderSetup component handles most cases, but passing extendLoader
   // here ensures the decoder is registered on this exact loader instance so
   // quantized geometry (KHR_mesh_quantization) decodes with full bone data intact.
-  const { scene, animations } = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshoptAndKTX2);
+  // web-load T10-B: a failed load is rethrown as a tagged ModelLoadError, so
+  // the resident's own ModelLoadBoundary skips only this model (before, the
+  // raw R3F Error reached StageCanvasErrorBoundary and replaced the world).
+  let gltf: ReturnType<typeof useGLTF>;
+  try {
+    gltf = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshoptAndKTX2);
+  } catch (thrown) {
+    throw tagGltfLoadRejection(thrown, modelCfg.model);
+  }
+  const { scene, animations } = gltf as { scene: THREE.Group; animations: THREE.AnimationClip[] };
   const terrainY = useRef(-2);
   const placed = useRef(false);
 
@@ -827,9 +837,10 @@ const LocationNpc = memo(function LocationNpc({
   // probe run N6) the residents had 2 meshes at 114 s against 72 unthrottled.
   // The warm starts on the same tick the GLB demand started before (released
   // AND in stream range). A failed load resolves the warm at once; NpcMesh
-  // then rethrows the cached Error exactly as it did without the warm. Once
-  // warmed it stays warmed: the drei cache keeps the entry, so a resident
-  // that streams out and back in mounts at once.
+  // then throws it as a tagged ModelLoadError into its ModelLoadBoundary.
+  // Once warmed it stays warmed (the drei cache keeps the entry, so a
+  // resident that streams out and back in mounts at once), except after a
+  // model failure (see onModelFailed below).
   const [warmed, setWarmed] = useState(false);
   useEffect(() => {
     if (!config || warmed || !released || !mounted) return undefined;
@@ -847,6 +858,19 @@ const LocationNpc = memo(function LocationNpc({
       cancelled = true;
     };
   }, [config, warmed, released, mounted]);
+  // A model failure (caught by the resident's ModelLoadBoundary, which
+  // clears the failed cache entry) re-arms the warm for the next stream-in,
+  // so the retry reads a resolved entry too. Not on the failure itself: a
+  // permanent 404 would otherwise reload in a loop.
+  const modelFailedRef = useRef(false);
+  const onModelFailed = useCallback(() => {
+    modelFailedRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (mounted || !modelFailedRef.current) return;
+    modelFailedRef.current = false;
+    setWarmed(false);
+  }, [mounted]);
   // Real incrementing frame counter — replaces Math.floor(clock.elapsedTime * 60)
   // which drifted when the tab was backgrounded or the frame rate varied.
   const frameCountRef = useRef(0);
@@ -891,25 +915,41 @@ const LocationNpc = memo(function LocationNpc({
             {/* The stagger tick starts the warm read (fetch/parse outside
                 React). Keep the resolved object and its DOM label hidden
                 until the shared GPU warm ends. */}
-            <NpcMesh
-              modelCfg={config}
-              worldX={worldX}
-              worldZ={worldZ}
-              facingRotY={facingRotY}
-              seedBase={seed}
-              showLabel={true}
-              attachmentVisible={warmReady}
-            />
-            {companion && (
+            {/* One ModelLoadBoundary per model: a failed GLB skips only
+                that model (one console.error) and the world keeps running. */}
+            <ModelLoadBoundary
+              label={`resident:${zoneId}`}
+              assetUrl={config.model}
+              resetKey={config.model}
+              onModelFailed={onModelFailed}
+            >
               <NpcMesh
-                modelCfg={companion}
-                worldX={companionX}
-                worldZ={companionZ}
+                modelCfg={config}
+                worldX={worldX}
+                worldZ={worldZ}
                 facingRotY={facingRotY}
-                seedBase={companionSeed}
-                showLabel={false}
+                seedBase={seed}
+                showLabel={true}
                 attachmentVisible={warmReady}
               />
+            </ModelLoadBoundary>
+            {companion && (
+              <ModelLoadBoundary
+                label={`resident:${zoneId}:companion`}
+                assetUrl={companion.model}
+                resetKey={companion.model}
+                onModelFailed={onModelFailed}
+              >
+                <NpcMesh
+                  modelCfg={companion}
+                  worldX={companionX}
+                  worldZ={companionZ}
+                  facingRotY={facingRotY}
+                  seedBase={companionSeed}
+                  showLabel={false}
+                  attachmentVisible={warmReady}
+                />
+              </ModelLoadBoundary>
             )}
           </>
         )}
