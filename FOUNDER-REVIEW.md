@@ -783,6 +783,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## PERF
 
+### October 6: Next.js 16.3.8 (security upgrade) on staging
+
+- **Session:** tradeLead3, 2026-10-06. Staging first; prod only with your go.
+- **Where:** `https://staging.clawville.world/game`, `/leaderboard`, `/cove/baccarat`, and the landing page.
+- **Look at:** the pages load and look the same as before; log in and play one normal session (walk, chat, one Cove game).
+- **Feedback wanted:** anything that looks or behaves differently from prod. Load time is not expected to change (the measured gain is about 1-3%); the reason is security (16.2.3 matched 25 advisories, 16.3.8 matches 0).
+
 ### Nori in the first loading batch (NOW ON PROD — the one amendment from your reveal sign-off)
 - **What:** your verdict on the buildings-gated reveal ("looks pretty good,
   I'm pretty happy") is absorbed ✅ — that entry is closed. The one ask from
