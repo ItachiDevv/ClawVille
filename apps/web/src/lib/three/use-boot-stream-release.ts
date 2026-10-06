@@ -9,7 +9,7 @@
  * queue (own 1.5s quiet period; parks while hidden).
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import {
   BOOT_CAMERA_POSITION,
   isBootBuildingsStreamEligible,
@@ -110,80 +110,88 @@ function startCacheRead(read: () => unknown): void {
   void warmSuspenseRead(read);
 }
 
-/** true when `read` does not suspend now: a resolved entry, or a cached
- * failure (the render rethrows it into the boundary, as in
- * warmSuspenseRead's contract). A thrown thenable (loading) is false. */
-function isCacheEntryReady(read: () => unknown): boolean {
+type CachePeek = 'resolved' | 'failed' | 'pending';
+
+/** Non-suspending read of the cache entry: 'resolved'; 'failed' (a cached
+ * failure: the render rethrows it into the member's boundary, as in
+ * warmSuspenseRead's contract); 'pending' (the read threw a thenable: the
+ * entry is loading, or was missing and this read started its load). Calls
+ * no hook, so it is safe in render and outside it. */
+function peekCacheEntry(read: () => unknown): CachePeek {
   try {
     read();
-    return true;
+    return 'resolved';
   } catch (thrown) {
-    return !isThenable(thrown);
+    return isThenable(thrown) ? 'pending' : 'failed';
   }
 }
 
-/** Warm rounds per hook instance: the first warm plus 2 re-warms after a
- * peek found the entry missing or loading again (Codex E3 re-check). */
+/** Warm rounds per hook instance: the first warm plus 2 re-warms after the
+ * gate found the entry missing or loading again (Codex E3 re-check). */
 const INSTANCE_WARM_MAX_ROUNDS = 3;
 
 /**
- * Codex E3 BLOCKER (T10 batch, 2026-10-06): the stream queue records a
- * member as DELIVERED at admission, before its warm read resolves, and a
- * delivered member's remount initializes admitted. So the warm result
- * belongs to the HOOK INSTANCE, never to the queue: content renders only
- * after THIS instance saw `read` not suspend. A remount whose entry is
- * already resolved is warmed in its first render (one non-hook cache read:
- * instant reveal, as before). Otherwise, once admitted, the effect awaits
- * warmSuspenseRead (it joins a load in flight), peeks the entry again
- * (missing or loading -> re-warm, at most INSTANCE_WARM_MAX_ROUNDS) and
- * flips `warmed`; an unmount before it resolves cancels the flip.
- * `parsedStampKey` (boot-critical lane) is stamped first-write-wins when
- * the warm resolves, or on the first commit of an instance warmed in its
- * first render.
+ * The release gate of a member with a warm read (Codex E3, T10 batch,
+ * 2026-10-06). Rules:
+ * - The warm result belongs to THIS hook instance, never to the queue (the
+ *   queue marks a member delivered at admission, before its warm resolves,
+ *   and a delivered member's remount starts admitted).
+ * - Readiness is checked DURING the gate's render with a non-suspending
+ *   peek, so no clear or eviction between a warm and the release render can
+ *   make the content's own read suspend: the peek and the content read run
+ *   in the same synchronous render. 'resolved' or 'failed' -> release;
+ *   'pending' -> render nothing and warm again (an effect; the peek already
+ *   started or joined the load), at most INSTANCE_WARM_MAX_ROUNDS; after
+ *   the cap the content renders as without the warm (it may suspend).
+ * - A fresh member peeks only after a completed warm round (so the release
+ *   peek normally hits a resolved entry); a member admitted at mount (a
+ *   remount) peeks from its first render: instant reveal when resolved.
+ * - Once released and committed, the gate latches (layout effect, before
+ *   paint): a later clear of a failed entry never hides the boundary and
+ *   never retries the model.
+ * - `parsedStampKey` (boot-critical lane) is stamped first-write-wins ONLY
+ *   when the release peek saw a resolved entry: never on a cached failure,
+ *   never after exhausted rounds.
+ * - An unmount before a warm resolves cancels its round.
  */
 function useInstanceWarm(
   admitted: boolean,
   read: (() => unknown) | undefined,
   parsedStampKey?: string,
 ): boolean {
-  const [warmed, setWarmed] = useState(
-    () => read === undefined || (admitted && isCacheEntryReady(read)),
-  );
+  const [admittedAtMount] = useState(admitted);
+  const [rounds, setRounds] = useState(0);
+  const [latched, setLatched] = useState(false);
+  const exhausted = rounds >= INSTANCE_WARM_MAX_ROUNDS;
+  const peek: CachePeek | null =
+    read !== undefined && admitted && !latched && (rounds > 0 || admittedAtMount)
+      ? peekCacheEntry(read)
+      : null;
+  const ready =
+    read === undefined ||
+    latched ||
+    (peek !== null && (peek !== 'pending' || exhausted));
+
   useEffect(() => {
-    if (warmed || !admitted || read === undefined) return undefined;
+    if (read === undefined || !admitted || ready || exhausted) return undefined;
     let cancelled = false;
-    void (async () => {
-      // warmSuspenseRead never rejects, so its completion does not prove the
-      // entry is still there: a cached failure can be CLEARED after the warm
-      // saw it (ModelLoadBoundary clear(), any eviction), and the release
-      // render would then start a new load and suspend (Codex E3 re-check).
-      // Peek again before the release: ready (resolved, or a cached failure
-      // the render rethrows into the boundary) -> release; still loading
-      // (the peek started or joined a load) -> warm again. After the last
-      // round, release anyway: the render suspends, as without the warm.
-      for (let round = 0; round < INSTANCE_WARM_MAX_ROUNDS; round += 1) {
-        await warmSuspenseRead(read);
-        if (cancelled) return;
-        if (isCacheEntryReady(read)) break;
-      }
-      if (cancelled) return;
-      if (parsedStampKey !== undefined) stampBgrPhase(parsedStampKey);
-      setWarmed(true);
-    })();
+    void warmSuspenseRead(read).then(() => {
+      if (!cancelled) setRounds((n) => n + 1);
+    });
     return () => {
       cancelled = true;
     };
-  }, [warmed, admitted, read, parsedStampKey]);
-  useEffect(() => {
-    // An instance warmed by its first-render check (a remount of a resolved
-    // entry) skips the warm effect above; it stamps here, so a first mount
-    // that ended before its warm resolved still leaves a stamp. First write
-    // wins, so the stamp from the warm path is never moved.
-    if (warmed && read !== undefined && parsedStampKey !== undefined) {
+  }, [read, admitted, ready, exhausted, rounds]);
+
+  useLayoutEffect(() => {
+    if (read === undefined || latched || !ready) return;
+    if (peek === 'resolved' && parsedStampKey !== undefined) {
       stampBgrPhase(parsedStampKey);
     }
-  }, [warmed, read, parsedStampKey]);
-  return warmed || read === undefined;
+    setLatched(true);
+  }, [read, latched, ready, peek, parsedStampKey]);
+
+  return ready;
 }
 
 /** First-write-wins phase stamp in `window.__W3D_PHASES` (a number write;
@@ -225,12 +233,13 @@ export function BgrMountedStamp({ cohortId }: { cohortId: string }): null {
  * (the consumer must not report it again on `released`). With `warmRead`
  * (the member's own non-hook GLB read; MUST be referentially stable), the
  * admitted member loads + parses OUTSIDE React first (warmSuspenseRead),
- * stamps `bgrParsed:<member>`, and only then flips `released`, so its first
- * render reads a resolved cache entry and commits without a Suspense retry
- * (retry lanes starve under the 5 Hz SyncLane stream renders). Unmount
- * before the warm resolves cancels the flip. The warm result belongs to the
- * hook instance (useInstanceWarm, Codex E3 T10): a remount of a delivered
- * member waits for its own warm (instant when the entry is resolved).
+ * and only then flips `released`, so its first render reads a resolved
+ * cache entry and commits without a Suspense retry (retry lanes starve
+ * under the 5 Hz SyncLane stream renders). Unmount before the warm
+ * resolves cancels the flip. The release gate is useInstanceWarm (Codex E3
+ * T10): per-instance warm, render-time non-suspending peek, re-warm when the
+ * entry went missing, latch after release; `bgrParsed:<member>` is stamped
+ * only when the release peek saw a resolved entry.
  */
 export function useBootBuildingsStreamRelease(
   priority: number,

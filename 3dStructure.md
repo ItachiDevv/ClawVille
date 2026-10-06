@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-06 15:08Z (web-load T10-C, Codex E3 re-check: the stream release peeks the cache entry again after its warm read, so a cleared failed entry is re-warmed instead of suspending in render; a remount warmed in its first render stamps `bgrParsed`).** Drift note: "Stage-B warm read" bullet (peek + stamp sentences); §13 entry.
+**Last Audited: 2026-10-06 15:17Z (web-load T10-C, Codex E3 15:08Z: the stream release gate checks the cache entry DURING its render with a non-suspending peek, renders nothing and warms again when the entry went missing, latches once released, and stamps `bgrParsed` only after a resolved peek).** Drift note: "Stage-B warm read" bullet (release gate sentences); §13 entry.
+
+**Prior Last Audited: 2026-10-06 15:08Z (web-load T10-C, Codex E3 re-check: the stream release peeks the cache entry again after its warm read, so a cleared failed entry is re-warmed instead of suspending in render; a remount warmed in its first render stamps `bgrParsed`).** Drift note: "Stage-B warm read" bullet (peek + stamp sentences); §13 entry.
 
 **Prior Last Audited: 2026-10-06 14:57Z (web-load T3, Codex E3 BLOCKER fix: a moving remote player no longer renders `RemotePlayers` on every world snapshot; the players store mutates position in place like the NPC store and the remote body reads the live object every frame).** Drift note: new "Remote player position updates in place" bullet after "Stream commit budget" (whose KNOWN remaining source sentence now points to it); §13 T3 entry.
 
@@ -422,14 +424,19 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   (`useInstanceWarm`, Codex E3 T10): the queue marks a member delivered at
   admission, so a remount during a pending warm starts admitted but
   renders its content only after its own `warmSuspenseRead` resolved; a
-  remount whose entry is already resolved releases in its first render
-  (one non-hook cache read). `warmSuspenseRead` never rejects, so after
-  it resolves the hook peeks the entry again: resolved or a cached
-  failure releases; missing or loading (e.g. a failed entry cleared by
-  `ModelLoadBoundary`) warms again, at most 3 rounds, then releases as
-  without the warm. An instance warmed in its first render stamps
-  `bgrParsed` on its first commit. Phase stamps (first write
-  wins): `bgrParsed:<cohort>` when the read resolved, `bgrMounted:<cohort>`
+  remount whose entry is already resolved releases in its first render.
+  The gate checks readiness DURING its render with a non-suspending peek
+  (`peekCacheEntry`; the peek and the content read run in the same
+  synchronous render, so a clear or eviction between a warm and the
+  release cannot make the content suspend): resolved or a cached failure
+  releases; missing or loading (e.g. a failed entry cleared by
+  `ModelLoadBoundary`) renders nothing and warms again, at most 3 rounds,
+  then releases as without the warm. A fresh member peeks only after a
+  completed warm round. Once released, the gate latches (layout effect):
+  a later clear of a failed entry never hides the boundary or retries the
+  model. Phase stamps (first write
+  wins): `bgrParsed:<cohort>` when the release peek saw a resolved entry
+  (never on a cached failure or after exhausted rounds), `bgrMounted:<cohort>`
   when the content tree committed (hidden). Wrapping stream updates in `startTransition`
   would NOT help: `useSyncExternalStore` updates are forced to SyncLane, and
   transition lanes outrank retry lanes too.
@@ -3079,6 +3086,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-10-06 — **Stream release gate peeks during its render** (commit pending, branch `perf/load-items`, web-load T10-C, Codex E3 15:08Z on a5802f72). Cause 1 (BLOCKER): the post-warm peek ran outside render, so a clear after it (before the release render) still made the content's own read start a load and suspend (2 suspended render reads per lane in the test). Fix: `useInstanceWarm` peeks with `peekCacheEntry` during the gate's render: resolved or failed releases; pending renders nothing and re-warms (at most 3 rounds, then the old behaviour); a layout-effect latch keeps a released member released. Cause 2 (SHOULD-FIX): `bgrParsed` was stamped after a cached failure and after exhausted rounds; it is now stamped only when the release peek saw a resolved entry. Tests (`post-reveal-warm-read.test.tsx`, failed first 4/4): clear between the warm and the release render -> 0 suspensions, re-warm, commit after the retry load (both lanes); failure and exhausted rounds leave no stamp. New latch test (a cleared failed entry + a gate re-render start no retry) catches a no-latch mutant (2 loads). Needs measurement (CPU 4x), Codex E3 re-review + staging.
 - 2026-10-06 — **Stream release re-checks the cache entry after its warm read** (commit pending, branch `perf/load-items`, web-load T10-C, Codex E3 re-check on 35cadcc3). Cause 1 (BLOCKER): `warmSuspenseRead` never rejects, so its completion did not prove the entry was still there; a cached failure cleared after the warm saw it made the release render start a new load and suspend (2 suspended render reads per lane in the test). Fix: `useInstanceWarm` peeks the entry after each warm; missing or loading re-warms (at most 3 rounds, then the old behaviour). Cause 2 (SHOULD-FIX): a remount warmed in its first render skipped the `bgrParsed` stamp; it now stamps on its first commit (first write wins). Tests (`post-reveal-warm-read.test.tsx`, failed first 3/3): failed read + cleared entry + retry load -> 0 suspended render reads before the retry resolves, 2 loads (both lanes); remount stamp. Guard: a permanent failure with a clear after every error ends `failed` with at most 5 loads (an unbounded-rounds mutant made 100). Needs measurement (CPU 4x), Codex E3 re-review + staging.
 - 2026-10-06 — **Remote player position updates in place** (commit pending, branch `perf/load-items`, web-load T3, Codex E3 BLOCKER). Cause: `stores/players.ts` replaced a moved player's object on every snapshot (the 2026-06-12 Codex #5 immutable fix), so `RemotePlayers` rendered the R3F root at 5 Hz per moving remote player and discarded pending Suspense retry lanes. Fix: position-only snapshots mutate the existing object (array + identities kept, no store notification); structural changes (join, leave, reorder, identity fields, `isLocal`, non-locomotion activity) still replace; `tsDelta` clamped [120, 320] like the NPC store; `remote-players.tsx` `RemotePlayerBody` reads the frame-loop fields through getters on the live object (no identity-keyed copy, so no Codex #5 freeze). Tests failed first: `remote-players.test.tsx` (10 commits for 10 snapshots; with only the store change the body froze at its mount position), `players-local-identity.test.ts` 6/9; now green, plus `stream-commit-budget.test.tsx` remote-player assertion = 0. Needs live measurement + Codex E3 + staging.
 - 2026-10-06 — **Stream release waits for the instance's own warm read** (commit pending, branch `perf/load-items`, web-load T10-C, Codex E3 BLOCKER on 62ff1ae8). Cause: the stream queue records a member as delivered at admission, before its warm read resolves; an unmount + remount in that window started released, its content read the still-loading entry in render and suspended (2 suspended render reads in the test, both lanes), so the starvable retry lane came back. Fix: `use-boot-stream-release.ts` `useInstanceWarm` (both `useBootStreamRelease` and `useBootBuildingsStreamRelease`): `released = admitted && warmed`, where `warmed` belongs to the hook instance; the first render of an admitted remount checks the entry with one non-hook read (ready = release now), else the effect awaits `warmSuspenseRead` (joins the load in flight). Admission still starts the load on its own tick. Tests (`post-reveal-warm-read.test.tsx`, failed first 2/2): admit, unmount during the pending warm, remount: 0 suspensions, commits after the warm, one load (both lanes); remount after the warm: content in the first commit (passes before and after; catches a mutant without the instant check). Needs measurement (CPU 4x), Codex E3 re-review + staging.

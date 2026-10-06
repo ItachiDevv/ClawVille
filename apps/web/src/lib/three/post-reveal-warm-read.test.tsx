@@ -645,6 +645,181 @@ describe('BootStreamedContent post-reveal lane with the real useLoader cache', (
     20_000,
   );
 
+  // Codex E3 (15:08Z) BLOCKER: a clear AFTER the final out-of-render peek
+  // (before the release render) still made the release render suspend.
+  // Inside one act, React holds the release render until the act ends, so
+  // the test clears the failed entry exactly in that window. The gate must
+  // re-check during its render, render null, warm again, and commit after
+  // the retry load. Ids outside the cohort: reportCohortState warns only.
+  for (const lane of [
+    { name: 'post-reveal', revealRequired: false },
+    { name: 'boot-critical', revealRequired: true },
+  ] as const) {
+    test(
+      `${lane.name}: entry cleared after the warm, before the release render -> 0 suspensions, re-warm, commit after the retry`,
+      async () => {
+        suspensions = 0;
+        reported.length = 0;
+        const id = `test:t10c-late-clear-${lane.name}`;
+        const url = `/models/t10c-late-clear-${lane.name}.glb`;
+        const name = `t10c-late-clear-${lane.name}`;
+        const warn = console.warn;
+        console.warn = () => undefined;
+        try {
+          const { root, find } = await mountMember(id, url, name, {
+            warm: true,
+            revealRequired: lane.revealRequired,
+          });
+          await waitFor(() => loadsFor(url).length === 1, 'admission started the load');
+          await r3f.act(async () => {
+            loadsFor(url)[0]!.onError(new Error('flaky'));
+            await flush(); // every warm/peek microtask settles; no render yet
+            r3f.useLoader.clear(ControlledLoader as never, url);
+          });
+          await waitFor(() => loadsFor(url).length === 2, 'the gate restarted the load');
+          expect(suspensions).toBe(0);
+          expect(find()).toBeUndefined();
+
+          await r3f.act(async () => {
+            loadsFor(url)[1]!.onLoad({});
+            await flush();
+          });
+          await waitFor(() => find() !== undefined, 'content committed after the retry load');
+          expect(suspensions).toBe(0);
+          expect(loadsFor(url).length).toBe(2);
+          expect(reported).toEqual([]);
+          await r3f.act(async () => root.unmount());
+        } finally {
+          console.warn = warn;
+        }
+      },
+      20_000,
+    );
+  }
+
+  test(
+    'a released member stays released: a cleared failed entry + a gate re-render start no retry',
+    async () => {
+      suspensions = 0;
+      reported.length = 0;
+      const id = 'test:t10c-latch';
+      const url = '/models/t10c-latch.glb';
+      const read = () => readModel(url);
+      const tree = (priority: number) =>
+        createElement(BootStreamedContent, {
+          cohortId: id,
+          priority,
+          warmRead: read,
+          children: createElement(Content, { url, name: 't10c-latch' }),
+        });
+      const warn = console.warn;
+      console.warn = () => undefined;
+      try {
+        const root = await createTestRoot();
+        await r3f.act(async () => {
+          root.render(tree(0));
+        });
+        await waitFor(() => loadsFor(url).length === 1, 'admission started the load');
+        await r3f.act(async () => {
+          loadsFor(url)[0]!.onError(new Error('404'));
+          await flush();
+        });
+        await waitFor(() => reported.length === 1, 'the boundary caught the load error');
+        // A clear of the failed entry (ModelLoadBoundary-style), then a
+        // re-render of the gate with new props.
+        await r3f.act(async () => {
+          r3f.useLoader.clear(ControlledLoader as never, url);
+          root.render(tree(1));
+          await flush();
+        });
+        await r3f.act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        });
+        expect(loadsFor(url).length).toBe(1);
+        expect(reported.length).toBe(1);
+        expect(suspensions).toBe(0);
+        await r3f.act(async () => root.unmount());
+      } finally {
+        console.warn = warn;
+      }
+    },
+    20_000,
+  );
+
+  // Codex E3 (15:08Z) SHOULD-FIX: bgrParsed only after a successful READY
+  // read: never after exhausted rounds, never on a cached failure.
+  const phasesNow = () =>
+    (globalThis.window as unknown as { __W3D_PHASES?: Record<string, unknown> }).__W3D_PHASES ?? {};
+
+  test(
+    'boot-critical: a failed load releases into the boundary without a bgrParsed stamp',
+    async () => {
+      reported.length = 0;
+      const id = 'test:t10c-fail-stamp';
+      const url = '/models/t10c-fail-stamp.glb';
+      const warn = console.warn;
+      console.warn = () => undefined;
+      try {
+        const { root, find } = await mountMember(id, url, 't10c-fail-stamp', {
+          warm: true,
+          revealRequired: true,
+        });
+        await waitFor(() => loadsFor(url).length === 1, 'admission started the load');
+        await r3f.act(async () => {
+          loadsFor(url)[0]!.onError(new Error('404'));
+          await flush();
+        });
+        await waitFor(() => reported.length === 1, 'the boundary caught the load error');
+        expect(find()).toBeUndefined();
+        expect(phasesNow()[`bgrParsed:${id}`]).toBeUndefined();
+        await r3f.act(async () => root.unmount());
+      } finally {
+        console.warn = warn;
+      }
+    },
+    20_000,
+  );
+
+  test(
+    'boot-critical: exhausted warm rounds release without a bgrParsed stamp',
+    async () => {
+      reported.length = 0;
+      const id = 'test:t10c-exhausted-stamp';
+      const url = '/models/t10c-exhausted-stamp.glb';
+      const settled = new Set<PendingLoad>();
+      const failAll = () => {
+        for (const load of loadsFor(url)) {
+          if (settled.has(load)) continue;
+          settled.add(load);
+          load.onError(new Error('gone'));
+        }
+      };
+      const warn = console.warn;
+      console.warn = () => undefined;
+      try {
+        const { root } = await mountMember(id, url, 't10c-exhausted-stamp', {
+          warm: true,
+          revealRequired: true,
+          read: clearingRead(url, { left: 100 }),
+        });
+        const deadline = Date.now() + 10_000;
+        while (reported.length === 0) {
+          if (Date.now() > deadline) throw new Error('member never failed');
+          await r3f.act(async () => {
+            failAll();
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          });
+        }
+        expect(loadsFor(url).length).toBeLessThanOrEqual(5);
+        expect(phasesNow()[`bgrParsed:${id}`]).toBeUndefined();
+        await r3f.act(async () => root.unmount());
+      } finally {
+        console.warn = warn;
+      }
+    },
+    20_000,
+  );
+
   test(
     'boot-critical: a remount warmed in its first render still stamps bgrParsed',
     async () => {
