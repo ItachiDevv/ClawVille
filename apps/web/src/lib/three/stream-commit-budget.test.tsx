@@ -356,7 +356,42 @@ async function settledWorld(playersMoving: boolean) {
   );
   // Let mount-time state (stagger release, warm reads) finish committing.
   await settle(400);
+  // The warm-up bubble must outlive any test window, however slow the figure
+  // loads were (the store dedupes the repeated line by npcId + text, so it
+  // keeps this object). Test 1 sets its own expiry on the held clock.
+  const created = useNpcStore.getState().chatBubbles.find((b) => b.npcId === 't10-talker-a');
+  if (created) {
+    await r3f.act(async () => {
+      useNpcStore.setState({ chatBubbles: [{ ...created, expiresAt: Date.now() + 120_000 }] });
+    });
+    await settle(50);
+  }
   return world;
+}
+
+// ---------------------------------------------------------------------------
+// Held clock: Date.now() returns `heldNow` while held. The NPC store and the
+// speech-bubble layer read Date.now(), so a bubble expiry depends only on how
+// far the test moves this clock, never on how slow the runner is. Timers
+// still run in real time: a bubble timer that fires before the held clock
+// reached the expiry re-arms without a commit.
+// ---------------------------------------------------------------------------
+const realDateNow = Date.now;
+let heldNow: number | null = null;
+
+function holdClock(): void {
+  heldNow = realDateNow();
+  Date.now = () => heldNow ?? realDateNow();
+}
+
+function advanceClock(ms: number): void {
+  if (heldNow === null) throw new Error('clock is not held');
+  heldNow += ms;
+}
+
+function releaseClock(): void {
+  heldNow = null;
+  Date.now = realDateNow;
 }
 
 async function teardown(root: { unmount: () => void }): Promise<void> {
@@ -379,38 +414,53 @@ describe('stream commit budget (web-load T10)', () => {
       const { root } = await settledWorld(false);
       const created = useNpcStore.getState().chatBubbles.find((b) => b.npcId === 't10-talker-a');
       expect(created).toBeDefined();
-      // Fix the bubble's life to outlast phase 1 on a slow runner (the store
-      // dedupes the repeated line by npcId + text, so it keeps this object).
-      const bubble = { ...created!, expiresAt: Date.now() + 7_500 };
-      await r3f.act(async () => {
-        useNpcStore.setState({ chatBubbles: [bubble] });
-      });
-      await settle(100);
 
-      // Phase 1: 25 position-only snapshots over 5 s. The same conversation
-      // line repeats (deduped: no new bubble); the walkers move.
-      resetCommits();
-      for (let tick = 1; tick <= SNAPSHOTS; tick += 1) {
-        await pushSnapshot(tick, { conversation: true, playersMoving: false });
-        await settle(SNAPSHOT_MS);
+      let phase1: Record<Layer, number>;
+      let gap: Record<Layer, number>;
+      let phase2: Record<Layer, number>;
+      holdClock();
+      try {
+        // The bubble lives 6 s of HELD time; phase 1 moves the clock 5 s.
+        const bubble = { ...created!, expiresAt: Date.now() + 6_000 };
+        await r3f.act(async () => {
+          useNpcStore.setState({ chatBubbles: [bubble] });
+        });
+        await settle(100);
+
+        // Phase 1: 25 position-only snapshots, 200 ms of clock apart. The
+        // same conversation line repeats (deduped: no new bubble); the
+        // walkers move.
+        resetCommits();
+        for (let tick = 1; tick <= SNAPSHOTS; tick += 1) {
+          advanceClock(SNAPSHOT_MS);
+          await pushSnapshot(tick, { conversation: true, playersMoving: false });
+          await settle(SNAPSHOT_MS);
+        }
+        phase1 = snapshotCommits();
+        // The walkers really moved (mutated in place on the SAME objects).
+        const walker = useNpcStore.getState().npcs.find((n) => n.id === 't10-walker-a')!;
+        expect(walker.x).toBe(3_000 + SNAPSHOTS * 44);
+
+        // Gap: the clock passes the expiry -> exactly one bubble commit
+        // removes it (when the armed real-time timer next fires).
+        resetCommits();
+        advanceClock(1_200);
+        await waitFor(() => commits.bubbles > 0, 'the expiry commit', 10_000);
+        await settle(100);
+        gap = snapshotCommits();
+
+        // Phase 2: 5 s idle with no bubble (the 5 s store cleanup runs inside
+        // it). Short act slices: one long act batches separate timer updates
+        // into one commit, which a browser never does.
+        resetCommits();
+        for (let slice = 0; slice < 52; slice += 1) {
+          advanceClock(100);
+          await settle(100);
+        }
+        phase2 = snapshotCommits();
+      } finally {
+        releaseClock();
       }
-      const phase1 = snapshotCommits();
-      // The walkers really moved (mutated in place on the SAME objects).
-      const walker = useNpcStore.getState().npcs.find((n) => n.id === 't10-walker-a')!;
-      expect(walker.x).toBe(3_000 + SNAPSHOTS * 44);
-
-      // Gap: the bubble expires -> exactly one bubble commit removes it.
-      resetCommits();
-      await waitFor(() => Date.now() > bubble.expiresAt + 150, 'the bubble expired', 4_000);
-      await settle(50);
-      const gap = snapshotCommits();
-
-      // Phase 2: 5 s idle with no bubble (the 5 s store cleanup runs inside
-      // it). Short act slices: one long act batches separate timer updates
-      // into one commit, which a browser never does.
-      resetCommits();
-      for (let slice = 0; slice < 52; slice += 1) await settle(100);
-      const phase2 = snapshotCommits();
 
       // One assertion over all three windows, so a failure shows every count.
       expect({ phase1, gap, phase2 }).toEqual({
@@ -422,7 +472,7 @@ describe('stream commit budget (web-load T10)', () => {
       expect(reported).toEqual([]);
       await teardown(root);
     },
-    40_000,
+    60_000,
   );
 
   // KNOWN commit source owned by T3 (RemotePlayers / players store): a remote
