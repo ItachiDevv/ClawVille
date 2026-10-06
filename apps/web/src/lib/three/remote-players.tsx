@@ -14,6 +14,8 @@ import {
   VRMNpcMesh,
   useAmbientBodyRelease,
   useVRMOrphanCancel,
+  useVRMWarmRead,
+  vrmPathForSpecies,
 } from '@/lib/three/arena-npcs';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
@@ -178,9 +180,14 @@ const RemotePlayerEntry = memo(function RemotePlayerEntry({
 function DeferredRemoteBody({ player }: { player: RemotePlayerState }) {
   const { released, priority } = useAmbientBodyRelease(player.x, player.y, false);
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
-  const vrmPath = regEntry?.avatar_type === 'vrm' ? regEntry.path : null;
+  const vrmPath = regEntry?.avatar_type === 'vrm' ? vrmPathForSpecies(player.species) : null;
+  // Order matters: the orphan bracket's retain runs before the warm starts.
   useVRMOrphanCancel(vrmPath, player.id);
-  if (!released) return null;
+  // web-load T9: same as wanderers — the VRM resolves outside React before
+  // the body mounts, so a mid-session join never reveals through a Suspense
+  // retry lane (starved by the 5 Hz world-stream SyncLane renders).
+  const vrmWarmed = useVRMWarmRead(vrmPath, player.id, released);
+  if (!released || !vrmWarmed) return null;
   // The Suspense boundary must live INSIDE this component, BELOW the
   // cancellation hook (Codex round-2 finding 1): a post-release join renders
   // the suspending VRM subtree on this component's very first render, and

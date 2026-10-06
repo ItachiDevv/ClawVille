@@ -170,6 +170,8 @@ jobs:
           src/lib/three/adaptive-quality-governor.test.ts
           src/lib/three/world-ground-cover-mount.test.tsx
           src/lib/three/arena-terrain-decorations-warm-read.test.tsx
+          src/lib/three/arena-npcs-vrm-warm-read.test.tsx
+          src/lib/three/activity-indicators.test.tsx
           src/lib/three/deferred-warm.test.ts
           src/lib/__tests__/fingerprint-cache.test.ts
           SUITES

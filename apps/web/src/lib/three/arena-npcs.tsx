@@ -26,7 +26,14 @@ import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terra
 import { jumpState } from '@/lib/three/jump-state';
 import { clampMovement2D, ENTITY_HALF_HUMANOID, ENTITY_HALF_CHIBI } from '@/lib/three/collision/world-colliders';
 import { avatarPositionRef } from '@/stores/game';
-import { useVRMInstance, disposeVRMInstance, retainVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import {
+  useVRMInstance,
+  readVRMInstance,
+  disposeVRMInstance,
+  retainVRMInstance,
+  applyFattenedFrustumCulling,
+} from '@/lib/three/vrm-loader';
+import { warmSuspenseRead } from '@/lib/three/suspense-cache-warm';
 import {
   AMBIENT_ANIM_NAMES,
   isEmoteAnimName,
@@ -1212,9 +1219,10 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
    */
   const npcWasChargingRef = useRef<boolean>(false);
 
-  // Resolve VRM path from the model registry (or use the species key directly as path suffix)
-  const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
-  const vrmPath = regEntry?.path ?? `/avatars/${npc.species.replace('milady_official_', 'milady-official-')}.vrm`;
+  // Resolve VRM path from the model registry (or use the species key directly
+  // as path suffix). The ONE derivation shared with the warm read and the
+  // orphan bracket (web-load T9): all three must hit the same cache entry.
+  const vrmPath = vrmPathForSpecies(npc.species);
 
   // Load a fresh VRM instance for this NPC — each NPC gets its own scene,
   // skeleton, humanoid, no sharing with player-avatar or other NPCs (Codex Critical #1).
@@ -1896,7 +1904,57 @@ export function useVRMOrphanCancel(vrmPath: string | null, instanceId: string): 
   }, [vrmPath, instanceId]);
 }
 
-/** VRM path for a species — MUST mirror VRMNpcMesh's own derivation. */
+/**
+ * Warm read for an ambient VRM figure (web-load T9, the T7 pattern in
+ * suspense-cache-warm.ts). After `enabled` (the stagger release), resolve the
+ * figure's VRM cache entry OUTSIDE React with readVRMInstance — the non-hook
+ * body of useVRMInstance, so the SAME (path, instanceId) entry VRMNpcMesh
+ * reads — and report `true` only after. The caller mounts the figure only
+ * then, so its first render reads a resolved entry and never suspends.
+ *
+ * Why: mounted earlier, the figure suspended and could commit only in a
+ * Suspense RETRY lane; the 5 Hz world-stream SyncLane renders discard retry
+ * work, so under CPU 4x (local prod build, T8 runs) 10, 1, 1, 5 and 0 of 16
+ * wandering figures waited > 10 s between parse and commit (worst 26.6 s).
+ *
+ * Contract:
+ * - `vrmPath === null` (a GLB figure): returns true at once, no read.
+ * - A failed load: the warm resolves on the cached ModelLoadError, the
+ *   figure mounts, and its render rethrows into the ModelLoadBoundary (one
+ *   console.error, only that figure skipped, clear() on catch).
+ * - Ownership: no refcount, no retain. The caller MUST run
+ *   useVRMOrphanCancel(vrmPath, instanceId) BEFORE this hook (its retain
+ *   runs first in the same commit; its cleanup disposes an entry this warm
+ *   created when the caller unmounts before the figure commits). After this
+ *   effect's cleanup the warm reads nothing more, so it cannot re-create an
+ *   entry the bracket already disposed.
+ * - Keyed by `${vrmPath}#${instanceId}`: a species change warms the new
+ *   path before the new figure mounts.
+ */
+export function useVRMWarmRead(
+  vrmPath: string | null,
+  instanceId: string,
+  enabled: boolean,
+): boolean {
+  const key = vrmPath === null ? null : `${vrmPath}#${instanceId}`;
+  const [warmedKey, setWarmedKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!enabled || vrmPath === null || key === null || warmedKey === key) return undefined;
+    let cancelled = false;
+    void warmSuspenseRead(() => (cancelled ? undefined : readVRMInstance(vrmPath, instanceId))).then(() => {
+      // An unmount (or path change) before the warm resolved cancels the flip.
+      if (!cancelled) setWarmedKey(key);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, vrmPath, instanceId, key, warmedKey]);
+  return key === null || warmedKey === key;
+}
+
+/** VRM path for a species. VRMNpcMesh derives its path with this function,
+ * so every warm read (useVRMWarmRead) and orphan bracket that uses it reads
+ * the SAME cache entry as the figure. */
 export function vrmPathForSpecies(species: string): string {
   const regEntry = MODEL_REGISTRY[species as keyof typeof MODEL_REGISTRY];
   return regEntry?.path ?? `/avatars/${species.replace('milady_official_', 'milady-official-')}.vrm`;
@@ -1916,14 +1974,18 @@ const NpcEntry = memo(function NpcEntry({ npc }: { npc: NpcSpriteState }) {
   const { released, priority } = useAmbientBodyRelease(npc.x, npc.y, false);
   const isVrm = regEntry?.avatar_type === 'vrm';
   const vrmPath = isVrm ? vrmPathForSpecies(npc.species) : null;
+  // Order matters: the orphan bracket's retain runs before the warm starts.
   useVRMOrphanCancel(vrmPath, npc.id);
+  // web-load T9: a VRM figure mounts only after its entry resolved outside
+  // React (no Suspense retry lane; see useVRMWarmRead).
+  const vrmWarmed = useVRMWarmRead(vrmPath, npc.id, released);
 
   // Slice D [R2-F4]: the possessed/demo player body (PLAYER_NPC_ID) no
   // longer renders here — it moved to BootActorNpcBody below, mounted under
   // the whitelisted `perf:boot-actor` chunk. ArenaNpcs is ambient-only, so
   // hiding/compiling decisions on `perf:wandering-npcs` can never touch the
   // boot actor.
-  if (!released) return null;
+  if (!released || !vrmWarmed) return null;
   // ModelLoadBoundary (2026-10-04): a wanderer whose model fails to load
   // (VRM rejected after its request retries, or a GLB error) renders nothing
   // and logs once, instead of crashing the whole world canvas. Below the

@@ -25,6 +25,61 @@ const INDICATOR_Y = 10; // height above NPC position
 const TYPING_Y = 9;
 
 // ---------------------------------------------------------------------------
+// Shared GPU resources, one geometry + material per look (web-load T9)
+// ---------------------------------------------------------------------------
+//
+// Why: the JSX <meshBasicMaterial> / <sphereGeometry> built NEW objects every
+// time an indicator showed, so each show cost one synchronous pipeline
+// creation on the live world (T8 probe: one every 8-16 s; an Iris Xe hitch).
+// Now every indicator mesh uses these module-level objects: identity is
+// stable for the whole session, so a look compiles once. The layer
+// (ActivityIndicators) holds the only user count: GPU resources are released
+// when the LAST mounted layer unmounts, never when one indicator hides (the
+// next show would then compile again). The JS objects stay valid after
+// dispose(); three re-uploads them on the next render, so a remount (and a
+// StrictMode setup/cleanup/setup) keeps the same identity.
+
+type IndicatorLook = 'activity' | 'typing-dot';
+type IndicatorLookResources = { geometry: THREE.BufferGeometry; material: THREE.Material };
+
+const INDICATOR_LOOKS: Record<IndicatorLook, () => IndicatorLookResources> = {
+  activity: () => ({
+    geometry: new THREE.SphereGeometry(1.5, 8, 8),
+    material: new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.6 }),
+  }),
+  'typing-dot': () => ({
+    geometry: new THREE.SphereGeometry(0.4, 6, 4),
+    material: new THREE.MeshBasicMaterial({ color: 0xcccccc }),
+  }),
+};
+
+const sharedLooks = new Map<IndicatorLook, IndicatorLookResources>();
+let sharedLookUsers = 0;
+
+function getIndicatorLook(look: IndicatorLook): IndicatorLookResources {
+  let resources = sharedLooks.get(look);
+  if (!resources) {
+    resources = INDICATOR_LOOKS[look]();
+    sharedLooks.set(look, resources);
+  }
+  return resources;
+}
+
+function retainIndicatorLooks(): void {
+  sharedLookUsers += 1;
+}
+
+function releaseIndicatorLooks(): void {
+  sharedLookUsers -= 1;
+  if (sharedLookUsers > 0) return;
+  sharedLookUsers = 0;
+  for (const { geometry, material } of sharedLooks.values()) {
+    geometry.dispose();
+    material.dispose();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Activity emoji map (NPC activity -> emoji string)
 // ---------------------------------------------------------------------------
 
@@ -73,6 +128,7 @@ const NpcIndicator = memo(function NpcIndicator({
   const worldZ = y - HALF_H;
 
   const emoji = activity ? ACTIVITY_EMOJIS[activity] ?? '' : '';
+  const activityLook = getIndicatorLook('activity');
 
   useSceneFrame((state) => {
     const group = groupRef.current;
@@ -94,10 +150,13 @@ const NpcIndicator = memo(function NpcIndicator({
     <group ref={groupRef} position={[worldX, 0, worldZ]}>
       {/* Activity indicator — glowing sphere instead of Text */}
       {showEmoji && (
-        <mesh position={[0, INDICATOR_Y, 0]}>
-          <sphereGeometry args={[1.5, 8, 8]} />
-          <meshBasicMaterial color={0x00e5ff} transparent opacity={0.6} />
-        </mesh>
+        // Shared look (module-level); dispose={null}: the layer owns it.
+        <mesh
+          position={[0, INDICATOR_Y, 0]}
+          geometry={activityLook.geometry}
+          material={activityLook.material}
+          dispose={null}
+        />
       )}
 
       {/* Typing indicator: animated "..." */}
@@ -112,6 +171,12 @@ const NpcIndicator = memo(function NpcIndicator({
 // Animated typing dots
 // ---------------------------------------------------------------------------
 
+/** Stagger bounce: each dot is offset by 0.2 s. */
+function bounceTypingDot(mesh: THREE.Mesh | null, t: number, index: number, y: number): void {
+  if (!mesh) return;
+  mesh.position.y = y + Math.abs(Math.sin((t + index * 0.2) * 4)) * 1.5;
+}
+
 const TypingDots = memo(function TypingDots({
   x,
   y,
@@ -125,32 +190,21 @@ const TypingDots = memo(function TypingDots({
   const dot2Ref = useRef<THREE.Mesh>(null);
   const dot3Ref = useRef<THREE.Mesh>(null);
 
+  const dotLook = getIndicatorLook('typing-dot');
+
+  // No allocation per frame (Iris Xe rule): three direct calls, no array.
   useSceneFrame((state) => {
     const t = state.clock.elapsedTime;
-    const refs = [dot1Ref, dot2Ref, dot3Ref];
-    for (let i = 0; i < 3; i++) {
-      const mesh = refs[i].current;
-      if (!mesh) continue;
-      // Stagger bounce: each dot offset by 0.2s
-      const bounce = Math.abs(Math.sin((t + i * 0.2) * 4));
-      mesh.position.y = y + bounce * 1.5;
-    }
+    bounceTypingDot(dot1Ref.current, t, 0, y);
+    bounceTypingDot(dot2Ref.current, t, 1, y);
+    bounceTypingDot(dot3Ref.current, t, 2, y);
   });
 
   return (
     <group position={[x, 0, z]}>
-      <mesh ref={dot1Ref} position={[-1.2, y, 0]}>
-        <sphereGeometry args={[0.4, 6, 4]} />
-        <meshBasicMaterial color={0xcccccc} />
-      </mesh>
-      <mesh ref={dot2Ref} position={[0, y, 0]}>
-        <sphereGeometry args={[0.4, 6, 4]} />
-        <meshBasicMaterial color={0xcccccc} />
-      </mesh>
-      <mesh ref={dot3Ref} position={[1.2, y, 0]}>
-        <sphereGeometry args={[0.4, 6, 4]} />
-        <meshBasicMaterial color={0xcccccc} />
-      </mesh>
+      <mesh ref={dot1Ref} position={[-1.2, y, 0]} geometry={dotLook.geometry} material={dotLook.material} dispose={null} />
+      <mesh ref={dot2Ref} position={[0, y, 0]} geometry={dotLook.geometry} material={dotLook.material} dispose={null} />
+      <mesh ref={dot3Ref} position={[1.2, y, 0]} geometry={dotLook.geometry} material={dotLook.material} dispose={null} />
     </group>
   );
 });
@@ -178,6 +232,12 @@ const EMPTY_SNAPSHOTS: NpcActivitySnapshot[] = [];
 
 function ActivityIndicators() {
   const sceneActive = useSceneActive();
+  // The layer is the only user of the shared indicator looks (see above):
+  // they stay allocated while it is mounted, even with no indicator showing.
+  useEffect(() => {
+    retainIndicatorLooks();
+    return releaseIndicatorLooks;
+  }, []);
   // Subscribe to a derived array that only contains the fields we care about.
   // useShallow performs element-by-element shallow comparison on the returned
   // array, so a new array with identical elements does NOT trigger a re-render.
