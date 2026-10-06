@@ -122,6 +122,10 @@ function isCacheEntryReady(read: () => unknown): boolean {
   }
 }
 
+/** Warm rounds per hook instance: the first warm plus 2 re-warms after a
+ * peek found the entry missing or loading again (Codex E3 re-check). */
+const INSTANCE_WARM_MAX_ROUNDS = 3;
+
 /**
  * Codex E3 BLOCKER (T10 batch, 2026-10-06): the stream queue records a
  * member as DELIVERED at admission, before its warm read resolves, and a
@@ -130,9 +134,12 @@ function isCacheEntryReady(read: () => unknown): boolean {
  * after THIS instance saw `read` not suspend. A remount whose entry is
  * already resolved is warmed in its first render (one non-hook cache read:
  * instant reveal, as before). Otherwise, once admitted, the effect awaits
- * warmSuspenseRead (it joins a load in flight) and flips `warmed`; an
- * unmount before it resolves cancels the flip. `parsedStampKey`
- * (boot-critical lane) is stamped first-write-wins when the warm resolves.
+ * warmSuspenseRead (it joins a load in flight), peeks the entry again
+ * (missing or loading -> re-warm, at most INSTANCE_WARM_MAX_ROUNDS) and
+ * flips `warmed`; an unmount before it resolves cancels the flip.
+ * `parsedStampKey` (boot-critical lane) is stamped first-write-wins when
+ * the warm resolves, or on the first commit of an instance warmed in its
+ * first render.
  */
 function useInstanceWarm(
   admitted: boolean,
@@ -145,15 +152,37 @@ function useInstanceWarm(
   useEffect(() => {
     if (warmed || !admitted || read === undefined) return undefined;
     let cancelled = false;
-    void warmSuspenseRead(read).then(() => {
+    void (async () => {
+      // warmSuspenseRead never rejects, so its completion does not prove the
+      // entry is still there: a cached failure can be CLEARED after the warm
+      // saw it (ModelLoadBoundary clear(), any eviction), and the release
+      // render would then start a new load and suspend (Codex E3 re-check).
+      // Peek again before the release: ready (resolved, or a cached failure
+      // the render rethrows into the boundary) -> release; still loading
+      // (the peek started or joined a load) -> warm again. After the last
+      // round, release anyway: the render suspends, as without the warm.
+      for (let round = 0; round < INSTANCE_WARM_MAX_ROUNDS; round += 1) {
+        await warmSuspenseRead(read);
+        if (cancelled) return;
+        if (isCacheEntryReady(read)) break;
+      }
       if (cancelled) return;
       if (parsedStampKey !== undefined) stampBgrPhase(parsedStampKey);
       setWarmed(true);
-    });
+    })();
     return () => {
       cancelled = true;
     };
   }, [warmed, admitted, read, parsedStampKey]);
+  useEffect(() => {
+    // An instance warmed by its first-render check (a remount of a resolved
+    // entry) skips the warm effect above; it stamps here, so a first mount
+    // that ended before its warm resolved still leaves a stamp. First write
+    // wins, so the stamp from the warm path is never moved.
+    if (warmed && read !== undefined && parsedStampKey !== undefined) {
+      stampBgrPhase(parsedStampKey);
+    }
+  }, [warmed, read, parsedStampKey]);
   return warmed || read === undefined;
 }
 

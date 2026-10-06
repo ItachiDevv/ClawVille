@@ -325,10 +325,10 @@ describe('BootStreamedContent post-reveal lane with the real useLoader cache', (
     cohortId: string,
     url: string,
     name: string,
-    opts: { warm: boolean; strict?: boolean; revealRequired?: boolean },
+    opts: { warm: boolean; strict?: boolean; revealRequired?: boolean; read?: () => unknown },
   ) {
     const root = await createTestRoot();
-    const warmRead = opts.warm ? () => readModel(url) : undefined;
+    const warmRead = opts.read ?? (opts.warm ? () => readModel(url) : undefined);
     const member = createElement(BootStreamedContent, {
       cohortId,
       priority: 0,
@@ -533,4 +533,141 @@ describe('BootStreamedContent post-reveal lane with the real useLoader cache', (
       20_000,
     );
   }
+
+  // Codex E3 re-check BLOCKER (15:01Z): warmSuspenseRead never rejects, so
+  // its completion does not prove the entry is still ready. A failed entry
+  // that is CLEARED after the warm saw it (ModelLoadBoundary clear(), any
+  // eviction) made the release render start a NEW load and suspend. The
+  // reader below clears the entry in the microtask after a read threw the
+  // cached Error: after warmSuspenseRead returned, before the release.
+  const isThen = (value: unknown) =>
+    !!value && typeof (value as { then?: unknown }).then === 'function';
+  function clearingRead(url: string, clears: { left: number }) {
+    return () => {
+      try {
+        return readModel(url);
+      } catch (thrown) {
+        if (!isThen(thrown) && clears.left > 0) {
+          clears.left -= 1;
+          queueMicrotask(() => r3f.useLoader.clear(ControlledLoader as never, url));
+        }
+        throw thrown;
+      }
+    };
+  }
+  const loadsFor = (url: string) => pendingLoads.filter((p) => p.url === url);
+
+  for (const lane of [
+    { name: 'post-reveal', revealRequired: false, id: 'building:app-publishing' },
+    { name: 'boot-critical', revealRequired: true, id: 'building:api-integrations' },
+  ] as const) {
+    test(
+      `${lane.name}: failed read, entry cleared, retry load -> 0 suspended render reads before the retry resolves`,
+      async () => {
+        suspensions = 0;
+        reported.length = 0;
+        const url = `/models/t10c-cleared-${lane.name}.glb`;
+        const name = `t10c-cleared-${lane.name}`;
+        const read = clearingRead(url, { left: 1 });
+        const { root, find } = await mountMember(lane.id, url, name, {
+          warm: true,
+          revealRequired: lane.revealRequired,
+          read,
+        });
+        await waitFor(() => loadsFor(url).length === 1, 'admission started the load');
+        await r3f.act(async () => {
+          loadsFor(url)[0]!.onError(new Error('flaky'));
+          await flush();
+        });
+        // The cleared entry needs a retry load; nothing may render-suspend.
+        await waitFor(() => loadsFor(url).length === 2, 'the retry load started');
+        expect(suspensions).toBe(0);
+        expect(find()).toBeUndefined();
+
+        await r3f.act(async () => {
+          loadsFor(url)[1]!.onLoad({});
+          await flush();
+        });
+        await waitFor(() => find() !== undefined, 'content committed after the retry load');
+        expect(suspensions).toBe(0);
+        expect(loadsFor(url).length).toBe(2);
+        expect(reported).toEqual([]);
+        await r3f.act(async () => root.unmount());
+      },
+      20_000,
+    );
+  }
+
+  test(
+    'a permanent failure with clears does not loop: bounded loads, then the member fails',
+    async () => {
+      suspensions = 0;
+      reported.length = 0;
+      const id = 'npc:town-guide';
+      const url = '/models/t10c-permanent.glb';
+      const failedBefore = cohort.getCohortCounts().failed;
+      const settled = new Set<PendingLoad>();
+      const failAll = () => {
+        for (const load of loadsFor(url)) {
+          if (settled.has(load)) continue;
+          settled.add(load);
+          load.onError(new Error('gone'));
+        }
+      };
+      const warn = console.warn;
+      console.warn = () => undefined; // StreamBoundary logs the drop.
+      try {
+        const { root } = await mountMember(id, url, 't10c-permanent', {
+          warm: true,
+          read: clearingRead(url, { left: 100 }),
+        });
+        const deadline = Date.now() + 10_000;
+        while (cohort.getCohortCounts().failed === failedBefore) {
+          if (Date.now() > deadline) throw new Error('member never failed');
+          await r3f.act(async () => {
+            failAll();
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          });
+        }
+        const loads = loadsFor(url).length;
+        // 1 admission load + at most 3 warm-round retries + 1 render load.
+        expect(loads).toBeLessThanOrEqual(5);
+        await r3f.act(async () => {
+          failAll();
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        });
+        expect(loadsFor(url).length).toBe(loads);
+        await r3f.act(async () => root.unmount());
+      } finally {
+        console.warn = warn;
+      }
+    },
+    20_000,
+  );
+
+  test(
+    'boot-critical: a remount warmed in its first render still stamps bgrParsed',
+    async () => {
+      const id = 'building:mcp-tool-use';
+      const url = '/models/t10c-stamp.glb';
+      const name = 't10c-stamp';
+      const phases = () =>
+        (globalThis.window as unknown as { __W3D_PHASES?: Record<string, unknown> }).__W3D_PHASES ?? {};
+      const first = await mountMember(id, url, name, { warm: true, revealRequired: true });
+      await waitFor(() => loadFor(url) !== undefined, 'admission started the load');
+      // The first mount ends before its warm resolves: it must not stamp.
+      await r3f.act(async () => first.root.unmount());
+      await r3f.act(async () => {
+        loadFor(url)!.onLoad({});
+        await flush();
+      });
+      expect(phases()[`bgrParsed:${id}`]).toBeUndefined();
+
+      const second = await mountMember(id, url, name, { warm: true, revealRequired: true });
+      expect(second.find()).toBeDefined();
+      expect(typeof phases()[`bgrParsed:${id}`]).toBe('number');
+      await r3f.act(async () => second.root.unmount());
+    },
+    20_000,
+  );
 });
