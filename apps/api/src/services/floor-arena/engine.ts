@@ -1139,13 +1139,44 @@ function warnRecorder(kind: string, error: unknown): void {
 
 /** What one exit tick hands to the deferred recording write (collected in memory during the tick). */
 export interface ArenaRecordingJob {
-  /** The tick time: the tail window ends here. */
+  /** The tick time. */
   nowMs: number;
   /** Hold points of the tick (marks and quotes), already merged and capped. */
   points: MarkPathPoint[];
   /** Trough candidates: every fresh mark the tick used (open positions and the ones that closed in it), one per
    *  position (a tick reads one mark per position, so it is that tick's low). */
   troughs: Array<{ id: string; mult: number; at: string }>;
+  /** Positions this process closed in the last 30 min (the tail registry), so the job never reads positions. */
+  tails: ArenaTailPosition[];
+}
+
+/** A position in its 30-minute post-exit tail, as the exit tick that closed it knew it. */
+export interface ArenaTailPosition { id: string; mint: string; entryPriceUsd: number; closedAtMs: number }
+
+/** Upper bound of the in-memory tail registry (about 20x the peak closes per 30 min); the oldest go first. */
+export const ARENA_TAIL_REGISTRY_MAX = 2_000;
+const tailRegistry = new Map<string, ArenaTailPosition>();
+
+/**
+ * Remembers a position the exit tick just closed, and returns the positions still inside their 30-minute tail at
+ * `nowMs`. In memory only (no read of floor_arena_positions in the recorder path): a restart or a leader change loses
+ * the tails of positions closed before it (accepted; sparse tails are accepted anyway).
+ */
+function tailsAt(nowMs: number, closedNow: readonly ArenaTailPosition[]): ArenaTailPosition[] {
+  for (const tail of closedNow) tailRegistry.set(tail.id, tail);
+  for (const [id, tail] of tailRegistry) {
+    if (nowMs - tail.closedAtMs > ARENA_POST_EXIT_TAIL_MS) tailRegistry.delete(id);
+  }
+  while (tailRegistry.size > ARENA_TAIL_REGISTRY_MAX) {
+    const oldest = tailRegistry.keys().next().value;
+    if (oldest === undefined) break;
+    tailRegistry.delete(oldest);
+  }
+  return [...tailRegistry.values()];
+}
+
+export function resetArenaTailRegistryForTest(): void {
+  tailRegistry.clear();
 }
 
 export const ARENA_RECORDING_STATEMENT_TIMEOUT_MS = 2_000;
@@ -1194,13 +1225,12 @@ export async function closeArenaRecordingClient(): Promise<void> {
 
 /**
  * The deferred recording write: ONE short transaction on the recording client, started after runExitTick has done
- * every decision and booking of the tick (fire-and-forget). It sets statement_timeout 2 s and lock_timeout 200 ms
- * again with SET LOCAL (in case a pooler drops startup parameters), reads the tail (positions closed in the last
- * 30 min and the snapshots already stored for their mints: no network call), inserts the path points (no foreign key:
- * no lock on any position row; key order; a conflict keeps the NEWEST mark and quote by timestamp), and LAST writes the
- * troughs: it locks only rows whose trough would fall, in id order with SKIP LOCKED, so it never waits for a booking
- * (a row a booking holds loses that trough point); a booking can wait on it only for that last statement and the
- * commit. Any error rolls the whole job back; the caller logs it and drops it.
+ * every decision and booking of the tick (fire-and-forget). It never reads, writes or locks floor_arena_positions: it
+ * sets statement_timeout 2 s and lock_timeout 200 ms again with SET LOCAL (in case a pooler drops startup parameters),
+ * reads the snapshots already stored for the tail mints (discovery tables, plain reads; no network call), inserts the
+ * path points into floor_arena_position_marks (key order; a conflict keeps the NEWEST mark and quote by timestamp) and
+ * upserts the troughs into the recorder-owned floor_arena_position_troughs (a row changes only on a new low). Any error
+ * rolls the whole job back; the caller logs it and drops it.
  */
 export async function writeArenaRecording(job: ArenaRecordingJob, database: Pick<PostgresJsDatabase, 'transaction'> = recordingDatabase()): Promise<void> {
   await database.transaction(async (tx) => {
@@ -1212,21 +1242,14 @@ export async function writeArenaRecording(job: ArenaRecordingJob, database: Pick
     for (const point of job.points) points.set(`${point.positionId}|${point.phase}|${point.bucketAtMs}`, point);
     // Post-exit tail from the stored snapshots only: a point exists only when the enrichment refreshed the mint for
     // its own reasons (open elsewhere, private, live shared row). Sparse tails are expected.
-    const closed = rowsOf(await tx.execute(sql`
-      SELECT id, mint, entry_price_usd, closed_at FROM floor_arena_positions
-      WHERE status = 'closed' AND closed_at >= ${new Date(job.nowMs - ARENA_POST_EXIT_TAIL_MS).toISOString()}::timestamptz
-        AND closed_at <= ${new Date(job.nowMs).toISOString()}::timestamptz
-    `));
-    if (closed.length > 0) {
-      const marks = await latestSnapshotMarks(closed.map((row) => String(row.mint)), tx as unknown as Pick<typeof db, 'execute'>);
-      for (const row of closed) {
-        const entryPriceUsd = positiveNumber(row.entry_price_usd);
-        const closedMs = msOf(row.closed_at);
-        const mark = marks.get(String(row.mint));
-        if (entryPriceUsd === null || closedMs === null || !mark || mark.atMs <= closedMs) continue;
+    if (job.tails.length > 0) {
+      const marks = await latestSnapshotMarks(job.tails.map((tail) => tail.mint), tx as unknown as Pick<typeof db, 'execute'>);
+      for (const tail of job.tails) {
+        const mark = marks.get(tail.mint);
+        if (!mark || mark.atMs <= tail.closedAtMs || !(tail.entryPriceUsd > 0)) continue;
         addMarkPathPoint(points, {
-          positionId: String(row.id), phase: 'tail', anchorMs: closedMs, atMs: mark.atMs,
-          markMult: round9(mark.priceUsd / entryPriceUsd),
+          positionId: tail.id, phase: 'tail', anchorMs: tail.closedAtMs, atMs: mark.atMs,
+          markMult: round9(mark.priceUsd / tail.entryPriceUsd),
         });
       }
     }
@@ -1259,19 +1282,15 @@ export async function writeArenaRecording(job: ArenaRecordingJob, database: Pick
     }
     if (job.troughs.length > 0) {
       await tx.execute(sql`
-        WITH r AS (
-          SELECT * FROM jsonb_to_recordset(${JSON.stringify(job.troughs)}::jsonb) AS r(id uuid, mult numeric, at timestamptz)
-        ), lockable AS (
-          SELECT p.id FROM floor_arena_positions AS p JOIN r ON r.id = p.id
-          WHERE p.trough_mult IS NULL OR r.mult < p.trough_mult
-          ORDER BY p.id
-          FOR NO KEY UPDATE OF p SKIP LOCKED
-        )
-        UPDATE floor_arena_positions AS p
-        SET trough_mult = LEAST(COALESCE(p.trough_mult, r.mult), r.mult),
-            trough_at = CASE WHEN p.trough_mult IS NULL OR r.mult < p.trough_mult THEN r.at ELSE p.trough_at END
-        FROM r
-        WHERE p.id = r.id AND p.id IN (SELECT id FROM lockable)
+        INSERT INTO floor_arena_position_troughs AS t (position_id, trough_mult, trough_at, updated_at)
+        SELECT r.id, r.mult, r.at, now()
+        FROM jsonb_to_recordset(${JSON.stringify(job.troughs)}::jsonb) AS r(id uuid, mult numeric, at timestamptz)
+        ORDER BY r.id
+        ON CONFLICT (position_id) DO UPDATE SET
+          trough_mult = LEAST(t.trough_mult, EXCLUDED.trough_mult),
+          trough_at = CASE WHEN EXCLUDED.trough_mult < t.trough_mult THEN EXCLUDED.trough_at ELSE t.trough_at END,
+          updated_at = now()
+        WHERE EXCLUDED.trough_mult < t.trough_mult
       `);
     }
   });
@@ -1333,7 +1352,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
   result.open = positions.length;
   if (positions.length === 0) {
     // AR-1: tail only, deferred (never awaited here).
-    scheduleArenaRecording({ nowMs, points: [], troughs: [] }, recordingWriter);
+    scheduleArenaRecording({ nowMs, points: [], troughs: [], tails: tailsAt(nowMs, []) }, recordingWriter);
     return result;
   }
   const agentIds = [...new Set(positions.map((p) => p.agentId))];
@@ -1349,6 +1368,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
   // took with its own time (the wrapper only remembers the result and reads Date.now() directly, never the injectable
   // trading clock; the quote call, its arguments and its result are unchanged).
   const pathPoints = new Map<string, MarkPathPoint>();
+  const closedNow: ArenaTailPosition[] = [];
   const seen: { quote: SellQuoteResult | null; atMs: number } = { quote: null, atMs: 0 };
   const sell = deps.quoteSell ?? quoteSell;
   const exitDeps: ExitDeps = {
@@ -1417,6 +1437,10 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
       }
       if (outcome.kind === 'quote_failed') result.quoteFailures += 1;
       if (outcome.kind === 'unresolved') result.unresolved += 1;
+      // AR-1: a position closed by this tick (booked or unresolved; both stamp closed_at = now) starts its tail.
+      if ((outcome.kind === 'filled' && outcome.closed) || outcome.kind === 'unresolved') {
+        closedNow.push({ id: position.id, mint: position.mint, entryPriceUsd, closedAtMs: nowMs });
+      }
       // AR-1: the quote at its own time.
       const quoteMult = sellQuoteMultiple(seen.quote, entryPriceUsd);
       if (quoteMult !== null) {
@@ -1442,7 +1466,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
   // AR-1: deferred, fire-and-forget; the tick returns without waiting for it. The trough candidates are the marks
   // this tick already used (open positions and the ones that closed in it).
   const troughs = markUpdates.map(({ id, mult, at }) => ({ id, mult, at }));
-  scheduleArenaRecording({ nowMs, points: [...pathPoints.values()], troughs }, recordingWriter);
+  scheduleArenaRecording({ nowMs, points: [...pathPoints.values()], troughs, tails: tailsAt(nowMs, closedNow) }, recordingWriter);
   return result;
 }
 

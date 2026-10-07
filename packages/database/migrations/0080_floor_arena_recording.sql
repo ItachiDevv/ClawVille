@@ -3,7 +3,8 @@
 -- DATA RECORDING ONLY: no reader in a trading decision, filter, exit, money path or public payload uses these columns
 -- or tables. Additive and idempotent (in CI the Drizzle bootstrap already has them, so every statement no-ops there).
 -- Safe before the code flip: the old code never reads or writes them, and its event prune still deletes as before.
--- lock_timeout: the ALTERs need a short ACCESS EXCLUSIVE lock on three hot arena tables. SET LOCAL bounds the wait to
+-- No column is added to floor_arena_positions: the recorder never writes or locks a trading row.
+-- lock_timeout: the ALTERs need a short ACCESS EXCLUSIVE lock on two hot arena tables. SET LOCAL bounds the wait to
 -- 5 s for this file's implicit transaction only (migrate-ci runs a file as one multi-statement query); on a timeout the
 -- whole file rolls back, the CI migrate job fails loud, and a rerun of the job applies it (every statement is idempotent).
 SET LOCAL lock_timeout = '5s';
@@ -15,9 +16,16 @@ ALTER TABLE "floor_discovery_mints" ADD COLUMN IF NOT EXISTS "first_snapshot_at"
 ALTER TABLE "floor_arena_private_mints" ADD COLUMN IF NOT EXISTS "first_snapshot" jsonb;
 ALTER TABLE "floor_arena_private_mints" ADD COLUMN IF NOT EXISTS "first_snapshot_at" timestamptz;
 
--- 2. Trough: the lowest fresh DexScreener mark multiple during the hold, and its snapshot time.
-ALTER TABLE "floor_arena_positions" ADD COLUMN IF NOT EXISTS "trough_mult" numeric;
-ALTER TABLE "floor_arena_positions" ADD COLUMN IF NOT EXISTS "trough_at" timestamptz;
+-- 2. Trough: the lowest fresh DexScreener mark multiple during the hold, and its snapshot time, in a RECORDER-OWNED
+--    table (join to floor_arena_positions by position id). NO foreign key and no column on floor_arena_positions, so the
+--    recorder never reads, writes or locks a trading row. updated_at drives the 90-day retention (events.ts).
+CREATE TABLE IF NOT EXISTS "floor_arena_position_troughs" (
+  "position_id" uuid PRIMARY KEY,
+  "trough_mult" numeric NOT NULL,
+  "trough_at" timestamptz NOT NULL,
+  "updated_at" timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS "floor_arena_position_troughs_updated_idx" ON "floor_arena_position_troughs" ("updated_at");
 
 -- 2 + 3. Mark path (phase 'hold') and post-exit tail (phase 'tail', 30 min after close). One row per time bucket:
 --    the newest mark and the newest sell quote of the bucket by timestamp. Buckets and the 800-row cap per position are
@@ -34,10 +42,13 @@ CREATE TABLE IF NOT EXISTS "floor_arena_position_marks" (
   "quote_mult" double precision,
   CONSTRAINT "floor_arena_position_marks_pkey" PRIMARY KEY ("position_id","phase","bucket_at")
 );
+-- The 90-day retention deletes by bucket_at (events.ts pruneArenaResearch).
+CREATE INDEX IF NOT EXISTS "floor_arena_position_marks_bucket_idx" ON "floor_arena_position_marks" ("bucket_at");
 
 -- 4. Pass and skip events older than 7 days move here instead of being deleted (the prune in events.ts).
 --    Never read by a route: the public and owner decision streams read floor_arena_events only. NO foreign key
---    either: an FK insert would take FOR KEY SHARE on floor_arena_agents rows that the routes lock.
+--    either: an FK insert would take FOR KEY SHARE on floor_arena_agents rows that the routes lock. Rows are deleted
+--    90 days after the event (ARENA_RESEARCH_RETENTION_DAYS, by the at index).
 CREATE TABLE IF NOT EXISTS "floor_arena_events_archive" (
   "id" bigint PRIMARY KEY,
   "agent_id" text NOT NULL,

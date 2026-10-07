@@ -159,10 +159,6 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
   exitQuoteFailures: integer('exit_quote_failures').default(0).notNull(),
   /** The engine's record of a failing exit (FloorArenaExitRun); NULL while no exit has failed. */
   exitRun: jsonb('exit_run').$type<FloorArenaExitRun>(),
-  /** Research (migration 0080): the lowest fresh DexScreener mark multiple during the hold, and its snapshot time.
-   *  Written by the deferred recording job after the exit tick (own DB client); no exit decision reads it. */
-  troughMult: numeric('trough_mult'),
-  troughAt: timestamp('trough_at', { withTimezone: true }),
 }, (t) => ({
   statusValid: check('floor_arena_positions_status_valid', sql`${t.status} IN ('open','closed')`),
   closedStamp: check('floor_arena_positions_closed_stamp', sql`(${t.status} = 'open' AND ${t.closedAt} IS NULL) OR (${t.status} = 'closed' AND ${t.closedAt} IS NOT NULL AND ${t.exitReason} IS NOT NULL)`),
@@ -183,7 +179,8 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
  *  ('tail'), one row per time bucket, at most 800 rows per position (engine `markPathSlot`). Multiples are price /
  *  entry price. Written after the exit tick, best effort; no decision and no route reads it. NO foreign key (an FK
  *  insert takes FOR KEY SHARE on the position row, which conflicts with a booking's FOR UPDATE); rows of a deleted
- *  position stay as orphans. The primary key (position_id first) is the lookup index. */
+ *  position stay as orphans. The primary key (position_id first) is the lookup index. Deleted 90 days after
+ *  `bucket_at` (ARENA_RESEARCH_RETENTION_DAYS, index floor_arena_position_marks_bucket_idx). */
 export const floorArenaPositionMarks = pgTable('floor_arena_position_marks', {
   positionId: uuid('position_id').notNull(),
   phase: text('phase').$type<'hold' | 'tail'>().notNull(),
@@ -194,6 +191,7 @@ export const floorArenaPositionMarks = pgTable('floor_arena_position_marks', {
   quoteMult: doublePrecision('quote_mult'),
 }, (t) => ({
   pk: primaryKey({ name: 'floor_arena_position_marks_pkey', columns: [t.positionId, t.phase, t.bucketAt] }),
+  bucketIdx: index('floor_arena_position_marks_bucket_idx').on(t.bucketAt),
   phaseValid: check('floor_arena_position_marks_phase_valid', sql`${t.phase} IN ('hold','tail')`),
   pairs: check('floor_arena_position_marks_pairs', sql`((${t.markAt} IS NULL) = (${t.markMult} IS NULL)) AND ((${t.quoteAt} IS NULL) = (${t.quoteMult} IS NULL)) AND (${t.markMult} IS NOT NULL OR ${t.quoteMult} IS NOT NULL)`),
 }));
@@ -217,6 +215,19 @@ export const floorArenaEvents = pgTable('floor_arena_events', {
   atIdx: index('floor_arena_events_at_idx').on(t.at),
   // The public trade tape: newest entry/exit rows without walking scan/pass/skip rows.
   tradesIdx: index('floor_arena_events_trades_idx').on(t.id.desc()).where(sql`${t.type} IN ('entry','exit')`),
+}));
+
+/** Research (migration 0080): the trough (lowest fresh DexScreener mark multiple of the hold and its snapshot time) of
+ *  a position, in a RECORDER-OWNED table: join to floor_arena_positions by position id. No foreign key and no column
+ *  on floor_arena_positions, so the recorder never reads, writes or locks a trading row. Deleted 90 days after
+ *  `updated_at` (ARENA_RESEARCH_RETENTION_DAYS). */
+export const floorArenaPositionTroughs = pgTable('floor_arena_position_troughs', {
+  positionId: uuid('position_id').primaryKey(),
+  troughMult: numeric('trough_mult').notNull(),
+  troughAt: timestamp('trough_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  updatedIdx: index('floor_arena_position_troughs_updated_idx').on(t.updatedAt),
 }));
 
 /** Research (migration 0080): pass and skip events older than ARENA_EVENT_RETENTION_DAYS, moved here by the prune
@@ -422,3 +433,4 @@ export type FloorArenaWithdrawChallengeRow = typeof floorArenaWithdrawChallenges
 export type FloorArenaWithdrawalRow = typeof floorArenaWithdrawals.$inferSelect;
 export type FloorArenaPositionMarkRow = typeof floorArenaPositionMarks.$inferSelect;
 export type FloorArenaEventArchiveRow = typeof floorArenaEventsArchive.$inferSelect;
+export type FloorArenaPositionTroughRow = typeof floorArenaPositionTroughs.$inferSelect;

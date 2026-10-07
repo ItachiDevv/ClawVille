@@ -95,7 +95,64 @@ export async function pruneArenaEvents(now: Date = new Date()): Promise<number> 
     total += deleted;
     if (deleted < PRUNE_BATCH) break;
   }
+  // AR-1 research retention, same hourly job. Its failure never undoes or blocks the event prune above.
+  try {
+    await pruneArenaResearch(now);
+  } catch (error) {
+    console.warn('[floor-arena] research retention failed (no trading effect)', error instanceof Error ? error.message.slice(0, 200) : 'error');
+  }
   return total;
+}
+
+/**
+ * Research retention (AR-1, migration 0080): rows of the research tables are deleted 90 days after their own time:
+ * `floor_arena_position_marks.bucket_at`, `floor_arena_position_troughs.updated_at`, `floor_arena_events_archive.at`
+ * (each column indexed). A position is never open for more than about a day, so the cut never touches an open
+ * position's path. Bounded: at most `batch` rows per statement and `maxBatches` statements per table per run. These
+ * tables are research-only: the deletes take no lock on any trading row (no foreign keys, no trading table touched).
+ */
+export const ARENA_RESEARCH_RETENTION_DAYS = 90;
+export const ARENA_RESEARCH_PRUNE_BATCH = 5_000;
+export const ARENA_RESEARCH_PRUNE_MAX_BATCHES = 20;
+
+export async function pruneArenaResearch(
+  now: Date = new Date(),
+  options: { batch?: number; maxBatches?: number } = {},
+): Promise<{ marks: number; troughs: number; archive: number }> {
+  const batch = options.batch ?? ARENA_RESEARCH_PRUNE_BATCH;
+  const maxBatches = options.maxBatches ?? ARENA_RESEARCH_PRUNE_MAX_BATCHES;
+  const cutoff = new Date(now.getTime() - ARENA_RESEARCH_RETENTION_DAYS * 86_400_000).toISOString();
+  const count = (result: unknown) => (Array.isArray(result) ? result.length : ((result as { rows?: unknown[] }).rows?.length ?? 0));
+  const loop = async (statement: () => Promise<unknown>): Promise<number> => {
+    let total = 0;
+    for (let i = 0; i < maxBatches; i += 1) {
+      const deleted = count(await statement());
+      total += deleted;
+      if (deleted < batch) break;
+    }
+    return total;
+  };
+  const marks = await loop(() => db.execute(sql`
+    DELETE FROM floor_arena_position_marks
+    WHERE (position_id, phase, bucket_at) IN (
+      SELECT position_id, phase, bucket_at FROM floor_arena_position_marks
+      WHERE bucket_at < ${cutoff}::timestamptz LIMIT ${batch}
+    )
+    RETURNING 1
+  `));
+  const troughs = await loop(() => db.execute(sql`
+    DELETE FROM floor_arena_position_troughs
+    WHERE position_id IN (
+      SELECT position_id FROM floor_arena_position_troughs WHERE updated_at < ${cutoff}::timestamptz LIMIT ${batch}
+    )
+    RETURNING 1
+  `));
+  const archive = await loop(() => db.execute(sql`
+    DELETE FROM floor_arena_events_archive
+    WHERE id IN (SELECT id FROM floor_arena_events_archive WHERE at < ${cutoff}::timestamptz LIMIT ${batch})
+    RETURNING 1
+  `));
+  return { marks, troughs, archive };
 }
 
 // ---------------------------------------------------------------- formatting for summaries

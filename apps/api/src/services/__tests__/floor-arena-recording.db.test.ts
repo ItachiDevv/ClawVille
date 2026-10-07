@@ -129,16 +129,21 @@ describeIfDb('floor arena research recording on Postgres', () => {
     const rows = await db.execute(sql`
       INSERT INTO floor_arena_positions (agent_id, mint, symbol, source, opened_at, size_usd, tokens, entry_price_usd,
         entry_fill_source, entry_features, params_version, status, closed_at, exit_reason, exit_fill_source, pnl_usd, pnl_mult,
-        remaining_fraction, realised_usd, trough_mult, trough_at)
+        remaining_fraction, realised_usd)
       VALUES (${input.agent ?? agentId}, ${input.mint}, 'TST', 'ds:token-profiles', ${new Date(input.openedAtMs).toISOString()}::timestamptz,
         20, ${20 / input.entryPriceUsd}, ${input.entryPriceUsd}, 'quote', ${JSON.stringify(features)}::jsonb, 1,
         ${closed ? 'closed' : 'open'}, ${closed ? new Date(input.closedAtMs!).toISOString() : null}::timestamptz,
         ${closed ? 'time' : null}, ${closed ? 'quote' : null}, ${closed ? -1 : null}, ${closed ? 0.95 : null},
-        ${closed ? 0 : 1}, ${closed ? 19 : 0}, ${input.firstSight ? 0.9 : null},
-        ${input.firstSight ? new Date().toISOString() : null}::timestamptz)
+        ${closed ? 0 : 1}, ${closed ? 19 : 0})
       RETURNING id
     `);
-    return String((rows as unknown as Array<{ id: string }>)[0]!.id);
+    const id = String((rows as unknown as Array<{ id: string }>)[0]!.id);
+    if (input.firstSight) {
+      await db.execute(sql`
+        INSERT INTO floor_arena_position_troughs (position_id, trough_mult, trough_at) VALUES (${id}::uuid, 0.9, now())
+      `);
+    }
+    return id;
   }
 
   async function pathOf(positionId: string) {
@@ -151,9 +156,14 @@ describeIfDb('floor arena research recording on Postgres', () => {
 
   async function positionOf(positionId: string) {
     const { sql, db } = dbm;
-    return ((await db.execute(sql`
-      SELECT status, trough_mult, trough_at, exit_reason FROM floor_arena_positions WHERE id = ${positionId}::uuid
-    `)) as unknown as Array<{ status: string; trough_mult: string | null; trough_at: Date | null; exit_reason: string | null }>)[0]!;
+    const position = ((await db.execute(sql`
+      SELECT status, exit_reason FROM floor_arena_positions WHERE id = ${positionId}::uuid
+    `)) as unknown as Array<{ status: string; exit_reason: string | null }>)[0]!;
+    // The trough lives in the recorder-owned table (join by position id).
+    const trough = ((await db.execute(sql`
+      SELECT trough_mult, trough_at FROM floor_arena_position_troughs WHERE position_id = ${positionId}::uuid
+    `)) as unknown as Array<{ trough_mult: string; trough_at: Date }>)[0];
+    return { ...position, trough_mult: trough?.trough_mult ?? null, trough_at: trough?.trough_at ?? null };
   }
 
   /** One exit tick plus its deferred recording (the tick itself never waits for it). */
@@ -190,6 +200,10 @@ describeIfDb('floor arena research recording on Postgres', () => {
     // No foreign keys on the research tables (B2): remove this file's rows explicitly.
     await db.execute(sql`
       DELETE FROM floor_arena_position_marks WHERE position_id IN (
+        SELECT id FROM floor_arena_positions WHERE agent_id = ${agentId} OR (agent_id = 'house:genesis' AND ${insertedHouse}))
+    `);
+    await db.execute(sql`
+      DELETE FROM floor_arena_position_troughs WHERE position_id IN (
         SELECT id FROM floor_arena_positions WHERE agent_id = ${agentId} OR (agent_id = 'house:genesis' AND ${insertedHouse}))
     `);
     await db.execute(sql`DELETE FROM floor_arena_events_archive WHERE agent_id = ${agentId}`);
@@ -352,28 +366,30 @@ describeIfDb('floor arena research recording on Postgres', () => {
     expect(path[1]!.mark_mult).toBeNull();
   });
 
-  test('3: a closed position gets tail points from stored snapshots only, for 30 minutes', async () => {
+  test('3: a position closed by the tick gets tail points from stored snapshots only, for 30 minutes', async () => {
+    const { resetArenaTailRegistryForTest } = await import('../floor-arena/engine');
+    resetArenaTailRegistryForTest();
+    const mint = fakeMint();
     const base = Date.now();
-    const recent = fakeMint();
-    const old = fakeMint();
-    await addDiscoveryRow(recent, new Date(base - 3_600_000));
-    await addDiscoveryRow(old, new Date(base - 3_600_000));
-    const recentId = await addPosition({ mint: recent, openedAtMs: base - 1_200_000, entryPriceUsd: 0.001, maxHoldS: 900, closedAtMs: base - 300_000 });
-    const oldId = await addPosition({ mint: old, openedAtMs: base - 3_000_000, entryPriceUsd: 0.001, maxHoldS: 900, closedAtMs: base - 31 * 60_000 });
-    // A snapshot from before the close is not a tail point.
-    await setSnapshot(recent, 0.0011, base - 310_000);
-    await setSnapshot(old, 0.0011, base - 20_000);
-    await tick(new Date(base - 15_000), { quoteSell: noQuote });
-    expect(await pathOf(recentId)).toEqual([]);
-    await setSnapshot(recent, 0.0012, base - 10_000);
-    await tick(new Date(base - 5_000), { quoteSell: noQuote });
-    await tick(new Date(base), { quoteSell: noQuote });
-    const tail = await pathOf(recentId);
+    await addDiscoveryRow(mint, new Date(base - 600_000));
+    const id = await addPosition({ mint, openedAtMs: base - 120_000, entryPriceUsd: 0.001, maxHoldS: 60 });
+    await setSnapshot(mint, 0.00095, base - 3_000);
+    await tick(new Date(base), { quoteSell: okQuote(0.00097) }); // closes it at base
+    expect((await positionOf(id)).status).toBe('closed');
+    const tailOf = async () => (await pathOf(id)).filter((p) => p.phase === 'tail');
+    expect(await tailOf()).toEqual([]); // the closing snapshot is older than the close: not a tail point
+    await setSnapshot(mint, 0.0012, base + 20_000);
+    await tick(new Date(base + 25_000), { quoteSell: noQuote });
+    await tick(new Date(base + 30_000), { quoteSell: noQuote }); // same snapshot: same bucket, no second row
+    let tail = await tailOf();
     expect(tail.length).toBe(1);
-    expect(tail[0]!.phase).toBe('tail');
     expect(tail[0]!.mark_mult!).toBeCloseTo(1.2, 9);
-    expect(await pathOf(oldId)).toEqual([]);
-    expect((await positionOf(recentId)).trough_mult).toBeNull();
+    expect(new Date(tail[0]!.bucket_at).getTime()).toBe(base + 20_000);
+    // After 30 min the position has left the tail registry: a newer snapshot adds nothing.
+    await setSnapshot(mint, 0.0013, base + 31 * 60_000);
+    await tick(new Date(base + 31 * 60_000 + 5_000), { quoteSell: noQuote });
+    tail = await tailOf();
+    expect(tail.length).toBe(1);
   });
 
   test('B1: the tail adds no DexScreener call and keeps no expired row', async () => {
@@ -476,7 +492,7 @@ describeIfDb('floor arena research recording on Postgres', () => {
     const positionId = crypto.randomUUID(); // no foreign key: any id works
     const b = Date.UTC(2026, 9, 7, 9, 0, 0);
     const job = (markAtMs: number | null, markMult: number | null, quoteAtMs: number | null, quoteMult: number | null) => ({
-      nowMs: b, troughs: [], points: [{ positionId, phase: 'hold' as const, bucketAtMs: b, markAtMs, markMult, quoteAtMs, quoteMult }],
+      nowMs: b, troughs: [], tails: [], points: [{ positionId, phase: 'hold' as const, bucketAtMs: b, markAtMs, markMult, quoteAtMs, quoteMult }],
     });
     try {
       await writeArenaRecording(job(b + 8_000, 1.1, b + 9_000, 1.2));
@@ -492,6 +508,123 @@ describeIfDb('floor arena research recording on Postgres', () => {
       expect(rows[0]!.quote_mult).toBe(1.2);
     } finally {
       await db.execute(sql`DELETE FROM floor_arena_position_marks WHERE position_id = ${positionId}::uuid`);
+    }
+  });
+
+  test('B2: the recorder never touches floor_arena_positions: a held row lock there does not stop it', async () => {
+    const postgres = (await import('postgres')).default;
+    const { db, sql } = dbm;
+    const { writeArenaRecording } = await import('../floor-arena/engine');
+    const at = Date.now() - 30_000;
+    const id = await addPosition({ mint: fakeMint(), openedAtMs: at - 60_000, entryPriceUsd: 0.001, maxHoldS: 86_400, tp: [[50, 1]] });
+    const other = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false, onnotice: () => {} });
+    try {
+      await other.begin(async (t) => {
+        // A trading-style row lock (an exit booking takes exactly this) held for the whole recorder run.
+        await t`SELECT id FROM floor_arena_positions WHERE id = ${id}::uuid FOR UPDATE`;
+        await writeArenaRecording({
+          nowMs: at, tails: [],
+          points: [{ positionId: id, phase: 'hold', bucketAtMs: at, markAtMs: at, markMult: 0.9, quoteAtMs: null, quoteMult: null }],
+          troughs: [{ id, mult: 0.85, at: new Date(at).toISOString() }],
+        });
+        // Completed while the lock is still held.
+        const row = await positionOf(id);
+        expect(Number(row.trough_mult)).toBeCloseTo(0.85, 9);
+        expect(new Date(row.trough_at!).getTime()).toBe(at);
+        expect((await pathOf(id)).length).toBe(1);
+      });
+    } finally {
+      await other.end({ timeout: 5 });
+      await db.execute(sql`DELETE FROM floor_arena_position_marks WHERE position_id = ${id}::uuid`);
+      await db.execute(sql`DELETE FROM floor_arena_position_troughs WHERE position_id = ${id}::uuid`);
+      await db.execute(sql`DELETE FROM floor_arena_positions WHERE id = ${id}::uuid`);
+    }
+  });
+
+  test('a trough row changes only on a new low', async () => {
+    const { db, sql } = dbm;
+    const { writeArenaRecording } = await import('../floor-arena/engine');
+    const positionId = crypto.randomUUID();
+    const t0 = Date.UTC(2026, 9, 7, 9, 0, 0);
+    const job = (mult: number, atMs: number) => ({
+      nowMs: atMs, points: [], tails: [], troughs: [{ id: positionId, mult, at: new Date(atMs).toISOString() }],
+    });
+    try {
+      await writeArenaRecording(job(0.9, t0));
+      await writeArenaRecording(job(0.95, t0 + 10_000)); // higher: no change
+      await writeArenaRecording(job(0.8, t0 + 20_000)); // new low
+      await writeArenaRecording(job(0.85, t0 + 30_000)); // higher again: no change
+      const rows = (await db.execute(sql`
+        SELECT trough_mult, trough_at FROM floor_arena_position_troughs WHERE position_id = ${positionId}::uuid
+      `)) as unknown as Array<{ trough_mult: string; trough_at: Date }>;
+      expect(rows.length).toBe(1);
+      expect(Number(rows[0]!.trough_mult)).toBe(0.8);
+      expect(new Date(rows[0]!.trough_at).getTime()).toBe(t0 + 20_000);
+    } finally {
+      await db.execute(sql`DELETE FROM floor_arena_position_troughs WHERE position_id = ${positionId}::uuid`);
+    }
+  });
+
+  test('retention: research rows older than 90 days are deleted in capped batches, younger rows stay', async () => {
+    const { db, sql } = dbm;
+    const { pruneArenaResearch, ARENA_RESEARCH_RETENTION_DAYS } = await import('../floor-arena/events');
+    expect(ARENA_RESEARCH_RETENTION_DAYS).toBe(90);
+    const now = new Date();
+    const old = (k: number) => new Date(now.getTime() - (91 * 86_400_000 + k * 1_000)).toISOString();
+    const young = new Date(now.getTime() - 89 * 86_400_000).toISOString();
+    const pos = crypto.randomUUID();
+    const oldTroughs = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const youngTrough = crypto.randomUUID();
+    const archiveBase = 9_000_000_000_000 + Math.floor(Math.random() * 1_000_000) * 10;
+    const archiveIds = [archiveBase, archiveBase + 1, archiveBase + 2, archiveBase + 3];
+    try {
+      await db.execute(sql`
+        INSERT INTO floor_arena_position_marks (position_id, phase, bucket_at, mark_at, mark_mult) VALUES
+          (${pos}::uuid, 'tail', ${old(1)}::timestamptz, ${old(1)}::timestamptz, 1),
+          (${pos}::uuid, 'tail', ${old(2)}::timestamptz, ${old(2)}::timestamptz, 1),
+          (${pos}::uuid, 'tail', ${old(3)}::timestamptz, ${old(3)}::timestamptz, 1),
+          (${pos}::uuid, 'hold', ${young}::timestamptz, ${young}::timestamptz, 1)
+      `);
+      for (const id of oldTroughs) {
+        await db.execute(sql`
+          INSERT INTO floor_arena_position_troughs (position_id, trough_mult, trough_at, updated_at)
+          VALUES (${id}::uuid, 0.5, ${old(1)}::timestamptz, ${old(1)}::timestamptz)
+        `);
+      }
+      await db.execute(sql`
+        INSERT INTO floor_arena_position_troughs (position_id, trough_mult, trough_at, updated_at)
+        VALUES (${youngTrough}::uuid, 0.5, ${young}::timestamptz, ${young}::timestamptz)
+      `);
+      await db.execute(sql`
+        INSERT INTO floor_arena_events_archive (id, agent_id, at, type, summary) VALUES
+          (${archiveIds[0]!}, ${agentId}, ${old(1)}::timestamptz, 'pass', 'r'),
+          (${archiveIds[1]!}, ${agentId}, ${old(2)}::timestamptz, 'pass', 'r'),
+          (${archiveIds[2]!}, ${agentId}, ${old(3)}::timestamptz, 'skip', 'r'),
+          (${archiveIds[3]!}, ${agentId}, ${young}::timestamptz, 'skip', 'r')
+      `);
+      const counts = async () => {
+        const marks = (await db.execute(sql`SELECT count(*)::int AS n FROM floor_arena_position_marks WHERE position_id = ${pos}::uuid`)) as unknown as Array<{ n: number }>;
+        const troughIds = JSON.stringify([...oldTroughs, youngTrough]);
+        const troughs = (await db.execute(sql`
+          SELECT count(*)::int AS n FROM floor_arena_position_troughs
+          WHERE position_id IN (SELECT (jsonb_array_elements_text(${troughIds}::jsonb))::uuid)
+        `)) as unknown as Array<{ n: number }>;
+        const ids = JSON.stringify(archiveIds);
+        const archive = (await db.execute(sql`
+          SELECT count(*)::int AS n FROM floor_arena_events_archive WHERE id IN (SELECT (jsonb_array_elements_text(${ids}::jsonb))::bigint)
+        `)) as unknown as Array<{ n: number }>;
+        return [marks[0]!.n, troughs[0]!.n, archive[0]!.n];
+      };
+      // Cap: 2 rows per statement, 1 statement per table per run.
+      expect(await pruneArenaResearch(now, { batch: 2, maxBatches: 1 })).toEqual({ marks: 2, troughs: 2, archive: 2 });
+      expect(await counts()).toEqual([2, 2, 2]);
+      await pruneArenaResearch(now, { batch: 2, maxBatches: 1 });
+      expect(await counts()).toEqual([1, 1, 1]); // only the young rows stay
+      expect(await pruneArenaResearch(now)).toEqual({ marks: 0, troughs: 0, archive: 0 });
+    } finally {
+      await db.execute(sql`DELETE FROM floor_arena_position_marks WHERE position_id = ${pos}::uuid`);
+      await db.execute(sql`DELETE FROM floor_arena_position_troughs WHERE position_id = ${youngTrough}::uuid`);
+      await db.execute(sql`DELETE FROM floor_arena_events_archive WHERE id = ${archiveIds[3]!}`);
     }
   });
 
