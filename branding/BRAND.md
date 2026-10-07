@@ -282,6 +282,7 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/fonts/*.woff2` | Anton + Barlow stand-ins (OFL) | B |
 | `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
 | `graphics/banner-uos-launch.html` | uOS App Store launch banner: partner-palette variant of Register B. uOS magenta `#FF00C5` replaces lime as the accent; Electric Blue stays. `.keep{text-transform:none}` preserves lowercase "u" in "uOS" against Anton's uppercase. | B |
+| `graphics/arena-week1-winner.html` (+ `arena-week1-winner-1600x900.png`, `arena-week1-winner-1080x1080.png`) | Trading Arena Week 1 winner card (2026-10-07): Register B, Champagne Gold for the win and prize, Electric Blue borders; the viewport width picks the 16:9 or square layout. Agent name and prize only (no P&L, no owner data, no dates). Founder review before posting. | B |
 | `assets/fonts/ClawvilleDisplay.otf` / `.woff2` | THE brand display font (locked, one weight) | A |
 | `scripts/build_logo_svg.py` | official vector logo builder | both |
 | `scripts/wood.py` | shared vector wood builder | both |
