@@ -12,7 +12,7 @@ import {
   type FloorArenaFeatures, type FloorArenaSnapshot,
 } from './filters';
 import {
-  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, latestSnapshotMarks, markFallbackProceeds, quoteBuy,
+  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, ARENA_POST_EXIT_TAIL_MS, latestSnapshotMarks, markFallbackProceeds, quoteBuy,
   quoteSell, type BuyQuoteResult, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
 import { entryVerdictStatus, type EntryVerdict } from './chain-checks';
@@ -915,10 +915,10 @@ export async function openPosition(
     // Codex r14: re-read the verdict and the priced pair now. FOR SHARE holds off a verdict or snapshot write on
     // this row until the entry commits, so the entry relies on the verdict that is current at insertion.
     const gateRows = rowsOf(await tx.execute(c.isPrivate
-      ? sql`SELECT chain_verdict, chain_checked_at, snapshot->>'pairAddress' AS pair_address FROM floor_arena_private_mints
-          WHERE agent_id = ${agent.id} AND mint = ${c.mint} FOR SHARE`
-      : sql`SELECT chain_verdict, chain_checked_at, snapshot->>'pairAddress' AS pair_address FROM floor_discovery_mints
-          WHERE mint = ${c.mint} FOR SHARE`));
+      ? sql`SELECT chain_verdict, chain_checked_at, snapshot->>'pairAddress' AS pair_address, first_snapshot, first_snapshot_at
+          FROM floor_arena_private_mints WHERE agent_id = ${agent.id} AND mint = ${c.mint} FOR SHARE`
+      : sql`SELECT chain_verdict, chain_checked_at, snapshot->>'pairAddress' AS pair_address, first_snapshot, first_snapshot_at
+          FROM floor_discovery_mints WHERE mint = ${c.mint} FOR SHARE`));
     const gateRow = gateRows[0];
     // The insert time: the wall clock read here, never earlier than the tick start. It judges the verdict and
     // stamps opened_at and the entry event, so a tick that started before a contest boundary but inserts after it
@@ -942,6 +942,9 @@ export async function openPosition(
       decimals: quote.decimals,
       dsEntryPriceUsd: c.features.priceUsd,
       quote: { impactPct: quote.impactPct, driftPct: quote.driftPct, quotedTokens: quote.quotedTokens, venue: quote.venue, route: quote.route },
+      // AR-1 research: the row's first snapshot (null for a row priced before migration 0080). No decision reads it,
+      // and the API position mapper strips it (queries.ts), so no payload changes.
+      firstSight: firstSightRecord(gateRow?.first_snapshot, gateRow?.first_snapshot_at, c),
     };
     const inserted = await tx.insert(floorArenaPositions).values({
       agentId: agent.id,
@@ -998,6 +1001,157 @@ export async function tryOpenPosition(
   }
 }
 
+// ---------------------------------------------------------------- research recording (AR-1, migration 0080)
+
+/*
+ * DATA RECORDING ONLY (docs/trading-floor-arena.md §6 "Research recording"): first sight, trough, mark path and
+ * post-exit tail. Nothing here feeds a trading decision, a filter, an exit, a money write or an API payload. Every
+ * write runs AFTER the tick's decisions and bookings, is best effort (an error is logged at most every 10 min per
+ * kind and never thrown into the tick), and uses only marks the tick already read: no extra network call.
+ */
+
+export type MarkPathPhase = 'hold' | 'tail';
+
+/** One row of floor_arena_position_marks (multiples = price / entry price; times in ms). */
+export interface MarkPathPoint {
+  positionId: string;
+  phase: MarkPathPhase;
+  bucketAtMs: number;
+  markAtMs: number | null;
+  markMult: number | null;
+  quoteAtMs: number | null;
+  quoteMult: number | null;
+}
+
+const PATH_FINE_STEP_MS = 10_000;
+const PATH_FINE_UNTIL_MS = 30 * 60_000;
+const PATH_MID_STEP_MS = 60_000;
+const PATH_MID_UNTIL_MS = 6 * 3_600_000;
+const PATH_COARSE_STEP_MS = 300_000;
+
+/**
+ * The time bucket of a path point; one row per bucket keeps the path bounded without reading it. Hold (anchor =
+ * opened_at): 10 s for the first 30 min, 60 s to 6 h, 300 s after, so a 24 h hold (the max_hold_s bound) has at most
+ * 180 + 330 + 216 rows. Tail (anchor = closed_at, 30 min): 10 s, at most 180 rows. A snapshot taken just before the
+ * entry lands in the bucket before the anchor.
+ */
+export function markPathBucketAt(phase: MarkPathPhase, atMs: number, anchorMs: number): number {
+  const age = atMs - anchorMs;
+  const step = phase === 'tail' || age < PATH_FINE_UNTIL_MS ? PATH_FINE_STEP_MS
+    : age < PATH_MID_UNTIL_MS ? PATH_MID_STEP_MS : PATH_COARSE_STEP_MS;
+  return anchorMs + Math.floor(age / step) * step;
+}
+
+/** The entry_features.firstSight object from a row's first snapshot (null when the row has none). */
+export function firstSightRecord(
+  raw: unknown,
+  atRaw: unknown,
+  c: Pick<ArenaCandidate, 'source' | 'firstSeenAtMs'>,
+): Record<string, unknown> | null {
+  const atMs = msOf(atRaw);
+  if (!raw || typeof raw !== 'object' || atMs === null) return null;
+  const s = raw as Record<string, unknown>;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return {
+    at: new Date(atMs).toISOString(), firstSeenAt: new Date(c.firstSeenAtMs).toISOString(), source: c.source,
+    priceUsd: n(s.priceUsd), mcap: n(s.mcap), liqUsd: n(s.liqUsd),
+    pairAddress: typeof s.pairAddress === 'string' ? s.pairAddress : null, pairCreatedAt: n(s.pairCreatedAt), ageS: n(s.ageS),
+    chg5m: n(s.chg5m), chg1h: n(s.chg1h), chg6h: n(s.chg6h), chg24h: n(s.chg24h), txns1h: n(s.txns1h), vol1h: n(s.vol1h),
+    volOverMcap: n(s.volOverMcap),
+  };
+}
+
+/** The quoted price of a sell quote (a refused quote keeps its quoted price when it had one) / the entry price. */
+export function sellQuoteMultiple(quote: SellQuoteResult | null, entryPriceUsd: number): number | null {
+  if (!quote || !(entryPriceUsd > 0)) return null;
+  const price = quote.ok ? quote.priceUsd : quote.quotedPriceUsd ?? quote.fill?.priceUsd ?? null;
+  return price !== null && Number.isFinite(price) && price > 0 ? price / entryPriceUsd : null;
+}
+
+const RECORDER_WARN_MS = 10 * 60_000;
+const recorderWarnedAt = new Map<string, number>();
+
+function warnRecorder(kind: string, error: unknown): void {
+  const nowMs = Date.now();
+  if (nowMs - (recorderWarnedAt.get(kind) ?? 0) < RECORDER_WARN_MS) return;
+  recorderWarnedAt.set(kind, nowMs);
+  console.warn('[floor-arena] research recording failed (no trading effect)', kind,
+    error instanceof Error ? error.message.slice(0, 200) : 'error');
+}
+
+/**
+ * One INSERT per tick. A bucket keeps its FIRST mark and the LAST quote taken in it. Rows are inserted in key order
+ * (ORDER BY), so two leaders during a deploy flip lock the same keys in the same order. The FK check takes FOR KEY
+ * SHARE on the position row, which never conflicts with the engine's row updates (FOR NO KEY UPDATE); a booking's
+ * FOR UPDATE makes it wait for that one row only, and the booking never waits on this table.
+ */
+async function writeMarkPath(points: readonly MarkPathPoint[]): Promise<void> {
+  if (points.length === 0) return;
+  const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+  const payload = JSON.stringify(points.map((p) => ({
+    position_id: p.positionId, phase: p.phase, bucket_at: iso(p.bucketAtMs), mark_at: iso(p.markAtMs),
+    mark_mult: p.markMult, quote_at: iso(p.quoteAtMs), quote_mult: p.quoteMult,
+  })));
+  await db.execute(sql`
+    INSERT INTO floor_arena_position_marks AS m (position_id, phase, bucket_at, mark_at, mark_mult, quote_at, quote_mult)
+    SELECT r.position_id, r.phase, r.bucket_at, r.mark_at, r.mark_mult, r.quote_at, r.quote_mult
+    FROM jsonb_to_recordset(${payload}::jsonb) AS r(position_id uuid, phase text, bucket_at timestamptz,
+      mark_at timestamptz, mark_mult double precision, quote_at timestamptz, quote_mult double precision)
+    ORDER BY r.position_id, r.phase, r.bucket_at
+    ON CONFLICT (position_id, phase, bucket_at) DO UPDATE SET
+      mark_at = COALESCE(m.mark_at, EXCLUDED.mark_at),
+      mark_mult = COALESCE(m.mark_mult, EXCLUDED.mark_mult),
+      quote_at = COALESCE(EXCLUDED.quote_at, m.quote_at),
+      quote_mult = COALESCE(EXCLUDED.quote_mult, m.quote_mult)
+    WHERE (m.mark_mult IS NULL AND EXCLUDED.mark_mult IS NOT NULL) OR EXCLUDED.quote_mult IS NOT NULL
+  `);
+}
+
+/**
+ * The trough (lowest fresh mark multiple of the hold) from the marks this tick used. No status filter, so the mark
+ * of the tick that closed a position (a stop) counts; every mark here was read while the position was open. Writes a
+ * row only on a new low.
+ */
+async function writeTroughs(marks: ReadonlyArray<{ id: string; mult: number; at: string }>): Promise<void> {
+  if (marks.length === 0) return;
+  await db.execute(sql`
+    UPDATE floor_arena_positions AS p SET trough_mult = r.mult, trough_at = r.at
+    FROM jsonb_to_recordset(${JSON.stringify(marks)}::jsonb) AS r(id uuid, mult numeric, at timestamptz)
+    WHERE p.id = r.id AND (p.trough_mult IS NULL OR r.mult < p.trough_mult)
+  `);
+}
+
+/**
+ * Post-exit tail: for 30 min after a close, one point per new stored DexScreener snapshot of the mint (the snapshot
+ * tables the enrichment already fills; it lists tail mints in its last tier). No quote, no network call.
+ */
+async function recordPostExitTail(now: Date): Promise<void> {
+  try {
+    const nowMs = now.getTime();
+    const rows = rowsOf(await db.execute(sql`
+      SELECT id, mint, entry_price_usd, closed_at FROM floor_arena_positions
+      WHERE status = 'closed' AND closed_at >= ${new Date(nowMs - ARENA_POST_EXIT_TAIL_MS).toISOString()}::timestamptz
+    `));
+    if (rows.length === 0) return;
+    const marks = await latestSnapshotMarks(rows.map((row) => String(row.mint)));
+    const points: MarkPathPoint[] = [];
+    for (const row of rows) {
+      const entryPriceUsd = positiveNumber(row.entry_price_usd);
+      const closedMs = msOf(row.closed_at);
+      const mark = marks.get(String(row.mint));
+      if (entryPriceUsd === null || closedMs === null || !mark) continue;
+      if (mark.atMs <= closedMs || mark.atMs - closedMs > ARENA_POST_EXIT_TAIL_MS) continue;
+      points.push({
+        positionId: String(row.id), phase: 'tail', bucketAtMs: markPathBucketAt('tail', mark.atMs, closedMs),
+        markAtMs: mark.atMs, markMult: round9(mark.priceUsd / entryPriceUsd), quoteAtMs: null, quoteMult: null,
+      });
+    }
+    await writeMarkPath(points);
+  } catch (error) {
+    warnRecorder('tail', error);
+  }
+}
+
 // ---------------------------------------------------------------- exits
 
 interface ExitDeps {
@@ -1027,7 +1181,10 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
   const result: ExitTickResult = { open: 0, marked: 0, exits: 0, closed: 0, fallbacks: 0, confirmedQuotes: 0, unresolved: 0, tpUnconfirmed: 0, quoteFailures: 0, errors: 0 };
   const positions = await db.select().from(floorArenaPositions).where(eq(floorArenaPositions.status, 'open'));
   result.open = positions.length;
-  if (positions.length === 0) return result;
+  if (positions.length === 0) {
+    await recordPostExitTail(now);
+    return result;
+  }
   const agentIds = [...new Set(positions.map((p) => p.agentId))];
   const agentRows = await db.select({ id: floorArenaAgents.id, params: floorArenaAgents.params })
     .from(floorArenaAgents).where(inArray(floorArenaAgents.id, agentIds));
@@ -1037,6 +1194,19 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
   }));
   const snapshotMarks = await latestSnapshotMarks(positions.map((p) => p.mint));
   const markUpdates: Array<{ id: string; peak: number; mult: number; at: string }> = [];
+  // AR-1 research recording: the hold path of this tick, and the last sell quote an exit took (the wrapper only
+  // remembers the result; the quote call, its arguments and its result are unchanged).
+  const pathPoints: MarkPathPoint[] = [];
+  const seen: { quote: SellQuoteResult | null } = { quote: null };
+  const sell = deps.quoteSell ?? quoteSell;
+  const exitDeps: ExitDeps = {
+    ...deps,
+    quoteSell: async (...args: Parameters<typeof quoteSell>) => {
+      const quote = await sell(...args);
+      seen.quote = quote;
+      return quote;
+    },
+  };
 
   for (const position of positions) {
     try {
@@ -1063,9 +1233,18 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
         result.marked += 1;
         markUpdates.push({ id: position.id, peak: round9(state.peakMult), mult: round9(markMult), at: new Date(known!.atMs).toISOString() });
       }
+      // AR-1: a path point for a mark newer than the stored one (the previous tick recorded that one).
+      const markAtMs = markMult !== null && known ? known.atMs : null;
+      const storedMarkAtMs = msOf(position.lastMarkAt);
+      const point: MarkPathPoint | null = markAtMs !== null && (storedMarkAtMs === null || markAtMs > storedMarkAtMs) ? {
+        positionId: position.id, phase: 'hold', bucketAtMs: markPathBucketAt('hold', markAtMs, state.openedAtMs),
+        markAtMs, markMult: round9(markMult!), quoteAtMs: null, quoteMult: null,
+      } : null;
+      if (point) pathPoints.push(point);
       const trigger = decideExitTrigger(state, exits, markMult, nowMs);
       if (!trigger) continue;
-      let outcome = await executeExit(position, state, exits, trigger, known, fresh, now, deps);
+      seen.quote = null;
+      let outcome = await executeExit(position, state, exits, trigger, known, fresh, now, exitDeps);
       if (outcome.kind === 'tp_unconfirmed') {
         // The mark says TP but the quote does not: hold the TP, but a stop / trail / time exit that is due still
         // runs now (with TP first in the order, a mark above TP would otherwise hide the time cap forever).
@@ -1074,7 +1253,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
         if (other) {
           // Re-read the row: the TP skip may have stored a low quote in exit_run (the CAS needs the current run).
           const current = (await db.select().from(floorArenaPositions).where(eq(floorArenaPositions.id, position.id)))[0];
-          if (current?.status === 'open') outcome = await executeExit(current, state, exits, other, known, fresh, now, deps);
+          if (current?.status === 'open') outcome = await executeExit(current, state, exits, other, known, fresh, now, exitDeps);
         }
       }
       if (outcome.kind === 'filled') {
@@ -1085,6 +1264,18 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
       }
       if (outcome.kind === 'quote_failed') result.quoteFailures += 1;
       if (outcome.kind === 'unresolved') result.unresolved += 1;
+      const quoteMult = sellQuoteMultiple(seen.quote, entryPriceUsd);
+      if (quoteMult !== null) {
+        if (point) {
+          point.quoteAtMs = nowMs;
+          point.quoteMult = round9(quoteMult);
+        } else {
+          pathPoints.push({
+            positionId: position.id, phase: 'hold', bucketAtMs: markPathBucketAt('hold', markAtMs ?? nowMs, state.openedAtMs),
+            markAtMs, markMult: markAtMs !== null ? round9(markMult!) : null, quoteAtMs: nowMs, quoteMult: round9(quoteMult),
+          });
+        }
+      }
     } catch (error) {
       result.errors += 1;
       console.warn('[floor-arena] exit failed for position', position.id, error instanceof Error ? error.message.slice(0, 200) : 'error');
@@ -1100,6 +1291,18 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
       WHERE p.id = r.id AND p.status = 'open'
     `);
   }
+  // AR-1 research recording, after every decision and booking of this tick; best effort, never thrown.
+  try {
+    await writeTroughs(markUpdates);
+  } catch (error) {
+    warnRecorder('trough', error);
+  }
+  try {
+    await writeMarkPath(pathPoints);
+  } catch (error) {
+    warnRecorder('path', error);
+  }
+  await recordPostExitTail(now);
   return result;
 }
 

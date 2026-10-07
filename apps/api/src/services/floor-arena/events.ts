@@ -4,7 +4,8 @@ import { floorArenaEvents } from '@clawville/database';
 /**
  * The arena decision stream (`floor_arena_events`, docs/trading-floor-arena.md §4).
  * Summaries are human readable and at most 280 chars. Retention: rows older than 7 days are pruned except
- * entry / exit / param_change / report, which are the permanent record.
+ * entry / exit / param_change / report, which are the permanent record; pruned pass / skip rows move to
+ * floor_arena_events_archive (research, read by no route), the other pruned types are deleted.
  */
 
 export type ArenaEventType = 'scan' | 'pass' | 'skip' | 'entry' | 'exit' | 'param_change' | 'report' | 'status' | 'addon';
@@ -54,23 +55,43 @@ export async function writeArenaEvent(event: ArenaEventInput, executor: EventWri
   await writeArenaEvents([event], executor);
 }
 
-/** Deletes pruneable rows in bounded batches so one pass never holds a long lock. Returns rows deleted. */
+/**
+ * Research recording (AR-1, migration 0080): pruned rows of these types are MOVED to floor_arena_events_archive
+ * (same id) instead of deleted. The other pruned types (scan, status, addon, withdraw) are still deleted.
+ */
+export const ARENA_EVENT_ARCHIVE_TYPES: readonly ArenaEventType[] = ['pass', 'skip'];
+
+/**
+ * Deletes pruneable rows in bounded batches so one pass never holds a long lock, and archives the pass and skip
+ * rows of each batch in the SAME statement (an archive failure rolls the delete back, so no row is lost). Returns
+ * rows removed from floor_arena_events.
+ */
 export async function pruneArenaEvents(now: Date = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - ARENA_EVENT_RETENTION_DAYS * 86_400_000);
   const keep = JSON.stringify(ARENA_EVENT_KEEP_TYPES);
+  const archive = JSON.stringify(ARENA_EVENT_ARCHIVE_TYPES);
   let total = 0;
   for (let batch = 0; batch < PRUNE_MAX_BATCHES; batch += 1) {
     const result = await db.execute(sql`
-      DELETE FROM floor_arena_events
-      WHERE id IN (
-        SELECT id FROM floor_arena_events
-        WHERE at < ${cutoff.toISOString()}::timestamptz
-          AND type NOT IN (SELECT jsonb_array_elements_text(${keep}::jsonb))
-        LIMIT ${PRUNE_BATCH}
+      WITH removed AS (
+        DELETE FROM floor_arena_events
+        WHERE id IN (
+          SELECT id FROM floor_arena_events
+          WHERE at < ${cutoff.toISOString()}::timestamptz
+            AND type NOT IN (SELECT jsonb_array_elements_text(${keep}::jsonb))
+          LIMIT ${PRUNE_BATCH}
+        )
+        RETURNING id, agent_id, at, type, mint, summary, data
+      ), archived AS (
+        INSERT INTO floor_arena_events_archive (id, agent_id, at, type, mint, summary, data)
+        SELECT id, agent_id, at, type, mint, summary, data FROM removed
+        WHERE type IN (SELECT jsonb_array_elements_text(${archive}::jsonb))
+        RETURNING id
       )
-      RETURNING id
+      SELECT (SELECT count(*) FROM removed)::int AS removed, (SELECT count(*) FROM archived)::int AS archived
     `);
-    const deleted = Array.isArray(result) ? result.length : ((result as { rows?: unknown[] }).rows?.length ?? 0);
+    const rows = Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? []);
+    const deleted = Number((rows[0] as { removed?: unknown } | undefined)?.removed ?? 0);
     total += deleted;
     if (deleted < PRUNE_BATCH) break;
   }

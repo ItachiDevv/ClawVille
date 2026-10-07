@@ -1,7 +1,8 @@
 /**
  * Trading Floor Arena (paper contest) tables. Contract:
  * `docs/trading-floor-arena.md` §4. Migrations: `0070_floor_arena.sql` + `0072_floor_arena_sources.sql`
- * + `0074_floor_arena_withdraw.sql` (idempotent, applied by the CI migrate gate, NEVER db:push).
+ * + `0074_floor_arena_withdraw.sql` + `0080_floor_arena_recording.sql` (idempotent, applied by the CI migrate gate,
+ * NEVER db:push). The 0080 research columns and tables are written by the engine only and read by no route.
  *
  * `floor_arena_addon_calls` and `floor_arena_withdrawals` record REAL USDC
  * and SOL that leave an agent's own ClawPump wallet. The other tables are
@@ -20,6 +21,7 @@ import {
   bigserial,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -77,6 +79,9 @@ export const floorDiscoveryMints = pgTable('floor_discovery_mints', {
   chainVerdict: jsonb('chain_verdict').$type<FloorArenaChainVerdict>(),
   chainCheckedAt: timestamp('chain_checked_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  /** Research (migration 0080): the FIRST snapshot of this row, written once by the enrichment, never replaced. */
+  firstSnapshot: jsonb('first_snapshot').$type<FloorDiscoverySnapshot>(),
+  firstSnapshotAt: timestamp('first_snapshot_at', { withTimezone: true }),
 }, (t) => ({
   firstSeenIdx: index('floor_discovery_mints_first_seen_idx').on(t.firstSeenAt.desc()),
   expiresIdx: index('floor_discovery_mints_expires_idx').on(t.expiresAt),
@@ -154,6 +159,10 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
   exitQuoteFailures: integer('exit_quote_failures').default(0).notNull(),
   /** The engine's record of a failing exit (FloorArenaExitRun); NULL while no exit has failed. */
   exitRun: jsonb('exit_run').$type<FloorArenaExitRun>(),
+  /** Research (migration 0080): the lowest fresh DexScreener mark multiple during the hold, and its snapshot time.
+   *  Written by the exit tick only; no exit decision reads it. */
+  troughMult: numeric('trough_mult'),
+  troughAt: timestamp('trough_at', { withTimezone: true }),
 }, (t) => ({
   statusValid: check('floor_arena_positions_status_valid', sql`${t.status} IN ('open','closed')`),
   closedStamp: check('floor_arena_positions_closed_stamp', sql`(${t.status} = 'open' AND ${t.closedAt} IS NULL) OR (${t.status} = 'closed' AND ${t.closedAt} IS NOT NULL AND ${t.exitReason} IS NOT NULL)`),
@@ -170,9 +179,27 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
   openMintUniq: uniqueIndex('floor_arena_positions_open_mint_uniq').on(t.agentId, t.mint).where(sql`${t.status} = 'open'`),
 }));
 
+/** Research (migration 0080): the bounded mark path of a position ('hold') and its 30-minute post-exit tail
+ *  ('tail'), one row per time bucket (engine `markPathBucketAt`). Multiples are price / entry price. Written by the
+ *  exit tick only, best effort; no decision and no route reads it. */
+export const floorArenaPositionMarks = pgTable('floor_arena_position_marks', {
+  positionId: uuid('position_id').notNull().references(() => floorArenaPositions.id, { onDelete: 'cascade' }),
+  phase: text('phase').$type<'hold' | 'tail'>().notNull(),
+  bucketAt: timestamp('bucket_at', { withTimezone: true }).notNull(),
+  markAt: timestamp('mark_at', { withTimezone: true }),
+  markMult: doublePrecision('mark_mult'),
+  quoteAt: timestamp('quote_at', { withTimezone: true }),
+  quoteMult: doublePrecision('quote_mult'),
+}, (t) => ({
+  pk: primaryKey({ name: 'floor_arena_position_marks_pkey', columns: [t.positionId, t.phase, t.bucketAt] }),
+  phaseValid: check('floor_arena_position_marks_phase_valid', sql`${t.phase} IN ('hold','tail')`),
+  pairs: check('floor_arena_position_marks_pairs', sql`((${t.markAt} IS NULL) = (${t.markMult} IS NULL)) AND ((${t.quoteAt} IS NULL) = (${t.quoteMult} IS NULL)) AND (${t.markMult} IS NOT NULL OR ${t.quoteMult} IS NOT NULL)`),
+}));
+
 /** The public decision stream. `summary` is at most
  *  FLOOR_ARENA_EVENT_SUMMARY_MAX characters (writers truncate). Retention:
- *  prune rows older than 7 days except entry/exit/param_change/report. The
+ *  prune rows older than 7 days except entry/exit/param_change/report; the
+ *  pruned pass/skip rows move to floor_arena_events_archive (0080). The
  *  `mode: 'number'` id is safe below 2^53 and serialises to JSON directly. */
 export const floorArenaEvents = pgTable('floor_arena_events', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
@@ -188,6 +215,22 @@ export const floorArenaEvents = pgTable('floor_arena_events', {
   atIdx: index('floor_arena_events_at_idx').on(t.at),
   // The public trade tape: newest entry/exit rows without walking scan/pass/skip rows.
   tradesIdx: index('floor_arena_events_trades_idx').on(t.id.desc()).where(sql`${t.type} IN ('entry','exit')`),
+}));
+
+/** Research (migration 0080): pass and skip events older than ARENA_EVENT_RETENTION_DAYS, moved here by the prune
+ *  instead of deleted. `id` is the original floor_arena_events id. No route reads this table. */
+export const floorArenaEventsArchive = pgTable('floor_arena_events_archive', {
+  id: bigint('id', { mode: 'number' }).primaryKey(),
+  agentId: text('agent_id').notNull().references(() => floorArenaAgents.id, { onDelete: 'cascade' }),
+  at: timestamp('at', { withTimezone: true }).notNull(),
+  type: text('type').$type<'pass' | 'skip'>().notNull(),
+  mint: text('mint'),
+  summary: text('summary').notNull(),
+  data: jsonb('data').$type<Record<string, unknown>>(),
+  archivedAt: timestamp('archived_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  typeValid: check('floor_arena_events_archive_type_valid', sql`${t.type} IN ('pass','skip')`),
+  atIdx: index('floor_arena_events_archive_at_idx').on(t.at),
 }));
 
 /** 30-minute analysis reports (D10); at most one suggestion each. */
@@ -234,6 +277,9 @@ export const floorArenaPrivateMints = pgTable('floor_arena_private_mints', {
   snapshotAt: timestamp('snapshot_at', { withTimezone: true }),
   chainVerdict: jsonb('chain_verdict').$type<FloorArenaChainVerdict>(),
   chainCheckedAt: timestamp('chain_checked_at', { withTimezone: true }),
+  /** Research (migration 0080): the FIRST snapshot of this row, as on floor_discovery_mints. */
+  firstSnapshot: jsonb('first_snapshot').$type<FloorDiscoverySnapshot>(),
+  firstSnapshotAt: timestamp('first_snapshot_at', { withTimezone: true }),
 }, (t) => ({
   pk: primaryKey({ name: 'floor_arena_private_mints_pkey', columns: [t.agentId, t.mint] }),
   mintIdx: index('floor_arena_private_mints_mint_idx').on(t.mint),
@@ -371,3 +417,5 @@ export type FloorArenaAddonCallRow = typeof floorArenaAddonCalls.$inferSelect;
 export type FloorArenaWithdrawAddressRow = typeof floorArenaWithdrawAddresses.$inferSelect;
 export type FloorArenaWithdrawChallengeRow = typeof floorArenaWithdrawChallenges.$inferSelect;
 export type FloorArenaWithdrawalRow = typeof floorArenaWithdrawals.$inferSelect;
+export type FloorArenaPositionMarkRow = typeof floorArenaPositionMarks.$inferSelect;
+export type FloorArenaEventArchiveRow = typeof floorArenaEventsArchive.$inferSelect;

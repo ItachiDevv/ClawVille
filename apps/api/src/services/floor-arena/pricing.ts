@@ -24,6 +24,8 @@ export const ARENA_QUOTE_SLIPPAGE_BPS = 300;
 export const ARENA_MAX_IMPACT_PCT = 3;
 export const ARENA_MAX_DRIFT_PCT = 35;
 export const ARENA_MARK_MAX_AGE_MS = 60_000;
+/** Research recording (AR-1, migration 0080): how long a closed position's price is still sampled (the tail). */
+export const ARENA_POST_EXIT_TAIL_MS = 30 * 60_000;
 /** One paper position is always $20 (D6). The engine never sizes differently. */
 export const ARENA_POSITION_USD = 20;
 

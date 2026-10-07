@@ -4,7 +4,7 @@ import type { FloorArenaSnapshot } from './filters';
 import { finiteOrNull } from './filters';
 import { CHAIN_UNIVERSE } from './chain-checks';
 import {
-  ArenaHttpError, arenaFetchJson, clawpumpBackend, dexscreenerBudgetLeft, noteDexscreenerCall,
+  ARENA_POST_EXIT_TAIL_MS, ArenaHttpError, arenaFetchJson, clawpumpBackend, dexscreenerBudgetLeft, noteDexscreenerCall,
   noteDexscreenerRateLimited, rememberSolPrice, USDC_MINT, WSOL_MINT, type ArenaFetch,
 } from './pricing';
 
@@ -378,14 +378,21 @@ export interface EnrichCandidate { mint: string; tier: number; firstSeenMs: numb
 
 /**
  * Enrichment order: 0 open positions, 1 private mints, 2 never priced (newest first), 3 coins in the chain
- * universe or first seen < 2 h ago, 4 the rest; inside a tier the least recently priced first. Tiers 2 and 3 are
- * for TRADEABLE shared coins only (D28, see enrichTier).
+ * universe or first seen < 2 h ago, 4 the rest, 5 post-exit tail mints (AR-1, ENRICH_TAIL_TIER); inside a tier the
+ * least recently priced first. Tiers 2 and 3 are for TRADEABLE shared coins only (D28, see enrichTier).
  */
 /**
  * Tier of a shared discovery row (D28). A GeckoTerminal-only coin (no ds:/clawpump: source) is never bought (D25), so
  * it always gets the last tier and is priced only with leftover budget: on staging 95 % of the in-universe rows were
  * GeckoTerminal-only and crowded the tradeable coins out of tiers 2 and 3.
  */
+/**
+ * Research recording (AR-1): a mint whose position closed in the last 30 min (the post-exit tail) is listed in this
+ * tier, AFTER every other tier, so it only takes enrichment room that nothing else wants. A tail mint that is also an
+ * open position, a private mint or a live shared row keeps its own (lower) tier: orderEnrichment keeps the first.
+ */
+export const ENRICH_TAIL_TIER = 5;
+
 export function enrichTier(row: { lastMs: number; tradeable: boolean; inUniverse: boolean; firstSeenMs: number }, nowMs: number): number {
   if (!row.tradeable) return 4;
   if (row.lastMs === 0) return 2;
@@ -462,6 +469,11 @@ export async function runEnrichmentTick(now: Date = new Date(), fetchImpl?: Aren
       ) AS tradeable
     FROM floor_discovery_mints WHERE expires_at > ${nowIso}::timestamptz
   `));
+  // AR-1 post-exit tail: mints of positions closed in the last 30 min (index floor_arena_positions_closed_idx).
+  const tail = rowsOf(await db.execute(sql`
+    SELECT DISTINCT mint FROM floor_arena_positions
+    WHERE status = 'closed' AND closed_at >= ${new Date(nowMs - ARENA_POST_EXIT_TAIL_MS).toISOString()}::timestamptz
+  `));
   const candidates: EnrichCandidate[] = [];
   const last = (mint: string, snapshotAt: unknown) => Math.max(lastAttempt.get(mint) ?? 0, msOf(snapshotAt) ?? 0);
   for (const row of open) candidates.push({ mint: String(row.mint), tier: 0, firstSeenMs: 0, lastMs: last(String(row.mint), null) });
@@ -476,6 +488,10 @@ export async function runEnrichmentTick(now: Date = new Date(), fetchImpl?: Aren
     const inUniverse = row.in_universe === true || row.in_universe === 't';
     const tradeable = row.tradeable === true || row.tradeable === 't';
     candidates.push({ mint, tier: enrichTier({ lastMs, tradeable, inUniverse, firstSeenMs }, nowMs), firstSeenMs, lastMs });
+  }
+  for (const row of tail) {
+    const mint = String(row.mint);
+    candidates.push({ mint, tier: ENRICH_TAIL_TIER, firstSeenMs: 0, lastMs: last(mint, null) });
   }
   const live = new Set(candidates.map((c) => c.mint));
   for (const mint of lastAttempt.keys()) if (!live.has(mint)) lastAttempt.delete(mint);
@@ -536,7 +552,10 @@ export async function storeSnapshots(
       await tx.execute(sql`
         UPDATE floor_discovery_mints AS d
         SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz,
-            symbol = COALESCE(d.symbol, r.symbol), name = COALESCE(d.name, r.name)
+            symbol = COALESCE(d.symbol, r.symbol), name = COALESCE(d.name, r.name),
+            -- AR-1 first sight: written once, never replaced (every SET expression reads the OLD row).
+            first_snapshot = CASE WHEN d.first_snapshot IS NULL THEN r.snapshot ELSE d.first_snapshot END,
+            first_snapshot_at = CASE WHEN d.first_snapshot IS NULL THEN ${at}::timestamptz ELSE d.first_snapshot_at END
         FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text)
         WHERE d.mint = r.mint
       `);
@@ -552,7 +571,9 @@ export async function storeSnapshots(
       const keys = JSON.stringify(locked.map((row) => ({ agent_id: String(row.agent_id), mint: String(row.mint) })));
       await tx.execute(sql`
         UPDATE floor_arena_private_mints AS p
-        SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz, symbol = COALESCE(p.symbol, r.symbol)
+        SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz, symbol = COALESCE(p.symbol, r.symbol),
+            first_snapshot = CASE WHEN p.first_snapshot IS NULL THEN r.snapshot ELSE p.first_snapshot END,
+            first_snapshot_at = CASE WHEN p.first_snapshot IS NULL THEN ${at}::timestamptz ELSE p.first_snapshot_at END
         FROM jsonb_to_recordset(${JSON.stringify(chunk)}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text),
              jsonb_to_recordset(${keys}::jsonb) AS k(agent_id text, mint text)
         WHERE p.mint = r.mint AND p.agent_id = k.agent_id AND p.mint = k.mint
@@ -562,20 +583,25 @@ export async function storeSnapshots(
 }
 
 /**
- * Removes expired shared rows and stale private rows, never one that backs an open position. O3: a DELETE locks in
- * scan order, so each table locks its doomed rows first in the shared order (FOR UPDATE, the DELETE's strength), then
- * deletes only those, with every condition re-checked on a fresh snapshot.
+ * Removes expired shared rows and stale private rows, never one that backs an open position. AR-1 post-exit tail: a
+ * SHARED row whose position closed less than 30 min ago is kept too, so the enrichment keeps pricing it for the tail
+ * recorder; a kept expired shared row is never a candidate, never chain-checked and never listed (those reads need
+ * expires_at > now). Private rows are NOT kept: the entry loader reads every private row, so keeping one would make
+ * it a candidate for longer (a trading change); a private mint's tail is recorded only while its row lives.
+ * O3: a DELETE locks in scan order, so each table locks its doomed rows first in the shared order (FOR UPDATE, the
+ * DELETE's strength), then deletes only those, with every condition re-checked on a fresh snapshot.
  */
 export async function runDiscoveryExpiryTick(
   now: Date = new Date(),
   database: ArenaDatabase = db,
 ): Promise<{ shared: number; private: number }> {
   const at = now.toISOString();
+  const tailFrom = new Date(now.getTime() - ARENA_POST_EXIT_TAIL_MS).toISOString();
   const shared = await database.transaction(async (tx) => {
     const doomed = rowsOf(await tx.execute(sql`
       SELECT d.mint FROM floor_discovery_mints AS d
       WHERE d.expires_at < ${at}::timestamptz
-        AND NOT EXISTS (SELECT 1 FROM floor_arena_positions p WHERE p.mint = d.mint AND p.status = 'open')
+        AND NOT EXISTS (SELECT 1 FROM floor_arena_positions p WHERE p.mint = d.mint AND (p.status = 'open' OR p.closed_at > ${tailFrom}::timestamptz))
       ORDER BY d.mint COLLATE "C"
       FOR UPDATE OF d
     `)).map((row) => String(row.mint));
@@ -584,7 +610,7 @@ export async function runDiscoveryExpiryTick(
       DELETE FROM floor_discovery_mints AS d
       WHERE d.mint IN (SELECT jsonb_array_elements_text(${JSON.stringify(doomed)}::jsonb))
         AND d.expires_at < ${at}::timestamptz
-        AND NOT EXISTS (SELECT 1 FROM floor_arena_positions p WHERE p.mint = d.mint AND p.status = 'open')
+        AND NOT EXISTS (SELECT 1 FROM floor_arena_positions p WHERE p.mint = d.mint AND (p.status = 'open' OR p.closed_at > ${tailFrom}::timestamptz))
       RETURNING d.mint
     `));
   });
