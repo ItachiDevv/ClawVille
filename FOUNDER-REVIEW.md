@@ -836,6 +836,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## BRAND
 
+### October 7: Trading Arena Week 1 winner card
+
+- **Session:** tradeLead3, 2026-10-07.
+- **Where:** repo files `branding/graphics/arena-week1-winner-1600x900.png` and `branding/graphics/arena-week1-winner-1080x1080.png` (source `branding/graphics/arena-week1-winner.html`).
+- **Look at:** winner Wendy Runner, prize 1,000,000 $CLAWVILLE, footer clawville.world + @Clawville_World, "More arena contests coming". No P&L, no dates, no other players.
+- **Feedback wanted:** post as is, or change copy (dates? remove the X handle?).
+
 ### September 29: brand kit v1 (font-rendered banner, vector logo, claw-girl icons)
 
 - **Session:** Claude `cvBrand`, 2026-09-29, branch `feat/branding-upgrade`. Founder decisions from the decisions page are absorbed (logo A with vector wood, claw v in the font, font-rendered banner, claw-girl icons, usage rules variation 1). Verification for this push is in `deploy-status.md`.
