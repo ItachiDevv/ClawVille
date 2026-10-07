@@ -160,7 +160,7 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
   /** The engine's record of a failing exit (FloorArenaExitRun); NULL while no exit has failed. */
   exitRun: jsonb('exit_run').$type<FloorArenaExitRun>(),
   /** Research (migration 0080): the lowest fresh DexScreener mark multiple during the hold, and its snapshot time.
-   *  Written by the exit tick only; no exit decision reads it. */
+   *  Written by the deferred recording job after the exit tick (own DB client); no exit decision reads it. */
   troughMult: numeric('trough_mult'),
   troughAt: timestamp('trough_at', { withTimezone: true }),
 }, (t) => ({

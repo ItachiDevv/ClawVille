@@ -55,6 +55,23 @@ describe('markPathSlot (pure)', () => {
   });
 });
 
+describe('addMarkPathPoint (pure)', () => {
+  test('a bucket keeps the NEWEST mark and the NEWEST quote by timestamp, not by arrival order', async () => {
+    const { addMarkPathPoint } = await import('../floor-arena/engine');
+    const t0 = Date.UTC(2026, 9, 7, 12, 0, 0);
+    const points = new Map<string, import('../floor-arena/engine').MarkPathPoint>();
+    const add = (atMs: number, extra: { markMult?: number; quoteMult?: number }) =>
+      addMarkPathPoint(points, { positionId: 'p', phase: 'hold', anchorMs: t0, atMs, ...extra });
+    add(t0 + 8_000, { markMult: 1.1 });
+    add(t0 + 2_000, { markMult: 1.0 }); // older, arrives later: ignored
+    add(t0 + 9_000, { quoteMult: 1.2 });
+    add(t0 + 1_000, { quoteMult: 0.9 }); // older, arrives later: ignored
+    expect([...points.values()]).toEqual([{
+      positionId: 'p', phase: 'hold', bucketAtMs: t0, markAtMs: t0 + 8_000, markMult: 1.1, quoteAtMs: t0 + 9_000, quoteMult: 1.2,
+    }]);
+  });
+});
+
 describeIfDb('floor arena research recording on Postgres', () => {
   const userId = crypto.randomUUID();
   const agentId = crypto.randomUUID();
@@ -167,8 +184,9 @@ describeIfDb('floor arena research recording on Postgres', () => {
 
   afterAll(async () => {
     const { db, sql } = dbm;
-    const { arenaRecordingSettled } = await import('../floor-arena/engine');
+    const { arenaRecordingSettled, closeArenaRecordingClient } = await import('../floor-arena/engine');
     await arenaRecordingSettled();
+    await closeArenaRecordingClient();
     // No foreign keys on the research tables (B2): remove this file's rows explicitly.
     await db.execute(sql`
       DELETE FROM floor_arena_position_marks WHERE position_id IN (
@@ -293,6 +311,13 @@ describeIfDb('floor arena research recording on Postgres', () => {
     expect(path.map((p) => p.phase)).toEqual(['hold', 'hold', 'hold']);
     expect(path.map((p) => Number(p.mark_mult!.toFixed(6)))).toEqual([0.8, 0.9, 0.7]);
     expect(path.every((p) => p.quote_mult === null)).toBe(true);
+    // The deferred write ran on its OWN one-connection client, not the trading pool.
+    const { db, sql } = dbm;
+    const conns = (await db.execute(sql`
+      SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE application_name = 'clawville-arena-recording' AND datname = current_database()
+    `)) as unknown as Array<{ n: number }>;
+    expect(conns[0]!.n).toBe(1);
   });
 
   test('2b: an exit quote is recorded at its own time and bucket; the closing tick mark counts for the trough', async () => {
@@ -302,9 +327,15 @@ describeIfDb('floor arena research recording on Postgres', () => {
     const openedAtMs = base - 120_000;
     const id = await addPosition({ mint, openedAtMs, entryPriceUsd: 0.001, maxHoldS: 60 });
     await setSnapshot(mint, 0.00095, base - 3_000);
-    const quoteAt = base + 500;
-    const result = await tick(new Date(base), { quoteSell: okQuote(0.00097), clock: () => quoteAt });
+    // The trading clock is injected and must NOT be read for recording: the quote time is Date.now().
+    let tradingClockReads = 0;
+    const before = Date.now();
+    const result = await tick(new Date(base), {
+      quoteSell: okQuote(0.00097), clock: () => { tradingClockReads += 1; return Date.now(); },
+    });
+    const after = Date.now();
     expect(result.closed).toBe(1);
+    expect(tradingClockReads).toBe(1); // the booking's own freshness check, as before AR-1
     const row = await positionOf(id);
     expect(row.status).toBe('closed');
     expect(Number(row.trough_mult)).toBeCloseTo(0.95, 9);
@@ -314,7 +345,9 @@ describeIfDb('floor arena research recording on Postgres', () => {
     expect(path[0]!.mark_mult!).toBeCloseTo(0.95, 9);
     expect(path[0]!.quote_mult).toBeNull();
     expect(new Date(path[1]!.bucket_at).getTime()).toBe(openedAtMs + 120_000);
-    expect(new Date(path[1]!.quote_at!).getTime()).toBe(quoteAt);
+    const quoteAtMs = new Date(path[1]!.quote_at!).getTime();
+    expect(quoteAtMs).toBeGreaterThanOrEqual(before);
+    expect(quoteAtMs).toBeLessThanOrEqual(after);
     expect(path[1]!.quote_mult!).toBeCloseTo(0.97, 9);
     expect(path[1]!.mark_mult).toBeNull();
   });
@@ -369,46 +402,97 @@ describeIfDb('floor arena research recording on Postgres', () => {
     await addDiscoveryRow(mint, new Date(base - 600_000));
     const id = await addPosition({ mint, openedAtMs: base - 120_000, entryPriceUsd: 0.001, maxHoldS: 60 });
     await setSnapshot(mint, 0.00095, base - 3_000);
-    let calls = 0;
-    const result = await tick(new Date(base), {
+    const { runExitTick, arenaRecordingSettled } = await import('../floor-arena/engine');
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    const order: string[] = [];
+    const result = await runExitTick(new Date(base), {
       quoteSell: okQuote(0.00097),
-      recordingWriter: async () => { calls += 1; throw new Error('injected recording failure'); },
+      recordingWriter: async () => {
+        await gate; // parked until the test has seen the tick return
+        order.push('job-failed');
+        throw new Error('injected recording failure');
+      },
     });
-    expect(calls).toBe(1);
+    order.push('tick-returned'); // if the tick waited for the job, this line would never run (deadlock)
+    openGate();
+    await arenaRecordingSettled();
+    expect(order).toEqual(['tick-returned', 'job-failed']);
     expect(result).toMatchObject({ exits: 1, closed: 1, errors: 0 });
     const row = await positionOf(id);
     expect(row.status).toBe('closed');
     expect(row.exit_reason).toBe('time');
-    expect(row.trough_mult).toBeNull(); // the closing-tick trough was in the dropped job
+    expect(row.trough_mult).toBeNull(); // the trough was in the dropped job (accepted loss)
     expect(await pathOf(id)).toEqual([]);
   });
 
   test('B2: a held lock on the marks table neither delays the tick nor holds the recording past its lock timeout', async () => {
     const postgres = (await import('postgres')).default;
-    const { runExitTick, arenaRecordingSettled, ARENA_RECORDING_LOCK_TIMEOUT_MS } = await import('../floor-arena/engine');
+    const { runExitTick, arenaRecordingSettled, writeArenaRecording } = await import('../floor-arena/engine');
     const mint = fakeMint();
     const base = Date.now();
     await addDiscoveryRow(mint, new Date(base - 600_000));
     const id = await addPosition({ mint, openedAtMs: base - 120_000, entryPriceUsd: 0.001, maxHoldS: 60 });
     await setSnapshot(mint, 0.00095, base - 3_000);
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    const order: string[] = [];
     const other = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false, onnotice: () => {} });
     try {
       await other.begin(async (t) => {
         await t`LOCK TABLE floor_arena_position_marks IN ACCESS EXCLUSIVE MODE`;
-        const t0 = Date.now();
-        const result = await runExitTick(new Date(base), { quoteSell: okQuote(0.00097) });
-        const tickMs = Date.now() - t0;
+        const result = await runExitTick(new Date(base), {
+          quoteSell: okQuote(0.00097),
+          recordingWriter: async (job) => {
+            await gate;
+            try {
+              await writeArenaRecording(job); // the real write on the recording client
+              order.push('job-written');
+            } catch (error) {
+              order.push('job-failed');
+              throw error;
+            }
+          },
+        });
+        order.push('tick-returned');
         expect(result).toMatchObject({ exits: 1, closed: 1, errors: 0 });
         expect((await positionOf(id)).status).toBe('closed');
-        await arenaRecordingSettled(); // fails on lock_timeout while the lock is still held
-        const settledMs = Date.now() - t0;
-        expect(tickMs).toBeLessThan(2_000);
-        expect(settledMs).toBeLessThan(tickMs + ARENA_RECORDING_LOCK_TIMEOUT_MS + 1_500);
+        openGate();
+        // The lock is released only after this callback returns, so the job can settle here ONLY through its
+        // lock_timeout; without one this await would never resolve (test timeout).
+        await arenaRecordingSettled();
+        order.push('job-settled');
       });
     } finally {
       await other.end({ timeout: 5 });
     }
+    expect(order).toEqual(['tick-returned', 'job-failed', 'job-settled']);
     expect(await pathOf(id)).toEqual([]);
+  });
+
+  test('a conflict keeps the newest mark and quote by timestamp (two leaders, any arrival order)', async () => {
+    const { db, sql } = dbm;
+    const { writeArenaRecording } = await import('../floor-arena/engine');
+    const positionId = crypto.randomUUID(); // no foreign key: any id works
+    const b = Date.UTC(2026, 9, 7, 9, 0, 0);
+    const job = (markAtMs: number | null, markMult: number | null, quoteAtMs: number | null, quoteMult: number | null) => ({
+      nowMs: b, troughs: [], points: [{ positionId, phase: 'hold' as const, bucketAtMs: b, markAtMs, markMult, quoteAtMs, quoteMult }],
+    });
+    try {
+      await writeArenaRecording(job(b + 8_000, 1.1, b + 9_000, 1.2));
+      await writeArenaRecording(job(b + 2_000, 1.0, b + 1_000, 0.9)); // older, arrives later
+      await writeArenaRecording(job(b + 9_500, 1.3, null, null)); // newer mark only
+      const rows = (await db.execute(sql`
+        SELECT mark_at, mark_mult, quote_at, quote_mult FROM floor_arena_position_marks WHERE position_id = ${positionId}::uuid
+      `)) as unknown as Array<{ mark_at: Date; mark_mult: number; quote_at: Date; quote_mult: number }>;
+      expect(rows.length).toBe(1);
+      expect(new Date(rows[0]!.mark_at).getTime()).toBe(b + 9_500);
+      expect(rows[0]!.mark_mult).toBe(1.3);
+      expect(new Date(rows[0]!.quote_at).getTime()).toBe(b + 9_000);
+      expect(rows[0]!.quote_mult).toBe(1.2);
+    } finally {
+      await db.execute(sql`DELETE FROM floor_arena_position_marks WHERE position_id = ${positionId}::uuid`);
+    }
   });
 
   test('privacy: no route that returns positions carries firstSight or trough fields (human and agent paths)', async () => {
@@ -513,6 +597,41 @@ describeIfDb('floor arena research recording on Postgres', () => {
     expect(counts.map((r) => r.n)).toEqual([1, 1]);
     const live = (await db.execute(sql`
       SELECT id FROM floor_arena_events WHERE id IN (SELECT (jsonb_array_elements_text(${ids}::jsonb))::bigint)
+    `)) as unknown as unknown[];
+    expect(live.length).toBe(0);
+  });
+
+  test('4c: a failed archive insert rolls the delete back; a later prune archives each row once', async () => {
+    const { db, sql } = dbm;
+    const { pruneArenaEvents } = await import('../floor-arena/events');
+    const now = new Date();
+    const old = new Date(now.getTime() - 10 * 86_400_000).toISOString();
+    const inserted = (await db.execute(sql`
+      INSERT INTO floor_arena_events (agent_id, at, type, mint, summary) VALUES
+        (${agentId}, ${old}::timestamptz, 'pass', 'F1', 'recover pass'),
+        (${agentId}, ${old}::timestamptz, 'skip', 'F2', 'recover skip')
+      RETURNING id
+    `)) as unknown as Array<{ id: number }>;
+    const ids = inserted.map((r) => Number(r.id));
+    const idList = JSON.stringify(ids);
+    // Inject the failure: an archive row already holds the first id, so the archive INSERT hits the primary key.
+    await db.execute(sql`
+      INSERT INTO floor_arena_events_archive (id, agent_id, at, type, summary) VALUES (${ids[0]!}, ${agentId}, now(), 'pass', 'blocker')
+    `);
+    await expect(pruneArenaEvents(now)).rejects.toThrow();
+    const stillLive = (await db.execute(sql`
+      SELECT id FROM floor_arena_events WHERE id IN (SELECT (jsonb_array_elements_text(${idList}::jsonb))::bigint)
+    `)) as unknown as unknown[];
+    expect(stillLive.length).toBe(2); // the delete rolled back with the failed insert: nothing lost
+    await db.execute(sql`DELETE FROM floor_arena_events_archive WHERE id = ${ids[0]!} AND summary = 'blocker'`);
+    await pruneArenaEvents(now);
+    const archived = (await db.execute(sql`
+      SELECT id, summary FROM floor_arena_events_archive
+      WHERE id IN (SELECT (jsonb_array_elements_text(${idList}::jsonb))::bigint) ORDER BY id
+    `)) as unknown as Array<{ id: number; summary: string }>;
+    expect(archived.map((r) => r.summary)).toEqual(['recover pass', 'recover skip']);
+    const live = (await db.execute(sql`
+      SELECT id FROM floor_arena_events WHERE id IN (SELECT (jsonb_array_elements_text(${idList}::jsonb))::bigint)
     `)) as unknown as unknown[];
     expect(live.length).toBe(0);
   });

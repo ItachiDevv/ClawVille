@@ -20,7 +20,7 @@ ALTER TABLE "floor_arena_positions" ADD COLUMN IF NOT EXISTS "trough_mult" numer
 ALTER TABLE "floor_arena_positions" ADD COLUMN IF NOT EXISTS "trough_at" timestamptz;
 
 -- 2 + 3. Mark path (phase 'hold') and post-exit tail (phase 'tail', 30 min after close). One row per time bucket:
---    the first mark of the bucket and the last sell quote taken in it. Buckets and the 800-row cap per position are
+--    the newest mark and the newest sell quote of the bucket by timestamp. Buckets and the 800-row cap per position are
 --    in the engine (markPathSlot): hold 10 s for the first 30 min, 60 s to 6 h, 600 s to 24 h (620 rows at most);
 --    tail 10 s for 30 min (180 rows at most). NO foreign key: an FK insert takes FOR KEY SHARE on the position row,
 --    which conflicts with an exit booking's FOR UPDATE; the primary key (position_id first) is the lookup index.
