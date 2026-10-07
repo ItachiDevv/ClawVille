@@ -180,10 +180,12 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
 }));
 
 /** Research (migration 0080): the bounded mark path of a position ('hold') and its 30-minute post-exit tail
- *  ('tail'), one row per time bucket (engine `markPathBucketAt`). Multiples are price / entry price. Written by the
- *  exit tick only, best effort; no decision and no route reads it. */
+ *  ('tail'), one row per time bucket, at most 800 rows per position (engine `markPathSlot`). Multiples are price /
+ *  entry price. Written after the exit tick, best effort; no decision and no route reads it. NO foreign key (an FK
+ *  insert takes FOR KEY SHARE on the position row, which conflicts with a booking's FOR UPDATE); rows of a deleted
+ *  position stay as orphans. The primary key (position_id first) is the lookup index. */
 export const floorArenaPositionMarks = pgTable('floor_arena_position_marks', {
-  positionId: uuid('position_id').notNull().references(() => floorArenaPositions.id, { onDelete: 'cascade' }),
+  positionId: uuid('position_id').notNull(),
   phase: text('phase').$type<'hold' | 'tail'>().notNull(),
   bucketAt: timestamp('bucket_at', { withTimezone: true }).notNull(),
   markAt: timestamp('mark_at', { withTimezone: true }),
@@ -218,10 +220,11 @@ export const floorArenaEvents = pgTable('floor_arena_events', {
 }));
 
 /** Research (migration 0080): pass and skip events older than ARENA_EVENT_RETENTION_DAYS, moved here by the prune
- *  instead of deleted. `id` is the original floor_arena_events id. No route reads this table. */
+ *  instead of deleted. `id` is the original floor_arena_events id. No route reads this table. NO foreign key (an FK
+ *  insert would take FOR KEY SHARE on agent rows the routes lock); rows of a deleted agent stay as orphans. */
 export const floorArenaEventsArchive = pgTable('floor_arena_events_archive', {
   id: bigint('id', { mode: 'number' }).primaryKey(),
-  agentId: text('agent_id').notNull().references(() => floorArenaAgents.id, { onDelete: 'cascade' }),
+  agentId: text('agent_id').notNull(),
   at: timestamp('at', { withTimezone: true }).notNull(),
   type: text('type').$type<'pass' | 'skip'>().notNull(),
   mint: text('mint'),

@@ -3,6 +3,10 @@
 -- DATA RECORDING ONLY: no reader in a trading decision, filter, exit, money path or public payload uses these columns
 -- or tables. Additive and idempotent (in CI the Drizzle bootstrap already has them, so every statement no-ops there).
 -- Safe before the code flip: the old code never reads or writes them, and its event prune still deletes as before.
+-- lock_timeout: the ALTERs need a short ACCESS EXCLUSIVE lock on three hot arena tables. SET LOCAL bounds the wait to
+-- 5 s for this file's implicit transaction only (migrate-ci runs a file as one multi-statement query); on a timeout the
+-- whole file rolls back, the CI migrate job fails loud, and a rerun of the job applies it (every statement is idempotent).
+SET LOCAL lock_timeout = '5s';
 
 -- 1. First sight: the FIRST DexScreener snapshot of a discovery row (written once by the enrichment, never replaced
 --    while the row lives). The engine copies it into floor_arena_positions.entry_features.firstSight at entry.
@@ -16,8 +20,10 @@ ALTER TABLE "floor_arena_positions" ADD COLUMN IF NOT EXISTS "trough_mult" numer
 ALTER TABLE "floor_arena_positions" ADD COLUMN IF NOT EXISTS "trough_at" timestamptz;
 
 -- 2 + 3. Mark path (phase 'hold') and post-exit tail (phase 'tail', 30 min after close). One row per time bucket:
---    the first mark of the bucket and the last sell quote taken in it. Bucket widths are in the engine
---    (markPathBucketAt): hold 10 s for the first 30 min, 60 s to 6 h, 300 s after; tail 10 s.
+--    the first mark of the bucket and the last sell quote taken in it. Buckets and the 800-row cap per position are
+--    in the engine (markPathSlot): hold 10 s for the first 30 min, 60 s to 6 h, 600 s to 24 h (620 rows at most);
+--    tail 10 s for 30 min (180 rows at most). NO foreign key: an FK insert takes FOR KEY SHARE on the position row,
+--    which conflicts with an exit booking's FOR UPDATE; the primary key (position_id first) is the lookup index.
 CREATE TABLE IF NOT EXISTS "floor_arena_position_marks" (
   "position_id" uuid NOT NULL,
   "phase" text NOT NULL,
@@ -26,12 +32,12 @@ CREATE TABLE IF NOT EXISTS "floor_arena_position_marks" (
   "mark_mult" double precision,
   "quote_at" timestamptz,
   "quote_mult" double precision,
-  CONSTRAINT "floor_arena_position_marks_pkey" PRIMARY KEY ("position_id","phase","bucket_at"),
-  CONSTRAINT "floor_arena_position_marks_position_id_floor_arena_positions_id_fk" FOREIGN KEY ("position_id") REFERENCES "floor_arena_positions"("id") ON DELETE CASCADE
+  CONSTRAINT "floor_arena_position_marks_pkey" PRIMARY KEY ("position_id","phase","bucket_at")
 );
 
 -- 4. Pass and skip events older than 7 days move here instead of being deleted (the prune in events.ts).
---    Never read by a route: the public and owner decision streams read floor_arena_events only.
+--    Never read by a route: the public and owner decision streams read floor_arena_events only. NO foreign key
+--    either: an FK insert would take FOR KEY SHARE on floor_arena_agents rows that the routes lock.
 CREATE TABLE IF NOT EXISTS "floor_arena_events_archive" (
   "id" bigint PRIMARY KEY,
   "agent_id" text NOT NULL,
@@ -40,8 +46,7 @@ CREATE TABLE IF NOT EXISTS "floor_arena_events_archive" (
   "mint" text,
   "summary" text NOT NULL,
   "data" jsonb,
-  "archived_at" timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT "floor_arena_events_archive_agent_id_floor_arena_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "floor_arena_agents"("id") ON DELETE CASCADE
+  "archived_at" timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS "floor_arena_events_archive_at_idx" ON "floor_arena_events_archive" ("at");
 

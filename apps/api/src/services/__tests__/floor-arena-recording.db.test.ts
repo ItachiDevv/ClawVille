@@ -3,9 +3,10 @@ import { FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
 
 /**
  * Research recording (task AR-1, migration 0080; docs/trading-floor-arena.md §6 "Research recording"): first-sight
- * snapshot, trough + mark path, post-exit tail, pass/skip archive. Real Postgres only, same opt-in as
- * floor-arena-queries.db.test.ts (CI === 'true' or ARENA_DB_TEST=1, plus DATABASE_URL). The exit-tick checks run the
- * real engine tick, which reads EVERY open position, so run this file against a test database of its own.
+ * snapshot, trough + mark path, post-exit tail, pass/skip archive, and the guarantees that recording never changes
+ * or delays trading. Real Postgres only, same opt-in as floor-arena-queries.db.test.ts (CI === 'true' or
+ * ARENA_DB_TEST=1, plus DATABASE_URL). The exit-tick checks run the real engine tick, which reads EVERY open
+ * position, so run this file against a test database of its own.
  */
 const optedIn = process.env.CI === 'true' || process.env.ARENA_DB_TEST === '1';
 const describeIfDb = process.env.DATABASE_URL && optedIn ? describe : describe.skip;
@@ -17,21 +18,40 @@ function fakeMint(): string {
   return out;
 }
 
-describe('markPathBucketAt (pure)', () => {
-  test('hold buckets: 10 s to 30 min, 60 s to 6 h, 300 s after; tail 10 s', async () => {
-    const { markPathBucketAt } = await import('../floor-arena/engine');
+describe('markPathSlot (pure)', () => {
+  test('hold buckets: 10 s to 30 min, 60 s to 6 h, 600 s to 24 h, then dropped; tail 10 s for 30 min', async () => {
+    const { markPathSlot } = await import('../floor-arena/engine');
     const t0 = Date.UTC(2026, 9, 7, 12, 0, 0);
-    expect(markPathBucketAt('hold', t0 + 17_000, t0)).toBe(t0 + 10_000);
-    expect(markPathBucketAt('hold', t0 + 29 * 60_000 + 59_000, t0)).toBe(t0 + 29 * 60_000 + 50_000);
-    expect(markPathBucketAt('hold', t0 + 31 * 60_000 + 59_000, t0)).toBe(t0 + 31 * 60_000);
-    expect(markPathBucketAt('hold', t0 + 7 * 3_600_000 + 299_000, t0)).toBe(t0 + 7 * 3_600_000);
-    expect(markPathBucketAt('tail', t0 + 25 * 60_000 + 9_000, t0)).toBe(t0 + 25 * 60_000);
-    // A snapshot taken just before the entry lands in the bucket before it.
-    expect(markPathBucketAt('hold', t0 - 3_000, t0)).toBe(t0 - 10_000);
-    // Bound: a 24 h hold has at most 180 + 330 + 216 buckets.
-    const buckets = new Set<number>();
-    for (let age = 0; age <= 86_400_000; age += 5_000) buckets.add(markPathBucketAt('hold', t0 + age, t0));
-    expect(buckets.size).toBeLessThanOrEqual(727);
+    expect(markPathSlot('hold', t0 + 17_000, t0)?.bucketAtMs).toBe(t0 + 10_000);
+    expect(markPathSlot('hold', t0 + 29 * 60_000 + 59_000, t0)?.bucketAtMs).toBe(t0 + 29 * 60_000 + 50_000);
+    expect(markPathSlot('hold', t0 + 31 * 60_000 + 59_000, t0)?.bucketAtMs).toBe(t0 + 31 * 60_000);
+    expect(markPathSlot('hold', t0 + 7 * 3_600_000 + 599_000, t0)?.bucketAtMs).toBe(t0 + 7 * 3_600_000);
+    expect(markPathSlot('hold', t0 + 86_400_000, t0)).not.toBeNull();
+    expect(markPathSlot('hold', t0 + 86_400_000 + 600_000, t0)).toBeNull();
+    // Every mark before the entry shares one bucket.
+    expect(markPathSlot('hold', t0 - 3_000, t0)?.bucketAtMs).toBe(t0 - 10_000);
+    expect(markPathSlot('hold', t0 - 55_000, t0)?.bucketAtMs).toBe(t0 - 10_000);
+    expect(markPathSlot('tail', t0 + 25 * 60_000 + 9_000, t0)?.bucketAtMs).toBe(t0 + 25 * 60_000);
+    expect(markPathSlot('tail', t0 - 1, t0)).toBeNull();
+    expect(markPathSlot('tail', t0 + 30 * 60_000, t0)).toBeNull();
+  });
+
+  test('hard cap: at most 620 hold rows and 180 tail rows (800) per position, whatever the hold time', async () => {
+    const { markPathSlot, MARK_PATH_MAX_ROWS } = await import('../floor-arena/engine');
+    const t0 = Date.UTC(2026, 9, 7, 12, 0, 0);
+    const hold = new Set<number>();
+    for (let age = -60_000; age <= 72 * 3_600_000; age += 5_000) {
+      const slot = markPathSlot('hold', t0 + age, t0);
+      if (slot) hold.add(slot.bucketAtMs);
+    }
+    const tail = new Set<number>();
+    for (let age = -60_000; age <= 3 * 3_600_000; age += 1_000) {
+      const slot = markPathSlot('tail', t0 + age, t0);
+      if (slot) tail.add(slot.bucketAtMs);
+    }
+    expect(hold.size).toBe(620);
+    expect(tail.size).toBe(180);
+    expect(hold.size + tail.size).toBe(MARK_PATH_MAX_ROWS);
   });
 });
 
@@ -41,6 +61,7 @@ describeIfDb('floor arena research recording on Postgres', () => {
   const params = FLOOR_ARENA_TEMPLATES[0]!.params;
   const pairAddress = fakeMint();
   let dbm: typeof import('@clawville/database');
+  let insertedHouse = false;
 
   function pair(mint: string, priceUsd: number, nowMs: number, pairAddr = pairAddress) {
     return {
@@ -79,23 +100,25 @@ describeIfDb('floor arena research recording on Postgres', () => {
 
   async function addPosition(input: {
     mint: string; openedAtMs: number; entryPriceUsd: number; maxHoldS: number; tp?: Array<[number, number]>;
-    closedAtMs?: number;
+    closedAtMs?: number; agent?: string; firstSight?: boolean;
   }): Promise<string> {
     const { sql, db } = dbm;
-    const features = {
+    const features: Record<string, unknown> = {
       exits: { tp: input.tp ?? [[10, 1]], stop_mult: null, trail_from_peak: null, trail_arm_mult: null, max_hold_s: input.maxHoldS },
-      decimals: 6, dsEntryPriceUsd: input.entryPriceUsd,
+      decimals: 6, dsEntryPriceUsd: input.entryPriceUsd, mcap: 50_000,
     };
+    if (input.firstSight) features.firstSight = { at: new Date().toISOString(), priceUsd: 0.001, mcap: 40_000 };
     const closed = input.closedAtMs !== undefined;
     const rows = await db.execute(sql`
       INSERT INTO floor_arena_positions (agent_id, mint, symbol, source, opened_at, size_usd, tokens, entry_price_usd,
         entry_fill_source, entry_features, params_version, status, closed_at, exit_reason, exit_fill_source, pnl_usd, pnl_mult,
-        remaining_fraction, realised_usd)
-      VALUES (${agentId}, ${input.mint}, 'TST', 'ds:token-profiles', ${new Date(input.openedAtMs).toISOString()}::timestamptz,
+        remaining_fraction, realised_usd, trough_mult, trough_at)
+      VALUES (${input.agent ?? agentId}, ${input.mint}, 'TST', 'ds:token-profiles', ${new Date(input.openedAtMs).toISOString()}::timestamptz,
         20, ${20 / input.entryPriceUsd}, ${input.entryPriceUsd}, 'quote', ${JSON.stringify(features)}::jsonb, 1,
         ${closed ? 'closed' : 'open'}, ${closed ? new Date(input.closedAtMs!).toISOString() : null}::timestamptz,
         ${closed ? 'time' : null}, ${closed ? 'quote' : null}, ${closed ? -1 : null}, ${closed ? 0.95 : null},
-        ${closed ? 0 : 1}, ${closed ? 19 : 0})
+        ${closed ? 0 : 1}, ${closed ? 19 : 0}, ${input.firstSight ? 0.9 : null},
+        ${input.firstSight ? new Date().toISOString() : null}::timestamptz)
       RETURNING id
     `);
     return String((rows as unknown as Array<{ id: string }>)[0]!.id);
@@ -109,14 +132,25 @@ describeIfDb('floor arena research recording on Postgres', () => {
     `)) as unknown as Array<{ phase: string; bucket_at: Date; mark_at: Date | null; mark_mult: number | null; quote_at: Date | null; quote_mult: number | null }>;
   }
 
-  async function troughOf(positionId: string) {
+  async function positionOf(positionId: string) {
     const { sql, db } = dbm;
     return ((await db.execute(sql`
-      SELECT trough_mult, trough_at FROM floor_arena_positions WHERE id = ${positionId}::uuid
-    `)) as unknown as Array<{ trough_mult: string | null; trough_at: Date | null }>)[0]!;
+      SELECT status, trough_mult, trough_at, exit_reason FROM floor_arena_positions WHERE id = ${positionId}::uuid
+    `)) as unknown as Array<{ status: string; trough_mult: string | null; trough_at: Date | null; exit_reason: string | null }>)[0]!;
+  }
+
+  /** One exit tick plus its deferred recording (the tick itself never waits for it). */
+  async function tick(at: Date, deps: Parameters<typeof import('../floor-arena/engine').runExitTick>[1]) {
+    const { runExitTick, arenaRecordingSettled } = await import('../floor-arena/engine');
+    const result = await runExitTick(at, deps);
+    await arenaRecordingSettled();
+    return result;
   }
 
   const noQuote = async () => { throw new Error('no sell quote expected'); };
+  const okQuote = (priceUsd: number) => async () => ({
+    ok: true as const, tokens: 20_000, quotedUsd: 19.4, proceedsUsd: 19.2, priceUsd, venue: 'test',
+  });
 
   beforeAll(async () => {
     dbm = await import('@clawville/database');
@@ -133,6 +167,15 @@ describeIfDb('floor arena research recording on Postgres', () => {
 
   afterAll(async () => {
     const { db, sql } = dbm;
+    const { arenaRecordingSettled } = await import('../floor-arena/engine');
+    await arenaRecordingSettled();
+    // No foreign keys on the research tables (B2): remove this file's rows explicitly.
+    await db.execute(sql`
+      DELETE FROM floor_arena_position_marks WHERE position_id IN (
+        SELECT id FROM floor_arena_positions WHERE agent_id = ${agentId} OR (agent_id = 'house:genesis' AND ${insertedHouse}))
+    `);
+    await db.execute(sql`DELETE FROM floor_arena_events_archive WHERE agent_id = ${agentId}`);
+    if (insertedHouse) await db.execute(sql`DELETE FROM floor_arena_agents WHERE id = 'house:genesis'`);
     await db.execute(sql`DELETE FROM users WHERE id = ${userId}::uuid`);
   });
 
@@ -162,7 +205,34 @@ describeIfDb('floor arena research recording on Postgres', () => {
     expect(new Date(priv[0]!.first_snapshot_at).getTime()).toBe(t1.getTime());
   });
 
-  test('1b: an entry copies the first sight into entry_features.firstSight; the public position shape is unchanged', async () => {
+  test('1a B3: a row priced before migration 0080 never gets a first snapshot', async () => {
+    const { db, sql } = dbm;
+    const { storeSnapshots } = await import('../floor-arena/discovery-hub');
+    const mint = fakeMint();
+    const old = Date.now() - 3_600_000;
+    await addDiscoveryRow(mint, new Date(old - 60_000));
+    await db.execute(sql`INSERT INTO floor_arena_private_mints (agent_id, mint, source) VALUES (${agentId}, ${mint}, 'test-addon')`);
+    // The pre-0080 state: a snapshot already stored, first_snapshot NULL.
+    const before = JSON.stringify(await snapshotOf(mint, 0.0005, old));
+    await db.execute(sql`UPDATE floor_discovery_mints SET snapshot = ${before}::jsonb, snapshot_at = ${new Date(old).toISOString()}::timestamptz WHERE mint = ${mint}`);
+    await db.execute(sql`UPDATE floor_arena_private_mints SET snapshot = ${before}::jsonb, snapshot_at = ${new Date(old).toISOString()}::timestamptz WHERE mint = ${mint}`);
+    for (const price of [0.001, 0.002]) {
+      await storeSnapshots([{ mint, snapshot: await snapshotOf(mint, price, Date.now()), symbol: 'TST', name: 'Test' }], new Date());
+    }
+    const rows = (await db.execute(sql`
+      SELECT snapshot, first_snapshot, first_snapshot_at FROM floor_discovery_mints WHERE mint = ${mint}
+      UNION ALL
+      SELECT snapshot, first_snapshot, first_snapshot_at FROM floor_arena_private_mints WHERE mint = ${mint}
+    `)) as unknown as Array<Record<string, any>>;
+    expect(rows.length).toBe(2);
+    for (const row of rows) {
+      expect(row.snapshot.priceUsd).toBe(0.002);
+      expect(row.first_snapshot).toBeNull();
+      expect(row.first_snapshot_at).toBeNull();
+    }
+  });
+
+  test('1b: an entry copies the first sight into entry_features.firstSight', async () => {
     const { db, sql, floorArenaAgents, eq } = dbm;
     const { storeSnapshots } = await import('../floor-arena/discovery-hub');
     const { openPosition } = await import('../floor-arena/engine');
@@ -198,67 +268,58 @@ describeIfDb('floor arena research recording on Postgres', () => {
       priceUsd: 0.001, mcap: 50_000, liqUsd: 20_000, chg5m: 1, chg1h: 2, chg6h: 3,
     });
     expect(typeof fs.ageS).toBe('number');
-    // The API position shape never carries the research object (owner and house views read entryFeatures).
-    const { readArenaPositions } = await import('../floor-arena/queries');
-    const listed = (await readArenaPositions(agentId, 'open', 10)).find((p) => p.mint === mint)!;
-    expect((listed.entryFeatures as Record<string, unknown>).firstSight).toBeUndefined();
-    expect(Object.keys(listed)).not.toContain('troughMult');
     await db.execute(sql`DELETE FROM floor_arena_positions WHERE id = ${rows[0]!.id}::uuid`);
   });
 
-  test('2: the exit tick records the trough and a bounded mark path without a quote', async () => {
-    const { runExitTick } = await import('../floor-arena/engine');
+  test('2: the exit tick records the trough and a mark path without a quote', async () => {
     const mint = fakeMint();
     const base = Date.now();
     await addDiscoveryRow(mint, new Date(base - 300_000));
     const id = await addPosition({ mint, openedAtMs: base - 120_000, entryPriceUsd: 0.001, maxHoldS: 86_400 });
     await setSnapshot(mint, 0.0008, base - 50_000);
-    await runExitTick(new Date(base - 45_000), { quoteSell: noQuote });
-    await runExitTick(new Date(base - 40_000), { quoteSell: noQuote }); // same snapshot: no second point
+    await tick(new Date(base - 45_000), { quoteSell: noQuote });
+    await tick(new Date(base - 40_000), { quoteSell: noQuote }); // same snapshot: no second point
     await setSnapshot(mint, 0.0009, base - 30_000);
-    await runExitTick(new Date(base - 25_000), { quoteSell: noQuote });
-    let trough = await troughOf(id);
-    expect(Number(trough.trough_mult)).toBeCloseTo(0.8, 9);
-    expect(new Date(trough.trough_at!).getTime()).toBe(base - 50_000);
+    await tick(new Date(base - 25_000), { quoteSell: noQuote });
+    let row = await positionOf(id);
+    expect(Number(row.trough_mult)).toBeCloseTo(0.8, 9);
+    expect(new Date(row.trough_at!).getTime()).toBe(base - 50_000);
     await setSnapshot(mint, 0.0007, base - 10_000);
-    await runExitTick(new Date(base - 5_000), { quoteSell: noQuote });
-    trough = await troughOf(id);
-    expect(Number(trough.trough_mult)).toBeCloseTo(0.7, 9);
-    expect(new Date(trough.trough_at!).getTime()).toBe(base - 10_000);
+    await tick(new Date(base - 5_000), { quoteSell: noQuote });
+    row = await positionOf(id);
+    expect(Number(row.trough_mult)).toBeCloseTo(0.7, 9);
+    expect(new Date(row.trough_at!).getTime()).toBe(base - 10_000);
     const path = await pathOf(id);
     expect(path.map((p) => p.phase)).toEqual(['hold', 'hold', 'hold']);
     expect(path.map((p) => Number(p.mark_mult!.toFixed(6)))).toEqual([0.8, 0.9, 0.7]);
     expect(path.every((p) => p.quote_mult === null)).toBe(true);
   });
 
-  test('2b: a sell quote taken by an exit is recorded with the closing mark, and the trough counts the closing tick', async () => {
-    const { runExitTick } = await import('../floor-arena/engine');
+  test('2b: an exit quote is recorded at its own time and bucket; the closing tick mark counts for the trough', async () => {
     const mint = fakeMint();
     const base = Date.now();
     await addDiscoveryRow(mint, new Date(base - 600_000));
-    const id = await addPosition({ mint, openedAtMs: base - 120_000, entryPriceUsd: 0.001, maxHoldS: 60 });
+    const openedAtMs = base - 120_000;
+    const id = await addPosition({ mint, openedAtMs, entryPriceUsd: 0.001, maxHoldS: 60 });
     await setSnapshot(mint, 0.00095, base - 3_000);
-    let quotes = 0;
-    await runExitTick(new Date(base), {
-      quoteSell: async () => {
-        quotes += 1;
-        return { ok: true as const, tokens: 20_000, quotedUsd: 19.4, proceedsUsd: 19.2, priceUsd: 0.00097, venue: 'test' };
-      },
-    });
-    expect(quotes).toBe(1);
-    const { db, sql } = dbm;
-    const status = ((await db.execute(sql`SELECT status FROM floor_arena_positions WHERE id = ${id}::uuid`)) as unknown as Array<{ status: string }>)[0]!;
-    expect(status.status).toBe('closed');
-    expect(Number((await troughOf(id)).trough_mult)).toBeCloseTo(0.95, 9);
+    const quoteAt = base + 500;
+    const result = await tick(new Date(base), { quoteSell: okQuote(0.00097), clock: () => quoteAt });
+    expect(result.closed).toBe(1);
+    const row = await positionOf(id);
+    expect(row.status).toBe('closed');
+    expect(Number(row.trough_mult)).toBeCloseTo(0.95, 9);
     const path = await pathOf(id);
-    expect(path.length).toBe(1);
+    expect(path.length).toBe(2);
+    expect(new Date(path[0]!.bucket_at).getTime()).toBe(openedAtMs + 110_000);
     expect(path[0]!.mark_mult!).toBeCloseTo(0.95, 9);
-    expect(path[0]!.quote_mult!).toBeCloseTo(0.97, 9);
-    expect(new Date(path[0]!.quote_at!).getTime()).toBe(base);
+    expect(path[0]!.quote_mult).toBeNull();
+    expect(new Date(path[1]!.bucket_at).getTime()).toBe(openedAtMs + 120_000);
+    expect(new Date(path[1]!.quote_at!).getTime()).toBe(quoteAt);
+    expect(path[1]!.quote_mult!).toBeCloseTo(0.97, 9);
+    expect(path[1]!.mark_mult).toBeNull();
   });
 
-  test('3: a closed position gets 30 minutes of tail points from the stored snapshots, never after', async () => {
-    const { runExitTick } = await import('../floor-arena/engine');
+  test('3: a closed position gets tail points from stored snapshots only, for 30 minutes', async () => {
     const base = Date.now();
     const recent = fakeMint();
     const old = fakeMint();
@@ -269,39 +330,22 @@ describeIfDb('floor arena research recording on Postgres', () => {
     // A snapshot from before the close is not a tail point.
     await setSnapshot(recent, 0.0011, base - 310_000);
     await setSnapshot(old, 0.0011, base - 20_000);
-    await runExitTick(new Date(base - 15_000), { quoteSell: noQuote });
+    await tick(new Date(base - 15_000), { quoteSell: noQuote });
     expect(await pathOf(recentId)).toEqual([]);
     await setSnapshot(recent, 0.0012, base - 10_000);
-    await runExitTick(new Date(base - 5_000), { quoteSell: noQuote });
-    await runExitTick(new Date(base), { quoteSell: noQuote });
+    await tick(new Date(base - 5_000), { quoteSell: noQuote });
+    await tick(new Date(base), { quoteSell: noQuote });
     const tail = await pathOf(recentId);
     expect(tail.length).toBe(1);
     expect(tail[0]!.phase).toBe('tail');
     expect(tail[0]!.mark_mult!).toBeCloseTo(1.2, 9);
     expect(await pathOf(oldId)).toEqual([]);
-    expect((await troughOf(recentId)).trough_mult).toBeNull();
+    expect((await positionOf(recentId)).trough_mult).toBeNull();
   });
 
-  test('3b: the expiry keeps a discovery row whose position closed under 30 min ago', async () => {
+  test('B1: the tail adds no DexScreener call and keeps no expired row', async () => {
     const { db, sql } = dbm;
-    const { runDiscoveryExpiryTick } = await import('../floor-arena/discovery-hub');
-    const base = Date.now();
-    const kept = fakeMint();
-    const gone = fakeMint();
-    await addDiscoveryRow(kept, new Date(base - 2 * 86_400_000), new Date(base - 60_000));
-    await addDiscoveryRow(gone, new Date(base - 2 * 86_400_000), new Date(base - 60_000));
-    await addPosition({ mint: kept, openedAtMs: base - 1_200_000, entryPriceUsd: 0.001, maxHoldS: 900, closedAtMs: base - 600_000 });
-    await addPosition({ mint: gone, openedAtMs: base - 4_000_000, entryPriceUsd: 0.001, maxHoldS: 900, closedAtMs: base - 40 * 60_000 });
-    await runDiscoveryExpiryTick(new Date(base));
-    const left = ((await db.execute(sql`
-      SELECT mint FROM floor_discovery_mints WHERE mint IN (${kept}, ${gone})
-    `)) as unknown as Array<{ mint: string }>).map((r) => r.mint);
-    expect(left).toEqual([kept]);
-  });
-
-  test('3c: the enrichment prices a tail mint whose discovery row has expired', async () => {
-    const { db, sql } = dbm;
-    const { runEnrichmentTick, resetDiscoveryStateForTest } = await import('../floor-arena/discovery-hub');
+    const { runEnrichmentTick, runDiscoveryExpiryTick, resetDiscoveryStateForTest } = await import('../floor-arena/discovery-hub');
     resetDiscoveryStateForTest();
     const base = Date.now();
     const mint = fakeMint();
@@ -309,15 +353,108 @@ describeIfDb('floor arena research recording on Postgres', () => {
     await addPosition({ mint, openedAtMs: base - 1_200_000, entryPriceUsd: 0.001, maxHoldS: 900, closedAtMs: base - 120_000 });
     const requested: string[] = [];
     const fakeFetch = (async (input: URL | string) => {
-      const url = String(input);
-      requested.push(url);
-      const body = url.includes(mint) ? [pair(mint, 0.0013, base)] : [];
-      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      requested.push(String(input));
+      return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
     }) as unknown as typeof fetch;
     await runEnrichmentTick(new Date(base), fakeFetch);
-    expect(requested.some((u) => u.includes(mint))).toBe(true);
-    const row = ((await db.execute(sql`SELECT snapshot FROM floor_discovery_mints WHERE mint = ${mint}`)) as unknown as Array<Record<string, any>>)[0]!;
-    expect(row.snapshot.priceUsd).toBe(0.0013);
+    expect(requested.some((u) => u.includes(mint))).toBe(false);
+    await runDiscoveryExpiryTick(new Date(base));
+    const left = (await db.execute(sql`SELECT mint FROM floor_discovery_mints WHERE mint = ${mint}`)) as unknown as unknown[];
+    expect(left.length).toBe(0);
+  });
+
+  test('B2: a failing recording write changes no trade and never reaches the tick', async () => {
+    const mint = fakeMint();
+    const base = Date.now();
+    await addDiscoveryRow(mint, new Date(base - 600_000));
+    const id = await addPosition({ mint, openedAtMs: base - 120_000, entryPriceUsd: 0.001, maxHoldS: 60 });
+    await setSnapshot(mint, 0.00095, base - 3_000);
+    let calls = 0;
+    const result = await tick(new Date(base), {
+      quoteSell: okQuote(0.00097),
+      recordingWriter: async () => { calls += 1; throw new Error('injected recording failure'); },
+    });
+    expect(calls).toBe(1);
+    expect(result).toMatchObject({ exits: 1, closed: 1, errors: 0 });
+    const row = await positionOf(id);
+    expect(row.status).toBe('closed');
+    expect(row.exit_reason).toBe('time');
+    expect(row.trough_mult).toBeNull(); // the closing-tick trough was in the dropped job
+    expect(await pathOf(id)).toEqual([]);
+  });
+
+  test('B2: a held lock on the marks table neither delays the tick nor holds the recording past its lock timeout', async () => {
+    const postgres = (await import('postgres')).default;
+    const { runExitTick, arenaRecordingSettled, ARENA_RECORDING_LOCK_TIMEOUT_MS } = await import('../floor-arena/engine');
+    const mint = fakeMint();
+    const base = Date.now();
+    await addDiscoveryRow(mint, new Date(base - 600_000));
+    const id = await addPosition({ mint, openedAtMs: base - 120_000, entryPriceUsd: 0.001, maxHoldS: 60 });
+    await setSnapshot(mint, 0.00095, base - 3_000);
+    const other = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false, onnotice: () => {} });
+    try {
+      await other.begin(async (t) => {
+        await t`LOCK TABLE floor_arena_position_marks IN ACCESS EXCLUSIVE MODE`;
+        const t0 = Date.now();
+        const result = await runExitTick(new Date(base), { quoteSell: okQuote(0.00097) });
+        const tickMs = Date.now() - t0;
+        expect(result).toMatchObject({ exits: 1, closed: 1, errors: 0 });
+        expect((await positionOf(id)).status).toBe('closed');
+        await arenaRecordingSettled(); // fails on lock_timeout while the lock is still held
+        const settledMs = Date.now() - t0;
+        expect(tickMs).toBeLessThan(2_000);
+        expect(settledMs).toBeLessThan(tickMs + ARENA_RECORDING_LOCK_TIMEOUT_MS + 1_500);
+      });
+    } finally {
+      await other.end({ timeout: 5 });
+    }
+    expect(await pathOf(id)).toEqual([]);
+  });
+
+  test('privacy: no route that returns positions carries firstSight or trough fields (human and agent paths)', async () => {
+    const { db, sql } = dbm;
+    const { createFloorArenaRoutes } = await import('../../routes/floor-arena');
+    const { createFloorArenaHouseBoardRoutes } = await import('../../routes/floor-arena-house-board');
+    const { createRateLimiter } = await import('../../middleware/rate-limit');
+    const { FLOOR_ARENA_HOUSE_AGENTS } = await import('@clawville/shared');
+    const house = FLOOR_ARENA_HOUSE_AGENTS.find((h) => h.id === 'house:genesis')!;
+    const added = (await db.execute(sql`
+      INSERT INTO floor_arena_agents (id, kind, name, template_id, params, seated)
+      VALUES ('house:genesis', 'house', ${house.name}, 'genesis', ${JSON.stringify(params)}::jsonb, true)
+      ON CONFLICT (id) DO NOTHING RETURNING id
+    `)) as unknown as unknown[];
+    insertedHouse = added.length > 0;
+    const base = Date.now();
+    // An open and a closed position each, with the research fields set.
+    for (const agent of ['house:genesis', agentId]) {
+      await addPosition({ agent, mint: fakeMint(), openedAtMs: base - 60_000, entryPriceUsd: 0.001, maxHoldS: 86_400, tp: [[50, 1]], firstSight: true });
+      await addPosition({ agent, mint: fakeMint(), openedAtMs: base - 600_000, entryPriceUsd: 0.001, maxHoldS: 900, closedAtMs: base - 60_000, firstSight: true });
+    }
+    const limiters = { public: () => createRateLimiter({ maxPerWindow: 1_000 }) };
+    const arena = createFloorArenaRoutes(undefined, { auth: [], limiters });
+    const board = createFloorArenaHouseBoardRoutes(undefined, { limiter: () => createRateLimiter({ maxPerWindow: 1_000 }) });
+    // Human: no header (public). Agent: the same public routes with an agent session header (tools
+    // clawville_arena_agent and the house-board line of clawville_arena_templates).
+    const headerSets: Array<Record<string, string>> = [{}, { 'X-Clawville-Agent-Session': 'oc-test-session' }];
+    const bodies: string[] = [];
+    for (const headers of headerSets) {
+      for (const path of ['/agents/house:genesis', `/agents/${agentId}`]) {
+        const response = await arena.request(path, { headers });
+        expect(response.status).toBe(200);
+        bodies.push(await response.text());
+      }
+      const response = await board.request('/house-board', { headers });
+      expect(response.status).toBe(200);
+      bodies.push(await response.text());
+    }
+    const houseBody = JSON.parse(bodies[0]!) as { openPositions: Array<{ entryFeatures: Record<string, unknown> }>; closedPositions: unknown[] };
+    expect(houseBody.openPositions.length).toBeGreaterThan(0);
+    expect(houseBody.closedPositions.length).toBeGreaterThan(0);
+    expect(houseBody.openPositions[0]!.entryFeatures.mcap).toBe(50_000); // house features are still served
+    for (const body of bodies) {
+      expect(body).not.toContain('firstSight');
+      expect(body.toLowerCase()).not.toContain('trough');
+    }
   });
 
   test('4: the prune archives old pass and skip events, still deletes other prunable types, keeps the record types', async () => {
@@ -353,5 +490,30 @@ describeIfDb('floor arena research recording on Postgres', () => {
     ]);
     expect(archived[1]!.data).toEqual({ reason: 'cooldown' });
     expect(new Date(archived[0]!.at).toISOString()).toBe(old);
+  });
+
+  test('4b: a second prune (a retry) archives nothing twice', async () => {
+    const { db, sql } = dbm;
+    const { pruneArenaEvents } = await import('../floor-arena/events');
+    const now = new Date();
+    const old = new Date(now.getTime() - 9 * 86_400_000).toISOString();
+    const inserted = (await db.execute(sql`
+      INSERT INTO floor_arena_events (agent_id, at, type, mint, summary) VALUES
+        (${agentId}, ${old}::timestamptz, 'pass', 'R1', 'retry pass'),
+        (${agentId}, ${old}::timestamptz, 'skip', 'R2', 'retry skip')
+      RETURNING id
+    `)) as unknown as Array<{ id: number }>;
+    const ids = JSON.stringify(inserted.map((r) => Number(r.id)));
+    await pruneArenaEvents(now);
+    await pruneArenaEvents(now);
+    const counts = (await db.execute(sql`
+      SELECT id, count(*)::int AS n FROM floor_arena_events_archive
+      WHERE id IN (SELECT (jsonb_array_elements_text(${ids}::jsonb))::bigint) GROUP BY id ORDER BY id
+    `)) as unknown as Array<{ id: number; n: number }>;
+    expect(counts.map((r) => r.n)).toEqual([1, 1]);
+    const live = (await db.execute(sql`
+      SELECT id FROM floor_arena_events WHERE id IN (SELECT (jsonb_array_elements_text(${ids}::jsonb))::bigint)
+    `)) as unknown as unknown[];
+    expect(live.length).toBe(0);
   });
 });

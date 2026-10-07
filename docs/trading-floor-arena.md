@@ -1,6 +1,6 @@
 # Trading Floor Arena (paper contest) — build spec + decision log
 
-Last Audited: 2026-10-07 10:00Z (task AR-1, lead tradeLead3: research recording, migration 0080; §4 new "Research recording" block, `floor_arena_events` retention line; §6 new "Research recording" paragraph; §7 entry. Drift: §4 said every pruned event row is deleted; pass and skip rows now move to `floor_arena_events_archive`. No decision, filter, exit, money path, route, payload or protocol change; PROTOCOL_VERSION stays 83). Prior: 2026-10-07 06:28Z (lead tradeLead3: §8 P3 RESULT for arena-week-1: winner Wendy Runner, founder decision 2026-10-07; payout by the founder). Prior: 2026-10-04 10:22Z (lead: D34-h LIVENESS, every withdrawal without proof reaches `needs_review` within 24 h, new neutral code `review_timeout`; §6 reconcile bullet; §7 prod promotion entry). Prior: 2026-10-04 09:15Z (lead: D34-h FINAL RULE after the founder-approved Codex final pass, the reconcile never confirms from history and never writes `failed_no_send`; §6 reconcile bullet rewritten; §7 staging micro-withdraw results (USDC + SOL `confirmed`, exact deltas) and the Genesis restore; §8 new P22 operator resolve). Prior: 2026-10-03 06:58Z (lead, Codex round 2 on P5 + provisioning: D34-h and §6 reconcile now say a chain match that is not this row's own proven transfer (vendor status not `success`, or block time before the row's dispatch second) is a conflict for operator review; §7 entry for the provisioning create-attempt rule). Prior: 2026-10-03 06:43Z (task W5, web only: F2, F3, F4 and the provisioning wait copy; §7). Prior: 2026-10-02 01:20Z (task DOCS-A, lead session tDesk2Main: P5 wallet withdraw BUILT and going to staging (§1 D34-a to D34-k; §4 migration 0074, three tables and the guard trigger; §5 the six withdraw routes, two admin routes and the public house board; §6 the `withdrawals` loop and the lock order; §7 status entry; §8 P5 and P15 BUILT (staging), new founder rows P18-P21). Drift: §4 and §5 said "paper only" for every table and route; `floor_arena_withdrawals` and the withdraw routes move REAL USDC and SOL from the player's own ClawPump wallet. The withdraw routes and the six agent tools come from the frozen P5 contract §6 and §8; their code (task T5) lands in the same staging push). Prior: 2026-10-01 23:00Z (founder decisions, evening: P5 custody + per-player ClawPump agent with deposit/withdraw, withdraw probe facts; P6 superseded by P15 house agents on the big screen + walk-up template choice; P12 mask scope final (hate slurs only); new P13-P17). Prior: 2026-10-01 (protocol 79: desk range 0..9 from `FLOOR_ARENA_DESK_COUNT` = 10, founder order for 10 desks, 5 per side wall; the room resize ships separately from session coolerDesk3). Prior: 2026-10-01 (task N5 on branch `fix/arena-next`: §5 content mask scope is hate slurs only, measured counts, the short-run join, the 3D display of a masked item and the one refusal copy; §8 P12 known gaps; status log entry). Prior Last Audited: 2026-10-01 (task N4 on branch `fix/arena-next`: §5 content mask on every public arena payload (`content-mask.ts`, MIT `obscenity`) and launch 400 `name_not_allowed`, PROTOCOL_VERSION 78; §6 O3 lock order covers the private chain-check verdict; status log entry). Prior Last Audited: 2026-10-01 (task N2 on branch `fix/arena-next`: §6 D1 add-on call budget (4 calls before the first call, a budget refusal is not an attempt), O1 rotation counts sent rows only, O3 one row-lock order for the discovery writers; status log entry). Prior Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups T3 on branch `fix/arena-followups`: D33 checkpoint schedule (tests only at 20/40/80/160/200/400/800 closed trades on the current params, each once, alpha 0.01/0.005/0.0025, 0.05 per rule set; reasons `waiting_checkpoint`, `budget_spent`) in D10, D27, D33 and §6a; status log corrects the `10cd060d` "4.0%" claim (per look, not per rule set); §6a redaction drift (model text redacted, the reason is code text); P8 no-rename record). Prior Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups A3 on branch `fix/arena-followups`: new decision D33 (honest tuner: code searches one-filter tightenings, a change needs D27 AND a shuffle test p <= 0.05, the model reply is commentary only, every report states why); line 7, D10, D27 and §6a no longer claim "fine-tuned about every 30 minutes"; D30/D31 deployed on staging in `5049971e`, verified 2026-10-01; D32 Codex r23-money APPROVE, deployed on staging, live add-on call owed; D6 score wording; §8 P8 FIXED on the branch, P6 three notes; status log 2026-10-01 verify entry). Prior Last Audited: 2026-10-01 (session coolerTrading: P9 RESOLVED (post-reveal stall fixed, lane C), new rows P10 (late WebGL avatar first-draw compile) and P11 (from-/game WebGL curtain freeze)). Prior Last Audited: 2026-10-01 (session coolerTrading: §8 rows P8 (number-shaped agent names on the leaderboard) and P9 (post-reveal stall) added; the shared tape path now strips `$` from symbols and trader names and validates the symbol AFTER the action-length cut and drops it unless it keeps a letter, has no decimal number and no run of 5+ digits, `trading-floor-trade-tape.ts`, so the board tape row, the 3D chips and the interior ticker can never print a figure the route did not send). Prior Last Audited: 2026-09-30 (session tradeDeskMain, lead; D6 prize-eligibility text synced with `FLOOR_ARENA_CONTEST` rule 6 by arena-docs; §1 decision rows D13-D29 added with amendment pointers on D2-D10 and D26; D28 fresh chain verdicts on tradeable coins; D29 every user-agent report stored as an earned-skill lesson and recalled in owner avatar chat; punch list P4; 2026-10-01: D30/D31 rows synced to the code, P3 B1 events, P5, D6 rule-6 wording; D30/D31/rule 6 marked BUILT, not deployed, after Codex r22 APPROVE, r19-r22 chain in §7; single ClawPump writer, Codex r19 money, in §5/§6/D8; D32 x402 removal = hygiene, design v8b in §6). Status: IN BUILD on branch `feat/trading-floor-arena`
+Last Audited: 2026-10-07 11:00Z (task AR-1 round 2 after the Codex review of `fbf5febd`: no DexScreener tier and no expiry change for the tail (B1); recording deferred to one fire-and-forget transaction with statement_timeout 2 s and lock_timeout 200 ms, no foreign keys on the research tables, open-position trough in the existing batch mark UPDATE (B2); first snapshot only for rows first priced after 0080 (B3); quote points at the quote's own time, 800-row cap per position, migration `SET LOCAL lock_timeout`; §4, §6 and §7 updated). Prior: 2026-10-07 10:00Z (task AR-1, lead tradeLead3: research recording, migration 0080; §4 new "Research recording" block, `floor_arena_events` retention line; §6 new "Research recording" paragraph; §7 entry. Drift: §4 said every pruned event row is deleted; pass and skip rows now move to `floor_arena_events_archive`. No decision, filter, exit, money path, route, payload or protocol change; PROTOCOL_VERSION stays 83). Prior: 2026-10-07 06:28Z (lead tradeLead3: §8 P3 RESULT for arena-week-1: winner Wendy Runner, founder decision 2026-10-07; payout by the founder). Prior: 2026-10-04 10:22Z (lead: D34-h LIVENESS, every withdrawal without proof reaches `needs_review` within 24 h, new neutral code `review_timeout`; §6 reconcile bullet; §7 prod promotion entry). Prior: 2026-10-04 09:15Z (lead: D34-h FINAL RULE after the founder-approved Codex final pass, the reconcile never confirms from history and never writes `failed_no_send`; §6 reconcile bullet rewritten; §7 staging micro-withdraw results (USDC + SOL `confirmed`, exact deltas) and the Genesis restore; §8 new P22 operator resolve). Prior: 2026-10-03 06:58Z (lead, Codex round 2 on P5 + provisioning: D34-h and §6 reconcile now say a chain match that is not this row's own proven transfer (vendor status not `success`, or block time before the row's dispatch second) is a conflict for operator review; §7 entry for the provisioning create-attempt rule). Prior: 2026-10-03 06:43Z (task W5, web only: F2, F3, F4 and the provisioning wait copy; §7). Prior: 2026-10-02 01:20Z (task DOCS-A, lead session tDesk2Main: P5 wallet withdraw BUILT and going to staging (§1 D34-a to D34-k; §4 migration 0074, three tables and the guard trigger; §5 the six withdraw routes, two admin routes and the public house board; §6 the `withdrawals` loop and the lock order; §7 status entry; §8 P5 and P15 BUILT (staging), new founder rows P18-P21). Drift: §4 and §5 said "paper only" for every table and route; `floor_arena_withdrawals` and the withdraw routes move REAL USDC and SOL from the player's own ClawPump wallet. The withdraw routes and the six agent tools come from the frozen P5 contract §6 and §8; their code (task T5) lands in the same staging push). Prior: 2026-10-01 23:00Z (founder decisions, evening: P5 custody + per-player ClawPump agent with deposit/withdraw, withdraw probe facts; P6 superseded by P15 house agents on the big screen + walk-up template choice; P12 mask scope final (hate slurs only); new P13-P17). Prior: 2026-10-01 (protocol 79: desk range 0..9 from `FLOOR_ARENA_DESK_COUNT` = 10, founder order for 10 desks, 5 per side wall; the room resize ships separately from session coolerDesk3). Prior: 2026-10-01 (task N5 on branch `fix/arena-next`: §5 content mask scope is hate slurs only, measured counts, the short-run join, the 3D display of a masked item and the one refusal copy; §8 P12 known gaps; status log entry). Prior Last Audited: 2026-10-01 (task N4 on branch `fix/arena-next`: §5 content mask on every public arena payload (`content-mask.ts`, MIT `obscenity`) and launch 400 `name_not_allowed`, PROTOCOL_VERSION 78; §6 O3 lock order covers the private chain-check verdict; status log entry). Prior Last Audited: 2026-10-01 (task N2 on branch `fix/arena-next`: §6 D1 add-on call budget (4 calls before the first call, a budget refusal is not an attempt), O1 rotation counts sent rows only, O3 one row-lock order for the discovery writers; status log entry). Prior Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups T3 on branch `fix/arena-followups`: D33 checkpoint schedule (tests only at 20/40/80/160/200/400/800 closed trades on the current params, each once, alpha 0.01/0.005/0.0025, 0.05 per rule set; reasons `waiting_checkpoint`, `budget_spent`) in D10, D27, D33 and §6a; status log corrects the `10cd060d` "4.0%" claim (per look, not per rule set); §6a redaction drift (model text redacted, the reason is code text); P8 no-rename record). Prior Last Audited: 2026-10-01 (session tradeDeskMain, arena follow-ups A3 on branch `fix/arena-followups`: new decision D33 (honest tuner: code searches one-filter tightenings, a change needs D27 AND a shuffle test p <= 0.05, the model reply is commentary only, every report states why); line 7, D10, D27 and §6a no longer claim "fine-tuned about every 30 minutes"; D30/D31 deployed on staging in `5049971e`, verified 2026-10-01; D32 Codex r23-money APPROVE, deployed on staging, live add-on call owed; D6 score wording; §8 P8 FIXED on the branch, P6 three notes; status log 2026-10-01 verify entry). Prior Last Audited: 2026-10-01 (session coolerTrading: P9 RESOLVED (post-reveal stall fixed, lane C), new rows P10 (late WebGL avatar first-draw compile) and P11 (from-/game WebGL curtain freeze)). Prior Last Audited: 2026-10-01 (session coolerTrading: §8 rows P8 (number-shaped agent names on the leaderboard) and P9 (post-reveal stall) added; the shared tape path now strips `$` from symbols and trader names and validates the symbol AFTER the action-length cut and drops it unless it keeps a letter, has no decimal number and no run of 5+ digits, `trading-floor-trade-tape.ts`, so the board tape row, the 3D chips and the interior ticker can never print a figure the route did not send). Prior Last Audited: 2026-09-30 (session tradeDeskMain, lead; D6 prize-eligibility text synced with `FLOOR_ARENA_CONTEST` rule 6 by arena-docs; §1 decision rows D13-D29 added with amendment pointers on D2-D10 and D26; D28 fresh chain verdicts on tradeable coins; D29 every user-agent report stored as an earned-skill lesson and recalled in owner avatar chat; punch list P4; 2026-10-01: D30/D31 rows synced to the code, P3 B1 events, P5, D6 rule-6 wording; D30/D31/rule 6 marked BUILT, not deployed, after Codex r22 APPROVE, r19-r22 chain in §7; single ClawPump writer, Codex r19 money, in §5/§6/D8; D32 x402 removal = hygiene, design v8b in §6). Status: IN BUILD on branch `feat/trading-floor-arena`
 (worktree `.worktrees/trading-floor-arena`, base `origin/staging` a2a073a7).
 
 Founder goal (2026-09-30, verbatim summary): five house trading agents on the Trading Floor, each running its own
@@ -223,39 +223,50 @@ exists only in the SQL file (Drizzle has no triggers).
 
 Research recording (task AR-1, 2026-10-07; migration `packages/database/migrations/0080_floor_arena_recording.sql`,
 additive and idempotent; Drizzle mirror in `packages/database/src/schema/floor-arena.ts`). DATA ONLY: no trading
-decision, filter, exit, money path, route or API payload reads these columns or tables (engine §6 "Research
-recording"). Motivation: the 2026-10-07 data review (`ops/house-traders/research-20261007/REPORT.md` §3, outside git)
-could not test entry or stop rules because the first sight was lost on expiry, the hold low was never stored and the
-pass/skip stream expired after 7 days.
+decision, filter, exit, money path, route or API payload reads these columns or tables, and recording never delays or
+locks against trading (engine §6 "Research recording"). Motivation: the 2026-10-07 data review
+(`ops/house-traders/research-20261007/REPORT.md` §3, outside git) could not test entry or stop rules because the first
+sight was lost on expiry, the hold low was never stored and the pass/skip stream expired after 7 days.
+- Migration safety: the file starts with `SET LOCAL lock_timeout = '5s'` (the ALTERs take a short ACCESS EXCLUSIVE
+  lock on three hot arena tables). `SET LOCAL` holds only for the file's implicit transaction (migrate-ci sends a file
+  as one multi-statement query; checked locally: inside 5 s, after it 0, no warning), so it never leaks into a later
+  file. On a timeout the whole file rolls back, the CI migrate job fails loud, and rerunning the job applies it (every
+  statement is idempotent).
 - `floor_discovery_mints` and `floor_arena_private_mints`: `first_snapshot jsonb` + `first_snapshot_at timestamptz`,
-  the FIRST DexScreener snapshot of the row (same shape as `snapshot`), written once by the enrichment and never
-  replaced while the row lives. The row's `first_seen_at` / `first_source` already hold the first sighting.
+  the row's FIRST DexScreener snapshot (same shape as `snapshot`). Written only by the UPDATE that writes the row's
+  first `snapshot` (old `snapshot` null), so a row priced before 0080 keeps them null forever, and they are never
+  replaced. The row's `first_seen_at` / `first_source` already hold the first sighting.
 - `floor_arena_positions.entry_features.firstSight` (no new column): `{ at, firstSeenAt, source, priceUsd, mcap, liqUsd,
   pairAddress, pairCreatedAt, ageS, chg5m, chg1h, chg6h, chg24h, txns1h, vol1h, volOverMcap }`, copied at entry from
-  the insert-time re-read of the row; `null` for a row priced before 0080. `at` is the first-snapshot time, `ageS` the
-  pool age at that time. The API position mapper (`mapPosition`, `queries.ts`) strips it, so the owner, agent and
-  public (house) position payloads are unchanged.
+  the insert-time re-read of the row; `null` when the row has no first snapshot. `at` is the first-snapshot time,
+  `ageS` the pool age at that time. The API position mapper (`mapPosition`, `queries.ts`) strips it, so the owner,
+  agent and public (house) position payloads are unchanged (route test: `GET /agents/:id` house and player, and
+  `GET /house-board`, with and without an agent session header).
 - `floor_arena_positions.trough_mult numeric`, `trough_at timestamptz`: the lowest FRESH DexScreener mark multiple
   (mark / entry price) the exit tick used during the hold, and its snapshot time; the closing tick's mark counts.
-- `floor_arena_position_marks` (new): PK (`position_id`, `phase`, `bucket_at`), `position_id` FK ->
-  `floor_arena_positions` ON DELETE CASCADE, `phase` (`hold` | `tail`), `mark_at` + `mark_mult` (the bucket's FIRST
-  fresh mark), `quote_at` + `quote_mult` (the LAST sell quote taken in the bucket: quoted price / entry price, also
-  for a refused quote that carried a price). CHECKs: phase; each at/mult pair both set or both null; a mark or a
-  quote. Buckets (engine `markPathBucketAt`): hold, anchored at `opened_at`, 10 s for the first 30 min, 60 s to 6 h,
-  300 s after (at most 726 rows for a 24 h hold, the `max_hold_s` bound); tail, anchored at `closed_at`, 10 s for
-  30 min (at most 180 rows).
-- `floor_arena_events_archive` (new): `id bigint` PK (the original event id), `agent_id` FK (CASCADE), `at`, `type`
-  (CHECK `pass` | `skip`), `mint`, `summary`, `data`, `archived_at`. Index (`at`). No route reads it.
+- `floor_arena_position_marks` (new): PK (`position_id`, `phase`, `bucket_at`; `position_id` first, so it is the
+  lookup index), NO foreign key (an FK insert takes `FOR KEY SHARE` on the position row, which conflicts with a
+  booking's `FOR UPDATE`; rows of a deleted position stay as orphans), `phase` (`hold` | `tail`), `mark_at` +
+  `mark_mult` (the bucket's FIRST fresh mark), `quote_at` + `quote_mult` (the LAST sell quote taken in the bucket, at
+  the quote's own time: quoted price / entry price, also for a refused quote that carried a price). CHECKs: phase;
+  each at/mult pair both set or both null; a mark or a quote. Buckets and the hard cap (engine `markPathSlot`, by
+  construction, no read): hold, anchored at `opened_at`, one bucket for every mark before the entry, 10 s for the
+  first 30 min, 60 s to 6 h, 600 s to 24 h (the `max_hold_s` bound), later points dropped: at most 620 rows; tail,
+  anchored at `closed_at`, 10 s for 30 min: at most 180 rows. At most 800 rows per position (`MARK_PATH_MAX_ROWS`).
+- `floor_arena_events_archive` (new): `id bigint` PK (the original event id), `agent_id` (NO foreign key, so the
+  hourly prune never takes a lock on an agent row; rows of a deleted agent stay as orphans), `at`, `type` (CHECK
+  `pass` | `skip`), `mint`, `summary`, `data`, `archived_at`. Index (`at`). No route reads it.
 - Why a table for the path and not a jsonb array on the position row: an append to a jsonb column rewrites the whole
-  (TOASTed) value on every 10 s tick, so write volume grows with the square of the hold, and every append would add
-  a write to the row the exit bookings lock and compare-and-set. One small INSERT per tick, bounded per position by
-  the buckets, needs no read of the old path and never touches the booking's compare-and-set columns.
+  (TOASTed) value on every 10 s tick, so write volume grows with the square of the hold, and every append would write
+  the row the exit bookings lock and compare-and-set. One small INSERT per tick, capped per position, needs no read of
+  the old path and takes no lock on any position row.
 - Storage (prod volumes 2026-10-01..06 from the read-only pull in `ops/house-traders/research-20261007/arena-analysis`):
   peak day 461 positions and 8,834 pass + skip events. Archive: about 0.4 KB a row with its two index entries, so
   about 3.5 MB a day, 105 MB a month at the peak. Mark path: about 140 B a row with its index entry; a typical
-  position has 20-40 hold rows (one per new 20 s snapshot) and up to 90 tail rows, so about 60,000 rows and 8 MB a
-  day at the peak, 250 MB a month. First sight: about 0.5 KB per live discovery row (deleted with the row) and
-  0.4 KB per position (0.2 MB a day). Neither new table has a retention yet: a founder or lead decision (§8 P23).
+  position has 20-40 hold rows (one per new 20 s snapshot) and at most 180 tail rows (fewer: tails are sparse, see
+  §6), so at most about 60,000 rows and 8 MB a day at the peak, 250 MB a month. First sight: about 0.5 KB per live
+  discovery row (deleted with the row) and 0.4 KB per position (0.2 MB a day). Neither new table has a retention yet:
+  a founder or lead decision (§8 P23).
 
 ## 5. CONTRACT — API (`apps/api/src/routes/floor-arena.ts`, mounted at `/api/floor/arena`; public GETs registered before `sessionMiddleware` like `trading-floor.ts`)
 
@@ -521,39 +532,46 @@ count, the 500 USDC per agent and the cooldown use `requested_at` (UTC day); the
 `dispatched_at` (DB clock). Holds = `COALESCE(amount_atomic, requested_atomic)` of open rows; an open USDC `max` row
 with no amount makes add-ons refuse `withdraw_pending`. The add-on reservation subtracts open withdrawals (D34-i).
 
-Research recording (task AR-1, 2026-10-07; tables in §4 "Research recording"). DATA ONLY. Every write is best effort:
-it runs after the tick's decisions and bookings, an error is logged at most every 10 min per kind ("research
-recording failed (no trading effect)") and is never thrown into the tick. Lock order O3 is unchanged.
+Research recording (task AR-1, 2026-10-07, reworked after the Codex review of `fbf5febd`; tables in §4 "Research
+recording"). DATA ONLY: zero effect on trading. The exit tick only COLLECTS in memory; it never waits for a recording
+write. Lock order O3 is unchanged.
 - First sight: `storeSnapshots` sets `first_snapshot` / `first_snapshot_at` in the SAME UPDATE that writes `snapshot`
-  (shared and private tables), only where `first_snapshot` is null; the row-lock order of that write is unchanged.
-  `openPosition` reads the two columns in its existing `FOR SHARE` re-read of the gate row and copies them into
-  `entry_features.firstSight` (`firstSightRecord`). No extra query.
-- Mark path and trough (exit tick, 10 s): the tick already reads every open position and its newest DB mark. A hold
-  point is recorded when that mark is fresh and newer than the stored `last_mark_at` (so one point per new snapshot);
-  when the tick takes a sell quote, the point also gets the quote multiple (`runExitTick` wraps `quoteSell` only to
-  remember the last result; the call, its arguments and its result are unchanged). After the existing batch mark
-  UPDATE: one trough UPDATE (rows with a new low only, no status filter, so a stop's closing mark counts) and one
-  path INSERT (rows in key order, `ON CONFLICT` keeps the bucket's first mark and last quote). Two leaders insert in
-  the same key order. The FK check takes `FOR KEY SHARE` on the position row: it never conflicts with the engine's
-  row UPDATEs, waits only for one booking's `FOR UPDATE`, and no booking waits on the path table.
-- Post-exit tail (same tick): positions closed in the last 30 min (`ARENA_POST_EXIT_TAIL_MS`, index on `closed_at`)
-  get one point per stored snapshot newer than `closed_at` (`latestSnapshotMarks`, the existing DB read). No sell
-  quote and no new network call. To keep the snapshot coming, (a) the enrichment lists tail mints in a new LAST tier
-  (`ENRICH_TAIL_TIER` 5): a tail mint that is already open, private or a live shared row keeps its own tier, so the
-  tail takes only enrichment room nothing else wants (at most `ceil(tail mints / 30)` extra DexScreener batch calls
-  per 20 s tick, and only from budget left after every other tier; usually 0, because the tail mints share batches);
-  (b) the expiry keeps an expired SHARED row while its position closed less than 30 min ago. A kept expired row is
-  never a candidate, never chain-checked and never listed (those reads need `expires_at > now`). Private rows are not
-  kept (the entry loader reads every private row, so keeping one would be a trading change); a private mint's tail
-  stops when its row expires.
+  (shared and private tables), only when the old `snapshot` and `first_snapshot` are both null (B3); the row-lock order
+  of that write is unchanged. `openPosition` reads the two columns in its existing `FOR SHARE` re-read of the gate row
+  and copies them into `entry_features.firstSight` (`firstSightRecord`). No extra query.
+- Hold path (exit tick, 10 s): a hold point is collected when the tick's mark is fresh and newer than the stored
+  `last_mark_at` (one point per new snapshot); when an exit takes a sell quote, a point is collected at the quote's own
+  time (the clock read when the quote returned) with the quote multiple. `runExitTick` wraps `quoteSell` only to
+  remember the last result and its time; the call, its arguments and its result are unchanged. Points merge per
+  bucket in memory (`addMarkPathPoint`), and a point outside the 800-row cap is dropped (`markPathSlot`).
+- Trough: for a position that is still open, `trough_mult` / `trough_at` ride in the tick's EXISTING batch mark UPDATE
+  (same statement, same rows, same lock, no extra round trip; not the booking UPDATE, which is unchanged). For a
+  position that closed in the tick, its fresh closing mark (a stop's low) goes to the deferred write below, which
+  updates the row only while it is `closed` (no booking writes a closed row again).
+- Deferred write (`writeArenaRecording`): after `runExitTick` has done every decision and booking it schedules ONE
+  fire-and-forget transaction and returns without waiting. The transaction sets `statement_timeout` 2 s and
+  `lock_timeout` 200 ms (`set_config(..., true)`), reads the tail, inserts the points (no foreign key: no lock on any
+  position row; key order, `ON CONFLICT` keeps a bucket's first mark and last quote) and LAST writes the closed rows'
+  trough. Any error rolls the whole job back; it is logged at most every 10 min per kind ("research recording failed
+  and was dropped (no trading effect)") and dropped. At most one job runs at a time: a tick whose predecessor is still
+  writing drops its own batch (logged), so a slow database cannot pile writes up. Tests prove it: an injected writer
+  failure leaves the tick's result and bookings unchanged, and with an ACCESS EXCLUSIVE lock held on the marks table
+  the tick returns at once and the job gives up after the lock timeout (`floor-arena-recording.db.test.ts`; against
+  the previous design the same test blocked the tick for 5 s).
+- Post-exit tail (B1): positions closed in the last 30 min (`ARENA_POST_EXIT_TAIL_MS`) get one point per STORED
+  snapshot newer than `closed_at` (`latestSnapshotMarks`, a DB read inside the deferred job). There is NO extra
+  DexScreener call, no enrichment tier and no budget use: a tail point exists only when the enrichment refreshed the
+  mint for its own reasons (another open position, a private mint, a live shared row in its normal tier). Sparse or
+  empty tails are accepted. The discovery expiry is unchanged.
 - Events: `pruneArenaEvents` moves the pruned `pass` and `skip` rows into `floor_arena_events_archive` in the same
-  statement as the delete (a data-modifying CTE: an archive failure rolls the delete back, nothing is lost); scan,
-  status, addon and withdraw rows are still deleted. The decision streams keep reading `floor_arena_events` only, so
-  no payload changes.
-- Extra DB work per exit tick: one SELECT of recently closed positions, plus one snapshot SELECT when any exist, one
-  trough UPDATE and one path INSERT when marks exist; per enrichment tick, one SELECT of tail mints. No ClawPump call.
-- Tests: `apps/api/src/services/__tests__/floor-arena-recording.db.test.ts` (real Postgres; written first and run red
-  against the old code, 9 of 9 failing, then green).
+  statement as the delete (a data-modifying CTE: an archive failure rolls the delete back, nothing is lost; a second
+  run finds no row to move, so every event is archived once). Scan, status, addon and withdraw rows are still deleted.
+  The decision streams keep reading `floor_arena_events` only, so no payload changes.
+- Extra DB work: in the exit tick, none (two more SET expressions in the existing batch UPDATE); in the deferred job,
+  one SET, one SELECT of recently closed positions plus one snapshot SELECT when any exist, one INSERT when points
+  exist, one UPDATE when a position closed with a fresh mark. No ClawPump call, no DexScreener call.
+- Tests: `apps/api/src/services/__tests__/floor-arena-recording.db.test.ts` (real Postgres; each round written first
+  and run red against the code before it: round 1 9 of 9 failing, round 2 10 of 15 failing, then green).
 
 ## 6a. Analysis as built (D10; `analysis.ts` + `analysis-store.ts`, tests `services/__tests__/floor-arena-analysis.test.ts`)
 
@@ -1036,6 +1054,16 @@ recording failed (no trading effect)") and is never thrown into the tick. Lock o
   payload or protocol change (PARITY n/a: no agent-visible change; PROTOCOL_VERSION stays 83). Tests: the new DB
   suite 9/9 (red first), every floor-arena suite in its own process green, api tsc 0. Unit-tested only: needs Codex
   and a staging check (recorder rows appear, no recorder warning in the logs).
+- 2026-10-07 11:00Z (task AR-1 round 2, lead tradeLead3): Codex review of `fbf5febd` (10:02-10:06Z) found 3 blockers
+  against the "data only, zero effect on trading" contract; lead decisions implemented, tests first (10 of 15 red on
+  the round 1 code; the lock test blocked that tick for 5 s). B1: the tail's enrichment tier 5 and the expiry change
+  are removed; tails use only snapshots the engine already has (sparse accepted). B2: the research tables have no
+  foreign keys; the tick collects in memory and one deferred fire-and-forget transaction (statement_timeout 2 s,
+  lock_timeout 200 ms) writes the path, the tail and the closed rows' trough; the open rows' trough rides in the
+  existing batch mark UPDATE. B3: `first_snapshot` only when the row's first `snapshot` is written. Should-fix: quote
+  points at the quote's own time and bucket, 800-row cap per position by construction, migration `SET LOCAL
+  lock_timeout = '5s'`, a route privacy test (house and player profiles, house board, with and without an agent
+  header) and an archive retry test. Unit-tested only: needs Codex and a staging check.
 
 ## 8. Punch list (tracked deferrals, rule E6)
 
