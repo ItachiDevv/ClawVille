@@ -51,6 +51,7 @@ import {
 } from './custodial-x402';
 import { alertError } from './alert-error';
 import {
+  acquireFallbackTokens,
   createMainnetConnection,
   provenFallbackMainnetRpcUrl,
   redactRpcUrl,
@@ -693,6 +694,15 @@ export function agentPayConnection(rail: Pick<AgentPayRail, 'network' | 'rpcUrl'
 }
 
 /**
+ * RPC reads of the costliest prepare that goes through `prepareWithMainnetRpcFallback`: the inbound custodial prepare
+ * (`custodial-x402.ts` `prepareInboundCustodialExactPayment`) runs the PayAI prepare (`@x402/svm` 2.9.0
+ * `ExactSvmScheme.createPaymentPayload`, dist/esm/chunk-6GZCHEXV.mjs:52 `fetchMint` = getAccountInfo and :82
+ * `getLatestBlockhash`) plus the Meridian prepare (`x402-meridian.ts` `prepareMeridianPayment`, one
+ * `getLatestBlockhash`). The outbound agent-pay prepare reads 2, a Meridian-only prepare 1; 3 covers all of them.
+ */
+export const X402_PREPARE_FALLBACK_TOKENS = 3;
+
+/**
  * Prepare (build + payer-sign) with one retry on the public mainnet RPC.
  * The x402 SVM client reads the mint and a blockhash through its own
  * transport, so the fetch-level failover cannot reach it. Prepare never
@@ -714,6 +724,10 @@ export async function prepareWithMainnetRpcFallback<
     // must be the genesis-proven mainnet fallback; unproven => fail closed.
     const fallbackUrl = await provenFallbackMainnetRpcUrl();
     if (!fallbackUrl) throw err;
+    // Codex 2026-10-08 (B2 on e1abaa1f): this retry reads the fallback through the x402 client's own transport,
+    // outside the breaker's fetch, so it takes its fallback-budget tokens here. Refused => the original error
+    // (fail closed; prepare is pre-send, nothing is on the wire).
+    if (!(await acquireFallbackTokens(X402_PREPARE_FALLBACK_TOKENS))) throw err;
     console.warn(
       `[agent-pay] mainnet prepare failed on the primary RPC (${redactRpcUrl(
         err instanceof Error ? err.message : String(err),

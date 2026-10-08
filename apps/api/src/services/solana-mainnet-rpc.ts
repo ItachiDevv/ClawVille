@@ -177,41 +177,69 @@ export function fallbackMaxRps(): number {
 }
 
 /**
- * Take one fallback token. Refill at `fallbackMaxRps()` per second up to FALLBACK_BURST. With no token, the request
- * reserves the next one (the balance goes negative, so concurrent waiters queue in order) and sleeps until it is due,
- * when that is at most 3 s away. Returns false (and reserves nothing) when it is further away. A caller abort while
- * waiting returns the reservation and rethrows the abort reason.
+ * Take `n` fallback tokens (1..FALLBACK_BURST). Refill at `fallbackMaxRps()` per second up to FALLBACK_BURST. With
+ * too few tokens, the request reserves them (the balance goes negative, so concurrent waiters queue in order) and
+ * sleeps until they are due, when that is at most 3 s away. Returns false (and reserves nothing) when it is further
+ * away. A caller abort while waiting returns the reservation, clears the timer and rethrows the abort reason.
  */
-async function acquireFallbackToken(signal?: AbortSignal): Promise<boolean> {
+export async function acquireFallbackTokens(n: number, signal?: AbortSignal): Promise<boolean> {
+  if (!Number.isInteger(n) || n < 1 || n > FALLBACK_BURST) {
+    throw new Error(`acquireFallbackTokens: n must be an integer 1..${FALLBACK_BURST}`);
+  }
   if (signal?.aborted) throw signal.reason ?? new Error('aborted');
   const rps = fallbackMaxRps();
   const now = nowFn();
   if (bucketAt === null) bucketAt = now;
   bucketTokens = Math.min(FALLBACK_BURST, bucketTokens + (Math.max(0, now - bucketAt) * rps) / 1000);
   bucketAt = Math.max(bucketAt, now);
-  if (bucketTokens >= 1) {
-    bucketTokens -= 1;
+  if (bucketTokens >= n) {
+    bucketTokens -= n;
     return true;
   }
-  const waitMs = ((1 - bucketTokens) * 1000) / rps;
+  const waitMs = ((n - bucketTokens) * 1000) / rps;
   if (waitMs > FALLBACK_MAX_WAIT_MS) {
     fallbackLocalLimited += 1;
     if (now - lastLocalLimitWarnAt >= FALLBACK_WARN_EVERY_MS) {
       lastLocalLimitWarnAt = now;
       console.warn(
-        `[${SOURCE}] fallback budget exhausted (${rps}/s, burst ${FALLBACK_BURST}); ${fallbackLocalLimited} request(s) refused locally with 429 so far (callers fail closed)`,
+        `[${SOURCE}] fallback budget exhausted (${rps}/s, burst ${FALLBACK_BURST}); ${fallbackLocalLimited} request(s) refused locally so far (callers fail closed)`,
       );
     }
     return false;
   }
-  bucketTokens -= 1;
+  bucketTokens -= n;
   try {
     await limiterSleep(waitMs, signal);
   } catch (err) {
-    bucketTokens = Math.min(FALLBACK_BURST, bucketTokens + 1);
+    bucketTokens = Math.min(FALLBACK_BURST, bucketTokens + n);
     throw err;
   }
   return true;
+}
+
+function acquireFallbackToken(signal?: AbortSignal): Promise<boolean> {
+  return acquireFallbackTokens(1, signal);
+}
+
+/**
+ * Codex 2026-10-08 (B1 on e1abaa1f): a JSON-RPC body that carries `sendTransaction` (alone or inside a batch) is a
+ * SEND. A local 429 on a send would look like an ambiguous send to the caller (the withdraw executor captures the
+ * signature before it sends), so sends are never limited. Reads, including signature-status polls, are limited.
+ */
+function isSendTransactionBody(body: RequestInit['body']): boolean {
+  let text: string;
+  if (typeof body === 'string') text = body;
+  else if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    const bytes = body instanceof ArrayBuffer ? new Uint8Array(body) : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    text = new TextDecoder().decode(bytes);
+  } else return false;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    return items.some((item) => (item as { method?: unknown } | null)?.method === 'sendTransaction');
+  } catch {
+    return /"method"\s*:\s*"sendTransaction"/.test(text); // unparseable: never risk limiting a send
+  }
 }
 
 function localRateLimited(): Response {
@@ -434,11 +462,11 @@ function resendable(body: RequestInit['body']): boolean {
 
 /**
  * One send to the fallback with the same 10 s timeout (headers AND body) as the primary; its errors and timeout go to
- * the caller. It first takes a fallback token (up to 3 s wait, the caller's signal aborts the wait); with none it
- * returns a local 429 and never calls the fallback.
+ * the caller. A read first takes a fallback token (up to 3 s wait, the caller's signal aborts the wait); with none it
+ * returns a local 429 and never calls the fallback. A `sendTransaction` body skips the bucket (never refused locally).
  */
 async function sendFallback(s: BreakerState, url: string, init: RequestInit, caller: AbortSignal | undefined): Promise<Response> {
-  if (!(await acquireFallbackToken(caller))) return localRateLimited();
+  if (!isSendTransactionBody(init.body) && !(await acquireFallbackToken(caller))) return localRateLimited();
   s.fallbackCalls += 1;
   const res = await withTimeout(caller, 'fallback', async (signal) => bufferResponse(await fetch(url, { ...init, signal }), signal));
   if (res.status === 429) noteFallback429(url);

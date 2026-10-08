@@ -3,6 +3,7 @@ import type { Connection } from '@solana/web3.js';
 import * as alertModule from '../alert-error';
 import {
   PUBLIC_MAINNET_RPC_URL,
+  acquireFallbackTokens,
   confirmSignatureByPolling,
   __markFallbackProvenForTests,
   __resetMainnetRpcStateForTests,
@@ -623,6 +624,83 @@ describe('fallback rate limiter (public RPC budget, 2026-10-08)', () => {
     await post();
     expect(mainnetRpcStatus().fallbackRateLimited).toBe(4);
     expect(warns()).toBe(2);
+  });
+
+  /** Frozen clock, instant sleep: take tokens until the limiter refuses (3 s of reservations used up). */
+  async function drainBudget(waits: number[]): Promise<void> {
+    __setFallbackLimiterSleepForTests(async (ms) => {
+      waits.push(ms);
+    });
+    while (await acquireFallbackTokens(1)) {
+      /* keep taking */
+    }
+    waits.length = 0;
+  }
+
+  it('Codex B1: a sendTransaction (single or in a batch) is never limited; a read in the same state is', async () => {
+    const waits: number[] = [];
+    await openBreaker();
+    await drainBudget(waits);
+    const sendBody = '{"jsonrpc":"2.0","id":"7","method":"sendTransaction","params":["AQID",{"encoding":"base64"}]}';
+    const before = fallbackCalls();
+    const sent = await mainnetFailoverFetch(PRIMARY, { method: 'POST', body: sendBody });
+    expect(sent.status).toBe(200);
+    const batch = await mainnetFailoverFetch(PRIMARY, {
+      method: 'POST',
+      body: new TextEncoder().encode(`[{"jsonrpc":"2.0","id":1,"method":"getSlot"},${sendBody}]`),
+    });
+    expect(batch.status).toBe(200);
+    expect(fallbackCalls()).toBe(before + 2);
+    expect(calls.slice(-2).map((c) => c.url)).toEqual([PUBLIC_MAINNET_RPC_URL, PUBLIC_MAINNET_RPC_URL]);
+    expect(waits).toEqual([]);
+    expect(mainnetRpcStatus().fallbackCalls).toBe(before + 2);
+    const local = mainnetRpcStatus().fallbackLocalLimited;
+    // A read (incl. a getSignatureStatuses poll) in the same state is refused locally, no fallback call.
+    const read = await mainnetFailoverFetch(PRIMARY, {
+      method: 'POST',
+      body: '{"jsonrpc":"2.0","id":"8","method":"getSignatureStatuses","params":[["sig"]]}',
+    });
+    expect(read.status).toBe(429);
+    expect(await read.text()).toBe(LOCAL_429);
+    expect(fallbackCalls()).toBe(before + 2);
+    expect(mainnetRpcStatus().fallbackLocalLimited).toBe(local + 1);
+  });
+
+  it('acquireFallbackTokens(n): takes n from the same bucket, waits up to 3 s, refuses beyond, rejects bad n', async () => {
+    const waits: number[] = [];
+    __setFallbackLimiterSleepForTests(async (ms) => {
+      waits.push(ms);
+    });
+    expect(await acquireFallbackTokens(10)).toBe(true); // full burst, no wait
+    expect(waits).toEqual([]);
+    expect(await acquireFallbackTokens(3)).toBe(true); // 3 tokens due in 0.5 s
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeCloseTo(500, 6);
+    expect(await acquireFallbackTokens(10)).toBe(true); // balance -3: due in (10 + 3) / 6 s = 2.17 s
+    expect(await acquireFallbackTokens(3)).toBe(true); // balance -13: due in 16 / 6 s = 2.67 s
+    expect(await acquireFallbackTokens(2)).toBe(true); // balance -16: due in 18 / 6 s = 3.0 s, the limit
+    expect(waits[waits.length - 1]).toBeCloseTo(3_000, 6);
+    expect(await acquireFallbackTokens(1)).toBe(false); // balance -18: 19 / 6 s = 3.17 s, refused, nothing reserved
+    expect(await acquireFallbackTokens(1)).toBe(false);
+    expect(mainnetRpcStatus().fallbackLocalLimited).toBe(2);
+    for (const bad of [0, 11, 1.5, Number.NaN]) {
+      await expect(acquireFallbackTokens(bad)).rejects.toThrow('n must be an integer');
+    }
+  });
+
+  it('acquireFallbackTokens(n): a caller abort while waiting rejects and returns all n reserved tokens', async () => {
+    expect(await acquireFallbackTokens(10)).toBe(true);
+    const ctrl = new AbortController();
+    const pending = acquireFallbackTokens(5, ctrl.signal); // real sleep: 5 / 6 s
+    ctrl.abort(new Error('caller gave up'));
+    await expect(pending).rejects.toThrow('caller gave up');
+    const waits: number[] = [];
+    __setFallbackLimiterSleepForTests(async (ms) => {
+      waits.push(ms);
+    });
+    expect(await acquireFallbackTokens(5)).toBe(true);
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeCloseTo(5_000 / 6, 6); // not 10 / 6 s: the aborted 5 came back
   });
 
   it('SOLANA_MAINNET_FALLBACK_MAX_RPS: 1..50 accepted, anything else is the default 6 with one warn', () => {
