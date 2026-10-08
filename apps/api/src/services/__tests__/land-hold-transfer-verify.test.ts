@@ -73,6 +73,7 @@ import {
   type VerifyWalletRow,
 } from '../land-hold-transfer-verify';
 import type { AlertErrorParams } from '../alert-error';
+import { __resetMainnetRpcStateForTests } from '../solana-mainnet-rpc';
 
 const SERVICE_PATH = resolve(import.meta.dir, '../land-hold-transfer-verify.ts');
 /** Service source, for the structural invariants that guard money paths. */
@@ -1071,6 +1072,44 @@ describe('T4 mainnet RPC seam', () => {
   it('builds the Helius mainnet endpoint from HELIUS_API_KEY', () => {
     process.env.HELIUS_API_KEY = 'test-key';
     expect(landHoldVerifyRpcUrl()).toBe('https://mainnet.helius-rpc.com/?api-key=test-key');
+  });
+
+  it('the default connection fails over a quota-exhausted Helius to public mainnet, so the door stays open (2026-10-08)', async () => {
+    process.env.HELIUS_API_KEY = 'test-key';
+    const savedFallback = process.env.SOLANA_MAINNET_FALLBACK_RPC_URL;
+    delete process.env.SOLANA_MAINNET_FALLBACK_RPC_URL;
+    // Real RPC seam (getConnection), real keypair decrypt; only the store, alert sink and clock stay fake.
+    _resetLandHoldVerifyDepsForTest();
+    _setLandHoldVerifyDepsForTest({ store, alert: async (params) => { alerts.push(params); }, now: () => clockMs });
+    __resetMainnetRpcStateForTests();
+    const realFetch = globalThis.fetch;
+    const rpcHosts: string[] = [];
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      rpcHosts.push(url.host);
+      if (url.host === 'mainnet.helius-rpc.com') {
+        return new Response('{"jsonrpc":"2.0","error":{"code":-32429,"message":"max usage reached"},"id":1}', { status: 429 });
+      }
+      if (url.host === 'api.mainnet-beta.solana.com') {
+        const body = JSON.parse(String(init?.body)) as { id: unknown; method: string };
+        expect(body.method).toBe('getBalance');
+        return Response.json({ jsonrpc: '2.0', id: body.id, result: { context: { slot: 1 }, value: 5 * LAMPORTS_PER_SOL } });
+      }
+      throw new Error(`unexpected host ${url.host}`);
+    }) as unknown as typeof fetch;
+    try {
+      await expect(getTransferDoorAvailability()).resolves.toEqual({
+        available: true,
+        destination: store.wallet!.publicKey,
+      });
+      expect(rpcHosts).toEqual(['mainnet.helius-rpc.com', 'api.mainnet-beta.solana.com']);
+      expect(alerts.filter((a) => /balance_unknown/.test(JSON.stringify(a)))).toHaveLength(0);
+    } finally {
+      globalThis.fetch = realFetch;
+      __resetMainnetRpcStateForTests();
+      if (savedFallback === undefined) delete process.env.SOLANA_MAINNET_FALLBACK_RPC_URL;
+      else process.env.SOLANA_MAINNET_FALLBACK_RPC_URL = savedFallback;
+    }
   });
 
   it('falls back to public mainnet-beta, never a devnet endpoint', () => {

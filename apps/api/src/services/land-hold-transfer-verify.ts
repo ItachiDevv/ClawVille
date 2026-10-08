@@ -198,6 +198,7 @@ import {
 import { db, sql } from '@clawville/database';
 import { decryptSecretKey } from './keypair-vault';
 import { alertError, type AlertErrorParams } from './alert-error';
+import { createMainnetConnection } from './solana-mainnet-rpc';
 
 // ---------------------------------------------------------------------------
 // Frozen public contract (spec §9). The route layer codes against exactly these.
@@ -715,7 +716,10 @@ export function landHoldVerifyRpcUrl(): string {
 
 function getConnection(): Connection {
   if (!connectionCache) {
-    connectionCache = new Connection(landHoldVerifyRpcUrl(), 'confirmed');
+    // Helius stays the primary; a quota-exhausted Helius (429, 2026-10-08) fails
+    // over per request to the public MAINNET RPC, so the float check no longer
+    // reads `balance_unknown` and closes the door while mainnet is reachable.
+    connectionCache = createMainnetConnection('confirmed', landHoldVerifyRpcUrl());
   }
   return connectionCache;
 }

@@ -12,7 +12,9 @@
  * reads), NOT on the devnet the wager program / special-events RPC default to. So
  * this service builds its OWN mainnet connection: Helius mainnet RPC when
  * `HELIUS_API_KEY` is set (the oracle's endpoint), else the public mainnet-beta
- * RPC as a rate-limited fallback. The CLV never leaves the wallet — we only READ.
+ * RPC as a rate-limited fallback. A Helius primary also fails over per request to
+ * the public mainnet RPC on 429 / 5xx (`solana-mainnet-rpc.ts`, 2026-10-08 quota
+ * outage). The CLV never leaves the wallet — we only READ.
  *
  * ── Caching + fail-soft ──────────────────────────────────────────────────────
  * 5-minute in-memory cache PER wallet pubkey (a hold-tier check must not hammer
@@ -27,6 +29,7 @@ import { db, users, eq } from '@clawville/database';
 import type { Connection } from '@solana/web3.js';
 import { CLV_MINT } from './clv-price-oracle';
 import { readSplTokenBalance, type SplTokenBalance } from './solana-token-balance';
+import { createMainnetConnection } from './solana-mainnet-rpc';
 
 export const CLV_BALANCE_CACHE_TTL_MS = 5 * 60 * 1000;
 export const CLV_BALANCE_HARD_STALE_MS = 15 * 60 * 1000;
@@ -50,11 +53,9 @@ export interface ClvBalanceReadOptions {
 let conn: Connection | null = null;
 function getMainnetConnection(): Connection {
   if (!conn) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const web3 = require('@solana/web3.js') as typeof import('@solana/web3.js');
     const key = process.env.HELIUS_API_KEY?.trim();
     const url = key ? `https://mainnet.helius-rpc.com/?api-key=${key}` : 'https://api.mainnet-beta.solana.com';
-    conn = new web3.Connection(url, 'confirmed');
+    conn = createMainnetConnection('confirmed', url);
   }
   return conn;
 }

@@ -15,6 +15,7 @@ import { withKeyedMutex } from './keyed-mutex';
 import { verifyUsdcTransfer } from './x402-chain-verifier';
 import { usdcMintForNetwork, type X402Network } from './x402-payai';
 import { readSplTokenBalance } from './solana-token-balance';
+import { createMainnetConnection, PUBLIC_MAINNET_RPC_URL } from './solana-mainnet-rpc';
 import {
   calculateEarnedBackingSolvency,
   earnedBackingIntegrityQuery,
@@ -190,6 +191,23 @@ function isUniqueViolation(error: unknown): boolean {
   return value?.code === '23505' || (value?.cause ? isUniqueViolation(value.cause) : false);
 }
 
+/**
+ * One RPC resolver for the three chain reads below. Mainnet keeps its order
+ * (Helius key, then SOLANA_MAINNET_RPC_URL, then public) and that endpoint stays
+ * the primary; it fails over per request to the public mainnet RPC on 429 / 5xx
+ * (2026-10-08 Helius quota outage). Devnet is unchanged.
+ */
+function earnedImportConnection(network: X402Network): Connection {
+  if (network === 'mainnet') {
+    const key = process.env.HELIUS_API_KEY?.trim();
+    const primary = key
+      ? `https://mainnet.helius-rpc.com/?api-key=${key}`
+      : process.env.SOLANA_MAINNET_RPC_URL?.trim() || PUBLIC_MAINNET_RPC_URL;
+    return createMainnetConnection('confirmed', primary);
+  }
+  return new Connection(process.env.SOLANA_RPC_URL?.trim() || 'https://api.devnet.solana.com', 'confirmed');
+}
+
 export async function earnFromExternalSettlement(
   input: EarnFromExternalSettlementInput,
   deps: EarnImportDeps = {},
@@ -254,12 +272,7 @@ export async function earnFromExternalSettlement(
   }
   const custody = custodyRows[0];
   const getParsedTransaction = deps.getParsedTransaction ?? (async (network, signature) => {
-    const rpcUrl = network === 'mainnet'
-      ? (process.env.HELIUS_API_KEY?.trim()
-          ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY.trim()}`
-          : process.env.SOLANA_MAINNET_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com')
-      : process.env.SOLANA_RPC_URL?.trim() || 'https://api.devnet.solana.com';
-    return new Connection(rpcUrl, 'confirmed').getParsedTransaction(signature, {
+    return earnedImportConnection(network).getParsedTransaction(signature, {
       commitment: 'confirmed', maxSupportedTransactionVersion: 0,
     });
   });
@@ -275,13 +288,8 @@ export async function earnFromExternalSettlement(
     return reject('backing_transfer_unverified', chainProof.kind);
   }
   const readCustodyUsdcBalance = deps.readCustodyUsdcBalance ?? (async (network, owner, options) => {
-    const rpcUrl = network === 'mainnet'
-      ? (process.env.HELIUS_API_KEY?.trim()
-          ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY.trim()}`
-          : process.env.SOLANA_MAINNET_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com')
-      : process.env.SOLANA_RPC_URL?.trim() || 'https://api.devnet.solana.com';
     return readSplTokenBalance(
-      new Connection(rpcUrl, 'confirmed'),
+      earnedImportConnection(network),
       usdcMintForNetwork(network),
       owner,
       options,
@@ -528,12 +536,7 @@ async function inspectPayerWalletDefault(
   network: X402Network,
   cfg: TokenomicsEarnConfig,
 ): Promise<PayerInspection> {
-  const url = network === 'mainnet'
-    ? (process.env.HELIUS_API_KEY?.trim()
-        ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY.trim()}`
-        : process.env.SOLANA_MAINNET_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com')
-    : process.env.SOLANA_RPC_URL?.trim() || 'https://api.devnet.solana.com';
-  const connection = new Connection(url, 'confirmed');
+  const connection = earnedImportConnection(network);
   const pubkey = new PublicKey(payerWallet);
   const signatures: Awaited<ReturnType<typeof connection.getSignaturesForAddress>> = [];
   let before: string | undefined;
