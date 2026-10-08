@@ -273,6 +273,45 @@ async function fallbackProven(url: string): Promise<boolean> {
   return (await pending).verdict === 'mainnet';
 }
 
+/**
+ * The fallback URL once it has passed the genesis proof (runs or awaits the
+ * same cached probe), else null. For callers that retry outside the fetch
+ * wrapper (the x402 prepare): null means do not retry, fail closed.
+ */
+export async function provenFallbackMainnetRpcUrl(): Promise<string | null> {
+  const url = fallbackMainnetRpcUrl();
+  return (await fallbackProven(url)) ? url : null;
+}
+
+const NULL_BODY_STATUS = new Set([101, 204, 205, 304]);
+
+/**
+ * Read the whole body under `signal` and return an in-memory copy, so the
+ * 10 s timeout also covers a stalled body (Codex round 2): web3.js reads the
+ * body after fetch returns, outside any timer.
+ */
+async function bufferResponse(res: Response, signal: AbortSignal): Promise<Response> {
+  let onAbort = (): void => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason ?? new Error('aborted'));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    const buf = await Promise.race([res.arrayBuffer(), aborted]);
+    const headers = new Headers(res.headers);
+    headers.delete('content-encoding'); // the body is already decoded
+    headers.delete('content-length');
+    return new Response(NULL_BODY_STATUS.has(res.status) ? null : buf, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    });
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 function resendable(body: RequestInit['body']): boolean {
   return (
     body == null ||
@@ -283,10 +322,10 @@ function resendable(body: RequestInit['body']): boolean {
   );
 }
 
-/** One send to the fallback with the same 10 s timeout as the primary; its errors and timeout go to the caller. */
+/** One send to the fallback with the same 10 s timeout (headers AND body) as the primary; its errors and timeout go to the caller. */
 function sendFallback(s: BreakerState, url: string, init: RequestInit, caller: AbortSignal | undefined): Promise<Response> {
   s.fallbackCalls += 1;
-  return withTimeout(caller, 'fallback', (signal) => fetch(url, { ...init, signal }));
+  return withTimeout(caller, 'fallback', async (signal) => bufferResponse(await fetch(url, { ...init, signal }), signal));
 }
 
 /** fetch-compatible. Requests whose URL is NOT a configured primary (helius host) pass straight through to fetch. */
@@ -315,7 +354,8 @@ export async function mainnetFailoverFetch(input: string | URL | Request, init?:
   let reason: DownReason | null;
   try {
     [res, reason] = await withTimeout(caller, 'primary', async (signal) => {
-      const r = await fetch(url, { ...req, signal });
+      // A stalled body times out here too and counts as an 'error' trigger.
+      const r = await bufferResponse(await fetch(url, { ...req, signal }), signal);
       return [r, await classify(r)] as const;
     });
   } catch (err) {
@@ -330,7 +370,6 @@ export async function mainnetFailoverFetch(input: string | URL | Request, init?:
     return res;
   }
   if (!(await fallbackProven(fallbackUrl))) return res; // fail closed: the primary's own response
-  res.body?.cancel().catch(() => {});
   markDown(s, reason, `HTTP ${res.status}`);
   return sendFallback(s, fallbackUrl, req, caller);
 }

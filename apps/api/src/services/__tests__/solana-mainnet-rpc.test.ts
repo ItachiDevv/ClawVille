@@ -8,6 +8,7 @@ import {
   __setMainnetRpcNowForTests,
   __setMainnetRpcTimeoutMsForTests,
   createMainnetConnection,
+  provenFallbackMainnetRpcUrl,
   fallbackMainnetRpcUrl,
   mainnetFailoverFetch,
   mainnetRpcStatus,
@@ -385,6 +386,45 @@ describe('fallback mainnet proof (B1) and fallback timeout (F2)', () => {
     expect(mainnetRpcStatus().reason).toBe('error');
   });
 
+  const stalledBody = (): Response => new Response(new ReadableStream({ start() {} }), { status: 200 });
+
+  it('stalled primary BODY: times out as an error trigger and fails over', async () => {
+    __setMainnetRpcTimeoutMsForTests(20);
+    primaryHandler = stalledBody;
+    const res = await post();
+    expect(await res.json()).toEqual({ fallback: true });
+    expect(mainnetRpcStatus().reason).toBe('error');
+  });
+
+  it('stalled fallback BODY: error to the caller within the timeout, no retry', async () => {
+    __setMainnetRpcTimeoutMsForTests(20);
+    primaryHandler = quota;
+    fallbackHandler = stalledBody;
+    const t0 = Date.now();
+    await expect(post()).rejects.toThrow('fallback timeout after 20 ms');
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(fallbackCalls()).toBe(1);
+  });
+
+  it('buffered responses keep status, statusText and headers; the 429 peek still works', async () => {
+    primaryHandler = () => new Response('{"ok":1}', { status: 200, statusText: 'OK', headers: { 'x-test': 'yes' } });
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(res.statusText).toBe('OK');
+    expect(res.headers.get('x-test')).toBe('yes');
+    expect(await res.text()).toBe('{"ok":1}');
+  });
+
+  it('provenFallbackMainnetRpcUrl: the URL when proven, null when not (one cached probe each)', async () => {
+    expect(await provenFallbackMainnetRpcUrl()).toBe(PUBLIC_MAINNET_RPC_URL);
+    expect(await provenFallbackMainnetRpcUrl()).toBe(PUBLIC_MAINNET_RPC_URL);
+    expect(probes).toHaveLength(1);
+    process.env.SOLANA_MAINNET_FALLBACK_RPC_URL = 'https://rpc.example.org/';
+    genesisHandler = () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' }));
+    expect(await provenFallbackMainnetRpcUrl()).toBeNull();
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('caller abort during the fallback send rethrows', async () => {
     primaryHandler = quota;
     const ctrl = new AbortController();
@@ -425,6 +465,13 @@ describe('fallback mainnet proof (B1) and fallback timeout (F2)', () => {
       now += 31_000;
       fallbackHandler = hang;
       await expect(post()).rejects.toThrow('fallback timeout'); // fallback timeout
+      now += 31_000;
+      fallbackHandler = stalledBody;
+      await expect(post()).rejects.toThrow('fallback timeout'); // stalled fallback body
+      now += 31_000;
+      primaryHandler = stalledBody;
+      fallbackHandler = () => new Response('{"fallback":true}');
+      await post(); // stalled primary body + failover
     } finally {
       setSpy.mockRestore();
       clearSpy.mockRestore();

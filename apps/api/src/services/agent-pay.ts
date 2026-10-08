@@ -52,7 +52,7 @@ import {
 import { alertError } from './alert-error';
 import {
   createMainnetConnection,
-  fallbackMainnetRpcUrl,
+  provenFallbackMainnetRpcUrl,
   redactRpcUrl,
 } from './solana-mainnet-rpc';
 import {
@@ -710,7 +710,10 @@ export async function prepareWithMainnetRpcFallback<
     return await prepare(input);
   } catch (err) {
     if (input.network !== 'mainnet' || !isHeliusMainnetRpcUrl(input.rpcUrl)) throw err;
-    const fallbackUrl = fallbackMainnetRpcUrl();
+    // Codex round 2: the prepare signs against this RPC's blockhash, so it
+    // must be the genesis-proven mainnet fallback; unproven => fail closed.
+    const fallbackUrl = await provenFallbackMainnetRpcUrl();
+    if (!fallbackUrl) throw err;
     console.warn(
       `[agent-pay] mainnet prepare failed on the primary RPC (${redactRpcUrl(
         err instanceof Error ? err.message : String(err),

@@ -1576,4 +1576,41 @@ describe('agent-pay rail — Helius quota-dead primary fails over to the public 
     ).rejects.toThrow('boom');
     expect(calls).toBe(2);
   });
+
+  it('GUARD (Codex round 2): an UNPROVEN fallback gets no prepare retry; the original error is thrown', async () => {
+    const realFetch = globalThis.fetch;
+    const probed: string[] = [];
+    const urls: string[] = [];
+    __resetMainnetRpcStateForTests(); // nothing proven
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      probed.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      // A devnet node answering getGenesisHash: not mainnet.
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' }));
+    }) as typeof fetch;
+    try {
+      await expect(
+        prepareWithMainnetRpcFallback({ network: 'mainnet' as const, rpcUrl: HELIUS }, async (input) => {
+          urls.push(input.rpcUrl);
+          throw new Error('429 max usage reached (original)');
+        }),
+      ).rejects.toThrow('(original)');
+      expect(urls).toEqual([HELIUS]);
+      expect(probed).toEqual(['https://api.mainnet-beta.solana.com']);
+    } finally {
+      globalThis.fetch = realFetch;
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    }
+  });
+
+  it('a PROVEN fallback: one prepare retry on exactly that URL', async () => {
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    const urls: string[] = [];
+    const out = await prepareWithMainnetRpcFallback({ network: 'mainnet' as const, rpcUrl: HELIUS }, async (input) => {
+      urls.push(input.rpcUrl);
+      if (urls.length === 1) throw new Error('429 max usage reached');
+      return 'prepared-on-fallback';
+    });
+    expect(out).toBe('prepared-on-fallback');
+    expect(urls).toEqual([HELIUS, 'https://api.mainnet-beta.solana.com']);
+  });
 });
