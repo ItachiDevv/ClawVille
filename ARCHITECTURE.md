@@ -1,6 +1,6 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-10-08 09:05Z (mainnet RPC failover read sites + money rails + ws-free confirm, see §4 "Mainnet RPC failover" "Who uses it").** Drift note: the failover section named the breaker but no caller; the read sites, the two money connection factories, the x402 prepare retry and the polling confirm (with its two behaviour changes) are now listed.
+**Last Audited: 2026-10-08 08:37Z (mainnet RPC failover read sites + money rails + ws-free confirm, see §4 "Mainnet RPC failover" "Who uses it").** Drift note: the failover section named the breaker but no caller; the read sites, the two money connection factories, the x402 prepare retry and the polling confirm (with its two behaviour changes) are now listed.
 
 **Prior Last Audited: 2026-10-08 08:24Z (mainnet RPC failover: new `apps/api/src/services/solana-mainnet-rpc.ts` and env `SOLANA_MAINNET_FALLBACK_RPC_URL`; infrastructure only; no route, schema, payload or protocol change; PROTOCOL_VERSION stays 83).** Drift note: §4 had no failover path for Solana mainnet RPC; on 2026-10-08 02:04Z the Helius quota ran out (HTTP 429 "max usage reached") and every mainnet read and send failed. §4 "Mainnet RPC failover" now records the breaker, and the env reference names the new fallback variable.
 
