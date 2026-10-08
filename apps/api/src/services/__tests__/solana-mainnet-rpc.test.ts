@@ -6,6 +6,7 @@ import {
   confirmSignatureByPolling,
   __resetMainnetRpcStateForTests,
   __setMainnetRpcNowForTests,
+  __setMainnetRpcTimeoutMsForTests,
   createMainnetConnection,
   fallbackMainnetRpcUrl,
   mainnetFailoverFetch,
@@ -33,9 +34,19 @@ let warnSpy: Mock<typeof console.warn>;
 let errorSpy: Mock<typeof console.error>;
 let logSpy: Mock<typeof console.log>;
 
+const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+const genesisOk = (): Response => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: MAINNET_GENESIS }));
+let genesisHandler: Handler = genesisOk;
+let probes: string[] = [];
+
 function installFetch(): void {
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
+    if (typeof init?.body === 'string' && init.body.includes('"getGenesisHash"')) {
+      probes.push(url); // the fallback's mainnet proof, kept out of `calls`
+      if (init.signal?.aborted) throw init.signal.reason ?? new Error('aborted');
+      return genesisHandler(url, init);
+    }
     calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers });
     if (init?.signal?.aborted) throw init.signal.reason ?? new Error('aborted');
     if (url.startsWith('https://mainnet.helius-rpc.com')) return primaryHandler(url, init);
@@ -68,6 +79,8 @@ beforeEach(() => {
   now = 1_000_000;
   __setMainnetRpcNowForTests(() => now);
   calls = [];
+  probes = [];
+  genesisHandler = genesisOk;
   primaryHandler = () => new Response('{"ok":true}');
   fallbackHandler = () => new Response('{"fallback":true}');
   installFetch();
@@ -201,7 +214,7 @@ describe('mainnetFailoverFetch', () => {
     expect(st.reason).toBe('rate');
     expect(Date.parse(st.downUntil!) - now).toBe(30_000);
     expect(alertSpy).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls.filter((c) => String(c[0]).includes(' down ('))).toHaveLength(1);
     now += 30_000;
     primaryHandler = () => new Response('{"ok":true}');
     await post();
@@ -267,6 +280,157 @@ describe('mainnetFailoverFetch', () => {
     const res = await mainnetFailoverFetch(PRIMARY, { method: 'POST', body });
     expect(res.status).toBe(429);
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('fallback mainnet proof (B1) and fallback timeout (F2)', () => {
+  const hang: Handler = (_url, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      if (init?.signal?.aborted) return reject(init.signal.reason);
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+    });
+
+  it('genesis probe passes: fails over, one probe to the fallback', async () => {
+    primaryHandler = quota;
+    const res = await post();
+    expect(await res.json()).toEqual({ fallback: true });
+    expect(probes).toEqual([PUBLIC_MAINNET_RPC_URL]);
+    expect(fallbackCalls()).toBe(1);
+  });
+
+  it('wrong genesis: no failover, the primary response returns, one alert per process', async () => {
+    primaryHandler = quota;
+    genesisHandler = () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' }));
+    const res = await post();
+    expect(res.status).toBe(429);
+    expect(await res.text()).toContain('Max usage');
+    expect(fallbackCalls()).toBe(0);
+    expect(mainnetRpcStatus()).toMatchObject({ primaryHealthy: true, fallbackCalls: 0 });
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0]![0]).toMatchObject({ severity: 'critical', source: 'solana-mainnet-rpc' });
+    expect(alertSpy.mock.calls[0]![0].message).toContain('no failover');
+    now += 61_000;
+    await post();
+    expect(probes).toHaveLength(2);
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(fallbackCalls()).toBe(0);
+  });
+
+  it('network error with an unproven fallback: the primary error is thrown', async () => {
+    primaryHandler = () => {
+      throw new TypeError('connect ECONNREFUSED');
+    };
+    genesisHandler = () => new Response('nope', { status: 500 });
+    await expect(post()).rejects.toThrow('ECONNREFUSED');
+    expect(fallbackCalls()).toBe(0);
+  });
+
+  it('a good proof is cached: one probe for N failovers', async () => {
+    primaryHandler = () => new Response('bad gateway', { status: 502 });
+    for (let i = 0; i < 5; i += 1) {
+      await post();
+      now += 31_000; // past the 30 s window, so the next call probes the primary again
+    }
+    expect(primaryCalls()).toBe(5);
+    expect(fallbackCalls()).toBe(5);
+    expect(probes).toHaveLength(1);
+  });
+
+  it('a failed probe is cached for 60 s, then re-probed', async () => {
+    primaryHandler = quota;
+    genesisHandler = () => {
+      throw new TypeError('fallback unreachable');
+    };
+    expect((await post()).status).toBe(429);
+    now += 59_999;
+    expect((await post()).status).toBe(429);
+    expect(probes).toHaveLength(1);
+    now += 2;
+    genesisHandler = genesisOk;
+    const res = await post();
+    expect(await res.json()).toEqual({ fallback: true });
+    expect(probes).toHaveLength(2);
+    expect(warnSpy.mock.calls.filter((c) => String(c[0]).includes('verdict'))).toHaveLength(2);
+  });
+
+  it('IP-literal, internal and single-label fallback hosts are rejected (no DNS)', () => {
+    for (const bad of [
+      'https://127.0.0.2',
+      'https://10.0.0.5/rpc',
+      'https://0x7f.1',
+      'https://[::1]',
+      'https://clawville-db',
+      'https://rpc.internal',
+      'https://node.local',
+    ]) {
+      process.env.SOLANA_MAINNET_FALLBACK_RPC_URL = bad;
+      expect(fallbackMainnetRpcUrl()).toBe(PUBLIC_MAINNET_RPC_URL);
+    }
+  });
+
+  it('fallback timeout: throws to the caller after one fallback send, no retry', async () => {
+    __setMainnetRpcTimeoutMsForTests(20);
+    primaryHandler = quota;
+    fallbackHandler = hang;
+    await expect(post()).rejects.toThrow('fallback timeout after 20 ms');
+    expect(primaryCalls()).toBe(1);
+    expect(fallbackCalls()).toBe(1);
+  });
+
+  it('primary timeout fails over', async () => {
+    __setMainnetRpcTimeoutMsForTests(20);
+    primaryHandler = hang;
+    const res = await post();
+    expect(await res.json()).toEqual({ fallback: true });
+    expect(mainnetRpcStatus().reason).toBe('error');
+  });
+
+  it('caller abort during the fallback send rethrows', async () => {
+    primaryHandler = quota;
+    const ctrl = new AbortController();
+    fallbackHandler = (url, init) => {
+      ctrl.abort(new Error('caller gave up'));
+      return hang(url, init);
+    };
+    await expect(
+      mainnetFailoverFetch(PRIMARY, { method: 'POST', body: BODY, signal: ctrl.signal }),
+    ).rejects.toThrow('caller gave up');
+    expect(fallbackCalls()).toBe(1);
+  });
+
+  it('no leaked timers: every timer the module starts is cleared', async () => {
+    const started: unknown[] = [];
+    const cleared = new Set<unknown>();
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const setSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      const t = realSet(fn, ms);
+      started.push(t);
+      return t;
+    }) as typeof setTimeout);
+    const clearSpy = spyOn(globalThis, 'clearTimeout').mockImplementation(((t?: Parameters<typeof clearTimeout>[0]) => {
+      cleared.add(t);
+      realClear(t);
+    }) as typeof clearTimeout);
+    try {
+      __setMainnetRpcTimeoutMsForTests(20);
+      await post(); // healthy
+      primaryHandler = quota;
+      await post(); // probe + failover
+      now += 16 * 60_000;
+      primaryHandler = () => {
+        throw new TypeError('reset');
+      };
+      await post(); // network error + failover
+      now += 31_000;
+      fallbackHandler = hang;
+      await expect(post()).rejects.toThrow('fallback timeout'); // fallback timeout
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
+    expect(started.length).toBeGreaterThanOrEqual(7);
+    expect(started.filter((t) => !cleared.has(t))).toEqual([]);
   });
 });
 

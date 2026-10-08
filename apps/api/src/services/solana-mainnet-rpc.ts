@@ -28,8 +28,11 @@ const DOWN_MS: Record<DownReason, number> = {
   rate: 30_000,
   error: 30_000,
 };
-const PRIMARY_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
+const PROBE_RETRY_MS = 60_000;
 const SOURCE = 'solana-mainnet-rpc';
+/** mainnet-beta genesis hash; a fallback must answer getGenesisHash with it before it gets any traffic. */
+export const MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
 
 interface BreakerState {
   host: string;
@@ -40,8 +43,18 @@ interface BreakerState {
   fallbackCalls: number;
 }
 
+type ProofVerdict = 'mainnet' | 'not-mainnet' | 'unreachable';
+interface FallbackProof {
+  verdict: ProofVerdict;
+  at: number;
+}
+
 const states = new Map<string, BreakerState>();
 const warnedBadFallback = new Set<string>();
+const proofs = new Map<string, FallbackProof>();
+const probing = new Map<string, Promise<FallbackProof>>();
+let noFailoverAlerted = false;
+let timeoutMs = DEFAULT_TIMEOUT_MS;
 let nowFn: () => number = () => Date.now();
 
 /** Redact `api-key=<value>` anywhere in a string (URLs, error messages). */
@@ -74,18 +87,30 @@ export function primaryMainnetRpcUrl(): string {
   return PUBLIC_MAINNET_RPC_URL;
 }
 
-/** SOLANA_MAINNET_FALLBACK_RPC_URL (must be https, must not be devnet/testnet/localhost, else ignored with one warn) || PUBLIC_MAINNET_RPC_URL. */
+/** Literal host check (no DNS): devnet/testnet names, IP literals, localhost, single-label and .local/.internal names. */
+function fallbackHostRejected(host: string): boolean {
+  return (
+    /devnet|testnet/.test(host) ||
+    /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || // IPv4 literal (URL already normalizes 0x7f.1 and friends)
+    host.startsWith('[') || // IPv6 literal
+    host === 'localhost' ||
+    /\.(localhost|local|internal)$/.test(host) ||
+    !host.includes('.')
+  );
+}
+
+/**
+ * SOLANA_MAINNET_FALLBACK_RPC_URL (https, a public DNS name: no devnet/testnet,
+ * IP literal, localhost or internal name; else ignored with one warn) ||
+ * PUBLIC_MAINNET_RPC_URL. The URL still gets no traffic until it passes the
+ * genesis-hash proof (`fallbackProven`).
+ */
 export function fallbackMainnetRpcUrl(): string {
   const raw = process.env.SOLANA_MAINNET_FALLBACK_RPC_URL?.trim();
   if (!raw) return PUBLIC_MAINNET_RPC_URL;
   const u = parse(raw);
   const host = u?.hostname.toLowerCase() ?? '';
-  const ok =
-    u !== null &&
-    u.protocol === 'https:' &&
-    !/devnet|testnet|localhost/.test(host) &&
-    host !== '127.0.0.1' &&
-    host !== '[::1]';
+  const ok = u !== null && u.protocol === 'https:' && !fallbackHostRejected(host);
   if (ok) return raw;
   if (!warnedBadFallback.has(raw)) {
     warnedBadFallback.add(raw);
@@ -177,6 +202,77 @@ async function classify(res: Response): Promise<DownReason | null> {
   return null;
 }
 
+/** Run `run` with a signal that aborts on the caller's signal OR after `timeoutMs`; the timer is cleared on every path. */
+async function withTimeout<T>(
+  caller: AbortSignal | undefined,
+  label: string,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const ctrl = new AbortController();
+  const ms = timeoutMs;
+  const timer = setTimeout(() => ctrl.abort(new Error(`${label} timeout after ${ms} ms`)), ms);
+  try {
+    return await run(caller ? AbortSignal.any([caller, ctrl.signal]) : ctrl.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeGenesis(url: string): Promise<{ verdict: ProofVerdict; detail: string }> {
+  try {
+    const hash = await withTimeout(undefined, 'genesis probe', async (signal) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"jsonrpc":"2.0","id":1,"method":"getGenesisHash"}',
+        signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return ((await res.json()) as { result?: unknown }).result;
+    });
+    return hash === MAINNET_GENESIS_HASH
+      ? { verdict: 'mainnet', detail: 'genesis hash matches mainnet-beta' }
+      : { verdict: 'not-mainnet', detail: `genesis hash ${String(hash).slice(0, 64)}` };
+  } catch (err) {
+    return { verdict: 'unreachable', detail: redactRpcUrl(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+/**
+ * B1 (Codex 2026-10-08): money guards check the PRIMARY endpoint, so the
+ * fallback must prove it is mainnet before it gets any traffic. One
+ * getGenesisHash probe per fallback URL (concurrent callers share it):
+ * success is cached for the process, failure for 60 s. Unproven => no
+ * failover (fail closed, as before the breaker existed).
+ */
+async function fallbackProven(url: string): Promise<boolean> {
+  const cached = proofs.get(url);
+  if (cached && (cached.verdict === 'mainnet' || nowFn() - cached.at < PROBE_RETRY_MS)) {
+    return cached.verdict === 'mainnet';
+  }
+  let pending = probing.get(url);
+  if (!pending) {
+    pending = (async () => {
+      const { verdict, detail } = await probeGenesis(url);
+      const proof: FallbackProof = { verdict, at: nowFn() };
+      const prev = proofs.get(url);
+      proofs.set(url, proof);
+      const host = parse(url)?.host ?? 'fallback';
+      if (prev?.verdict !== verdict) console.warn(`[${SOURCE}] fallback ${host} verdict ${verdict}: ${detail}`);
+      if (verdict !== 'mainnet' && !noFailoverAlerted) {
+        noFailoverAlerted = true;
+        safeAlert(
+          'critical',
+          `Fallback RPC (${host}) is not mainnet / unreachable (${verdict}: ${detail}); no failover. Mainnet RPC calls fail closed while the primary is down.`,
+        );
+      }
+      return proof;
+    })().finally(() => probing.delete(url));
+    probing.set(url, pending);
+  }
+  return (await pending).verdict === 'mainnet';
+}
+
 function resendable(body: RequestInit['body']): boolean {
   return (
     body == null ||
@@ -187,9 +283,10 @@ function resendable(body: RequestInit['body']): boolean {
   );
 }
 
-function sendFallback(s: BreakerState, init: RequestInit): Promise<Response> {
+/** One send to the fallback with the same 10 s timeout as the primary; its errors and timeout go to the caller. */
+function sendFallback(s: BreakerState, url: string, init: RequestInit, caller: AbortSignal | undefined): Promise<Response> {
   s.fallbackCalls += 1;
-  return fetch(fallbackMainnetRpcUrl(), init);
+  return withTimeout(caller, 'fallback', (signal) => fetch(url, { ...init, signal }));
 }
 
 /** fetch-compatible. Requests whose URL is NOT a configured primary (helius host) pass straight through to fetch. */
@@ -207,35 +304,35 @@ export async function mainnetFailoverFetch(input: string | URL | Request, init?:
   const caller = req.signal ?? undefined;
   const s = stateFor(key);
 
-  if (s.reason !== null && nowFn() < s.downUntil) return sendFallback(s, req);
+  const fallbackUrl = fallbackMainnetRpcUrl();
+
+  if (s.reason !== null && nowFn() < s.downUntil && (await fallbackProven(fallbackUrl))) {
+    return sendFallback(s, fallbackUrl, req, caller);
+  }
   if (!resendable(req.body)) return fetch(url, req); // a stream cannot be re-sent
 
-  const ctrl = new AbortController();
-  if (caller) {
-    if (caller.aborted) ctrl.abort(caller.reason);
-    else caller.addEventListener('abort', () => ctrl.abort(caller.reason), { once: true });
-  }
-  const timer = setTimeout(() => ctrl.abort(new Error(`primary timeout after ${PRIMARY_TIMEOUT_MS} ms`)), PRIMARY_TIMEOUT_MS);
   let res: Response;
   let reason: DownReason | null;
   try {
-    res = await fetch(url, { ...req, signal: ctrl.signal });
-    reason = await classify(res);
+    [res, reason] = await withTimeout(caller, 'primary', async (signal) => {
+      const r = await fetch(url, { ...req, signal });
+      return [r, await classify(r)] as const;
+    });
   } catch (err) {
     if (caller?.aborted) throw err; // never fail over a caller abort
+    if (!(await fallbackProven(fallbackUrl))) throw err; // fail closed: the primary's own error
     markDown(s, 'error', err instanceof Error ? err.message : String(err));
-    return sendFallback(s, req);
-  } finally {
-    clearTimeout(timer);
+    return sendFallback(s, fallbackUrl, req, caller);
   }
 
   if (reason === null) {
     markHealthy(s);
     return res;
   }
+  if (!(await fallbackProven(fallbackUrl))) return res; // fail closed: the primary's own response
   res.body?.cancel().catch(() => {});
   markDown(s, reason, `HTTP ${res.status}`);
-  return sendFallback(s, req);
+  return sendFallback(s, fallbackUrl, req, caller);
 }
 // Bun's `typeof fetch` also requires `preconnect`; with it, this function is
 // assignable wherever `typeof fetch` is expected (no cast at call sites).
@@ -280,7 +377,21 @@ export function mainnetRpcStatus(): {
 export function __resetMainnetRpcStateForTests(): void {
   states.clear();
   warnedBadFallback.clear();
+  proofs.clear();
+  probing.clear();
+  noFailoverAlerted = false;
+  timeoutMs = DEFAULT_TIMEOUT_MS;
   nowFn = () => Date.now();
+}
+
+/** Test hook: mark a fallback URL proven mainnet, so a fetch mock need not answer getGenesisHash. */
+export function __markFallbackProvenForTests(url: string = fallbackMainnetRpcUrl()): void {
+  proofs.set(url, { verdict: 'mainnet', at: nowFn() });
+}
+
+/** Test hook: the primary / fallback / probe timeout. Pass undefined to restore 10 s. */
+export function __setMainnetRpcTimeoutMsForTests(ms?: number): void {
+  timeoutMs = ms ?? DEFAULT_TIMEOUT_MS;
 }
 
 /** Test hook: deterministic clock. Pass undefined to restore Date.now. */
