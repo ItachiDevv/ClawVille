@@ -4,9 +4,10 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   chainErrorCode, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus, isTransientChainError, lpLockFail, mintRuleFails,
-  orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, storeChainVerdict, top10Percent, verdictFromCodes,
-  type ChainRpc, type ParsedAccount, type RawAccount,
+  orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, runChainCheckTick, storeChainVerdict, top10Percent,
+  verdictFromCodes, type ChainRpc, type DueRow, type ParsedAccount, type RawAccount,
 } from './chain-checks';
+import type { FloorArenaSnapshot } from './filters';
 
 const SPL = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const T22 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -323,5 +324,84 @@ describe('O3: storeChainVerdict locks the private rows in order first', () => {
     const { database, log } = fakeDatabase([]);
     await storeChainVerdict(MINT, verdict, NOW, database);
     expect(log.map((entry) => entry.sql.split(' ')[0])).toEqual(['UPDATE', 'SELECT']);
+  });
+});
+
+/**
+ * 2026-10-08 staging: on the public fallback RPC every arena check failed `rpc_rate_limited`. While the primary mainnet
+ * RPC is down, a tick checks at most 2 coins, one at a time; when it is healthy, the normal batch of 20, 4 at a time.
+ */
+describe('chain-check tick pacing: outage mode while the primary RPC is down', () => {
+  function tickHarness(dueCount: number) {
+    const rpc = new FakeRpc();
+    const rows: DueRow[] = Array.from({ length: dueCount }, (_, i) => {
+      const mint = key();
+      // A live freeze authority: one RPC read per coin, a full (failing) verdict.
+      rpc.parsed.set(mint, mintAccount({ freezeAuthority: key() }));
+      return {
+        mint,
+        snapshot: { pairAddress: key(), liqUsd: 10_000, liqBase: 1 } as unknown as FloorArenaSnapshot,
+        unchecked: true,
+        firstSeenMs: 1_000 + i,
+        checkedAtMs: null,
+      };
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const read = rpc.getParsedAccount.bind(rpc);
+    rpc.getParsedAccount = async (address: string) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 2));
+      try { return await read(address); } finally { inFlight -= 1; }
+    };
+    const limits: number[] = [];
+    const stored: string[] = [];
+    const deps = {
+      rpc,
+      configured: () => true,
+      selectDue: async (_now: Date, limit: number) => {
+        limits.push(limit);
+        return pickDueChainChecks(rows, limit);
+      },
+      store: async (mint: string) => { stored.push(mint); },
+    };
+    return { rows, deps, limits, stored, maxInFlight: () => maxInFlight };
+  }
+
+  test('primary down: at most 2 coins, concurrency 1, newest first sight first, every checked coin gets a stored verdict', async () => {
+    const h = tickHarness(25);
+    const result = await runChainCheckTick(NOW, { ...h.deps, primaryHealthy: () => false });
+    expect(h.limits).toEqual([2]);
+    expect(result.checked).toBe(2);
+    expect(h.stored).toEqual([h.rows[24]!.mint, h.rows[23]!.mint]);
+    expect(h.maxInFlight()).toBe(1);
+    expect(result).toMatchObject({ passed: 0, errors: 0, skipped: null });
+  });
+
+  test('primary healthy: the normal batch of 20 with concurrency 4', async () => {
+    const h = tickHarness(25);
+    const result = await runChainCheckTick(NOW, { ...h.deps, primaryHealthy: () => true });
+    expect(h.limits).toEqual([20]);
+    expect(result.checked).toBe(20);
+    expect(h.stored).toHaveLength(20);
+    expect(h.maxInFlight()).toBe(4);
+  });
+
+  test('outage mode keeps fail-closed verdicts: an RPC error is stored as a transient error, never a pass', async () => {
+    const h = tickHarness(3);
+    h.deps.rpc.getParsedAccount = async () => { throw new Error('429 Too Many Requests: fallback rate limited (local)'); };
+    const verdicts: Array<{ pass: boolean; error?: string }> = [];
+    const result = await runChainCheckTick(NOW, {
+      ...h.deps,
+      primaryHealthy: () => false,
+      store: async (_mint, verdict) => { verdicts.push(verdict); },
+    });
+    expect(result).toMatchObject({ checked: 2, passed: 0, errors: 2 });
+    expect(verdicts.map((v) => [v.pass, v.error])).toEqual([
+      [false, 'chain_check_error: rpc_rate_limited'],
+      [false, 'chain_check_error: rpc_rate_limited'],
+    ]);
+    expect(isTransientChainError(verdicts[0]!.error)).toBe(true);
   });
 });

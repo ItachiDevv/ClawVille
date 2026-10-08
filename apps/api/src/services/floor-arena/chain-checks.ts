@@ -2,6 +2,7 @@ import { Connection, PublicKey, type ParsedAccountData } from '@solana/web3.js';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { db, sql } from '@clawville/database';
 import { tradingConnection, tradingRpcConfigured } from '../trading-rpc';
+import { mainnetRpcStatus } from '../solana-mainnet-rpc';
 import { FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES, type FloorArenaHardRuleId } from '@clawville/shared';
 import type { FloorArenaSnapshot } from './filters';
 import { currentSolPriceUsd, USDC_MINT, WSOL_MINT } from './pricing';
@@ -52,6 +53,13 @@ export const CHAIN_VERDICT_TTL_MS = 30 * 60_000;
 const CHECK_DEADLINE_MS = 25_000;
 const CHECKS_PER_TICK = 20;
 const CHECK_CONCURRENCY = 4;
+/**
+ * Outage mode (2026-10-08 staging: on the public fallback RPC every check failed `rpc_rate_limited`): while the primary
+ * mainnet RPC is down (`mainnetRpcStatus().primaryHealthy === false`) a tick checks at most 2 coins, one at a time, so
+ * the arena does not burn the shared public-RPC budget that wallet withdraw, agent pay and land refunds need.
+ */
+export const OUTAGE_CHECKS_PER_TICK = 2;
+export const OUTAGE_CHECK_CONCURRENCY = 1;
 /**
  * Coarse universe: only these coins are worth an RPC budget. D26: no liquidity bound (pump.fun curve coins show
  * DexScreener liquidity 0 and must still get a verdict); a positive price and mcap 1k-100M.
@@ -413,7 +421,7 @@ export async function runChainCheck(
 
 // ---------------------------------------------------------------- the 20 s tick
 
-interface DueRow { mint: string; snapshot: FloorArenaSnapshot | null; unchecked: boolean; firstSeenMs: number; checkedAtMs: number | null }
+export interface DueRow { mint: string; snapshot: FloorArenaSnapshot | null; unchecked: boolean; firstSeenMs: number; checkedAtMs: number | null }
 
 /**
  * D28: the check order. Never-checked rows first (newest first sight first), then the OLDEST verdicts first, so no
@@ -629,26 +637,37 @@ export interface ChainTickResult { checked: number; passed: number; errors: numb
 
 export async function runChainCheckTick(
   now: Date = new Date(),
-  deps: { rpc?: ChainRpc; configured?: () => boolean } = {},
+  deps: {
+    rpc?: ChainRpc;
+    configured?: () => boolean;
+    /** Test seams; production uses the module functions. */
+    primaryHealthy?: () => boolean;
+    selectDue?: (now: Date, limit: number) => Promise<DueRow[]>;
+    store?: (mint: string, verdict: ArenaChainVerdict, now: Date) => Promise<void>;
+  } = {},
 ): Promise<ChainTickResult> {
   if (!(deps.configured ?? tradingRpcConfigured)()) {
     // No verdicts are written: coins stay chain_pending (no entries) and are checked as soon as RPC is configured.
     return { checked: 0, passed: 0, errors: 0, skipped: 'rpc_not_configured' };
   }
   const rpc = deps.rpc ?? web3ChainRpc(tradingConnection());
-  const due = await selectDueChainChecks(now);
+  // Outage mode: same selection order (pickDueChainChecks), a smaller batch, one check at a time.
+  const outage = !(deps.primaryHealthy ?? (() => mainnetRpcStatus().primaryHealthy))();
+  const due = await (deps.selectDue ?? selectDueChainChecks)(now, outage ? OUTAGE_CHECKS_PER_TICK : CHECKS_PER_TICK);
+  const concurrency = outage ? OUTAGE_CHECK_CONCURRENCY : CHECK_CONCURRENCY;
+  const store = deps.store ?? storeChainVerdict;
   const solPrice = currentSolPriceUsd(now.getTime());
   let passed = 0;
   let errors = 0;
-  for (let i = 0; i < due.length; i += CHECK_CONCURRENCY) {
-    await Promise.all(due.slice(i, i + CHECK_CONCURRENCY).map(async (row) => {
+  for (let i = 0; i < due.length; i += concurrency) {
+    await Promise.all(due.slice(i, i + concurrency).map(async (row) => {
       // The DB snapshot is the only snapshot source (Codex r9).
       const snapshot = row.snapshot;
       if (!snapshot) return;
       const verdict = await runChainCheck(rpc, row.mint, snapshot, solPrice, now);
       if (verdict.pass) passed += 1;
       if (verdict.error) errors += 1;
-      await storeChainVerdict(row.mint, verdict, now);
+      await store(row.mint, verdict, now);
     }));
   }
   return { checked: due.length, passed, errors, skipped: null };

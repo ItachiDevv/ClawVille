@@ -4,12 +4,15 @@ import * as alertModule from '../alert-error';
 import {
   PUBLIC_MAINNET_RPC_URL,
   confirmSignatureByPolling,
+  __markFallbackProvenForTests,
   __resetMainnetRpcStateForTests,
+  __setFallbackLimiterSleepForTests,
   __setMainnetRpcNowForTests,
   __setMainnetRpcTimeoutMsForTests,
   createMainnetConnection,
   provenFallbackMainnetRpcUrl,
   fallbackMainnetRpcUrl,
+  fallbackMaxRps,
   mainnetFailoverFetch,
   mainnetRpcStatus,
   primaryMainnetRpcUrl,
@@ -18,7 +21,7 @@ import {
 
 const SECRET = 'SECRETKEY123';
 const PRIMARY = `https://mainnet.helius-rpc.com/?api-key=${SECRET}`;
-const ENV_KEYS = ['HELIUS_RPC_URL', 'HELIUS_API_KEY', 'SOLANA_MAINNET_FALLBACK_RPC_URL'] as const;
+const ENV_KEYS = ['HELIUS_RPC_URL', 'HELIUS_API_KEY', 'SOLANA_MAINNET_FALLBACK_RPC_URL', 'SOLANA_MAINNET_FALLBACK_MAX_RPS'] as const;
 const BODY = '{"jsonrpc":"2.0","id":"1","method":"getSlot","params":[]}';
 
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
@@ -139,7 +142,15 @@ describe('mainnetFailoverFetch', () => {
     expect(await res.json()).toEqual({ ok: true });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(PRIMARY);
-    expect(mainnetRpcStatus()).toEqual({ primaryHealthy: true, downSince: null, downUntil: null, reason: null, fallbackCalls: 0 });
+    expect(mainnetRpcStatus()).toEqual({
+      primaryHealthy: true,
+      downSince: null,
+      downUntil: null,
+      reason: null,
+      fallbackCalls: 0,
+      fallbackRateLimited: 0,
+      fallbackLocalLimited: 0,
+    });
   });
 
   it('quota 429: fails over with identical request, one alert, down 15 min', async () => {
@@ -478,6 +489,152 @@ describe('fallback mainnet proof (B1) and fallback timeout (F2)', () => {
     }
     expect(started.length).toBeGreaterThanOrEqual(7);
     expect(started.filter((t) => !cleared.has(t))).toEqual([]);
+  });
+});
+
+describe('fallback rate limiter (public RPC budget, 2026-10-08)', () => {
+  const LOCAL_429 = '{"jsonrpc":"2.0","error":{"code":429,"message":"fallback rate limited (local)"}}';
+  const RATE = 1000 / 6;
+
+  /** Primary quota-dead, fallback pre-proven (no probe token), breaker already open after one failover send. */
+  async function openBreaker(): Promise<void> {
+    __markFallbackProvenForTests();
+    primaryHandler = quota;
+    await post(); // 1 fallback token used
+    expect(primaryCalls()).toBe(1);
+  }
+
+  it('burst of 10, then spaced to 6/s on the fake clock', async () => {
+    const waits: number[] = [];
+    __setFallbackLimiterSleepForTests(async (ms) => {
+      waits.push(ms);
+      now += ms;
+    });
+    await openBreaker();
+    const t0 = now;
+    for (let i = 0; i < 19; i += 1) expect((await post()).status).toBe(200);
+    expect(fallbackCalls()).toBe(20);
+    expect(primaryCalls()).toBe(1);
+    // Tokens 2..10 are free; each of the next 10 waits one refill interval (1/6 s).
+    expect(waits).toHaveLength(10);
+    for (const w of waits) expect(w).toBeCloseTo(RATE, 6);
+    expect(now - t0).toBeCloseTo(10 * RATE, 3);
+    expect(mainnetRpcStatus()).toMatchObject({ fallbackCalls: 20, fallbackLocalLimited: 0 });
+  });
+
+  it('waits up to 3 s, then returns the local 429 without calling the fallback', async () => {
+    const waits: number[] = [];
+    __setFallbackLimiterSleepForTests(async (ms) => {
+      waits.push(ms); // the clock stays frozen: no refill
+    });
+    await openBreaker();
+    const results = await Promise.all(Array.from({ length: 30 }, () => post()));
+    const statuses = results.map((r) => r.status);
+    // 9 tokens left + 18 reservations within 3 s (1/6 s .. 3 s) = 27 sends; the last 3 are refused locally.
+    expect(statuses.filter((st) => st === 200)).toHaveLength(27);
+    expect(statuses.filter((st) => st === 429)).toHaveLength(3);
+    expect(fallbackCalls()).toBe(28);
+    expect(waits).toHaveLength(18);
+    expect(Math.max(...waits)).toBeCloseTo(3_000, 6);
+    expect(await results[29]!.text()).toBe(LOCAL_429);
+    expect(mainnetRpcStatus()).toMatchObject({ fallbackCalls: 28, fallbackLocalLimited: 3, fallbackRateLimited: 0 });
+    expect(warnSpy.mock.calls.filter((c) => String(c[0]).includes('fallback budget exhausted'))).toHaveLength(1);
+  });
+
+  it('web3.js sees the local 429 as a rate-limit error (callers fail closed)', async () => {
+    __setFallbackLimiterSleepForTests(async () => {});
+    await openBreaker();
+    for (let i = 0; i < 27; i += 1) await post(); // bucket and 3 s of reservations used up
+    const before = fallbackCalls();
+    await expect(createMainnetConnection('confirmed').getSlot()).rejects.toThrow('429');
+    expect(fallbackCalls()).toBe(before);
+  });
+
+  it('never limits the primary: 60 healthy requests on a frozen clock, no waits', async () => {
+    const waits: number[] = [];
+    __setFallbackLimiterSleepForTests(async (ms) => {
+      waits.push(ms);
+    });
+    for (let i = 0; i < 60; i += 1) expect((await post()).status).toBe(200);
+    expect(primaryCalls()).toBe(60);
+    expect(waits).toEqual([]);
+    expect(mainnetRpcStatus()).toMatchObject({ fallbackCalls: 0, fallbackLocalLimited: 0 });
+  });
+
+  it('caller abort while waiting rejects, sends nothing, returns the reservation, clears its timer', async () => {
+    await openBreaker();
+    for (let i = 0; i < 9; i += 1) await post(); // bucket empty, clock frozen: the next send waits 1/6 s
+    const sent = fallbackCalls();
+    const started: unknown[] = [];
+    const cleared = new Set<unknown>();
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const setSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      const t = realSet(fn, ms);
+      started.push(t);
+      return t;
+    }) as typeof setTimeout);
+    const clearSpy = spyOn(globalThis, 'clearTimeout').mockImplementation(((t?: Parameters<typeof clearTimeout>[0]) => {
+      cleared.add(t);
+      realClear(t);
+    }) as typeof clearTimeout);
+    try {
+      const ctrl = new AbortController();
+      const pending = mainnetFailoverFetch(PRIMARY, { method: 'POST', body: BODY, signal: ctrl.signal });
+      await new Promise<void>((r) => realSet(r, 10));
+      ctrl.abort(new Error('caller gave up'));
+      await expect(pending).rejects.toThrow('caller gave up');
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
+    expect(fallbackCalls()).toBe(sent);
+    expect(started.length).toBeGreaterThanOrEqual(1);
+    expect(started.filter((t) => !cleared.has(t))).toEqual([]);
+    // The reservation came back: the next request waits one interval again, not two.
+    const waits: number[] = [];
+    __setFallbackLimiterSleepForTests(async (ms) => {
+      waits.push(ms);
+    });
+    await post();
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeCloseTo(RATE, 6);
+  });
+
+  it('the genesis probe takes a token too', async () => {
+    primaryHandler = quota;
+    await post(); // probe + one fallback send = 2 tokens
+    expect(probes).toHaveLength(1);
+    __setFallbackLimiterSleepForTests(async () => {});
+    const results = await Promise.all(Array.from({ length: 30 }, () => post()));
+    // 8 tokens left + 18 reservations = 26 sends.
+    expect(results.filter((r) => r.status === 200)).toHaveLength(26);
+    expect(probes).toHaveLength(1);
+  });
+
+  it('a fallback HTTP 429 is counted, warned at most once per minute', async () => {
+    await openBreaker();
+    fallbackHandler = () => new Response('Too many requests', { status: 429 });
+    for (let i = 0; i < 3; i += 1) expect((await post()).status).toBe(429);
+    const warns = (): number => warnSpy.mock.calls.filter((c) => String(c[0]).includes('answered HTTP 429')).length;
+    expect(mainnetRpcStatus().fallbackRateLimited).toBe(3);
+    expect(warns()).toBe(1);
+    now += 60_000;
+    await post();
+    expect(mainnetRpcStatus().fallbackRateLimited).toBe(4);
+    expect(warns()).toBe(2);
+  });
+
+  it('SOLANA_MAINNET_FALLBACK_MAX_RPS: 1..50 accepted, anything else is the default 6 with one warn', () => {
+    expect(fallbackMaxRps()).toBe(6);
+    process.env.SOLANA_MAINNET_FALLBACK_MAX_RPS = '12';
+    expect(fallbackMaxRps()).toBe(12);
+    for (const bad of ['0', '51', 'abc', '-3']) {
+      process.env.SOLANA_MAINNET_FALLBACK_MAX_RPS = bad;
+      expect(fallbackMaxRps()).toBe(6);
+      expect(fallbackMaxRps()).toBe(6);
+    }
+    expect(warnSpy.mock.calls.filter((c) => String(c[0]).includes('MAX_RPS ignored'))).toHaveLength(4);
   });
 });
 

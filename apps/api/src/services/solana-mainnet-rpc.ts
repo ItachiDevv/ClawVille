@@ -34,6 +34,20 @@ const SOURCE = 'solana-mainnet-rpc';
 /** mainnet-beta genesis hash; a fallback must answer getGenesisHash with it before it gets any traffic. */
 export const MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
 
+/**
+ * Fallback rate limiter (2026-10-08 staging: the arena chain-check loop burst past the public RPC's per-IP limits,
+ * every check failed `rpc_rate_limited`, and that budget is shared with wallet withdraw, agent pay and land refunds).
+ * One process-wide token bucket for requests SENT TO THE FALLBACK only (failover sends and the genesis probe); the
+ * primary is never limited. A request waits up to 3 s for a token, then gets a local 429 without a fallback call.
+ * Public mainnet limits (solana.com/docs/references/clusters): 100 requests / 10 s per IP, 40 / 10 s per IP for a
+ * single RPC method.
+ */
+const FALLBACK_BURST = 10;
+const DEFAULT_FALLBACK_RPS = 6;
+const FALLBACK_MAX_WAIT_MS = 3_000;
+const FALLBACK_WARN_EVERY_MS = 60_000;
+const LOCAL_RATE_LIMIT_BODY = '{"jsonrpc":"2.0","error":{"code":429,"message":"fallback rate limited (local)"}}';
+
 interface BreakerState {
   host: string;
   reason: DownReason | null;
@@ -56,6 +70,34 @@ const probing = new Map<string, Promise<FallbackProof>>();
 let noFailoverAlerted = false;
 let timeoutMs = DEFAULT_TIMEOUT_MS;
 let nowFn: () => number = () => Date.now();
+
+let bucketTokens = FALLBACK_BURST;
+let bucketAt: number | null = null;
+let fallbackRateLimited = 0;
+let fallbackLocalLimited = 0;
+let lastFallback429WarnAt = Number.NEGATIVE_INFINITY;
+let lastLocalLimitWarnAt = Number.NEGATIVE_INFINITY;
+const warnedBadRps = new Set<string>();
+
+/** Sleep `ms`, rejecting with the signal's reason on abort; the timer and the listener are removed on every path. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('aborted'));
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error('aborted'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+let limiterSleep: (ms: number, signal?: AbortSignal) => Promise<void> = abortableSleep;
 
 /** Redact `api-key=<value>` anywhere in a string (URLs, error messages). */
 export function redactRpcUrl(text: string): string {
@@ -119,6 +161,72 @@ export function fallbackMainnetRpcUrl(): string {
     );
   }
   return PUBLIC_MAINNET_RPC_URL;
+}
+
+/** SOLANA_MAINNET_FALLBACK_MAX_RPS when it is a number in 1..50, else 6 (an invalid value warns once). */
+export function fallbackMaxRps(): number {
+  const raw = process.env.SOLANA_MAINNET_FALLBACK_MAX_RPS?.trim();
+  if (!raw) return DEFAULT_FALLBACK_RPS;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n >= 1 && n <= 50) return n;
+  if (!warnedBadRps.has(raw)) {
+    warnedBadRps.add(raw);
+    console.warn(`[${SOURCE}] SOLANA_MAINNET_FALLBACK_MAX_RPS ignored (needs a number 1..50); using ${DEFAULT_FALLBACK_RPS}`);
+  }
+  return DEFAULT_FALLBACK_RPS;
+}
+
+/**
+ * Take one fallback token. Refill at `fallbackMaxRps()` per second up to FALLBACK_BURST. With no token, the request
+ * reserves the next one (the balance goes negative, so concurrent waiters queue in order) and sleeps until it is due,
+ * when that is at most 3 s away. Returns false (and reserves nothing) when it is further away. A caller abort while
+ * waiting returns the reservation and rethrows the abort reason.
+ */
+async function acquireFallbackToken(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+  const rps = fallbackMaxRps();
+  const now = nowFn();
+  if (bucketAt === null) bucketAt = now;
+  bucketTokens = Math.min(FALLBACK_BURST, bucketTokens + (Math.max(0, now - bucketAt) * rps) / 1000);
+  bucketAt = Math.max(bucketAt, now);
+  if (bucketTokens >= 1) {
+    bucketTokens -= 1;
+    return true;
+  }
+  const waitMs = ((1 - bucketTokens) * 1000) / rps;
+  if (waitMs > FALLBACK_MAX_WAIT_MS) {
+    fallbackLocalLimited += 1;
+    if (now - lastLocalLimitWarnAt >= FALLBACK_WARN_EVERY_MS) {
+      lastLocalLimitWarnAt = now;
+      console.warn(
+        `[${SOURCE}] fallback budget exhausted (${rps}/s, burst ${FALLBACK_BURST}); ${fallbackLocalLimited} request(s) refused locally with 429 so far (callers fail closed)`,
+      );
+    }
+    return false;
+  }
+  bucketTokens -= 1;
+  try {
+    await limiterSleep(waitMs, signal);
+  } catch (err) {
+    bucketTokens = Math.min(FALLBACK_BURST, bucketTokens + 1);
+    throw err;
+  }
+  return true;
+}
+
+function localRateLimited(): Response {
+  return new Response(LOCAL_RATE_LIMIT_BODY, { status: 429 });
+}
+
+/** The fallback's own HTTP 429: counted, and one warn per minute at most. */
+function noteFallback429(url: string): void {
+  fallbackRateLimited += 1;
+  const now = nowFn();
+  if (now - lastFallback429WarnAt < FALLBACK_WARN_EVERY_MS) return;
+  lastFallback429WarnAt = now;
+  console.warn(
+    `[${SOURCE}] fallback ${parse(url)?.host ?? 'fallback'} answered HTTP 429 (${fallbackRateLimited} so far); callers fail closed`,
+  );
 }
 
 /** Breaker key when `raw` is a configured mainnet primary; null means pass straight through. */
@@ -220,6 +328,7 @@ async function withTimeout<T>(
 
 async function probeGenesis(url: string): Promise<{ verdict: ProofVerdict; detail: string }> {
   try {
+    if (!(await acquireFallbackToken())) return { verdict: 'unreachable', detail: 'fallback rate limited (local)' };
     const hash = await withTimeout(undefined, 'genesis probe', async (signal) => {
       const res = await fetch(url, {
         method: 'POST',
@@ -227,6 +336,7 @@ async function probeGenesis(url: string): Promise<{ verdict: ProofVerdict; detai
         body: '{"jsonrpc":"2.0","id":1,"method":"getGenesisHash"}',
         signal,
       });
+      if (res.status === 429) noteFallback429(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return ((await res.json()) as { result?: unknown }).result;
     });
@@ -322,10 +432,17 @@ function resendable(body: RequestInit['body']): boolean {
   );
 }
 
-/** One send to the fallback with the same 10 s timeout (headers AND body) as the primary; its errors and timeout go to the caller. */
-function sendFallback(s: BreakerState, url: string, init: RequestInit, caller: AbortSignal | undefined): Promise<Response> {
+/**
+ * One send to the fallback with the same 10 s timeout (headers AND body) as the primary; its errors and timeout go to
+ * the caller. It first takes a fallback token (up to 3 s wait, the caller's signal aborts the wait); with none it
+ * returns a local 429 and never calls the fallback.
+ */
+async function sendFallback(s: BreakerState, url: string, init: RequestInit, caller: AbortSignal | undefined): Promise<Response> {
+  if (!(await acquireFallbackToken(caller))) return localRateLimited();
   s.fallbackCalls += 1;
-  return withTimeout(caller, 'fallback', async (signal) => bufferResponse(await fetch(url, { ...init, signal }), signal));
+  const res = await withTimeout(caller, 'fallback', async (signal) => bufferResponse(await fetch(url, { ...init, signal }), signal));
+  if (res.status === 429) noteFallback429(url);
+  return res;
 }
 
 /** fetch-compatible. Requests whose URL is NOT a configured primary (helius host) pass straight through to fetch. */
@@ -397,6 +514,10 @@ export function mainnetRpcStatus(): {
   downUntil: string | null;
   reason: DownReason | null;
   fallbackCalls: number;
+  /** HTTP 429 answers from the fallback itself (failover sends and genesis probes). */
+  fallbackRateLimited: number;
+  /** Fallback requests refused by the local rate limiter (local 429, the fallback was not called). */
+  fallbackLocalLimited: number;
 } {
   let open: BreakerState | undefined;
   let fallbackCalls = 0;
@@ -410,6 +531,8 @@ export function mainnetRpcStatus(): {
     downUntil: open ? new Date(open.downUntil).toISOString() : null,
     reason: open?.reason ?? null,
     fallbackCalls,
+    fallbackRateLimited,
+    fallbackLocalLimited,
   };
 }
 
@@ -421,6 +544,19 @@ export function __resetMainnetRpcStateForTests(): void {
   noFailoverAlerted = false;
   timeoutMs = DEFAULT_TIMEOUT_MS;
   nowFn = () => Date.now();
+  bucketTokens = FALLBACK_BURST;
+  bucketAt = null;
+  fallbackRateLimited = 0;
+  fallbackLocalLimited = 0;
+  lastFallback429WarnAt = Number.NEGATIVE_INFINITY;
+  lastLocalLimitWarnAt = Number.NEGATIVE_INFINITY;
+  warnedBadRps.clear();
+  limiterSleep = abortableSleep;
+}
+
+/** Test hook: the fallback limiter's wait. Pass undefined to restore the real abortable sleep. */
+export function __setFallbackLimiterSleepForTests(fn?: (ms: number, signal?: AbortSignal) => Promise<void>): void {
+  limiterSleep = fn ?? abortableSleep;
 }
 
 /** Test hook: mark a fallback URL proven mainnet, so a fetch mock need not answer getGenesisHash. */
