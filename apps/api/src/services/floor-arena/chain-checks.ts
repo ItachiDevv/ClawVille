@@ -54,12 +54,15 @@ const CHECK_DEADLINE_MS = 25_000;
 const CHECKS_PER_TICK = 20;
 const CHECK_CONCURRENCY = 4;
 /**
- * Outage mode (2026-10-08 staging: on the public fallback RPC every check failed `rpc_rate_limited`): while the primary
- * mainnet RPC is down (`mainnetRpcStatus().primaryHealthy === false`) a tick checks at most 2 coins, one at a time, so
- * the arena does not burn the shared public-RPC budget that wallet withdraw, agent pay and land refunds need.
+ * Outage mode (2026-10-08 staging, Helius key quota-dead): the breaker sends every read to the public fallback RPC
+ * (api.mainnet-beta.solana.com). That RPC answers getSlot, getAccountInfo and getMultipleAccounts, but it refuses
+ * `getTokenLargestAccounts` with HTTP 429 "Too many requests for a specific RPC call" on a SINGLE call (measured from
+ * the staging box and from a second IP). The LP-lock and holder checks need that method, so no check can complete on
+ * the fallback: at 2 coins per tick, 52 of 60 checks still failed `rpc_rate_limited`, and each attempt only burned the
+ * shared public budget that wallet withdraw, agent pay and land refunds need. While a breaker episode is open, a tick
+ * checks nothing inside the window and exactly OUTAGE_PROBE_CHECKS coin, alone, after it (see runChainCheckTick).
  */
-export const OUTAGE_CHECKS_PER_TICK = 2;
-export const OUTAGE_CHECK_CONCURRENCY = 1;
+export const OUTAGE_PROBE_CHECKS = 1;
 /**
  * Coarse universe: only these coins are worth an RPC budget. D26: no liquidity bound (pump.fun curve coins show
  * DexScreener liquidity 0 and must still get a verdict); a positive price and mcap 1k-100M.
@@ -633,15 +636,39 @@ export async function storeChainVerdict(
   });
 }
 
-export interface ChainTickResult { checked: number; passed: number; errors: number; skipped: 'rpc_not_configured' | null }
+export interface ChainTickResult {
+  checked: number;
+  passed: number;
+  errors: number;
+  skipped: 'rpc_not_configured' | 'rpc_outage' | null;
+}
 
+/** The part of `mainnetRpcStatus()` the tick reads. */
+export interface ChainTickRpcStatus { primaryHealthy: boolean; downSince?: string | null; downUntil: string | null }
+
+/** The breaker episode (its `downSince`) whose pause was already logged; null after a healthy tick. */
+let loggedOutageEpisode: string | null = null;
+
+/**
+ * One chain-check tick (every 20 s). Pacing follows the mainnet RPC breaker (`mainnetRpcStatus()`):
+ * - primary healthy: up to CHECKS_PER_TICK due coins, CHECK_CONCURRENCY at a time (unchanged).
+ * - episode open and `now < downUntil`: check NOTHING, return `skipped: 'rpc_outage'`. The breaker would send every
+ *   read to the public fallback, which refuses `getTokenLargestAccounts` (HTTP 429 on a single call, measured
+ *   2026-10-08), so no check could complete and each attempt would only burn the public budget that money paths share.
+ *   No verdict is written: coins stay chain_pending (no entry), the same as `rpc_not_configured`. One log per episode.
+ * - episode open and `now >= downUntil` (half-open): check OUTAGE_PROBE_CHECKS coin, alone. Its first read goes to the
+ *   primary: a good answer closes the episode (the next tick is normal); a failure opens a new window (the next tick
+ *   skips again) and the coin stores a transient `chain_check_error`, never a pass.
+ * A missing `downUntil` on an open episode is treated as half-open.
+ */
 export async function runChainCheckTick(
   now: Date = new Date(),
   deps: {
     rpc?: ChainRpc;
     configured?: () => boolean;
-    /** Test seams; production uses the module functions. */
+    /** Test seams; production uses the module functions. `primaryHealthy` overrides `rpcStatus().primaryHealthy`. */
     primaryHealthy?: () => boolean;
+    rpcStatus?: () => ChainTickRpcStatus;
     selectDue?: (now: Date, limit: number) => Promise<DueRow[]>;
     store?: (mint: string, verdict: ArenaChainVerdict, now: Date) => Promise<void>;
   } = {},
@@ -650,11 +677,31 @@ export async function runChainCheckTick(
     // No verdicts are written: coins stay chain_pending (no entries) and are checked as soon as RPC is configured.
     return { checked: 0, passed: 0, errors: 0, skipped: 'rpc_not_configured' };
   }
+  const status = (deps.rpcStatus ?? mainnetRpcStatus)();
+  const primaryHealthy = deps.primaryHealthy ? deps.primaryHealthy() : status.primaryHealthy;
+  let limit = CHECKS_PER_TICK;
+  let concurrency = CHECK_CONCURRENCY;
+  if (primaryHealthy) {
+    loggedOutageEpisode = null;
+  } else {
+    const downUntilMs = status.downUntil ? Date.parse(status.downUntil) : Number.NaN;
+    if (Number.isFinite(downUntilMs) && now.getTime() < downUntilMs) {
+      const episode = status.downSince ?? 'open';
+      if (loggedOutageEpisode !== episode) {
+        loggedOutageEpisode = episode;
+        console.warn(
+          `[floor-arena] chain checks paused: mainnet RPC primary down until ${status.downUntil}; the public fallback `
+          + 'refuses getTokenLargestAccounts, so coins stay chain_pending until the primary answers',
+        );
+      }
+      return { checked: 0, passed: 0, errors: 0, skipped: 'rpc_outage' };
+    }
+    // Half-open: one coin, alone; same selection order (pickDueChainChecks).
+    limit = OUTAGE_PROBE_CHECKS;
+    concurrency = 1;
+  }
   const rpc = deps.rpc ?? web3ChainRpc(tradingConnection());
-  // Outage mode: same selection order (pickDueChainChecks), a smaller batch, one check at a time.
-  const outage = !(deps.primaryHealthy ?? (() => mainnetRpcStatus().primaryHealthy))();
-  const due = await (deps.selectDue ?? selectDueChainChecks)(now, outage ? OUTAGE_CHECKS_PER_TICK : CHECKS_PER_TICK);
-  const concurrency = outage ? OUTAGE_CHECK_CONCURRENCY : CHECK_CONCURRENCY;
+  const due = await (deps.selectDue ?? selectDueChainChecks)(now, limit);
   const store = deps.store ?? storeChainVerdict;
   const solPrice = currentSolPriceUsd(now.getTime());
   let passed = 0;

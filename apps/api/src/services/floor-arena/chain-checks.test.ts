@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -328,10 +328,11 @@ describe('O3: storeChainVerdict locks the private rows in order first', () => {
 });
 
 /**
- * 2026-10-08 staging: on the public fallback RPC every arena check failed `rpc_rate_limited`. While the primary mainnet
- * RPC is down, a tick checks at most 2 coins, one at a time; when it is healthy, the normal batch of 20, 4 at a time.
+ * 2026-10-08 staging: the public fallback RPC refuses getTokenLargestAccounts (HTTP 429 on a single call), so no arena
+ * check can complete during a primary outage. Inside the breaker window a tick checks nothing; after the window
+ * (half-open) it checks 1 coin, alone; with the primary healthy, the normal batch of 20, 4 at a time.
  */
-describe('chain-check tick pacing: outage mode while the primary RPC is down', () => {
+describe('chain-check tick pacing: skip inside the breaker window, probe 1 coin after it', () => {
   function tickHarness(dueCount: number) {
     const rpc = new FakeRpc();
     const rows: DueRow[] = Array.from({ length: dueCount }, (_, i) => {
@@ -369,39 +370,87 @@ describe('chain-check tick pacing: outage mode while the primary RPC is down', (
     return { rows, deps, limits, stored, maxInFlight: () => maxInFlight };
   }
 
-  test('primary down: at most 2 coins, concurrency 1, newest first sight first, every checked coin gets a stored verdict', async () => {
+  const DOWN_SINCE = new Date(NOW.getTime() - 5 * 60_000).toISOString();
+  const IN_WINDOW = { primaryHealthy: false, downSince: DOWN_SINCE, downUntil: new Date(NOW.getTime() + 10 * 60_000).toISOString() };
+  const AFTER_WINDOW = { primaryHealthy: false, downSince: DOWN_SINCE, downUntil: new Date(NOW.getTime() - 1).toISOString() };
+
+  test('inside the window: no selection, no RPC, no store, skipped rpc_outage, one log for two ticks', async () => {
     const h = tickHarness(25);
-    const result = await runChainCheckTick(NOW, { ...h.deps, primaryHealthy: () => false });
-    expect(h.limits).toEqual([2]);
-    expect(result.checked).toBe(2);
-    expect(h.stored).toEqual([h.rows[24]!.mint, h.rows[23]!.mint]);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const status = { ...IN_WINDOW, downSince: new Date(NOW.getTime() - 7 * 60_000).toISOString() };
+      const first = await runChainCheckTick(NOW, { ...h.deps, rpcStatus: () => status });
+      const second = await runChainCheckTick(new Date(NOW.getTime() + 20_000), { ...h.deps, rpcStatus: () => status });
+      for (const result of [first, second]) {
+        expect(result).toEqual({ checked: 0, passed: 0, errors: 0, skipped: 'rpc_outage' });
+      }
+      expect(h.limits).toEqual([]);
+      expect(h.stored).toEqual([]);
+      expect(h.deps.rpc.calls).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('getTokenLargestAccounts');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('after the window (half-open): exactly 1 coin, concurrency 1, newest first sight first, verdict stored', async () => {
+    const h = tickHarness(25);
+    const result = await runChainCheckTick(NOW, { ...h.deps, rpcStatus: () => AFTER_WINDOW });
+    expect(h.limits).toEqual([1]);
+    expect(result).toEqual({ checked: 1, passed: 0, errors: 0, skipped: null });
+    expect(h.stored).toEqual([h.rows[24]!.mint]);
     expect(h.maxInFlight()).toBe(1);
-    expect(result).toMatchObject({ passed: 0, errors: 0, skipped: null });
+  });
+
+  test('downUntil exactly now counts as half-open (probe), not as inside the window', async () => {
+    const h = tickHarness(3);
+    const result = await runChainCheckTick(NOW, { ...h.deps, rpcStatus: () => ({ ...IN_WINDOW, downUntil: NOW.toISOString() }) });
+    expect(h.limits).toEqual([1]);
+    expect(result.skipped).toBeNull();
   });
 
   test('primary healthy: the normal batch of 20 with concurrency 4', async () => {
     const h = tickHarness(25);
-    const result = await runChainCheckTick(NOW, { ...h.deps, primaryHealthy: () => true });
+    const result = await runChainCheckTick(NOW, { ...h.deps, rpcStatus: () => ({ primaryHealthy: true, downUntil: null }) });
     expect(h.limits).toEqual([20]);
     expect(result.checked).toBe(20);
     expect(h.stored).toHaveLength(20);
     expect(h.maxInFlight()).toBe(4);
   });
 
-  test('outage mode keeps fail-closed verdicts: an RPC error is stored as a transient error, never a pass', async () => {
+  test('primaryHealthy seam overrides the status: true gives the normal batch even with an open window', async () => {
+    const h = tickHarness(25);
+    const result = await runChainCheckTick(NOW, { ...h.deps, primaryHealthy: () => true, rpcStatus: () => IN_WINDOW });
+    expect(h.limits).toEqual([20]);
+    expect(result.checked).toBe(20);
+  });
+
+  test('a new episode logs again after a healthy tick', async () => {
+    const h = tickHarness(3);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const status = { ...IN_WINDOW, downSince: new Date(NOW.getTime() - 9 * 60_000).toISOString() };
+      await runChainCheckTick(NOW, { ...h.deps, rpcStatus: () => status });
+      await runChainCheckTick(NOW, { ...h.deps, rpcStatus: () => ({ primaryHealthy: true, downUntil: null }) });
+      await runChainCheckTick(NOW, { ...h.deps, rpcStatus: () => status });
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('fail closed in the probe tick: an RPC error is stored as a transient error, never a pass', async () => {
     const h = tickHarness(3);
     h.deps.rpc.getParsedAccount = async () => { throw new Error('429 Too Many Requests: fallback rate limited (local)'); };
     const verdicts: Array<{ pass: boolean; error?: string }> = [];
     const result = await runChainCheckTick(NOW, {
       ...h.deps,
-      primaryHealthy: () => false,
+      rpcStatus: () => AFTER_WINDOW,
       store: async (_mint, verdict) => { verdicts.push(verdict); },
     });
-    expect(result).toMatchObject({ checked: 2, passed: 0, errors: 2 });
-    expect(verdicts.map((v) => [v.pass, v.error])).toEqual([
-      [false, 'chain_check_error: rpc_rate_limited'],
-      [false, 'chain_check_error: rpc_rate_limited'],
-    ]);
+    expect(result).toMatchObject({ checked: 1, passed: 0, errors: 1, skipped: null });
+    expect(verdicts.map((v) => [v.pass, v.error])).toEqual([[false, 'chain_check_error: rpc_rate_limited']]);
     expect(isTransientChainError(verdicts[0]!.error)).toBe(true);
   });
 });
