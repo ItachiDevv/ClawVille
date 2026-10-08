@@ -93,7 +93,7 @@ import { redactArenaText } from './queries';
 /** A period never reaches further back than this (after an outage the older
  *  trades still count in the lifetime stats). */
 export const ARENA_MAX_PERIOD_MS = 6 * 60 * 60_000;
-export const ARENA_LLM_TIMEOUT_MS = 20_000;
+export const ARENA_LLM_TIMEOUT_MS = 45_000; // 20 s timed out 3x on 10-08 (local-primary qwen, ~5.3k-token prompt takes 13-17 s alone)
 export const ARENA_LLM_CONCURRENCY = 2;
 /** LLM reports per tick. With the timeout and concurrency above, a tick
  *  spends at most about 12 / 2 * 20 s = 2 minutes waiting on the model. */
