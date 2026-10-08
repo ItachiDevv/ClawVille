@@ -53,6 +53,7 @@
 
 import { db, clvPriceSnapshots } from '@clawville/database';
 import { asc, desc, gte } from 'drizzle-orm';
+import { mainnetFailoverFetch } from './solana-mainnet-rpc';
 
 /** CLV token mint (Token-2022). Same constant as the /dash token-economy tab. */
 export const CLV_MINT = 'Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA';
@@ -166,14 +167,19 @@ interface HeliusGetAssetResponse {
 /**
  * Helius DAS `getAsset` price. Returns a positive finite price or null (any
  * transport error, non-200, or missing `price_info` — all treated as failure).
+ * Exported for the RPC failover test only.
  */
-async function fetchHeliusPrice(): Promise<number | null> {
+export async function fetchHeliusPrice(): Promise<number | null> {
   const key = process.env.HELIUS_API_KEY?.trim();
   // Helius is optional and env-only. DexScreener remains the keyless fallback,
   // so a local environment never needs a committed or placeholder API key.
   if (!key) return null;
   try {
-    const res = await fetch(`https://mainnet.helius-rpc.com/?api-key=${key}`, {
+    // A quota-exhausted Helius (429) fails over to the public mainnet RPC. That
+    // endpoint has no DAS `getAsset`, so the fallback answers a JSON-RPC error,
+    // the price reads null, and the poll uses DexScreener (unchanged outcome,
+    // but the retry storm against the dead primary ends).
+    const res = await mainnetFailoverFetch(`https://mainnet.helius-rpc.com/?api-key=${key}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

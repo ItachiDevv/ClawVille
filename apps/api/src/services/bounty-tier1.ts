@@ -1,4 +1,3 @@
-import { Connection } from '@solana/web3.js';
 import {
   and,
   agentPayments,
@@ -14,7 +13,12 @@ import {
   sql,
   type BountyUsdcHold,
 } from '@clawville/database';
-import { payAgent, resolveAgentPayRail, type AgentPayResult } from './agent-pay';
+import {
+  agentPayConnection,
+  payAgent,
+  resolveAgentPayRail,
+  type AgentPayResult,
+} from './agent-pay';
 import { recordCovenantAction, type CovenantActorKind } from './covenant-action-recorder';
 import { alertError } from './alert-error';
 import { readSplTokenBalance } from './solana-token-balance';
@@ -71,7 +75,7 @@ async function readPosterUsdcBalance(publicKey: string): Promise<bigint> {
   const rail = resolveAgentPayRail();
   if (!rail.rpcUrl) throw new Error('agent-pay RPC is unavailable');
   const balance = await readSplTokenBalance(
-    new Connection(rail.rpcUrl, 'confirmed'),
+    agentPayConnection(rail),
     usdcMintForNetwork(rail.network),
     publicKey,
   );

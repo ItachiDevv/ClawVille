@@ -763,6 +763,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## WORLD / 3D
 
+### October 6: seabed decorations are back (staging)
+
+- **Session:** tradeLead3, 2026-10-06.
+- **Where:** `https://staging.clawville.world/game` on a desktop; walk out from the plaza toward the buildings.
+- **Look at:** about 60 props (coral, kelp, shells, barrels, anchors, chests, lanterns, a crayfish, a tower) on the sand between the plaza and the building ring; none on paths, parcels, portals or spawn. Phones do not show them (ground-cover rule).
+- **Feedback wanted:** too many or too few, sizes, any prop in a bad spot (send a screenshot), and whether the land-ring decorations should also turn off on phones.
+
 ### One failed 3D model no longer kills the whole world (session tradeProd, 2026-10-05, STAGING)
 - **What changed:** before, ONE failed model download (a seabed prop, an NPC avatar, your own avatar) replaced the whole world with "This browser couldn't start the 3D view ... Reload". Now a failed download retries twice; if it still fails, only that prop or figure is missing and the world keeps running.
 - **Your own avatar:** if it cannot load you are shown as the default lobster body with one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." (if even the lobster fails: "Your avatar could not load. Reload to try again.", and you are invisible until reload).
@@ -782,6 +789,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - Shipped by: kelp session, 2026-08-08. Founder eyes owed since then.
 
 ## PERF
+
+### October 6: Next.js 16.3.8 (security upgrade) on staging
+
+- **Session:** tradeLead3, 2026-10-06. Staging first; prod only with your go.
+- **Where:** `https://staging.clawville.world/game`, `/leaderboard`, `/cove/baccarat`, and the landing page.
+- **Look at:** the pages load and look the same as before; log in and play one normal session (walk, chat, one Cove game).
+- **Feedback wanted:** anything that looks or behaves differently from prod. Load time is not expected to change (the measured gain is about 1-3%); the reason is security (16.2.3 matched 25 advisories, 16.3.8 matches 0).
 
 ### Nori in the first loading batch (NOW ON PROD — the one amendment from your reveal sign-off)
 - **What:** your verdict on the buildings-gated reveal ("looks pretty good,
@@ -821,6 +835,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 ---
 
 ## BRAND
+
+### October 7: Trading Arena Week 1 winner card
+
+- **Session:** tradeLead3, 2026-10-07.
+- **Where:** repo files `branding/graphics/arena-week1-winner-1600x900.png` and `branding/graphics/arena-week1-winner-1080x1080.png` (source `branding/graphics/arena-week1-winner.html`).
+- **Look at:** winner Wendy Runner, prize 1,000,000 $CLAWVILLE, footer clawville.world + @Clawville_World, "More arena contests coming". No P&L, no dates, no other players.
+- **Feedback wanted:** post as is, or change copy (dates? remove the X handle?).
 
 ### September 29: brand kit v1 (font-rendered banner, vector logo, claw-girl icons)
 

@@ -536,7 +536,11 @@ export async function storeSnapshots(
       await tx.execute(sql`
         UPDATE floor_discovery_mints AS d
         SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz,
-            symbol = COALESCE(d.symbol, r.symbol), name = COALESCE(d.name, r.name)
+            symbol = COALESCE(d.symbol, r.symbol), name = COALESCE(d.name, r.name),
+            -- AR-1 first sight (research): only when THIS write is the row's first snapshot (every SET expression
+            -- reads the OLD row), so a row priced before migration 0080 keeps first_snapshot NULL forever.
+            first_snapshot = CASE WHEN d.snapshot IS NULL AND d.first_snapshot IS NULL THEN r.snapshot ELSE d.first_snapshot END,
+            first_snapshot_at = CASE WHEN d.snapshot IS NULL AND d.first_snapshot IS NULL THEN ${at}::timestamptz ELSE d.first_snapshot_at END
         FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text)
         WHERE d.mint = r.mint
       `);
@@ -552,7 +556,9 @@ export async function storeSnapshots(
       const keys = JSON.stringify(locked.map((row) => ({ agent_id: String(row.agent_id), mint: String(row.mint) })));
       await tx.execute(sql`
         UPDATE floor_arena_private_mints AS p
-        SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz, symbol = COALESCE(p.symbol, r.symbol)
+        SET snapshot = r.snapshot, snapshot_at = ${at}::timestamptz, symbol = COALESCE(p.symbol, r.symbol),
+            first_snapshot = CASE WHEN p.snapshot IS NULL AND p.first_snapshot IS NULL THEN r.snapshot ELSE p.first_snapshot END,
+            first_snapshot_at = CASE WHEN p.snapshot IS NULL AND p.first_snapshot IS NULL THEN ${at}::timestamptz ELSE p.first_snapshot_at END
         FROM jsonb_to_recordset(${JSON.stringify(chunk)}::jsonb) AS r(mint text, snapshot jsonb, symbol text, name text),
              jsonb_to_recordset(${keys}::jsonb) AS k(agent_id text, mint text)
         WHERE p.mint = r.mint AND p.agent_id = k.agent_id AND p.mint = k.mint

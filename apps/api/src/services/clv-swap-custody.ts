@@ -36,7 +36,8 @@
  *          (fail closed — we never guess which wallet holds customer USDC).
  *   4. CLV is a MAINNET Token-2022 mint. `getClvMainnetConnection()` always
  *      builds a MAINNET connection (Helius when `HELIUS_API_KEY` is set, the
- *      public mainnet-beta RPC as fallback) — it can never be pointed at
+ *      public mainnet-beta RPC when no key is set; with a key, Helius fails
+ *      over per request to the public mainnet RPC) — it can never be pointed at
  *      devnet by env. The devnet wager RPC (`SOLANA_RPC_URL`) is deliberately
  *      NOT consulted here.
  *
@@ -54,6 +55,7 @@ import { db, desc, eq, treasuryWallets } from '@clawville/database';
 import { decryptSecretKey } from './keypair-vault';
 import { getClvSwapWalletPubkey } from './clv-swap-executor';
 import { loadX402Config } from './x402-config';
+import { createMainnetConnection } from './solana-mainnet-rpc';
 
 // ─── module-scope memoization (rotation requires restart — see header) ──────
 
@@ -207,15 +209,23 @@ export async function loadX402MerchantKeypair(): Promise<Keypair> {
  * `SOLANA_RPC_URL` (that is the DEVNET wager default) — this connection can
  * never be env-pointed at devnet.
  *
+ * 2026-10-08 Helius quota outage: with a key, the connection is built by
+ * `createMainnetConnection` (`solana-mainnet-rpc.ts`). `rpcEndpoint` stays the
+ * Helius URL (so `assertMainnetWithdrawConnection` and every endpoint guard
+ * read the same string), and a 429 / 401 / 403 / 5xx / transport error from
+ * Helius re-posts the SAME JSON-RPC body once to the public mainnet RPC. A
+ * `sendTransaction` re-post carries the identical signed bytes (same
+ * signature; Solana dedupes it), never a re-sign or a new blockhash. Without a
+ * key the public URL stays a plain Connection (web3.js 429 retry unchanged).
+ *
  * PINNED SIGNATURE — the later payout executor imports this exactly.
  */
 export function getClvMainnetConnection(): Connection {
   if (!mainnetConnectionCache) {
     const key = process.env.HELIUS_API_KEY?.trim();
-    const url = key
-      ? `https://mainnet.helius-rpc.com/?api-key=${key}`
-      : 'https://api.mainnet-beta.solana.com';
-    mainnetConnectionCache = new Connection(url, 'confirmed');
+    mainnetConnectionCache = key
+      ? createMainnetConnection('confirmed', `https://mainnet.helius-rpc.com/?api-key=${key}`)
+      : new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
   }
   return mainnetConnectionCache;
 }

@@ -1,6 +1,12 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-04 23:10Z (§9c: avatar load failure notice and lobster fallback body; if that also fails, no body, the world keeps running, and the notice says so).** Drift note: §9c gains the avatar-load-failure line.
+**Last Audited: 2026-10-06 21:48Z (CI-2: Trading Floor arena panel test isolation; no gameplay change).** Drift note: none in gameplay. `apps/web/src/components/game/trading-floor/arena/arena-panels.test.tsx` now seeds the cached browser fingerprint (`cv:fp:v1`), so a GET /api/auth/me from an earlier test cannot land in the guest test. The guest arena flow (no GET /me, sign-up prompt on Launch) is unchanged.
+
+Prior — **Last Audited: 2026-10-06 07:48Z (§18a cove guest history trap note: browser fingerprint storage key).** Drift note: the trap note said the raw fingerprint was stored in localStorage as `cv-fp`, but no code wrote any key; the web client now stores it as `cv:fp:v1` (web-load T4, load-path cache, `ARCHITECTURE.md` §Anti-farm).
+
+Prior — **Last Audited: 2026-10-06 01:55Z (§9c: the avatar load failure fallback also covers the Cove body; a failed dealer or seated table figure is skipped).** Drift note: §9c avatar-load-failure line extended to the Cove and the table rooms.
+
+Prior — **Last Audited: 2026-10-04 23:10Z (§9c: avatar load failure notice and lobster fallback body; if that also fails, no body, the world keeps running, and the notice says so).** Drift note: §9c gains the avatar-load-failure line.
 
 **Prior Last Audited: 2026-10-04 (security pass answers a-d: daily faucet caps, protocol 83, M8 rent prepay non-refundable, earned refunds as earned; migration 0077_daily_reward_caps.sql; PROTOCOL_VERSION 82 -> 83).** Drift note: §5 said building visits and Nori chat pay on every turn (Nori only behind a 60 s cooldown) and activities had no daily total. Now each avatar has three daily caps per UTC day (10 paid visits, 10 paid Nori turns, 500 vCLAW from activities), shared by the human and every agent on that avatar (§5 "Daily faucet caps"). §2 gains protocol 83: event replay needs an owner-proven session and returns only events recorded for the current owner during its ownership period (Codex round 3: rows without an owner are not replayed), and `expectedPriceCt` is required on a land service buy (§18b.i). §18b.P2 and §5b: USDC rent prepay is non-refundable on an early release. §1e: a special-event refund now returns an EARNED burn as EARNED, not SOFT,.
 
@@ -1605,7 +1611,7 @@ Tested end-to-end 2026-04-12 — sign-up → create avatar → enter game works.
 | Milady VRM | `milady-official-1..8.vrm` | **No color tint** — MToon's toon-uniform system breaks under `.clone()`. Color customization disabled for VRM avatars. |
 | Hermes VRM | `hermes-female.vrm` ("Hermes"), `hermes-male.vrm` ("Tekk") | **No color tint** (same MToon constraint). Mixamo-style humanoid normalization; uses dedicated animation folders at `/avatars/animations/{hermes-female,tekk-male}/*.glb` rather than the generic Milady Mixamo set. |
 
-**Avatar load failure (2026-10-04):** if your VRM avatar fails to load after its request retries, in Player mode or in NPC mode, you are shown with the default lobster body and see one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." The world keeps running. If the default body also fails to load, your body is not shown, the world keeps running, and the one notice reads "Your avatar could not load. Reload to try again." Render-only: no state, economy or agent-surface change (PARITY n/a). Detail: `3dStructure.md` §9a.
+**Avatar load failure (2026-10-04):** if your VRM avatar fails to load after its request retries, in Player mode or in NPC mode, you are shown with the default lobster body and see one notice: "Your avatar could not load. You are shown with the default body. Reload to try again." The world keeps running. If the default body also fails to load, your body is not shown, the world keeps running, and the one notice reads "Your avatar could not load. Reload to try again." Render-only: no state, economy or agent-surface change (PARITY n/a). Detail: `3dStructure.md` §9a. Since 2026-10-06 the same applies inside the Cove (your Cove body falls back to the lobster, with the same one notice per session; you can still walk to every game). A table dealer or a seated figure whose model fails is not shown; the table and every bet keep working.
 
 ### 9d. Agent avatar picker (`/create-agent`)
 
@@ -2750,7 +2756,7 @@ Player avatar (VRM or GLB) mounts inside the casino interior scene. Fully self-c
 
 **Anti-farm note:** the `(fp_hash, ip_prefix_hash)` daily cap rules (chat=50, building=10) apply to leaderboard events — `cove_game_events` is a history table, not a leaderboard source. No new abuse surface for /dash budgets. Guest session creation IS subject to a per-fp rate limit (10 sessions/hour/fp) added in §1 to bound row-creation cost.
 
-**Adversarial trap (documented, accepted):** an authed user can technically claim another browser's guest rows if they obtain that browser's raw `X-CV-Fingerprint` value (stored same-origin in localStorage as `cv-fp`). This is the same risk surface as session hijack — XSS-equivalent, not a new vector. Documented in the route docstring. The server-side salted hash means no off-platform attacker can forge a fingerprint.
+**Adversarial trap (documented, accepted):** an authed user can technically claim another browser's guest rows if they obtain that browser's raw `X-CV-Fingerprint` value (stored same-origin in localStorage as `cv:fp:v1` since 2026-10-06; before that it lived only in page memory, and same-origin script could compute it with FingerprintJS anyway). This is the same risk surface as session hijack — XSS-equivalent, not a new vector. Documented in the route docstring. The server-side salted hash means no off-platform attacker can forge a fingerprint.
 
 **Revert:** §8 of the plan — re-enable `requireAuth` on the read paths, re-add `.notNull()` on the schema, `DELETE FROM cove_game_events WHERE guest_fp_hash IS NOT NULL` (safe because no real CT was moved). Signup-claim hook is a tiny client-side `try/catch` — removing the file is a no-op for everything else.
 

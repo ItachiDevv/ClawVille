@@ -1,0 +1,294 @@
+/**
+ * Mounted check of the seabed decoration gate (Codex E3 SHOULD-FIX 2026-10-06):
+ * (a) with the gate OFF, ArenaTerrain makes no demand and no fetch for any of
+ *     the 11 decoration GLB paths;
+ * (a2) web-load T11: a profile that starts at tier 1 (`decorationsVisible`
+ *     false) demands and fetches none of the 11 GLBs until the first show
+ *     (staging 4fe13447, desktop-low at CPU 4x: 10 GLB requests + parse with
+ *     0.89-1.79 s long tasks and a 52-mesh warm compile of 1.07-2.0 s, for
+ *     decorations that never showed); the first show mounts them once;
+ * (b) governor toggles (tier 0/1, `decorationsVisible`) only flip visibility:
+ *     0 new merged geometries, 0 disposals (staging ac36e4e1: a remount per
+ *     recovery cost a merge + upload spike that latched tier 1 for the session);
+ * (c) a REAL unmount (`decorationsMounted` false) disposes every merged
+ *     geometry and never the shared GLB materials (land-ring-decorations reuses
+ *     them).
+ *
+ * Real R3F root (fake renderer, frameloop 'never') like
+ * cove-figure-model-load.test.tsx. Three stand-ins only: the optional GLB hook
+ * (records each demanded path, returns a one-box scene per path), the
+ * decorative release (released), and the warm attachment (pass-through).
+ * Runs in its own process (mock.module is process-global).
+ */
+import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { Fragment, createElement, type ReactNode } from 'react';
+import { Window } from 'happy-dom';
+import * as THREE from 'three/webgpu';
+import { DECO_TYPES } from './arena-terrain-decorations';
+
+const DECO_PATHS = new Set(DECO_TYPES.map((t) => t.model));
+
+const testWindow = new Window({ url: 'http://localhost/game' });
+const globalNames = [
+  'window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLCanvasElement',
+  'Event', 'requestAnimationFrame', 'cancelAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT',
+] as const;
+const saved = new Map<string, PropertyDescriptor | undefined>();
+const originalFetch = globalThis.fetch;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const threeCjs = require('three') as typeof import('three');
+
+/** Paths demanded through the optional GLB hook, in call order. */
+const demands: string[] = [];
+/** Fetches whose URL contains a decoration path. */
+const decoFetches: string[] = [];
+
+// One cached scene per path, like the R3F loader cache: the SAME material
+// objects come back on every mount, so a material dispose would be visible.
+const cache = new Map<string, { scene: THREE.Group; material: THREE.MeshStandardMaterial }>();
+const materialDisposes = new Map<string, number>();
+function cachedGltf(path: string) {
+  let entry = cache.get(path);
+  if (!entry) {
+    const material = new THREE.MeshStandardMaterial();
+    const original = material.dispose.bind(material);
+    material.dispose = () => {
+      materialDisposes.set(path, (materialDisposes.get(path) ?? 0) + 1);
+      original();
+    };
+    const scene = new THREE.Group();
+    scene.add(new THREE.Mesh(new THREE.BoxGeometry(1, 2, 1), material));
+    entry = { scene, material };
+    cache.set(path, entry);
+  }
+  return { scene: entry.scene };
+}
+
+// Controlled loader completion (Codex E3 SHOULD-FIX on 58d7d91b): the first
+// warm read of each path throws a held thenable, like a suspend-react entry
+// that is still loading; `completeLoads()` resolves every held load. The read
+// is synchronous up to the throw, so a warm read that starts records its
+// demand and its held load inside the act() that rendered it.
+const heldLoads: Array<() => void> = [];
+const loaded = new Set<string>();
+function completeLoads(): void {
+  for (const resolve of heldLoads.splice(0)) resolve();
+}
+
+mock.module('./use-gltf-ktx2', () => ({
+  useOptionalGLTFWithKTX2: (path: string) => {
+    demands.push(path);
+    return cachedGltf(path);
+  },
+  useGLTFWithKTX2: (path: string) => {
+    demands.push(path);
+    return cachedGltf(path);
+  },
+  // web-load T8: the out-of-render warm read before MergedDecorationsInner
+  // mounts. Recorded as a demand too, so the profile-off case still proves
+  // that nothing is read or fetched when the gate is off.
+  readGLTFWithKTX2: (path: string) => {
+    demands.push(path);
+    if (!loaded.has(path)) {
+      throw new Promise<void>((resolve) => {
+        heldLoads.push(() => {
+          loaded.add(path);
+          resolve();
+        });
+      });
+    }
+    return cachedGltf(path);
+  },
+}));
+mock.module('./decorative-release', () => ({
+  isDecorativeReleased: () => true,
+  onDecorativeReleaseStaggered: (callback: () => void) => {
+    callback();
+    return () => undefined;
+  },
+}));
+mock.module('./deferred-warm-attachment', () => ({
+  DeferredWarmAttachment: ({ children }: { children: ReactNode | ((ready: boolean) => ReactNode) }) =>
+    createElement(Fragment, null, typeof children === 'function' ? children(true) : children),
+}));
+
+type R3F = typeof import('@react-three/fiber');
+let r3f: R3F;
+let ArenaTerrain: (props: { decorationsMounted: boolean; decorationsVisible: boolean }) => ReactNode;
+
+beforeAll(async () => {
+  for (const name of globalNames) {
+    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    const value =
+      name === 'IS_REACT_ACT_ENVIRONMENT'
+        ? true
+        : name === 'window'
+          ? testWindow
+          : name === 'requestAnimationFrame'
+            ? (cb: (t: number) => void) => setTimeout(() => cb(0), 0) as unknown as number
+            : name === 'cancelAnimationFrame'
+              ? (id: number) => clearTimeout(id)
+              : (testWindow as unknown as Record<string, unknown>)[name];
+    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  }
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if ([...DECO_PATHS].some((p) => url.includes(p.split('?')[0]))) decoFetches.push(url);
+    return new Response('missing', { status: 404 });
+  }) as typeof fetch;
+  r3f = await import('@react-three/fiber');
+  r3f.extend(threeCjs as never);
+  ArenaTerrain = (await import('./arena-terrain')).default as never;
+});
+
+afterAll(async () => {
+  globalThis.fetch = originalFetch;
+  for (const [name, descriptor] of saved) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete (globalThis as Record<string, unknown>)[name];
+  }
+  await testWindow.happyDOM.close();
+});
+
+function fakeRenderer(canvas: unknown) {
+  return {
+    domElement: canvas,
+    shadowMap: { enabled: false, type: 0, needsUpdate: false },
+    outputColorSpace: '',
+    toneMapping: 0,
+    render() {},
+    setSize() {},
+    setPixelRatio() {},
+    getPixelRatio: () => 1,
+    dispose() {},
+  };
+}
+
+async function waitFor(ready: () => boolean, what: string, timeoutMs = 6_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for: ${what}`);
+    await r3f.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+  }
+  await r3f.act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function meshes(scene: THREE.Object3D, name?: string): THREE.Mesh[] {
+  const out: THREE.Mesh[] = [];
+  scene.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh && (name === undefined || o.name === name)) out.push(o as THREE.Mesh);
+  });
+  return out;
+}
+
+/** True when the mesh and every ancestor are visible (what the renderer draws). */
+function drawn(mesh: THREE.Object3D): boolean {
+  for (let o: THREE.Object3D | null = mesh; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
+
+describe('ArenaTerrain decoration gate, mounted', () => {
+  test(
+    'profile off: no demand; governor toggles flip visibility only; real unmount disposes',
+    async () => {
+      const canvas = testWindow.document.createElement('canvas');
+      testWindow.document.body.appendChild(canvas);
+      const root = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
+      await root.configure({
+        gl: fakeRenderer(canvas) as never,
+        size: { width: 320, height: 200, top: 0, left: 0 },
+        frameloop: 'never',
+      });
+      let store!: ReturnType<typeof root.render>;
+      const render = async (decorationsMounted: boolean, decorationsVisible: boolean) => {
+        await r3f.act(async () => {
+          store = root.render(createElement(ArenaTerrain, { decorationsMounted, decorationsVisible }));
+        });
+      };
+      const decoMeshes = () => meshes(store.getState().scene, 'arena-terrain-decoration');
+      const decoDemands = () => demands.filter((p) => DECO_PATHS.has(p));
+      /** Complete every held load, then flush React (effects + microtasks). */
+      const completeAndFlush = async () => {
+        await r3f.act(async () => {
+          completeLoads();
+          for (let i = 0; i < 5; i++) await Promise.resolve();
+        });
+      };
+
+      // (a) Device profile OFF (phones / tablets): sand only, no demand, no fetch,
+      // whatever the governor says.
+      await render(false, true);
+      await waitFor(() => meshes(store.getState().scene).length > 0, 'sand floor mounted');
+      expect(heldLoads.length).toBe(0); // no warm read started
+      await completeAndFlush();
+      expect(decoMeshes().length).toBe(0);
+      expect(decoDemands()).toEqual([]);
+      expect(decoFetches).toEqual([]);
+
+      // (a2) Desktop profile that starts at tier 1 (desktop-low): nothing is
+      // demanded, fetched or mounted while the decorations were never shown.
+      // No timed wait: act() flushed the render and its effects, a started warm
+      // read would have recorded its demand and held load synchronously, and
+      // completing the loader + a second flush still mounts nothing.
+      await render(true, false);
+      expect(heldLoads.length).toBe(0);
+      await completeAndFlush();
+      await render(true, false);
+      await completeAndFlush();
+      expect(decoMeshes().length).toBe(0);
+      expect(decoDemands()).toEqual([]);
+      expect(heldLoads.length).toBe(0);
+      expect(decoFetches).toEqual([]);
+
+      // First show (the governor reaches tier 0): the 11 warm reads start in
+      // this act(), nothing mounts until the loader completes, then mount ONCE.
+      await render(true, true);
+      expect(new Set(decoDemands())).toEqual(DECO_PATHS);
+      expect(heldLoads.length).toBe(DECO_PATHS.size);
+      expect(decoMeshes().length).toBe(0);
+      await completeAndFlush();
+      await waitFor(() => decoMeshes().length > 0, 'decorations mounted on first show');
+      expect(new Set(decoDemands())).toEqual(DECO_PATHS);
+      const first = decoMeshes();
+      expect(first.every(drawn)).toBe(true);
+      const geoIds = new Set(first.map((m) => m.geometry.uuid));
+      const disposed = new Map<string, number>();
+      for (const m of first) {
+        const g = m.geometry;
+        const original = g.dispose.bind(g);
+        g.dispose = () => {
+          disposed.set(g.uuid, (disposed.get(g.uuid) ?? 0) + 1);
+          original();
+        };
+      }
+      const cacheEntriesAfterMount = cache.size;
+
+      // (b) Governor tier toggles after the first show: 0 -> 1 -> 0 -> 1 -> 0.
+      // Hiding never unmounts (the first-show latch holds).
+      for (const visible of [false, true, false, true, false, true]) {
+        await render(true, visible);
+        await waitFor(() => decoMeshes().length > 0 && decoMeshes().every((m) => drawn(m) === visible), `visible=${visible}`);
+        const now = decoMeshes();
+        expect(new Set(now.map((m) => m.geometry.uuid))).toEqual(geoIds); // 0 new geometries
+        expect(disposed.size).toBe(0); // 0 disposals
+      }
+      // A re-render re-runs the GLB hook (a cached read), never a new load.
+      expect(cache.size).toBe(cacheEntriesAfterMount);
+      expect(decoFetches).toEqual([]);
+
+      // (c) Real unmount: every merged geometry disposed once; shared materials kept.
+      await render(false, true);
+      await waitFor(() => decoMeshes().length === 0, 'decorations unmounted');
+      expect([...geoIds].filter((id) => (disposed.get(id) ?? 0) < 1)).toEqual([]);
+      expect([...materialDisposes.values()].reduce((a, b) => a + b, 0)).toBe(0);
+      expect(decoFetches).toEqual([]);
+
+      await r3f.act(async () => root.unmount());
+    },
+    20_000,
+  );
+});

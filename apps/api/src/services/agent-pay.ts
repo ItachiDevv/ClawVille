@@ -51,6 +51,12 @@ import {
 } from './custodial-x402';
 import { alertError } from './alert-error';
 import {
+  acquireFallbackTokens,
+  createMainnetConnection,
+  provenFallbackMainnetRpcUrl,
+  redactRpcUrl,
+} from './solana-mainnet-rpc';
+import {
   acquirePayAiCircuitPermit,
   recordPayAiCircuitAvailable,
   recordPayAiCircuitFailure,
@@ -659,13 +665,85 @@ export function resolveAgentPayRail(): AgentPayRail {
   return { network, rpcUrl, allowed: isHostedPayAiFacilitatorUrl(cfg.facilitatorUrl) };
 }
 
+/**
+ * True only for an https Helius MAINNET host (the same host test
+ * `solana-mainnet-rpc.ts` uses to arm its failover). A devnet Helius host,
+ * the public endpoint, and any other operator override return false.
+ */
+export function isHeliusMainnetRpcUrl(rpcUrl: string): boolean {
+  try {
+    const u = new URL(rpcUrl);
+    const host = u.hostname.toLowerCase();
+    return u.protocol === 'https:' && host.endsWith('helius-rpc.com') && host.includes('mainnet');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read connection for the agent-pay rail (balances, ATA probe, resume
+ * signature lookup, Tier-1 poster balance). A MAINNET rail on a Helius
+ * mainnet URL fails over per request to the public mainnet RPC
+ * (2026-10-08 Helius quota outage); `rpcEndpoint` stays `rail.rpcUrl`.
+ * Devnet and every other override keep the plain Connection, unchanged.
+ */
+export function agentPayConnection(rail: Pick<AgentPayRail, 'network' | 'rpcUrl'>): Connection {
+  return rail.network === 'mainnet' && isHeliusMainnetRpcUrl(rail.rpcUrl)
+    ? createMainnetConnection('confirmed', rail.rpcUrl)
+    : new Connection(rail.rpcUrl, 'confirmed');
+}
+
+/**
+ * RPC reads of the costliest prepare that goes through `prepareWithMainnetRpcFallback`: the inbound custodial prepare
+ * (`custodial-x402.ts` `prepareInboundCustodialExactPayment`) runs the PayAI prepare (`@x402/svm` 2.9.0
+ * `ExactSvmScheme.createPaymentPayload`, dist/esm/chunk-6GZCHEXV.mjs:52 `fetchMint` = getAccountInfo and :82
+ * `getLatestBlockhash`) plus the Meridian prepare (`x402-meridian.ts` `prepareMeridianPayment`, one
+ * `getLatestBlockhash`). The outbound agent-pay prepare reads 2, a Meridian-only prepare 1; 3 covers all of them.
+ */
+export const X402_PREPARE_FALLBACK_TOKENS = 3;
+
+/**
+ * Prepare (build + payer-sign) with one retry on the public mainnet RPC.
+ * The x402 SVM client reads the mint and a blockhash through its own
+ * transport, so the fetch-level failover cannot reach it. Prepare never
+ * transmits anything (PayAI submits later, in `execute`), so a failed first
+ * attempt left nothing on the wire: the retry signs a NEW payload with a
+ * fresh blockhash and the first one is discarded unsent. Only a MAINNET
+ * prepare on a Helius mainnet URL retries; devnet and other overrides throw
+ * the first error unchanged.
+ */
+export async function prepareWithMainnetRpcFallback<
+  I extends { network: X402Network; rpcUrl: string },
+  R,
+>(input: I, prepare: (input: I) => Promise<R>): Promise<R> {
+  try {
+    return await prepare(input);
+  } catch (err) {
+    if (input.network !== 'mainnet' || !isHeliusMainnetRpcUrl(input.rpcUrl)) throw err;
+    // Codex round 2: the prepare signs against this RPC's blockhash, so it
+    // must be the genesis-proven mainnet fallback; unproven => fail closed.
+    const fallbackUrl = await provenFallbackMainnetRpcUrl();
+    if (!fallbackUrl) throw err;
+    // Codex 2026-10-08 (B2 on e1abaa1f): this retry reads the fallback through the x402 client's own transport,
+    // outside the breaker's fetch, so it takes its fallback-budget tokens here. Refused => the original error
+    // (fail closed; prepare is pre-send, nothing is on the wire).
+    if (!(await acquireFallbackTokens(X402_PREPARE_FALLBACK_TOKENS))) throw err;
+    console.warn(
+      `[agent-pay] mainnet prepare failed on the primary RPC (${redactRpcUrl(
+        err instanceof Error ? err.message : String(err),
+      )}); retrying once on ${new URL(fallbackUrl).host}`,
+    );
+    return prepare({ ...input, rpcUrl: fallbackUrl });
+  }
+}
+
 function deps(input?: AgentPayDeps) {
   return {
     db: input?.db ?? defaultDb,
     readUsdcBalance: input?.readUsdcBalance ?? (async (network: X402Network, owner: string) => {
       const rail = (input?.resolveRail ?? resolveAgentPayRail)();
       const balance = await readSplTokenBalance(
-        new Connection(rail.rpcUrl, 'confirmed'), usdcMintForNetwork(network), owner,
+        agentPayConnection(rail), usdcMintForNetwork(network), owner,
       );
       return balance.amountAtomic;
     }),
@@ -674,7 +752,7 @@ function deps(input?: AgentPayDeps) {
         try {
           const rail = (input?.resolveRail ?? resolveAgentPayRail)();
           return await readAssociatedTokenAccountExists(
-            new Connection(rail.rpcUrl, 'confirmed'),
+            agentPayConnection(rail),
             usdcMintForNetwork(network),
             owner,
           );
@@ -692,7 +770,9 @@ function deps(input?: AgentPayDeps) {
       if (publicKey !== row.publicKey) throw new Error('custodial wallet pubkey mismatch');
       return { publicKey, secretKey: keypair.secretKey };
     }),
-    prepare: input?.prepare ?? prepareCustodialExactPayment,
+    prepare: input?.prepare
+      ?? ((prepInput: Parameters<typeof prepareCustodialExactPayment>[0]) =>
+        prepareWithMainnetRpcFallback(prepInput, prepareCustodialExactPayment)),
     execute: input?.execute ?? ((prep: PreparedCustodialExactPayment) => executePreparedExactPayment(prep)),
     mintEarned: input?.mintEarned ?? mintEarned,
     resolveFeePayer: input?.resolveFeePayer ?? resolveFacilitatorFeePayer,

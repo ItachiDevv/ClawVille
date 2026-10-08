@@ -1,5 +1,6 @@
-import { Connection, PublicKey } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
+import { createMainnetConnection, mainnetFailoverFetch } from './solana-mainnet-rpc';
 import {
   and, avatars, db, desc, eq, inArray, isNull, lte, sql, tradingWallets, verifiedTrades,
   type VerifiedTrade,
@@ -201,10 +202,12 @@ export async function fetchParsedTransactionJson(input: {
 
 export function createDefaultTradeObserverDeps(): TradeObserverDeps {
   const rpcUrl = tradeObserverRpcUrl();
-  const connection = new Connection(rpcUrl, 'confirmed');
+  // Both reads fail over to the public mainnet RPC when the Helius primary is
+  // quota-exhausted (2026-10-08 outage); a healthy primary is used unchanged.
+  const connection = createMainnetConnection('confirmed', rpcUrl);
   return {
     getSignaturesForAddress: (address, options) => connection.getSignaturesForAddress(new PublicKey(address), options, 'confirmed'),
-    getParsedTransaction: (signature) => fetchParsedTransactionJson({ rpcUrl, signature }),
+    getParsedTransaction: (signature) => fetchParsedTransactionJson({ rpcUrl, signature, fetchImpl: mainnetFailoverFetch }),
     now: () => Date.now(),
   };
 }

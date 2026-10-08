@@ -1,15 +1,15 @@
 'use client';
 
-import { useRef, useEffect, memo } from 'react';
+import { useRef, useEffect, useMemo, memo } from 'react';
 import {
   useSceneActive,
   useSceneFrame,
 } from '@/components/three/world-stage/use-scene-frame';
 // Text removed
 import * as THREE from 'three';
-import { useNpcStore } from '@/stores/npc';
-import { useShallow } from 'zustand/react/shallow';
+import { useNpcStore, type NpcSpriteState, type NpcStoreState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { getNpcRenderGroup } from '@/lib/three/arena-npcs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -23,6 +23,80 @@ const PULSE_MIN = 1.0;
 const PULSE_MAX = 1.25;
 const INDICATOR_Y = 10; // height above NPC position
 const TYPING_Y = 9;
+
+// ---------------------------------------------------------------------------
+// Shared GPU resources, one geometry + material per look (web-load T9)
+// ---------------------------------------------------------------------------
+//
+// Why: the JSX <meshBasicMaterial> / <sphereGeometry> built NEW objects every
+// time an indicator showed, so each show cost one synchronous pipeline
+// creation on the live world (T8 probe: one every 8-16 s; an Iris Xe hitch).
+// Now every indicator mesh uses these module-level objects: identity is
+// stable for the whole session, so a look compiles once. The layer
+// (ActivityIndicators) holds the only user count: GPU resources are released
+// when the LAST mounted layer unmounts, never when one indicator hides (the
+// next show would then compile again). The release is deferred one tick and
+// a retain cancels it, so a StrictMode setup/cleanup/setup keeps the same
+// objects; a real last unmount disposes them and empties the map, and the
+// next mount builds fresh objects.
+
+type IndicatorLook = 'activity' | 'typing-dot';
+type IndicatorLookResources = { geometry: THREE.BufferGeometry; material: THREE.Material };
+
+const INDICATOR_LOOKS: Record<IndicatorLook, () => IndicatorLookResources> = {
+  activity: () => ({
+    geometry: new THREE.SphereGeometry(1.5, 8, 8),
+    material: new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.6 }),
+  }),
+  'typing-dot': () => ({
+    geometry: new THREE.SphereGeometry(0.4, 6, 4),
+    material: new THREE.MeshBasicMaterial({ color: 0xcccccc }),
+  }),
+};
+
+const sharedLooks = new Map<IndicatorLook, IndicatorLookResources>();
+let sharedLookUsers = 0;
+
+function getIndicatorLook(look: IndicatorLook): IndicatorLookResources {
+  let resources = sharedLooks.get(look);
+  if (!resources) {
+    resources = INDICATOR_LOOKS[look]();
+    sharedLooks.set(look, resources);
+  }
+  return resources;
+}
+
+/** Pending teardown after the last layer unmounted (cancelled by a retain). */
+let pendingLookRelease: ReturnType<typeof setTimeout> | null = null;
+
+function retainIndicatorLooks(): void {
+  sharedLookUsers += 1;
+  // A StrictMode re-setup (or a remount in the same tick) keeps the objects
+  // its render already holds: cancel the teardown instead of rebuilding.
+  if (pendingLookRelease !== null) {
+    clearTimeout(pendingLookRelease);
+    pendingLookRelease = null;
+  }
+}
+
+function releaseIndicatorLooks(): void {
+  sharedLookUsers = Math.max(0, sharedLookUsers - 1);
+  if (sharedLookUsers > 0 || pendingLookRelease !== null) return;
+  // Deferred one tick (Codex E3 on 1ea42199): StrictMode runs cleanup and
+  // setup back to back with no re-render, so a synchronous teardown would
+  // dispose objects the mounted meshes still use. On a real last unmount
+  // the timer runs: dispose every resource once and DROP it from the map, so
+  // a later mount builds fresh objects instead of reusing disposed ones.
+  pendingLookRelease = setTimeout(() => {
+    pendingLookRelease = null;
+    if (sharedLookUsers > 0) return;
+    for (const { geometry, material } of sharedLooks.values()) {
+      geometry.dispose();
+      material.dispose();
+    }
+    sharedLooks.clear();
+  }, 0);
+}
 
 // ---------------------------------------------------------------------------
 // Activity emoji map (NPC activity -> emoji string)
@@ -52,31 +126,66 @@ const ACTIVITY_EMOJIS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 interface NpcIndicatorProps {
-  x: number;
-  y: number;
+  npcId: string;
   activity?: string;
   isTyping: boolean;
-  inConversation: boolean;
+}
+
+/** Id lookup without a closure (runs once per store write, not per frame). */
+function findNpcById(npcs: readonly NpcSpriteState[], id: string): NpcSpriteState | null {
+  for (let i = 0; i < npcs.length; i += 1) {
+    if (npcs[i].id === id) return npcs[i];
+  }
+  return null;
 }
 
 const NpcIndicator = memo(function NpcIndicator({
-  x,
-  y,
+  npcId,
   activity,
   isTyping,
-  inConversation,
 }: NpcIndicatorProps) {
   const groupRef = useRef<THREE.Group>(null);
   const scaleRef = useRef(1);
+  // The indicator follows its NPC from the frame loop and never needs a React
+  // render to move (web-load T10). First choice: the NPC's rendered body
+  // group (getNpcRenderGroup, the smoothed position the mesh draws at).
+  // Fallback: the store object, whose position the store MUTATES in place
+  // (stores/npc.ts updateFromSnapshot / moveNpc); it is looked up again only
+  // when the store's npcs ARRAY changes (one id scan per store write), since
+  // an identity change (conversation flip, rename, species swap) replaces it.
+  const npcsSeenRef = useRef<readonly NpcSpriteState[] | null>(null);
+  const npcRef = useRef<NpcSpriteState | null>(null);
 
-  const worldX = x - HALF_W;
-  const worldZ = y - HALF_H;
+  // Render-time position, so the indicator is in place before the first frame.
+  const renderNpc = findNpcById(useNpcStore.getState().npcs, npcId);
+  const worldX = renderNpc ? renderNpc.x - HALF_W : 0;
+  const worldZ = renderNpc ? renderNpc.y - HALF_H : 0;
 
   const emoji = activity ? ACTIVITY_EMOJIS[activity] ?? '' : '';
+  const activityLook = getIndicatorLook('activity');
 
   useSceneFrame((state) => {
     const group = groupRef.current;
     if (!group) return;
+
+    // Follow the rendered (smoothed) body when it is mounted; else the raw
+    // store position (body not mounted yet, or its model failed).
+    const body = getNpcRenderGroup(npcId);
+    if (body) {
+      group.position.x = body.position.x;
+      group.position.z = body.position.z;
+    } else {
+      const npcs = useNpcStore.getState().npcs;
+      if (npcs !== npcsSeenRef.current) {
+        npcsSeenRef.current = npcs;
+        npcRef.current = findNpcById(npcs, npcId);
+      }
+      const npc = npcRef.current;
+      if (npc) {
+        group.position.x = npc.x - HALF_W;
+        group.position.z = npc.y - HALF_H;
+      }
+    }
 
     const elapsed = state.clock.elapsedTime;
     const pulse = PULSE_MIN + (PULSE_MAX - PULSE_MIN) * (0.5 + 0.5 * Math.sin(elapsed * PULSE_SPEED * Math.PI * 2));
@@ -94,10 +203,13 @@ const NpcIndicator = memo(function NpcIndicator({
     <group ref={groupRef} position={[worldX, 0, worldZ]}>
       {/* Activity indicator — glowing sphere instead of Text */}
       {showEmoji && (
-        <mesh position={[0, INDICATOR_Y, 0]}>
-          <sphereGeometry args={[1.5, 8, 8]} />
-          <meshBasicMaterial color={0x00e5ff} transparent opacity={0.6} />
-        </mesh>
+        // Shared look (module-level); dispose={null}: the layer owns it.
+        <mesh
+          position={[0, INDICATOR_Y, 0]}
+          geometry={activityLook.geometry}
+          material={activityLook.material}
+          dispose={null}
+        />
       )}
 
       {/* Typing indicator: animated "..." */}
@@ -112,6 +224,12 @@ const NpcIndicator = memo(function NpcIndicator({
 // Animated typing dots
 // ---------------------------------------------------------------------------
 
+/** Stagger bounce: each dot is offset by 0.2 s. */
+function bounceTypingDot(mesh: THREE.Mesh | null, t: number, index: number, y: number): void {
+  if (!mesh) return;
+  mesh.position.y = y + Math.abs(Math.sin((t + index * 0.2) * 4)) * 1.5;
+}
+
 const TypingDots = memo(function TypingDots({
   x,
   y,
@@ -125,32 +243,21 @@ const TypingDots = memo(function TypingDots({
   const dot2Ref = useRef<THREE.Mesh>(null);
   const dot3Ref = useRef<THREE.Mesh>(null);
 
+  const dotLook = getIndicatorLook('typing-dot');
+
+  // No allocation per frame (Iris Xe rule): three direct calls, no array.
   useSceneFrame((state) => {
     const t = state.clock.elapsedTime;
-    const refs = [dot1Ref, dot2Ref, dot3Ref];
-    for (let i = 0; i < 3; i++) {
-      const mesh = refs[i].current;
-      if (!mesh) continue;
-      // Stagger bounce: each dot offset by 0.2s
-      const bounce = Math.abs(Math.sin((t + i * 0.2) * 4));
-      mesh.position.y = y + bounce * 1.5;
-    }
+    bounceTypingDot(dot1Ref.current, t, 0, y);
+    bounceTypingDot(dot2Ref.current, t, 1, y);
+    bounceTypingDot(dot3Ref.current, t, 2, y);
   });
 
   return (
     <group position={[x, 0, z]}>
-      <mesh ref={dot1Ref} position={[-1.2, y, 0]}>
-        <sphereGeometry args={[0.4, 6, 4]} />
-        <meshBasicMaterial color={0xcccccc} />
-      </mesh>
-      <mesh ref={dot2Ref} position={[0, y, 0]}>
-        <sphereGeometry args={[0.4, 6, 4]} />
-        <meshBasicMaterial color={0xcccccc} />
-      </mesh>
-      <mesh ref={dot3Ref} position={[1.2, y, 0]}>
-        <sphereGeometry args={[0.4, 6, 4]} />
-        <meshBasicMaterial color={0xcccccc} />
-      </mesh>
+      <mesh ref={dot1Ref} position={[-1.2, y, 0]} geometry={dotLook.geometry} material={dotLook.material} dispose={null} />
+      <mesh ref={dot2Ref} position={[0, y, 0]} geometry={dotLook.geometry} material={dotLook.material} dispose={null} />
+      <mesh ref={dot3Ref} position={[1.2, y, 0]} geometry={dotLook.geometry} material={dotLook.material} dispose={null} />
     </group>
   );
 });
@@ -159,44 +266,69 @@ const TypingDots = memo(function TypingDots({
 // ActivityIndicators — reads NPC store and renders indicators for all NPCs
 // ---------------------------------------------------------------------------
 
-// PERF: subscribe only to the activity-relevant NPC fields (isDead, inCombat,
-// inConversation, id, x, y) rather than the full NPC array. Full subscription
-// re-renders this component every 100ms SSE snapshot (NPC positions change
-// constantly), even though the emoji/typing state changes only rarely.
-// We use a shallow-equal selector on a derived array of activity snapshots.
-interface NpcActivitySnapshot {
+// PERF (web-load T10): the layer selects ONE primitive string, so its store
+// subscription bails (Object.is) on every position-only snapshot. Before, it
+// selected NEW snapshot objects through useShallow, which compares elements
+// with Object.is and so NEVER bailed: one SyncLane render of the R3F root per
+// 200 ms snapshot while any NPC talked, and each render discarded pending
+// Suspense retry work (gotchas/suspense-retry-lane-starvation-sync-store-updates.md).
+// Positions are not in the key: each indicator follows its NPC from the frame
+// loop (NpcIndicator above).
+//
+// Key: one length-prefixed entry per indicated NPC, `<id.length>:<id><flags>`,
+// concatenated. NPC ids are free server strings, so no separator character is
+// safe; the length prefix reads any id back exactly (Codex E3). Flags is ONE
+// digit: 1 = isDead, 2 = inCombat, 4 = inConversation (never 0 here).
+
+function selectIndicatorKey(s: NpcStoreState): string {
+  const npcs = s.npcs;
+  let key = '';
+  for (let i = 0; i < npcs.length; i += 1) {
+    const n = npcs[i];
+    // Only NPCs that have an indicator to show
+    if (!n.isDead && !n.inCombat && !n.inConversation) continue;
+    const flags = (n.isDead ? 1 : 0) | (n.inCombat ? 2 : 0) | (n.inConversation ? 4 : 0);
+    key += n.id.length + ':' + n.id + flags;
+  }
+  return key;
+}
+
+interface IndicatorEntry {
   id: string;
-  x: number;
-  y: number;
   isDead: boolean;
   inCombat: boolean;
   inConversation: boolean;
 }
 
-// Stable empty array to avoid triggering re-renders when no NPCs are active
-const EMPTY_SNAPSHOTS: NpcActivitySnapshot[] = [];
+function parseIndicatorKey(key: string): IndicatorEntry[] {
+  const entries: IndicatorEntry[] = [];
+  let at = 0;
+  while (at < key.length) {
+    const colon = key.indexOf(':', at);
+    const idLength = Number(key.slice(at, colon));
+    const idStart = colon + 1;
+    const flags = Number(key[idStart + idLength]);
+    entries.push({
+      id: key.slice(idStart, idStart + idLength),
+      isDead: (flags & 1) !== 0,
+      inCombat: (flags & 2) !== 0,
+      inConversation: (flags & 4) !== 0,
+    });
+    at = idStart + idLength + 1;
+  }
+  return entries;
+}
 
 function ActivityIndicators() {
   const sceneActive = useSceneActive();
-  // Subscribe to a derived array that only contains the fields we care about.
-  // useShallow performs element-by-element shallow comparison on the returned
-  // array, so a new array with identical elements does NOT trigger a re-render.
-  // Without useShallow every SSE tick (10 Hz) caused a full re-render even when
-  // no activity indicators changed.
-  const npcSnapshots = useNpcStore(useShallow((s) => {
-    const arr = s.npcs;
-    if (arr.length === 0) return EMPTY_SNAPSHOTS;
-    // Only include NPCs that have a non-empty indicator to show
-    return arr.filter((n) => n.isDead || n.inCombat || n.inConversation)
-              .map((n): NpcActivitySnapshot => ({
-                id: n.id,
-                x: n.x,
-                y: n.y,
-                isDead: n.isDead,
-                inCombat: n.inCombat,
-                inConversation: n.inConversation,
-              }));
-  }));
+  // The layer is the only user of the shared indicator looks (see above):
+  // they stay allocated while it is mounted, even with no indicator showing.
+  useEffect(() => {
+    retainIndicatorLooks();
+    return releaseIndicatorLooks;
+  }, []);
+  const indicatorKey = useNpcStore(selectIndicatorKey);
+  const entries = useMemo(() => parseIndicatorKey(indicatorKey), [indicatorKey]);
 
   // Periodically evict expired chatBubbles / combatEvents / lootEvents.
   // cleanupExpired() is defined in the store but was never called — in demo
@@ -209,11 +341,11 @@ function ActivityIndicators() {
     return () => clearInterval(id);
   }, [sceneActive]);
 
-  if (npcSnapshots.length === 0) return null;
+  if (entries.length === 0) return null;
 
   return (
     <group>
-      {npcSnapshots.map((npc) => {
+      {entries.map((npc) => {
         // Derive simple activity from NPC state
         let activity: string | undefined;
         if (npc.isDead) activity = 'resting';
@@ -224,11 +356,9 @@ function ActivityIndicators() {
         return (
           <NpcIndicator
             key={npc.id}
-            x={npc.x}
-            y={npc.y}
+            npcId={npc.id}
             activity={activity}
             isTyping={npc.inConversation}
-            inConversation={npc.inConversation}
           />
         );
       })}

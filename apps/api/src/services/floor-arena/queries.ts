@@ -410,6 +410,16 @@ export function toStats(aggregate: ArenaAgentAggregate | undefined): ArenaAgentS
   };
 }
 
+/**
+ * AR-1: `entry_features.firstSight` is research data (migration 0080). No API payload carries it, so the position
+ * shape served to owners, agents and the public (house agents) stays as before.
+ */
+function withoutResearchFeatures(features: unknown): unknown {
+  if (!features || typeof features !== 'object' || Array.isArray(features) || !('firstSight' in features)) return features;
+  const { firstSight: _research, ...rest } = features as Record<string, unknown>;
+  return rest;
+}
+
 function mapPosition(row: Row): ArenaPosition {
   return {
     id: String(row.id),
@@ -421,7 +431,7 @@ function mapPosition(row: Row): ArenaPosition {
     tokens: num(row.tokens),
     entryPriceUsd: num(row.entry_price_usd),
     entryFillSource: str(row.entry_fill_source),
-    entryFeatures: json(row.entry_features),
+    entryFeatures: withoutResearchFeatures(json(row.entry_features)),
     paramsVersion: num(row.params_version),
     peakMult: num(row.peak_mult),
     lastMarkMult: numOrNull(row.last_mark_mult),

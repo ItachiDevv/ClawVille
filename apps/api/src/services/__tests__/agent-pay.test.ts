@@ -1419,3 +1419,252 @@ describe('agent-pay durable x402 machine', () => {
     expect(h.executeCalls()).toBe(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-10-08 Helius quota outage: the agent-pay rail fails over to the public
+// mainnet RPC (reads via the failover Connection; prepare via one retry).
+const { Keypair: FoKeypair, VersionedTransaction: FoVersionedTransaction } = await import('@solana/web3.js');
+const { agentPayConnection, prepareWithMainnetRpcFallback, X402_PREPARE_FALLBACK_TOKENS } = await import('../agent-pay');
+const { readSplTokenBalance } = await import('../solana-token-balance');
+const { prepareCustodialExactPayment } = await import('../custodial-x402');
+const { usdcMintForNetwork } = await import('../x402-payai');
+const {
+  __resetMainnetRpcStateForTests,
+  __markFallbackProvenForTests,
+  __setFallbackLimiterSleepForTests,
+  __setMainnetRpcNowForTests,
+  acquireFallbackTokens,
+} = await import('../solana-mainnet-rpc');
+
+describe('agent-pay rail — Helius quota-dead primary fails over to the public mainnet RPC', () => {
+  const HELIUS = 'https://mainnet.helius-rpc.com/?api-key=agentpay-test-key';
+  const HELIUS_DEVNET = 'https://devnet.helius-rpc.com/?api-key=agentpay-test-key';
+  const FALLBACK_BLOCKHASH = 'GHtXQBsoZHVnNFa9YevAzFr17DJjgHXk3ycTKD5xD3Zi';
+
+  type Seen = { host: string; method: string; body: string };
+  async function withFetch<T>(
+    fallback: (method: string) => unknown,
+    run: (seen: Seen[]) => Promise<T>,
+  ): Promise<T> {
+    const realFetch = globalThis.fetch;
+    const seen: Seen[] = [];
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const host = new URL(url).host;
+      const body = typeof init?.body === 'string' ? init.body : '';
+      const req = body ? (JSON.parse(body) as { id: unknown; method: string }) : null;
+      seen.push({ host, method: req?.method ?? '', body });
+      if (host.endsWith('helius-rpc.com')) {
+        return new Response(
+          '{"jsonrpc":"2.0","error":{"code":-32429,"message":"max usage reached"}}',
+          { status: 429 },
+        );
+      }
+      if (host === 'api.mainnet-beta.solana.com' && req) {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: fallback(req.method) }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    try {
+      return await run(seen);
+    } finally {
+      globalThis.fetch = realFetch;
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    }
+  }
+
+  it('USDC balance read (the balance_unavailable 503 cause) succeeds through the public RPC; endpoint stays Helius', async () => {
+    await withFetch(
+      (method) => (method === 'getTokenAccountsByOwner' ? { context: { slot: 10 }, value: [] } : null),
+      async (seen) => {
+        const conn = agentPayConnection({ network: 'mainnet', rpcUrl: HELIUS });
+        expect(conn.rpcEndpoint).toBe(HELIUS);
+        const balance = await readSplTokenBalance(conn, usdcMintForNetwork('mainnet'), SENDER_WALLET);
+        expect(balance.amountAtomic).toBe(0n);
+        const fallbackSeen = seen.filter((s) => s.host === 'api.mainnet-beta.solana.com');
+        expect(seen.filter((s) => s.host === 'mainnet.helius-rpc.com').length).toBe(1);
+        expect(fallbackSeen.length).toBe(1);
+        expect(fallbackSeen.every((s) => !s.body.includes('agentpay-test-key'))).toBe(true);
+      },
+    );
+  });
+
+  it('GUARD: a devnet rail never fails over to the mainnet public RPC', async () => {
+    await withFetch(
+      () => ({ context: { slot: 10 }, value: [] }),
+      async (seen) => {
+        const conn = agentPayConnection({ network: 'devnet', rpcUrl: HELIUS_DEVNET });
+        await expect(
+          readSplTokenBalance(conn, usdcMintForNetwork('devnet'), SENDER_WALLET),
+        ).rejects.toThrow();
+        expect(seen.some((s) => s.host === 'api.mainnet-beta.solana.com')).toBe(false);
+        // A mainnet-labelled rail on a non-Helius-mainnet URL keeps the plain Connection.
+        expect(agentPayConnection({ network: 'mainnet', rpcUrl: HELIUS_DEVNET }).rpcEndpoint).toBe(HELIUS_DEVNET);
+      },
+    );
+  });
+
+  it('prepare: Helius 429 on the x402 client RPC → ONE retry on the public RPC; the payload uses the fallback blockhash', async () => {
+    const mintData = Buffer.alloc(82);
+    mintData[44] = 6; // decimals
+    mintData[45] = 1; // isInitialized
+    const payer = FoKeypair.generate();
+    const feePayer = FoKeypair.generate().publicKey.toBase58();
+    const hosts: string[] = [];
+    await withFetch(
+      (method) => {
+        if (method === 'getAccountInfo') {
+          return {
+            context: { slot: 10 },
+            value: {
+              data: [mintData.toString('base64'), 'base64'],
+              executable: false,
+              lamports: 1_461_600,
+              owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+              rentEpoch: 0,
+              space: 82,
+            },
+          };
+        }
+        if (method === 'getLatestBlockhash') {
+          return { context: { slot: 10 }, value: { blockhash: FALLBACK_BLOCKHASH, lastValidBlockHeight: 1_000 } };
+        }
+        return null;
+      },
+      async (seen) => {
+        const prepared = await prepareWithMainnetRpcFallback(
+          {
+            payerSecretKey: payer.secretKey,
+            payerPubkey: payer.publicKey.toBase58(),
+            payTo: FoKeypair.generate().publicKey.toBase58(),
+            amountBaseUnits: 1_000_000n,
+            network: 'mainnet' as const,
+            rpcUrl: HELIUS,
+            feePayer,
+            resource: { url: 'clawville://agent-pay/test' },
+            purpose: 'clawville-agent-pay',
+          },
+          async (input) => {
+            hosts.push(new URL(input.rpcUrl).host);
+            return prepareCustodialExactPayment(input);
+          },
+        );
+        expect(hosts).toEqual(['mainnet.helius-rpc.com', 'api.mainnet-beta.solana.com']);
+        const header = JSON.parse(Buffer.from(prepared.paymentHeader, 'base64').toString('utf8')) as {
+          payload: { transaction: string };
+        };
+        const tx = FoVersionedTransaction.deserialize(Buffer.from(header.payload.transaction, 'base64'));
+        expect(tx.message.recentBlockhash).toBe(FALLBACK_BLOCKHASH);
+        // Prepare only READS: no sendTransaction went out on either endpoint.
+        expect(seen.some((s) => s.method === 'sendTransaction')).toBe(false);
+      },
+    );
+  });
+
+  it('GUARD: a devnet prepare (or a non-Helius mainnet override) is never retried', async () => {
+    let calls = 0;
+    await expect(
+      prepareWithMainnetRpcFallback({ network: 'devnet' as const, rpcUrl: HELIUS_DEVNET }, async () => {
+        calls += 1;
+        throw new Error('429 max usage reached');
+      }),
+    ).rejects.toThrow('429');
+    expect(calls).toBe(1);
+    await expect(
+      prepareWithMainnetRpcFallback({ network: 'mainnet' as const, rpcUrl: 'https://rpc.example.com' }, async () => {
+        calls += 1;
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(calls).toBe(2);
+  });
+
+  it('GUARD (Codex round 2): an UNPROVEN fallback gets no prepare retry; the original error is thrown', async () => {
+    const realFetch = globalThis.fetch;
+    const probed: string[] = [];
+    const urls: string[] = [];
+    __resetMainnetRpcStateForTests(); // nothing proven
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      probed.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      // A devnet node answering getGenesisHash: not mainnet.
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' }));
+    }) as typeof fetch;
+    try {
+      await expect(
+        prepareWithMainnetRpcFallback({ network: 'mainnet' as const, rpcUrl: HELIUS }, async (input) => {
+          urls.push(input.rpcUrl);
+          throw new Error('429 max usage reached (original)');
+        }),
+      ).rejects.toThrow('(original)');
+      expect(urls).toEqual([HELIUS]);
+      expect(probed).toEqual(['https://api.mainnet-beta.solana.com']);
+    } finally {
+      globalThis.fetch = realFetch;
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    }
+  });
+
+  it('a PROVEN fallback: one prepare retry on exactly that URL', async () => {
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    const urls: string[] = [];
+    const out = await prepareWithMainnetRpcFallback({ network: 'mainnet' as const, rpcUrl: HELIUS }, async (input) => {
+      urls.push(input.rpcUrl);
+      if (urls.length === 1) throw new Error('429 max usage reached');
+      return 'prepared-on-fallback';
+    });
+    expect(out).toBe('prepared-on-fallback');
+    expect(urls).toEqual([HELIUS, 'https://api.mainnet-beta.solana.com']);
+  });
+
+  // Codex 2026-10-08 B2: the prepare retry reads the fallback outside the breaker's fetch, so it takes
+  // X402_PREPARE_FALLBACK_TOKENS from the shared fallback budget first; refused => the original error.
+  it('prepare retry takes 3 fallback-budget tokens before it runs', async () => {
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    const now = 5_000_000;
+    __setMainnetRpcNowForTests(() => now); // frozen: no refill
+    const waits: number[] = [];
+    __setFallbackLimiterSleepForTests(async (ms) => { waits.push(ms); });
+    try {
+      expect(X402_PREPARE_FALLBACK_TOKENS).toBe(3);
+      const urls: string[] = [];
+      const out = await prepareWithMainnetRpcFallback({ network: 'mainnet' as const, rpcUrl: HELIUS }, async (input) => {
+        urls.push(input.rpcUrl);
+        if (urls.length === 1) throw new Error('429 max usage reached');
+        return 'prepared-on-fallback';
+      });
+      expect(out).toBe('prepared-on-fallback');
+      expect(waits).toEqual([]);
+      // 10 - 3 = 7 tokens left: 7 more go free, the 8th waits one refill interval.
+      expect(await acquireFallbackTokens(7)).toBe(true);
+      expect(waits).toEqual([]);
+      expect(await acquireFallbackTokens(1)).toBe(true);
+      expect(waits).toHaveLength(1);
+    } finally {
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    }
+  });
+
+  it('GUARD: fallback budget refused => no prepare retry, the ORIGINAL error is thrown (fail closed, pre-send)', async () => {
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    const now = 5_000_000;
+    __setMainnetRpcNowForTests(() => now);
+    __setFallbackLimiterSleepForTests(async () => {});
+    try {
+      while (await acquireFallbackTokens(1)) { /* use up the burst and 3 s of reservations */ }
+      const urls: string[] = [];
+      await expect(
+        prepareWithMainnetRpcFallback({ network: 'mainnet' as const, rpcUrl: HELIUS }, async (input) => {
+          urls.push(input.rpcUrl);
+          throw new Error('429 max usage reached (original)');
+        }),
+      ).rejects.toThrow('(original)');
+      expect(urls).toEqual([HELIUS]);
+    } finally {
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
+    }
+  });
+});

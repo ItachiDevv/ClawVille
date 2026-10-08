@@ -37,7 +37,11 @@ import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
 import { useWorldLabel, WorldLabel, resetLabelPrevOpacity } from '@/lib/three/world-labels-overlay';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  preloadKTX2Bytes,
+  readGLTFWithKTX2,
+  useGLTFWithKTX2,
+} from '@/lib/three/use-gltf-ktx2';
 import {
   BOOT_STREAM_TIER_PROPS,
   onBootStreamEligible,
@@ -45,13 +49,26 @@ import {
 import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
 import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
+/** The model path: ONE constant for the byte-warm, the render read
+ * (QuestBountyPavilionInner) and the warm read, so they hit the same cache entry. */
+const PAVILION_MODEL = '/models/quest-bounty-pavilion-nonorm-ktx.glb';
+
+/** web-load T10-C: NON-HOOK read of the exact cache entry QuestBountyPavilionInner's
+ * useGLTFWithKTX2 call reads (same drei call, path, flags and extender).
+ * BootStreamedContent awaits it outside React at post-reveal admission,
+ * so the release render never suspends into a starvable retry lane.
+ * Module-level, so it is referentially stable. */
+function readPavilionGltf(): unknown {
+  return readGLTFWithKTX2(PAVILION_MODEL);
+}
+
 // ---------------------------------------------------------------------------
 // Rung-4 slice D (§3 preload demotion): byte-warm fires at boot-stream
 // eligibility, not module scope.
 // ---------------------------------------------------------------------------
 if (typeof window !== 'undefined') {
   onBootStreamEligible(
-    () => preloadKTX2Bytes('/models/quest-bounty-pavilion-nonorm-ktx.glb'),
+    () => preloadKTX2Bytes(PAVILION_MODEL),
     Number.NEGATIVE_INFINITY,
   );
 }
@@ -106,7 +123,7 @@ const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner({
    * two DOM labels (the three subtree is hidden by the attachment group). */
   attachmentVisible?: boolean;
 }) {
-  const { scene } = useGLTFWithKTX2('/models/quest-bounty-pavilion-nonorm-ktx.glb');
+  const { scene } = useGLTFWithKTX2(PAVILION_MODEL);
 
   // Clone so we don't mutate the cached GLB
   const cloned = useMemo(() => scene.clone(true), [scene]);
@@ -410,6 +427,7 @@ export default function QuestBountyPavilion() {
   return (
     <BootStreamedContent
       cohortId="prop:quest-bounty-pavilion"
+      warmRead={readPavilionGltf}
       priority={bootStreamPriority(BOOT_STREAM_TIER_PROPS, PAV_X, PAV_Z)}
     >
       {(ready) => <QuestBountyPavilionInner attachmentVisible={ready} />}

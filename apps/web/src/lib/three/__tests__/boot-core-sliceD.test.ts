@@ -20,12 +20,14 @@ import {
   subscribeWorldBootEpoch,
 } from '../decorative-release';
 import {
+  __cancelDeferredBootActorReleasesForTests,
   __classifyBootActorForTests,
   __fireBootActorDeadlineForTests,
   __resetBootActorForTests,
   __setClipTrackingForTests,
   awaitBootActorGate,
   closeBootActorRegistration,
+  deferBootActorClaimRelease,
   getBootDepProgress,
   getBootActorStamps,
   isBodyKind,
@@ -331,6 +333,56 @@ describe('boot-actor contract', () => {
     __fireBootActorDeadlineForTests();
     expect(requiresDeferredAttach('player-vrm', '/avatars/b.vrm')).toBe(true);
     expect(requiresDeferredAttach('player-vrm', '/avatars/a.vrm')).toBe(true);
+  });
+
+  test('deferred claim release: fires once after a tick; a re-registration of the SAME claim cancels it; a reset cancels it', async () => {
+    // Real timers with a short real wait (bun 1.3.11 checks test timeouts
+    // against the fake clock, so no fake timers here).
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+    ensureWorldBootEpoch();
+    const token = registerBootActorClaim('player-vrm', '/avatars/a.vrm');
+    let released = 0;
+    deferBootActorClaimRelease(token, () => {
+      released += 1;
+    });
+    // A newer deferral for the same token replaces the older one.
+    deferBootActorClaimRelease(token, () => {
+      released += 1;
+    });
+    await tick();
+    expect(released).toBe(1);
+
+    // Re-registration (a body for the same epoch + kind + path) cancels.
+    deferBootActorClaimRelease(token, () => {
+      released += 1;
+    });
+    expect(registerBootActorClaim('player-vrm', '/avatars/a.vrm')).toBe(token);
+    await tick();
+    expect(released).toBe(1);
+
+    // A different claim does not cancel it.
+    deferBootActorClaimRelease(token, () => {
+      released += 1;
+    });
+    registerBootActorClaim('player-vrm', '/avatars/b.vrm');
+    await tick();
+    expect(released).toBe(2);
+
+    // Both test resets cancel pending releases.
+    deferBootActorClaimRelease(token, () => {
+      released += 1;
+    });
+    __resetBootActorForTests();
+    await tick();
+    expect(released).toBe(2);
+    ensureWorldBootEpoch();
+    const token2 = registerBootActorClaim('player-vrm', '/avatars/a.vrm');
+    deferBootActorClaimRelease(token2, () => {
+      released += 1;
+    });
+    __cancelDeferredBootActorReleasesForTests();
+    await tick();
+    expect(released).toBe(2);
   });
 
   test('readiness stamp binds to the CURRENT resolution only', () => {

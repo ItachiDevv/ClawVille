@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense, useEffect, useState, type ReactElement } from 'react';
+import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
@@ -27,9 +27,11 @@ import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
-import { extendLoaderWithTextureDeviceCap } from '@/lib/three/use-gltf-ktx2';
+import { extendLoaderWithTextureDeviceCap, tagGltfLoadRejection } from '@/lib/three/use-gltf-ktx2';
+import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
+import { warmSuspenseRead } from '@/lib/three/suspense-cache-warm';
 import { CURRENT_WORLD_DEVICE_PROFILE } from '@/lib/three/device-class';
 
 // ---------------------------------------------------------------------------
@@ -122,7 +124,9 @@ type LocationNpcConfig = NpcModelConfig & {
   };
 };
 
-const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
+/** Exported read-only for arena-location-npcs-warm-read.test.tsx (every
+ * resident + companion model must be warm-read before its first render). */
+export const LOCATION_NPCS: Readonly<Record<string, LocationNpcConfig>> = {
   // Slot 0 — visual-creation — Pineapple House (SpongeBob's home)
   // Gary lives here too: he's a passive companion (no chat target)
   'visual-creation': {
@@ -229,6 +233,22 @@ const extendLoaderWithMeshoptAndKTX2 = (loader: GLTFLoader): void => {
   extendLoaderWithTextureDeviceCap(loader);
 };
 
+/**
+ * NON-HOOK read of the exact cache entry NpcMesh's render read uses: the SAME
+ * drei call (same path, same draco/meshopt flags, same loader extender), so
+ * the same suspend-react key [GLTFLoader, path]. For warmSuspenseRead only
+ * (web-load T10-B, the T7 pattern in suspense-cache-warm.ts): it runs OUTSIDE
+ * render, after the resident's stagger release, so NpcMesh's first render
+ * reads a resolved entry and never needs a Suspense retry. Safe outside
+ * render because drei useGLTF / R3F 9.5 useLoader call no React hook
+ * (guarded by suspense-cache-warm.test.ts). Throws the entry promise while
+ * loading and the cached Error on failure. Parity with the render read is
+ * pinned by arena-location-npcs-warm-read.test.tsx.
+ */
+function readLocationNpcModel(model: string): unknown {
+  return useGLTF(model, undefined, undefined, extendLoaderWithMeshoptAndKTX2);
+}
+
 /** Compute NPC world position and facing angle for a given building zone.
  *
  *  Position: moves NPC_INSET_WORLD world units from building center toward village
@@ -275,8 +295,9 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
 }
 
 // Character model preloads are deferred — see DeferredNpcPreloads exported below.
-// useGLTF() inside LocationNpc will Suspense-throw if the cache isn't warm yet;
-// the ArenaLocationNpcs Suspense fallback={null} wrapper absorbs that safely.
+// LocationNpc warm-reads its models (readLocationNpcModel) before NpcMesh
+// mounts, so NpcMesh's useGLTF reads a resolved entry. The Suspense
+// fallback={null} wrappers stay as the safety net if a warm gives up.
 
 // Scratch vectors for computeNormalizedScale — allocated once to avoid GC in useMemo.
 const _npcBboxScratch = new THREE.Box3();
@@ -457,7 +478,16 @@ const NpcMesh = memo(function NpcMesh({
   // MeshoptLoaderSetup component handles most cases, but passing extendLoader
   // here ensures the decoder is registered on this exact loader instance so
   // quantized geometry (KHR_mesh_quantization) decodes with full bone data intact.
-  const { scene, animations } = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshoptAndKTX2);
+  // web-load T10-B: a failed load is rethrown as a tagged ModelLoadError, so
+  // the resident's own ModelLoadBoundary skips only this model (before, the
+  // raw R3F Error reached StageCanvasErrorBoundary and replaced the world).
+  let gltf: ReturnType<typeof useGLTF>;
+  try {
+    gltf = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshoptAndKTX2);
+  } catch (thrown) {
+    throw tagGltfLoadRejection(thrown, modelCfg.model);
+  }
+  const { scene, animations } = gltf as { scene: THREE.Group; animations: THREE.AnimationClip[] };
   const terrainY = useRef(-2);
   const placed = useRef(false);
 
@@ -799,6 +829,48 @@ const LocationNpc = memo(function LocationNpc({
       releasePriorityRef.current,
     );
   }, [camera, released, worldX, worldZ]);
+  // web-load T10-B: NpcMesh mounts only after the primary and companion GLB
+  // entries resolved OUTSIDE React (warmSuspenseRead + readLocationNpcModel,
+  // the render read's exact drei call). Mounted earlier, NpcMesh suspended
+  // and the resident could commit only in a Suspense retry lane; the R3F
+  // root's ~6/s SyncLane renders discard retry work, so under CPU 4x (T9
+  // probe run N6) the residents had 2 meshes at 114 s against 72 unthrottled.
+  // The warm starts on the same tick the GLB demand started before (released
+  // AND in stream range). A failed load resolves the warm at once; NpcMesh
+  // then throws it as a tagged ModelLoadError into its ModelLoadBoundary.
+  // Once warmed it stays warmed (the drei cache keeps the entry, so a
+  // resident that streams out and back in mounts at once), except after a
+  // model failure (see onModelFailed below).
+  const [warmed, setWarmed] = useState(false);
+  useEffect(() => {
+    if (!config || warmed || !released || !mounted) return undefined;
+    let cancelled = false;
+    const models = config.companion ? [config.model, config.companion.model] : [config.model];
+    void Promise.all(
+      models.map((model) =>
+        warmSuspenseRead(() => (cancelled ? undefined : readLocationNpcModel(model))),
+      ),
+    ).then(() => {
+      // An unmount (or a stream-out) before the warm resolved cancels the flip.
+      if (!cancelled) setWarmed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [config, warmed, released, mounted]);
+  // A model failure (caught by the resident's ModelLoadBoundary, which
+  // clears the failed cache entry) re-arms the warm for the next stream-in,
+  // so the retry reads a resolved entry too. Not on the failure itself: a
+  // permanent 404 would otherwise reload in a loop.
+  const modelFailedRef = useRef(false);
+  const onModelFailed = useCallback(() => {
+    modelFailedRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (mounted || !modelFailedRef.current) return;
+    modelFailedRef.current = false;
+    setWarmed(false);
+  }, [mounted]);
   // Real incrementing frame counter — replaces Math.floor(clock.elapsedTime * 60)
   // which drifted when the tab was backgrounded or the frame rate varied.
   const frameCountRef = useRef(0);
@@ -824,7 +896,7 @@ const LocationNpc = memo(function LocationNpc({
   });
 
   if (!config) return null;
-  if (!mounted || !released) return null;
+  if (!mounted || !released || !warmed) return null;
 
   const companion = config.companion;
   const companionX = companion ? worldX + (companion.offsetX ?? 80) : 0;
@@ -840,27 +912,44 @@ const LocationNpc = memo(function LocationNpc({
       >
         {(warmReady) => (
           <>
-            {/* The stagger tick starts Suspense fetch/parse. Keep the resolved
-                object and its DOM label hidden until the shared GPU warm ends. */}
-            <NpcMesh
-              modelCfg={config}
-              worldX={worldX}
-              worldZ={worldZ}
-              facingRotY={facingRotY}
-              seedBase={seed}
-              showLabel={true}
-              attachmentVisible={warmReady}
-            />
-            {companion && (
+            {/* The stagger tick starts the warm read (fetch/parse outside
+                React). Keep the resolved object and its DOM label hidden
+                until the shared GPU warm ends. */}
+            {/* One ModelLoadBoundary per model: a failed GLB skips only
+                that model (one console.error) and the world keeps running. */}
+            <ModelLoadBoundary
+              label={`resident:${zoneId}`}
+              assetUrl={config.model}
+              resetKey={config.model}
+              onModelFailed={onModelFailed}
+            >
               <NpcMesh
-                modelCfg={companion}
-                worldX={companionX}
-                worldZ={companionZ}
+                modelCfg={config}
+                worldX={worldX}
+                worldZ={worldZ}
                 facingRotY={facingRotY}
-                seedBase={companionSeed}
-                showLabel={false}
+                seedBase={seed}
+                showLabel={true}
                 attachmentVisible={warmReady}
               />
+            </ModelLoadBoundary>
+            {companion && (
+              <ModelLoadBoundary
+                label={`resident:${zoneId}:companion`}
+                assetUrl={companion.model}
+                resetKey={companion.model}
+                onModelFailed={onModelFailed}
+              >
+                <NpcMesh
+                  modelCfg={companion}
+                  worldX={companionX}
+                  worldZ={companionZ}
+                  facingRotY={facingRotY}
+                  seedBase={companionSeed}
+                  showLabel={false}
+                  attachmentVisible={warmReady}
+                />
+              </ModelLoadBoundary>
             )}
           </>
         )}

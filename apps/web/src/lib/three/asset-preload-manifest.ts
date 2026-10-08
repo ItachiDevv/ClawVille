@@ -55,11 +55,11 @@
  *   lazy chibi gating reverted 2026-05-22 because it hid chibi NPC species
  *   for non-chibi players when the wandering roster included them).
  *
- * TERRAIN DECORATIONS (12 models, arena-terrain.tsx DECO_MODEL_PATHS):
+ * TERRAIN DECORATIONS (11 models, arena-terrain.tsx DECO_MODEL_PATHS):
  *   coral-reef1-ktx.glb?v=2, coral-reef2-ktx.glb?v=2, coral-reef3-ktx.glb?v=2, kelp.glb,
  *   building-shell-ktx.glb?v=2, building-seashell-ktx.glb?v=2, building-anchor.glb,
  *   building-barrel.glb, building-chest.glb, building-lantern-ktx.glb?v=2,
- *   crayfish-ktx.glb?v=2, building-tower2.glb
+ *   crayfish-ktx.glb?v=2 (building-tower2.glb removed 2026-10-06: draw-call budget)
  *
  * LOCOMOTION ANIMATIONS (3 GLBs, vrm-character-animator.ts):
  *   /avatars/animations/idle.glb
@@ -79,6 +79,7 @@
 import { useGLTF } from '@react-three/drei';
 import { preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 import { preloadKTX2Bytes } from '@/lib/three/use-gltf-ktx2';
+import { prefetchBasisTranscoder } from '@/lib/three/basis-transcoder-prefetch';
 
 // ---------------------------------------------------------------------------
 // Priority 1: Building GLBs — largest single group, most visible, critical path
@@ -189,7 +190,7 @@ export const LOCATION_NPC_GLBS: readonly string[] = [
 // Priority 4: Terrain decoration GLBs — scattered props, deferred
 // ---------------------------------------------------------------------------
 
-/** 12 scatter decoration GLBs from arena-terrain.tsx DECO_MODEL_PATHS */
+/** 11 scatter decoration GLBs from arena-terrain.tsx DECO_MODEL_PATHS */
 export const DECORATION_GLBS: readonly string[] = [
   '/models/coral-reef1-ktx.glb?v=2',
   '/models/coral-reef2-ktx.glb?v=2',
@@ -202,7 +203,6 @@ export const DECORATION_GLBS: readonly string[] = [
   '/models/building-chest.glb',
   '/models/building-lantern-ktx.glb?v=2',
   '/models/crayfish-ktx.glb?v=2',
-  '/models/building-tower2.glb',
 ] as const;
 
 /**
@@ -251,8 +251,11 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 // no-ops if the asset is already in cache.
 //
 // Tier 1 — fire immediately (parallel with canvas chunk download):
-//   buildings + locomotion + wandering NPC GLBs (wandering VRM bytes moved to
-//   tier 3 in rung-4 slice C — the wanderer slot owns its demand post-release)
+//   the 3 locomotion clips + the basis transcoder js/wasm (low priority).
+//   Building GLB bytes warm from arena-buildings.tsx `onBootBuildingsFetch`
+//   (BGR stage A, world boot epoch); town-prop and wandering-species warms
+//   register `onBootStreamEligible`; wandering VRM bytes moved to tier 3 in
+//   rung-4 slice C (the wanderer slot owns its demand post-release)
 // Tier 2 — intentionally lazy:
 //   selectable player VRM bytes are loaded by the active avatar or the avatar picker,
 //   not by the open-world boot path
@@ -280,14 +283,21 @@ export function preloadWorldAssets(): void {
 
   // --- Tier 1 — boot-core critical path ONLY (rung-4 slice D §3 [F3]) ---
   //
-  // Locomotion clips: 3 GLBs, an explicit boot-core gate dependency. This is
-  // the ENTIRE tier-1 set now: building, town-prop, and wandering-species
-  // byte-warms moved behind BOOT_CORE_PRESENTED (each owning module
-  // registers an `onBootStreamEligible` warm at priority −∞) so pre-reveal
-  // bandwidth belongs to the boot actor + clips alone — the structural fix
-  // for the fast-network inversion. BUILDING_GLBS / WANDERING_NPC_GLBS /
-  // TOWN_PROP_GLBS above remain the AUDIT manifest for those deferred sets.
+  // Locomotion clips: 3 GLBs, an explicit boot-core gate dependency. Town-prop
+  // and wandering-species byte-warms moved behind BOOT_CORE_PRESENTED (each
+  // owning module registers an `onBootStreamEligible` warm at priority −∞),
+  // the structural fix for the fast-network inversion. Building byte-warms
+  // later returned to the boot lane via arena-buildings.tsx
+  // `onBootBuildingsFetch` (BGR stage A: the overlay waits for buildings).
+  // BUILDING_GLBS / WANDERING_NPC_GLBS / TOWN_PROP_GLBS above remain the
+  // AUDIT manifest for those sets.
   preloadMixamoClips();
+
+  // Basis transcoder js + wasm (web-load T3, 2026-10-06): low-priority HTTP
+  // cache warm. KTX2Loader fetches them only at the first KTX2 transcode
+  // (phase D, ~3.5 s cold), and that transcode waits for the wasm. Same URLs
+  // and request shape as the loader, so its later request is a cache hit.
+  prefetchBasisTranscoder();
 
   // --- Tier 3 note ---
   // Release-deferred location NPC and decoration GLBs are intentionally absent

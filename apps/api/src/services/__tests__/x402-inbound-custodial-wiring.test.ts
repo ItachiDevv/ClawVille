@@ -33,7 +33,8 @@ describe('B.1 inbound custodial activation wiring', () => {
 
   it('OPEN circuit preparation is Meridian-only and direct Meridian never records a PayAI failure', () => {
     expect(topup).toContain('if (!permit)');
-    expect(topup).toContain('prepareInboundMeridianPayment(input)');
+    // 2026-10-08: the same Meridian-only prepare, with one public-RPC retry on a Helius mainnet failure.
+    expect(topup).toContain('prepareWithMainnetRpcFallback(input, prepareInboundMeridianPayment)');
     expect(topup).toContain('skipPayAi: true');
     expect(topup).toContain('if (attempt.permit && outcome.payAi.attempted)');
     expect(topup).toContain('outcome.payAi.providerFailure');

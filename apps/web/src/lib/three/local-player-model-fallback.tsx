@@ -15,14 +15,19 @@
  *    token) and only when the lobster body has COMMITTED (a sibling effect
  *    inside the same Suspense, which runs only after every child resolved),
  *    when the lobster itself failed, or when this fallback unmounts before
- *    either (deferred one tick so a StrictMode simulated unmount + re-mount
- *    does not release early). The reveal never runs with no body while the
- *    lobster is still loading, and never waits for the 8 s deadline.
+ *    either (deferred one tick; a StrictMode simulated re-mount or any new
+ *    registration of the same claim, e.g. the real body loading again,
+ *    cancels it, so it never releases early). The reveal never runs with no
+ *    body while the lobster is still loading, and never waits for the 8 s
+ *    deadline.
  * 3. Shows ONE notice per session through the existing game toast, with the
  *    text that matches the outcome (lobster shown, or no body at all).
  */
-import { Suspense, useCallback, useEffect, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import {
+  __cancelDeferredBootActorReleasesForTests,
+  cancelDeferredBootActorClaimRelease,
+  deferBootActorClaimRelease,
   notifyBootActorCommitted,
   registerBootActorClaim,
   type BootActorClaimToken,
@@ -49,11 +54,7 @@ export type AddToast = (icon: string, message: string, durationMs?: number) => v
 export type LocalBodyKind = Extract<BootActorKind, 'player-vrm' | 'npc-body'>;
 
 let noticeShown = false;
-const RELEASED_CLAIMS = new WeakSet<BootActorClaimToken>();
-/** claim token -> deferred unmount release; a mount for the SAME claim (a
- * StrictMode re-mount or a new instance) cancels it. Module scope, so a NEW
- * component instance sees the old instance's pending release. */
-const PENDING_UNMOUNT_RELEASE = new Map<BootActorClaimToken, ReturnType<typeof setTimeout>>();
+let RELEASED_CLAIMS = new WeakSet<BootActorClaimToken>();
 let releaseCount = 0;
 
 export function showLocalPlayerFallbackNotice(addToast: AddToast, outcome: FallbackOutcome): void {
@@ -63,10 +64,10 @@ export function showLocalPlayerFallbackNotice(addToast: AddToast, outcome: Fallb
   addToast(NOTICE_ICON, text, NOTICE_DURATION_MS);
 }
 
-/** Commit the failed body claim once (registerBootActorClaim returns the
- * same token for the same epoch + kind + path). */
-function releaseFailedBodyClaim(kind: LocalBodyKind, failedPath: string): void {
-  const token = registerBootActorClaim(kind, failedPath);
+/** Commit THIS claim token once. Never re-registers: a deferred release
+ * that fires after the boot state moved on must not create (and commit) a
+ * claim of the new state. */
+function releaseClaimToken(token: BootActorClaimToken): void {
   if (RELEASED_CLAIMS.has(token)) return;
   RELEASED_CLAIMS.add(token);
   releaseCount += 1;
@@ -98,36 +99,31 @@ export function LocalPlayerFallback({
   /** The fallback body (lobster GLB). */
   children?: ReactNode;
 }) {
+  // The claim this fallback releases, registered once at mount (render-time
+  // registration is legal and idempotent per epoch + kind + path; it also
+  // cancels a pending deferred release of the same claim). Every release
+  // path below uses THIS token.
+  const token = useMemo(() => registerBootActorClaim(kind, failedPath), [kind, failedPath]);
   const onBodyCommitted = useCallback(() => {
-    releaseFailedBodyClaim(kind, failedPath);
+    releaseClaimToken(token);
     showLocalPlayerFallbackNotice(addToast, 'body');
-  }, [kind, failedPath, addToast]);
+  }, [token, addToast]);
   const onBodyFailed = useCallback(() => {
-    releaseFailedBodyClaim(kind, failedPath);
+    releaseClaimToken(token);
     showLocalPlayerFallbackNotice(addToast, 'none');
-  }, [kind, failedPath, addToast]);
+  }, [token, addToast]);
 
   // Unmount before any outcome: release the claim anyway (once; the token
-  // guard makes it a no-op after an outcome). Deferred one tick in MODULE
-  // scope keyed by the claim token, and cancelled by any mount for the same
-  // claim (a StrictMode re-mount or a new instance), so it never releases
-  // while a fallback body for that claim is still loading.
+  // guard makes it a no-op after an outcome). Deferred one tick by
+  // boot-actor and cancelled by ANY new registration of the same claim (a
+  // new fallback instance, or a real body that re-registers it while still
+  // loading), so the reveal never runs before that owner commits. A
+  // StrictMode simulated re-mount does not render again, so the mount below
+  // cancels explicitly.
   useEffect(() => {
-    const token = registerBootActorClaim(kind, failedPath);
-    const pending = PENDING_UNMOUNT_RELEASE.get(token);
-    if (pending !== undefined) {
-      clearTimeout(pending);
-      PENDING_UNMOUNT_RELEASE.delete(token);
-    }
-    return () => {
-      const timer = setTimeout(() => {
-        if (PENDING_UNMOUNT_RELEASE.get(token) !== timer) return;
-        PENDING_UNMOUNT_RELEASE.delete(token);
-        releaseFailedBodyClaim(kind, failedPath);
-      }, 0);
-      PENDING_UNMOUNT_RELEASE.set(token, timer);
-    };
-  }, [kind, failedPath]);
+    cancelDeferredBootActorClaimRelease(token);
+    return () => deferBootActorClaimRelease(token, () => releaseClaimToken(token));
+  }, [token]);
 
   return (
     <ModelLoadBoundary
@@ -148,6 +144,9 @@ export function LocalPlayerFallback({
 export function __resetLocalPlayerFallbackForTests(): void {
   noticeShown = false;
   releaseCount = 0;
+  RELEASED_CLAIMS = new WeakSet<BootActorClaimToken>();
+  // The pending unmount releases live in boot-actor (only this module defers).
+  __cancelDeferredBootActorReleasesForTests();
 }
 
 /** TEST-ONLY: number of claim releases actually performed. */

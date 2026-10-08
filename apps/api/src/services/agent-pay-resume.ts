@@ -20,6 +20,7 @@ import {
 import { alertError, type AlertErrorParams } from './alert-error';
 import { isX402AutoReconcileEnabled } from './x402-auto-reconcile';
 import {
+  agentPayConnection,
   fulfillReconciledAgentPayment,
   markAgentPaymentReconcile,
   resolveAgentPayRail,
@@ -56,6 +57,8 @@ export interface AgentPayResumeDeps {
   getTransaction?: (
     rpcUrl: string,
     signature: string,
+    /** The rail network, already checked equal to the row's network. */
+    network?: AgentPayRail['network'],
   ) => Promise<AgentPayChainTransaction | null>;
   resolveRail?: () => AgentPayRail;
   resolveStaleMs?: () => number;
@@ -135,8 +138,18 @@ function resolveDeps(input: AgentPayResumeDeps = {}) {
   return {
     db: input.db ?? defaultDb,
     fulfill: input.fulfill ?? fulfillReconciledAgentPayment,
-    getTransaction: input.getTransaction ?? (async (rpcUrl: string, signature: string) => {
-      const connection = new Connection(rpcUrl, 'confirmed');
+    getTransaction: input.getTransaction ?? (async (
+      rpcUrl: string,
+      signature: string,
+      network?: AgentPayRail['network'],
+    ) => {
+      // Read-only lookup of the row's OWN captured signature. A mainnet
+      // Helius rail fails over to the public mainnet RPC; only positive
+      // evidence (meta.err === null) fulfills, so a lagging node can only
+      // delay or quarantine, never credit.
+      const connection = network
+        ? agentPayConnection({ network, rpcUrl })
+        : new Connection(rpcUrl, 'confirmed');
       return connection.getTransaction(signature, {
         commitment: 'confirmed',
         maxSupportedTransactionVersion: 0,
@@ -227,7 +240,7 @@ async function processCandidate(
     if (!rail.rpcUrl || rail.network !== row.network) {
       throw new Error(`agent-pay rail mismatch for network ${row.network}`);
     }
-    const transaction = await d.getTransaction(rail.rpcUrl, row.txSignature);
+    const transaction = await d.getTransaction(rail.rpcUrl, row.txSignature, rail.network);
     const landedSuccessfully = transaction?.meta !== null
       && transaction?.meta !== undefined
       && transaction.meta.err === null;

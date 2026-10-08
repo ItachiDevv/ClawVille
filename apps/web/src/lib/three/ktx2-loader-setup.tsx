@@ -34,6 +34,7 @@ import { useThree } from '@react-three/fiber';
 // three-stdlib's KTX2Loader only checks renderer.extensions.has() (WebGL only).
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import type { GLTFLoader } from 'three-stdlib';
+import { BASIS_TRANSCODER_PATH } from './basis-transcoder-prefetch';
 
 // ---------------------------------------------------------------------------
 // Module-level singleton — shared across all useGLTF calls in the same page
@@ -70,6 +71,22 @@ export function extendLoaderWithKTX2(loader: GLTFLoader): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Builds the shared loader. Exported for the transcoder-URL parity test
+ * (basis-transcoder-prefetch.test.ts): the boot prefetch must warm exactly
+ * the URLs this loader's lazy init() requests.
+ */
+export function createKTX2Loader(renderer: unknown): KTX2Loader {
+  const loader = new KTX2Loader();
+  loader.setTranscoderPath(BASIS_TRANSCODER_PATH);
+
+  // detectSupport accepts both WebGPURenderer (via hasFeature) and
+  // WebGLRenderer (via extensions.has) since Three.js r182.
+  loader.detectSupport(renderer as any);
+
+  return loader;
+}
+
+/**
  * Render this component inside the R3F Canvas before any GLB loads.
  * It accesses the renderer via useThree and calls detectSupport(gl) so the
  * transcoder knows which GPU compressed formats are available.
@@ -80,15 +97,7 @@ export function KTX2LoaderSetup(): ReactNode {
   const { gl } = useThree();
 
   if (!_ktx2Loader) {
-
-    const loader = new KTX2Loader();
-    loader.setTranscoderPath('/basis/');
-
-    // detectSupport accepts both WebGPURenderer (via hasFeature) and
-    // WebGLRenderer (via extensions.has) since Three.js r182.
-    loader.detectSupport(gl as any);
-
-    _ktx2Loader = loader;
+    _ktx2Loader = createKTX2Loader(gl);
   }
 
   return null;

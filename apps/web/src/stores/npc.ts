@@ -522,11 +522,10 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       // change. The NPC's useFrame still reads fresh x/y because npcRef.current
       // points at the same (now-mutated) object.
       //
-      // Cost: speech bubbles + activity indicators read npc.x/y from React
-      // state, so they lag by however long the npc identity stays stable.
-      // These appear on stationary NPCs (in combat / in conversation) so the
-      // visual lag is negligible (200-500 ms before the indicator updates
-      // when a fight finally ends and the NPC moves).
+      // Speech bubbles + activity indicators follow the NPC from their frame
+      // loops with no React render (web-load T10-A): they read the rendered
+      // (smoothed) body group (arena-npcs.tsx getNpcRenderGroup) and fall
+      // back to this mutated object's raw x/y while no body is mounted.
       if (prev && npcFieldsEqual(prev, candidate)) {
         // Mutate every non-identity field on prev. Only conversation flip,
         // rename, species swap, or color change ever invalidate identity in

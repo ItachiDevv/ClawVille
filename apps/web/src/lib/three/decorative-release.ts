@@ -1167,20 +1167,29 @@ export type LoadingDismissReason =
   | 'force-ready';
 
 let loadingDismissReason: LoadingDismissReason | null = null;
+let loadingDismissedAtMs: number | null = null;
 
 /** Returns true when THIS call stamped (the caller may run its one-time
  * dismissal side effects); false when a prior reason already won. */
 export function stampLoadingDismiss(reason: LoadingDismissReason): boolean {
   if (loadingDismissReason !== null) return false;
   loadingDismissReason = reason;
+  loadingDismissedAtMs = nowMs();
   stampPhase('loadingDismissReason', reason);
-  stampPhase('loadingDismissedAt', Math.round(nowMs()));
+  stampPhase('loadingDismissedAt', Math.round(loadingDismissedAtMs));
   stampPhase('loadingDismissGen', bootRendererGeneration);
   return true;
 }
 
 export function getLoadingDismissReason(): LoadingDismissReason | null {
   return loadingDismissReason;
+}
+
+/** The first dismissal's time on the performance.now() timeline (the rAF
+ * timestamp timeline), or null before it. web-load T8: the adaptive quality
+ * governor's post-load ceiling counts from this time. */
+export function getLoadingDismissedAt(): number | null {
+  return loadingDismissedAtMs;
 }
 
 /** TEST-ONLY: reset module state between unit tests. Never call from app code. */
@@ -1239,4 +1248,5 @@ export function __resetDecorativeReleaseForTests(): void {
   bgrBuildingsPresentedAtMs = null;
   bgrBuildingsQualifyingFrames = 0;
   loadingDismissReason = null;
+  loadingDismissedAtMs = null;
 }

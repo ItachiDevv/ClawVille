@@ -6,6 +6,7 @@ import {
   armDecorativeDeadline,
   armDecorativeReleaseOnFirstPaint,
   ensureWorldBootEpoch,
+  getLoadingDismissedAt,
   getWorldBootEpoch,
   notifyBootBuildingsScenePresented,
   notifyBootCoreScenePresented,
@@ -23,7 +24,15 @@ import {
   selectRootsToCompile,
 } from '@/lib/three/boot-core-compile';
 import { whenLocomotionClipsSettled } from '@/lib/three/vrm-character-animator';
-import { TEXTURE_SLOTS, tryClaimTexture } from '@/lib/three/deferred-warm';
+import { TEXTURE_SLOTS, isDeferredWarmQueueIdle, tryClaimTexture } from '@/lib/three/deferred-warm';
+import { getStreamSettledAt } from '@/lib/three/boot-stream-cohort';
+import {
+  QUALITY_MAX_TIER,
+  createQualityGovernor,
+  worldQualitySignals,
+  type QualityGovernor,
+  type QualityGovernorSignals,
+} from '@/lib/three/adaptive-quality-governor';
 import { BootActorNpcBody } from '@/lib/three/arena-npcs';
 import { stampColdLoadPhase, stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
@@ -46,7 +55,7 @@ declare module '@react-three/fiber' {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
 extend(THREE as any);
-import ArenaTerrain from '@/lib/three/arena-terrain';
+import ArenaTerrain, { isDecorationWarmReadPending } from '@/lib/three/arena-terrain';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { dampTowardConfirmedTarget } from '@/lib/three/npc-interpolation-damping';
 import ArenaBuildings, { ArenaBuildingsStreamed, DeclareBuildingsMode } from '@/lib/three/arena-buildings';
@@ -63,8 +72,7 @@ import {
 import { withStageSlotFrustumCullingDisabledSync } from '@/components/three/world-stage/resource-ledger';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
-import MergedSeaweed from '@/lib/three/merged-seaweed';
-import { KelpForestAmbient } from '@/lib/three/kelp-forest';
+import { WorldGroundCover } from '@/lib/three/world-ground-cover';
 import { KelpForestPortal } from '@/lib/three/kelp-forest-portal';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
@@ -191,15 +199,19 @@ const WORLD_DPR_RANGE: [number, number] = [
   CURRENT_WORLD_DEVICE_PROFILE.dprRange[0],
   CURRENT_WORLD_DEVICE_PROFILE.dprRange[1],
 ];
-const QUALITY_SAMPLE_MS = 2500;
-const QUALITY_WARMUP_MS = 5000;
-const QUALITY_FPS_DOWN = 58;
-// Recovery threshold: 59 FPS is reachable on a 60 Hz display (vsync permits it).
-// The old 90 threshold was unreachable at vsync, creating a one-way ratchet.
-const QUALITY_FPS_UP = 59;
-// Only one degradation tier: hide groundCover (seaweed / decorations).
-// activityFx and labels are gameplay-functional and must never be auto-degraded.
-const QUALITY_MAX_TIER = 1;
+// Adaptive quality governor inputs (web-load T8): no frame counts until the
+// loader is dismissed AND post-load work is quiet (every boot stream member
+// terminal + the deferred GPU warm queue empty + no seabed decoration warm
+// read pending) for the settle window; the ceiling counts from the loader's
+// own dismissal time. After arming the signal is not read (web-load T11: a
+// post-arming busy-window skip was removed after Codex E3). One module-level
+// object: the per-frame gate check allocates nothing.
+const QUALITY_GOVERNOR_SIGNALS: QualityGovernorSignals = worldQualitySignals({
+  loadingDismissedAt: getLoadingDismissedAt,
+  streamSettled: () => getStreamSettledAt() !== null,
+  warmQueueIdle: isDeferredWarmQueueIdle,
+  decorationWarmReadPending: isDecorationWarmReadPending,
+});
 
 export type WorldMode = 'game' | 'arena';
 
@@ -243,6 +255,12 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
     ? QUALITY_MAX_TIER
     : CURRENT_WORLD_DEVICE_PROFILE.initialQualityTier;
   const [qualityTier, setQualityTier] = useState<number>(initialTier);
+  // One governor per mounted world: its post-load gate, tier and anti-flap
+  // latch survive stage visits (sceneActive off/on). Before T8 every effect
+  // start rebuilt the state from `initialTier`, so a world left at tier 1
+  // could never recover after a stage visit (the local tier read 0 while the
+  // rendered tier was 1) and the latch reset.
+  const governorRef = useRef<QualityGovernor | null>(null);
 
   useEffect(() => {
     if (
@@ -253,45 +271,22 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
       return;
     }
 
+    let governor = governorRef.current;
+    if (governor === null) {
+      governor = createQualityGovernor(initialTier, QUALITY_GOVERNOR_SIGNALS);
+      governorRef.current = governor;
+    }
+    const active = governor;
+    active.resume(performance.now());
     let raf = 0;
-    let frames = 0;
-    let sampleStart = performance.now();
-    const startedAt = sampleStart;
-    let stableHighSamples = 0;
-    let tierRef = initialTier;
-    // Anti-flap latch: if the governor degrades a second time in one session,
-    // hold tier 1 for the rest of the session (degradeCount tracks triggers).
-    let degradeCount = 0;
-    let latched = false;
 
     const tick = (now: number) => {
-      frames++;
-      const elapsed = now - sampleStart;
-      if (elapsed >= QUALITY_SAMPLE_MS) {
-        const fps = (frames * 1000) / elapsed;
-        const warmed = now - startedAt >= QUALITY_WARMUP_MS;
-
-        if (!latched && warmed && fps < QUALITY_FPS_DOWN && tierRef < QUALITY_MAX_TIER) {
-          tierRef = QUALITY_MAX_TIER;
-          stableHighSamples = 0;
-          degradeCount += 1;
-          // Second degrade in the same session: lock tier for the rest of the session.
-          if (degradeCount >= 2) latched = true;
-          setQualityTier(tierRef);
-        } else if (!latched && warmed && fps >= QUALITY_FPS_UP && tierRef > 0) {
-          stableHighSamples += 1;
-          // Require 3 consecutive stable-high samples (~7.5s sustained) before recovering.
-          if (stableHighSamples >= 3) {
-            tierRef -= 1;
-            stableHighSamples = 0;
-            setQualityTier(tierRef);
-          }
-        } else if (fps < QUALITY_FPS_UP) {
-          stableHighSamples = 0;
-        }
-        frames = 0;
-        sampleStart = now;
+      const wasArmed = active.armed;
+      const next = active.frame(now);
+      if (!wasArmed && active.armed) {
+        stampColdLoadPhaseOnce('qualityGovernorArmedAt', Math.round(now));
       }
+      if (next !== null) setQualityTier(next);
       raf = requestAnimationFrame(tick);
     };
 
@@ -2836,7 +2831,14 @@ export const WorldSceneContents = memo(function WorldSceneContents({
 
       {/* Shared world geometry */}
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
-        <ArenaTerrain />
+        {/* Seabed scatter: device profile gate (phones/tablets never); it
+            mounts on the first groundCover show (a tier-1 start loads none of
+            its 11 GLBs until tier 0, web-load T11), then the governor's tier
+            only toggles its visibility. */}
+        <ArenaTerrain
+          decorationsMounted={CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover}
+          decorationsVisible={showGroundCover}
+        />
       </group>
       {/* Land state hydrator — headless, no geometry, returns null.
           Fetches all parcel ownership statuses from the public API
@@ -2975,25 +2977,19 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           Skipped on iOS/forceWebGL: 18,000 blades with per-vertex TSL positionNode wind
           animation compile to GLSL loops on WebGL2 backend and spike frame time past
           the A-series GPU budget on first draw. Plain WebGL path has no equivalent
-          GPU-side procedural animation so the cost isn't recoverable. */}
-      {showGroundCover &&
-        CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover &&
-        !FORCE_WEBGL && (
-        <group name="perf:seaweed" userData={{ perfChunk: 'seaweed' }}>
-          <MergedSeaweed />
-        </group>
-      )}
-
-      {/* Northeast Kelp Forest — three merged tall-blade variants with heavy TSL wind.
+          GPU-side procedural animation so the cost isn't recoverable.
+          Northeast Kelp Forest — three merged tall-blade variants with heavy TSL wind.
           Ambient blades keep the water-fog and ground-cover governor gates;
-          their TSL/GLSL wind now runs on both renderer backends. */}
-      {showWaterFogParticles &&
-        showGroundCover &&
-        CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover && (
-        <group name="perf:kelp-forest" userData={{ perfChunk: 'kelp-forest' }}>
-          <KelpForestAmbient forceWebGL={FORCE_WEBGL} />
-        </group>
-      )}
+          their TSL/GLSL wind now runs on both renderer backends.
+          web-load T8: both layers mount on the first ground-cover show and
+          then only toggle visibility (a remount per governor recovery cost a
+          154-181 ms task + 4-6 sync pipelines and latched tier 1). */}
+      <WorldGroundCover
+        show={showGroundCover}
+        seaweedEligible={CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover && !FORCE_WEBGL}
+        kelpEligible={showWaterFogParticles && CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover}
+        forceWebGL={FORCE_WEBGL}
+      />
 
       {/* Realm entrance stays mounted when the adaptive governor hides ground cover. */}
       <group name="perf:kelp-forest-portal" userData={{ perfChunk: 'kelp-forest-portal' }}>

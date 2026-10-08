@@ -1,6 +1,6 @@
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
-import { Connection, type FetchFn } from '@solana/web3.js';
+import type { FetchFn } from '@solana/web3.js';
 import {
   agentBots,
   and,
@@ -13,6 +13,7 @@ import {
   users,
   wallets,
 } from '@clawville/database';
+import { createMainnetConnection, mainnetFailoverFetch } from './solana-mainnet-rpc';
 import type { TradingSubject } from './trading-wallet-challenge';
 import {
   buildTradingWalletMessage,
@@ -67,12 +68,11 @@ export async function currentBindSlot(): Promise<number> {
   const { tradeObserverRpcUrl } = await import('./trade-observer');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 4_000);
+  // The 4 s bound covers the whole read, including a failover from a
+  // quota-exhausted Helius primary to the public mainnet RPC (2026-10-08).
   const boundedFetch = ((url: Parameters<FetchFn>[0], options: Parameters<FetchFn>[1]) =>
-    fetch(url as string | URL | Request, { ...options, signal: controller.signal })) as unknown as FetchFn;
-  const connection = new Connection(tradeObserverRpcUrl(), {
-    commitment: 'confirmed',
-    fetch: boundedFetch,
-  });
+    mainnetFailoverFetch(url as string | URL | Request, { ...options, signal: controller.signal })) as unknown as FetchFn;
+  const connection = createMainnetConnection({ commitment: 'confirmed', fetch: boundedFetch }, tradeObserverRpcUrl());
   try {
     return await connection.getSlot('confirmed');
   } catch {

@@ -10,6 +10,7 @@ import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import { useNpcStore, PLAYER_NPC_ID, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
 import { useShallow } from 'zustand/react/shallow';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { getNpcRenderGroup } from '@/lib/three/arena-npcs';
 
 // ---------------------------------------------------------------------------
 // NPC Speech Bubbles — Dom overlay speech bubbles for wandering NPCs
@@ -64,12 +65,14 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
   // camera.matrixWorldInverse viewZ calculation needed.
   const groupRef = useRef<THREE.Group>(null);
 
-  // Keep world coords in refs so useFrame reads fresh values without closure capture.
-  // Still needed to update the group position each frame (NPC moves with server ticks).
-  const worldXRef = useRef(worldX);
-  const worldZRef = useRef(worldZ);
-  worldXRef.current = worldX;
-  worldZRef.current = worldZ;
+  // The bubble follows a walking speaker from the frame loop, without a React
+  // render (web-load T10). First choice: the speaker's rendered body group
+  // (getNpcRenderGroup, the smoothed position the mesh draws at). Fallback:
+  // the npc object, whose position the store mutates in place
+  // (stores/npc.ts updateFromSnapshot); this memo bails while that object and
+  // the bubble keep their identity.
+  const npcRef = useRef(npc);
+  npcRef.current = npc;
 
   const { divRef: bubbleDivRef } = useWorldLabel({
     id: `speech-bubble-${npc.id}-${bubble.expiresAt}`,
@@ -100,8 +103,14 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
   useSceneFrame(() => {
     const g = groupRef.current;
     if (!g) return;
-    g.position.x = worldXRef.current;
-    g.position.z = worldZRef.current;
+    const body = getNpcRenderGroup(npcRef.current.id);
+    if (body) {
+      g.position.x = body.position.x;
+      g.position.z = body.position.z;
+    } else {
+      g.position.x = npcRef.current.x - HALF_W;
+      g.position.z = npcRef.current.y - HALF_H;
+    }
   });
 
   return (
@@ -175,29 +184,45 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
 // Main export — reads NPC store, renders active bubbles for wandering NPCs
 // ---------------------------------------------------------------------------
 
+const NO_BUBBLES: NpcChatBubble[] = [];
+
+/** Bubbles still live at `at`; the shared empty array when none is. */
+function selectLiveBubbles(bubbles: NpcChatBubble[], at: number): NpcChatBubble[] {
+  let live = 0;
+  for (const b of bubbles) if (b.expiresAt > at) live += 1;
+  if (live === 0) return NO_BUBBLES;
+  if (live === bubbles.length) return bubbles;
+  return bubbles.filter((b) => b.expiresAt > at);
+}
+
 function NpcSpeechBubbles() {
   const sceneActive = useSceneActive();
+
+  // `now` is read at render, so an expired bubble leaves the output only on
+  // a re-render. ONE timeout to the earliest live expiry forces that
+  // re-render (web-load T10). It replaced a 1 s setInterval tick that
+  // committed the R3F root every second even with no bubble (each such
+  // render discarded pending Suspense retry work,
+  // gotchas/suspense-retry-lane-starvation-sync-store-updates.md). No live
+  // bubble -> no timer -> no commits.
+  const [, setExpiryRender] = useState(0);
+  const now = Date.now();
+  // The bubble selection below filters by THIS render's time (a ref, so the
+  // selector gives the same answer for the same store state between renders).
+  // The store drops an expired bubble on the next snapshot or cleanup; that
+  // bubble already left the output at the expiry render, so the drop selects
+  // the same elements and commits nothing.
+  const renderNowRef = useRef(now);
+  renderNowRef.current = now;
+
   // useShallow on both array selectors so that SSE ticks where chatBubbles or
   // npcs array content is unchanged (same element references) don't cause re-renders.
   // Combined with B7 (NPC object identity preservation), npcs stays stable when
   // no NPC fields changed — preventing the useMemo(npcMap) from rebuilding each tick.
-  const chatBubbles = useNpcStore(useShallow((s) => s.chatBubbles));
+  const chatBubbles = useNpcStore(
+    useShallow((s) => selectLiveBubbles(s.chatBubbles, renderNowRef.current)),
+  );
   const npcs = useNpcStore(useShallow((s) => s.npcs));
-
-  // Tick every second so expired bubbles are removed from the rendered output
-  // even when the zustand store stops updating (quiet demo mode or idle server).
-  // Without this, `now` would be stale from the last React render — bubbles
-  // would stay on screen past their expiresAt timestamp until the next store update.
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!sceneActive) return;
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [sceneActive]);
-
-  const now = Date.now();
-  // tick is read so the effect dependency is correct and eslint doesn't strip it
-  void tick;
 
   // Build a lookup map from npcId -> NpcSpriteState for O(1) access
   const npcMap = useMemo(() => {
@@ -209,9 +234,28 @@ function NpcSpeechBubbles() {
   }, [npcs]);
 
   // Filter to active, non-expired bubbles — cap at MAX_BUBBLES
-  const activeBubbles = chatBubbles
-    .filter((b) => b.expiresAt > now && npcMap.has(b.npcId))
-    .slice(0, MAX_BUBBLES);
+  const liveBubbles = chatBubbles.filter((b) => b.expiresAt > now && npcMap.has(b.npcId));
+  const activeBubbles = liveBubbles.slice(0, MAX_BUBBLES);
+  // Earliest expiry over ALL live bubbles (one past the cap can expire and
+  // let a capped one in). Every value is > now, so the timer always moves on.
+  let nextExpiry = Infinity;
+  for (const b of liveBubbles) {
+    if (b.expiresAt < nextExpiry) nextExpiry = b.expiresAt;
+  }
+
+  useEffect(() => {
+    if (!sceneActive || nextExpiry === Infinity) return;
+    let id: ReturnType<typeof setTimeout>;
+    const arm = () => {
+      const wait = nextExpiry - Date.now();
+      // A timer can fire a little early: wait again instead of rendering a
+      // frame in which the bubble is still live (that would not re-arm).
+      if (wait >= 0) id = setTimeout(arm, wait + 1);
+      else setExpiryRender((n) => n + 1);
+    };
+    arm();
+    return () => clearTimeout(id);
+  }, [sceneActive, nextExpiry]);
 
   if (activeBubbles.length === 0) return null;
 

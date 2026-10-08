@@ -70,6 +70,13 @@ const nextConfig = {
   // can't be statically analyzed by Turbopack/webpack. Keep them external at
   // runtime instead of bundling into server routes. @elizaos/plugin-anthropic
   // and @anthropic-ai/sdk were removed alongside the ultrathink migration.
+  // The app has no next/image or next/og import, so the /_next/image
+  // optimizer only adds attack surface (GHSA-2xp9-vwfh-vxw4 AVIF RCE and
+  // the other optimizer advisories fixed in 16.3.x). Keep it off; a future
+  // next/image use then serves the original file unoptimized.
+  images: {
+    unoptimized: true,
+  },
   serverExternalPackages: [
     '@elizaos/core',
     '@elizaos/plugin-sql',

@@ -23,7 +23,11 @@ import { useMemo, useEffect, memo } from 'react';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import { groundedYOffset } from '@/lib/three/utils/ground-prop';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  preloadKTX2Bytes,
+  readGLTFWithKTX2,
+  useGLTFWithKTX2,
+} from '@/lib/three/use-gltf-ktx2';
 import {
   BOOT_STREAM_TIER_PROPS,
   onBootStreamEligible,
@@ -31,13 +35,26 @@ import {
 import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
 import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
+/** The model path: ONE constant for the byte-warm, the render read
+ * (MarketplaceStallInner) and the warm read, so they hit the same cache entry. */
+const MARKETPLACE_STALL_MODEL = '/models/shisha-oasis-mo-ktx.glb';
+
+/** web-load T10-C: NON-HOOK read of the exact cache entry MarketplaceStallInner's
+ * useGLTFWithKTX2 call reads (same drei call, path, flags and extender).
+ * BootStreamedContent awaits it outside React at post-reveal admission,
+ * so the release render never suspends into a starvable retry lane.
+ * Module-level, so it is referentially stable. */
+function readMarketplaceStallGltf(): unknown {
+  return readGLTFWithKTX2(MARKETPLACE_STALL_MODEL);
+}
+
 // ---------------------------------------------------------------------------
 // Rung-4 slice D (§3 preload demotion): byte-warm fires at boot-stream
 // eligibility, not module scope.
 // ---------------------------------------------------------------------------
 if (typeof window !== 'undefined') {
   onBootStreamEligible(
-    () => preloadKTX2Bytes('/models/shisha-oasis-mo-ktx.glb'),
+    () => preloadKTX2Bytes(MARKETPLACE_STALL_MODEL),
     Number.NEGATIVE_INFINITY,
   );
 }
@@ -76,7 +93,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const MarketplaceStallInner = memo(function MarketplaceStallInner() {
-  const { scene } = useGLTFWithKTX2('/models/shisha-oasis-mo-ktx.glb');
+  const { scene } = useGLTFWithKTX2(MARKETPLACE_STALL_MODEL);
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);
@@ -149,6 +166,7 @@ export default function MarketplaceStall() {
   return (
     <BootStreamedContent
       cohortId="prop:marketplace-stall"
+      warmRead={readMarketplaceStallGltf}
       priority={bootStreamPriority(BOOT_STREAM_TIER_PROPS, STALL_X, STALL_Z)}
     >
       <MarketplaceStallInner />

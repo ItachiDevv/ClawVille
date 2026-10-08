@@ -14,14 +14,33 @@ import {
   VRMNpcMesh,
   useAmbientBodyRelease,
   useVRMOrphanCancel,
+  useVRMWarmRead,
+  vrmPathForSpecies,
 } from '@/lib/three/arena-npcs';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 import { preloadVRMBytes } from '@/lib/three/vrm-loader';
 
+function isAtLabelledActivity(activity: string): boolean {
+  return activity === AT_COVE_ACTIVITY || activity === AT_KELP_ACTIVITY || activity === AT_ACTIVITY;
+}
+
+function remotePlayerLabel(player: RemotePlayerState): string {
+  switch (player.activity) {
+    case AT_COVE_ACTIVITY:
+      return `${player.name} · at the Cove`;
+    case AT_KELP_ACTIVITY:
+      return `${player.name} · at the Kelp Forest`;
+    case AT_ACTIVITY:
+      return `${player.name} · in an activity`;
+    default:
+      return player.name;
+  }
+}
+
 /**
- * Adapt a `RemotePlayerState` to the `NpcSpriteState` shape consumed by
+ * View a `RemotePlayerState` as the `NpcSpriteState` shape consumed by
  * `VRMNpcMesh` / `GLBNpcMesh`. The mesh reads x/y, prevX/prevY, ts/tsDelta,
  * direction, species, color, and id — every other field gets a benign default
  * because remote players don't have HP / combat / inventory / OpenClaw
@@ -37,7 +56,7 @@ import { preloadVRMBytes } from '@/lib/three/vrm-loader';
  * playing AS ITSELF gets the same connected-agent indicator dot the arena
  * NPC renderers already draw for OpenClaw entities (Rule E5 agent parity).
  *
- * `direction` is derived from `dirZ`: VRM facing follows atan2(vx, vz)
+ * `direction` is derived from `activity`: VRM facing follows atan2(vx, vz)
  * elsewhere in the renderer, but `direction` is only used downstream for
  * very coarse animation routing (idle vs walking). We map `activity` to
  * those buckets and let the mesh's velocity-derived facing math do the
@@ -56,55 +75,81 @@ import { preloadVRMBytes } from '@/lib/three/vrm-loader';
  * in arena-npcs.tsx is skipped (each client would compute a different push
  * vector, causing per-client divergence). The AABB building clamp is still
  * applied -- static colliders are identical across clients.
+ *
+ * LIVE READS (web-load T3, 2026-10-06): the players store now MUTATES the
+ * player object in place on position-only snapshots (no new object, no
+ * React render). So every field the mesh reads in its frame loop is a GETTER
+ * onto that live object: x/y, prevX/prevY, ts/tsDelta, direction,
+ * facingAngle, isRunning. One instance per player object (no per-frame
+ * allocation). Copying these fields here would freeze the body at its mount
+ * position (the 2026-06-12 Codex #5 freeze). Only render-time fields (id,
+ * name label, species, color, isOpenClaw) are copied: changing one of them is
+ * a structural store change that gives a new player object and so a new
+ * instance.
  */
-function adaptPlayer(player: RemotePlayerState): NpcSpriteState {
-  const isAtCove = player.activity === AT_COVE_ACTIVITY;
-  const isAtKelp = player.activity === AT_KELP_ACTIVITY;
-  const isAtActivity = player.activity === AT_ACTIVITY;
-  const direction: NpcSpriteState['direction'] =
-    player.activity === 'idle' || isAtCove || isAtKelp || isAtActivity
-      ? 'idle'
-      : 'down';
-  const name = isAtCove
-    ? `${player.name} · at the Cove`
-    : isAtKelp
-      ? `${player.name} · at the Kelp Forest`
-      : isAtActivity
-        ? `${player.name} · in an activity`
-        : player.name;
-  return {
-    id: player.id,
-    name,
-    x: player.x,
-    y: player.y,
-    prevX: player.prevX,
-    prevY: player.prevY,
-    ts: player.ts,
-    tsDelta: player.tsDelta,
-    direction,
-    species: player.species,
-    color: player.color,
-    hp: 100,
-    maxHp: 100,
-    isDead: false,
-    hasSword: false,
-    inCombat: false,
-    inConversation: false,
-    inventory: [],
-    isOpenClaw: player.kind === 'agent',
-    combatAction: null,
-    combatActionAt: 0,
-    // Server-authoritative heading. VRMNpcMesh uses this when non-null,
-    // overriding velocity-derived facing so stopped/turning players
-    // immediately show the correct direction from the server.
-    facingAngle: player.dirZ,
-    // Remote players use the 'run' animation when the server reports them
-    // sprinting. Local NPC sprints are set by NpcController via moveNpc.
-    isRunning: player.activity === 'running',
-    // Skip the entity-vs-local-player push-out for remote players
-    // (see NpcSpriteState.isRemotePlayer JSDoc for the full rationale).
-    isRemotePlayer: true,
-  };
+class RemotePlayerBody implements NpcSpriteState {
+  /** The LIVE store object (mutated in place by updateFromSnapshot). */
+  private readonly player: RemotePlayerState;
+  readonly id: string;
+  readonly name: string;
+  readonly species: string;
+  readonly color: number;
+  readonly isOpenClaw: boolean;
+  readonly hp = 100;
+  readonly maxHp = 100;
+  readonly isDead = false;
+  readonly hasSword = false;
+  readonly inCombat = false;
+  readonly inConversation = false;
+  readonly inventory: string[] = [];
+  readonly combatAction = null;
+  readonly combatActionAt = 0;
+  // Skip the entity-vs-local-player push-out for remote players
+  // (see NpcSpriteState.isRemotePlayer JSDoc for the full rationale).
+  readonly isRemotePlayer = true;
+
+  constructor(player: RemotePlayerState) {
+    this.player = player;
+    this.id = player.id;
+    this.name = remotePlayerLabel(player);
+    this.species = player.species;
+    this.color = player.color;
+    this.isOpenClaw = player.kind === 'agent';
+  }
+
+  get x(): number {
+    return this.player.x;
+  }
+  get y(): number {
+    return this.player.y;
+  }
+  get prevX(): number {
+    return this.player.prevX;
+  }
+  get prevY(): number {
+    return this.player.prevY;
+  }
+  get ts(): number {
+    return this.player.ts;
+  }
+  get tsDelta(): number {
+    return this.player.tsDelta;
+  }
+  get direction(): NpcSpriteState['direction'] {
+    const activity = this.player.activity;
+    return activity === 'idle' || isAtLabelledActivity(activity) ? 'idle' : 'down';
+  }
+  // Server-authoritative heading. VRMNpcMesh uses this when non-null,
+  // overriding velocity-derived facing so stopped/turning players
+  // immediately show the correct direction from the server.
+  get facingAngle(): number {
+    return this.player.dirZ;
+  }
+  // Remote players use the 'run' animation when the server reports them
+  // sprinting. Local NPC sprints are set by NpcController via moveNpc.
+  get isRunning(): boolean {
+    return this.player.activity === 'running';
+  }
 }
 
 interface RemotePlayerEntryProps {
@@ -127,27 +172,23 @@ interface RemotePlayerEntryProps {
  * leaving permanent zero-mesh. So every player's Suspense boundary lives
  * one level up, outside memo (the D3a fix).
  *
- * MOVEMENT (2026-06-12, Codex finding #5): the players store does IMMUTABLE
- * updates — `updateFromSnapshot` emits a NEW object for any player whose
- * position / heading / activity changed and keeps the previous reference only
- * for players that are perfectly still. So when a remote player moves, `player`
- * identity flips: memo re-renders this entry, `useMemo([player])` recomputes the
- * adapter with the fresh interpolation endpoints, and `VRMNpcMesh`/`GLBNpcMesh`
- * pick up the new `npcRef.current` — the mesh's entity-interp then lerps
- * prevX→x over tsDelta and the remote player VISIBLY moves. A still player keeps
- * its reference, so memo bails and costs zero reconciliation. (Before this, the
- * store mutated in place; identity never changed; the adapter froze at mount and
- * remote players mounted once then never moved.)
+ * MOVEMENT (web-load T3, 2026-10-06): position-only snapshots MUTATE the
+ * player object in place, so `player` identity does NOT change when a remote
+ * player moves and this entry does not re-render (0 commits per snapshot).
+ * The body still moves because `RemotePlayerBody` reads x/prevX/ts/tsDelta
+ * and the other frame-loop fields LIVE from that object every frame. The
+ * 2026-06-12 freeze (Codex #5) came from a COPY of those fields cached by
+ * object identity; do not reintroduce one. A structural change (name, model,
+ * color, kind, label activity, isLocal) gives a new player object, so memo
+ * re-renders and a new `RemotePlayerBody` is built.
  */
 const RemotePlayerEntry = memo(function RemotePlayerEntry({
   player,
   attachmentVisible = true,
 }: RemotePlayerEntryProps) {
-  // Rebuilt whenever `player` identity changes — i.e. every snapshot in which
-  // this player moved (immutable store update, see header). Still players keep
-  // their ref so this memo bails and nothing recomputes. Cheap allocation; we
-  // trade the alloc for keeping VRMNpcMesh / GLBNpcMesh untouched.
-  const npcLike = useMemo(() => adaptPlayer(player), [player]);
+  // One live view per player object (see RemotePlayerBody): rebuilt only on a
+  // structural change, never per snapshot, never per frame.
+  const npcLike = useMemo(() => new RemotePlayerBody(player), [player]);
 
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
   if (regEntry?.avatar_type === 'vrm') {
@@ -178,9 +219,14 @@ const RemotePlayerEntry = memo(function RemotePlayerEntry({
 function DeferredRemoteBody({ player }: { player: RemotePlayerState }) {
   const { released, priority } = useAmbientBodyRelease(player.x, player.y, false);
   const regEntry = MODEL_REGISTRY[player.species as keyof typeof MODEL_REGISTRY];
-  const vrmPath = regEntry?.avatar_type === 'vrm' ? regEntry.path : null;
+  const vrmPath = regEntry?.avatar_type === 'vrm' ? vrmPathForSpecies(player.species) : null;
+  // Order matters: the orphan bracket's retain runs before the warm starts.
   useVRMOrphanCancel(vrmPath, player.id);
-  if (!released) return null;
+  // web-load T9: same as wanderers — the VRM resolves outside React before
+  // the body mounts, so a mid-session join never reveals through a Suspense
+  // retry lane (starved by the 5 Hz world-stream SyncLane renders).
+  const vrmWarmed = useVRMWarmRead(vrmPath, player.id, released);
+  if (!released || !vrmWarmed) return null;
   // The Suspense boundary must live INSIDE this component, BELOW the
   // cancellation hook (Codex round-2 finding 1): a post-release join renders
   // the suspending VRM subtree on this component's very first render, and
@@ -222,8 +268,10 @@ function DeferredRemoteBody({ player }: { player: RemotePlayerState }) {
  * filtered out here so we never double-render the player.
  *
  * Subscription pattern: `useShallow((s) => s.players)` so the parent
- * re-renders only when the player array reference changes; sibling entries
- * are isolated by memo + per-entry LOD subscription.
+ * re-renders only on a structural store change (join, leave, reorder, or a
+ * render field). Position-only snapshots keep the array and every object, and
+ * do not even notify the store (web-load T3). Sibling entries are isolated by
+ * memo + per-entry LOD subscription.
  *
  * Each remote player gets its OWN <Suspense> boundary keyed to the player
  * id. This is required because the Suspense boundary must be OUTSIDE the

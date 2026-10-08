@@ -165,6 +165,61 @@ describe('deferred warm queue', () => {
 
     expect(states).toEqual(['queued', 'warming', 'cancelled']);
   });
+
+  // web-load T8: the quality governor counts no frame while post-load GPU
+  // warm work is queued or running (isDeferredWarmQueueIdle).
+  test('isIdle is false while a job is queued, scheduled or running', async () => {
+    const scheduler = createManualScheduler();
+    const queue = createDeferredWarmQueue(scheduler.schedule);
+    expect(queue.isIdle()).toBe(true);
+
+    let releaseFirst: (() => void) | undefined;
+    queue.enqueue({
+      warm: () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    });
+    queue.enqueue({ warm: async () => undefined });
+    expect(queue.isIdle()).toBe(false); // queued + scheduled
+
+    scheduler.flushOne();
+    await flushPromiseChain();
+    expect(queue.isIdle()).toBe(false); // first running, second queued
+
+    releaseFirst?.();
+    await flushPromiseChain();
+    expect(queue.isIdle()).toBe(false); // second scheduled as continuation
+
+    scheduler.flushOne();
+    await flushPromiseChain();
+    expect(queue.isIdle()).toBe(true);
+  });
+
+  test('isIdle stays false until a cancelled RUNNING job returns; queued cancel frees at once', async () => {
+    const scheduler = createManualScheduler();
+    const queue = createDeferredWarmQueue(scheduler.schedule);
+    let releaseWarm: (() => void) | undefined;
+    const cancelRunning = queue.enqueue({
+      warm: () =>
+        new Promise<void>((resolve) => {
+          releaseWarm = resolve;
+        }),
+    });
+    scheduler.flushOne();
+    await flushPromiseChain();
+    cancelRunning();
+    // A cancelled compile still owns the renderer until it returns.
+    expect(queue.isIdle()).toBe(false);
+    releaseWarm?.();
+    await flushPromiseChain();
+    expect(queue.isIdle()).toBe(true);
+
+    const cancelQueued = queue.enqueue({ warm: async () => undefined });
+    expect(queue.isIdle()).toBe(false);
+    cancelQueued();
+    expect(queue.isIdle()).toBe(true);
+  });
 });
 
 describe('deferred object warm state', () => {

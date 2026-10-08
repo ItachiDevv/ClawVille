@@ -15,6 +15,7 @@ import {
   revokeBuildingInstance,
 } from '@/lib/three/decorative-release';
 import {
+  BgrMountedStamp,
   bootStreamPriority,
   useBootBuildingsStreamRelease,
 } from '@/lib/three/use-boot-stream-release';
@@ -58,7 +59,7 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { preloadKTX2Bytes, readGLTFWithKTX2, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useTransitionStore } from '@/components/transitions/SceneTransition';
 import { TRADING_FLOOR_DOOR_PX } from '@/lib/three/trading-floor/trading-floor-location';
@@ -1803,7 +1804,17 @@ function StreamedGLBBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const priority = bootStreamPriority(BOOT_STREAM_TIER_BUILDINGS, cx, cz);
   const cohortId = `building:${zone.id}`;
-  const released = useBootBuildingsStreamRelease(priority, cohortId);
+  // web-load T7: the GLB loads + parses OUTSIDE React at stage-B admission
+  // (the SAME cache entry GLBBuilding reads), so the release render never
+  // suspends and never waits on a starvable Suspense retry lane. Stable per
+  // model (the release hook's effect depends on it).
+  const model = BUILDING_MODELS[zone.id]?.model;
+  const warmRead = useMemo(
+    () => (model === undefined ? undefined : () => readGLTFWithKTX2(model)),
+    [model],
+  );
+  // The hook reports the cohort 'loading' state at admission.
+  const released = useBootBuildingsStreamRelease(priority, cohortId, warmRead);
   // ONE instance owner for ALL of this mount's ack legs [fix-NF3].
   const ownerRef = useRef<symbol | null>(null);
   if (ownerRef.current === null) ownerRef.current = Symbol(cohortId);
@@ -1815,9 +1826,6 @@ function StreamedGLBBuilding({ zone }: { zone: BuildingZone }) {
     // success tree and the failed-boundary fallback.
     return () => revokeBuildingInstance(cohortId, owner);
   }, [cohortId, owner]);
-  useEffect(() => {
-    if (released) reportCohortState(cohortId, 'loading');
-  }, [released, cohortId]);
 
   if (!released) return null;
   return (
@@ -1847,6 +1855,7 @@ function StreamedGLBBuilding({ zone }: { zone: BuildingZone }) {
           {(ready) => (
             <>
               <CohortCommitProbe cohortId={cohortId} />
+              <BgrMountedStamp cohortId={cohortId} />
               <BuildingCommitAckProbe cohortId={cohortId} owner={owner} ready={ready} />
               <GLBBuilding zone={zone} attachmentVisible={ready} />
             </>

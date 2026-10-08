@@ -9,7 +9,21 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-10-04 (§5 ground decorations: rendered count corrected to 0, cluster count 24 → 12 and extent text corrected to match `generateDecorations`; failure-handling note added; Codex E3 round 1: a corrupt optional GLB is skipped too, and every skip logs `console.error`). No rendered object changed.
+**Last edit:** 2026-10-06 (§5 decorations, web-load T11: the scatter mounts on its first show, so a profile that starts at tier 1 (desktop-low) loads none of the 11 GLBs until the governor first reaches tier 0; the governor degrades only after 2 consecutive 2.5 s windows below 55 FPS).
+
+**Prior Last edit:** 2026-10-06 (§5 decorations, web-load T8: the 11 GLBs are warm-read before the merged group mounts; the governor no longer drops ground cover during load, so on desktop the props stay visible after their warm attach; "12 GLBs" in the visibility line corrected to 11).
+
+**Prior Last edit:** 2026-10-06 (§5 draw-call budget: building-tower2.glb removed, chests capped at 3; 52 merged meshes / 148,444 triangles, pinned by test).
+
+**Prior Last edit:** 2026-10-06 (§5 placement rule: the whole prop footprint stays out of the walk lanes; layout, mesh and triangle counts updated).
+
+**Prior Last edit:** 2026-10-06 (§5 decorations after the ac36e4e1 staging check: props centred on their sites (kelp was 945–2363 wu off), footprint kept inside the band; the device profile mounts the scatter and the governor only toggles visibility; layout and mesh counts updated).
+
+**Prior Last edit:** 2026-10-06 (§5 decoration sizes: `DECO_TYPES` ranges are now target world sizes 20–150 wu, normalized per GLB and grounded; the asset table shows native and old rendered sizes).
+
+**Prior Last edit:** 2026-10-06 (§5 ground decorations RESTORED: 60 props rendered again inside the 800–3800 wu band, new placement rule that keeps buildings, approach lanes, residents, entrances, spawn, town props and land parcels clear; render-strategy line gains measured mesh and triangle counts; §9 audit script replaced by the unit test). Drift fixed in passing: §1 fog row (was 4500→9000) and §4 sand-floor row (was 15360², "TSL shader") now match the code.
+
+**Prior Last edit:** 2026-10-04 (§5 ground decorations: rendered count corrected to 0, cluster count 24 → 12 and extent text corrected to match `generateDecorations`; failure-handling note added; Codex E3 round 1: a corrupt optional GLB is skipped too, and every skip logs `console.error`). No rendered object changed.
 
 **Prior Last edit:** 2026-09-30 (Trading Floor **big board + trade tape show the TRADING ARENA paper contest**). §2a Big board and Trade tape rows rewritten: the board draws the arena leaderboard (contest header · PAPER, countdown, prize line, top 8 with HOUSE tags, basis line, tape row) instead of the two live house-trader cards, and the tape flies the arena's entries (left lane) and exits (right lane) with three-row chip faces. The Big board row also carried a stale "never profit and loss" line from before 2026-09-20; corrected. Same plane, canvas, draw calls. Browser appearance not yet verified.
 
@@ -31,7 +45,7 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 
 | Group | Component | What renders | Source |
 |---|---|---|---|
-| **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (4500→9000wu) | `World3DCanvas.tsx` ~778 |
+| **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (desktop/tablet 5000→10500 wu, phone 2600→6000 wu; `device-class.ts` profiles) | `World3DCanvas.tsx` |
 | **Terrain** | `<ArenaTerrain>` | sand floor + decorations + (disabled landmarks) | `lib/three/arena-terrain.tsx` |
 | **Land parcels** | `<LandParcels>` | 176 for-sale lots (fences + signs), 7 draw calls; Zustand store `stores/land.ts` defaults all available | `lib/three/land-parcels.tsx` |
 | **Buildings** | `<ArenaBuildings>` | 12 themed building GLBs on a circular ring (R=130 tiles = 4160wu, 30° spacing; Phase 6.2.1 2026-05-18) | `lib/three/arena-buildings.tsx` |
@@ -147,7 +161,7 @@ Code: `lib/three/arena-terrain.tsx`.
 
 | Item | Config | Code |
 |---|---|---|
-| Sand floor | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 15360² wu plane, 120×120 segs, TSL height-blend shader | `SandFloor` |
+| Sand floor | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 67584² wu plane, 120×120 segs, `MeshBasicMaterial` with baked vertex colours | `SandFloor` |
 | Sand color ramp | 5-stop: ridge / high / mid / valley / deep | constants ~31 |
 | Dune field | summed sin/cos waves + per-vertex noise | `createSandGeometry` |
 
@@ -155,37 +169,38 @@ Code: `lib/three/arena-terrain.tsx`.
 
 ## 5. Ground decorations (procedural scatter)
 
-**Current state (Phase 6.2 2026-05-18):**
-- `TARGET_COUNT = 60`
-- `EXTENT_X = MAP_WIDTH * 1.4` full range, so cluster centres land in ±`EXTENT_X / 2` (now `MAP_WIDTH` 22528 → ±15770 wu)
-- `MAX_VISIBLE_DIST = 3800` — hard distance gate
-- `DECO_INNER_EXCLUSION_R = 800wu` — reduced 1500→800 (Phase 6.2). The 1500wu clear area at center appeared as a "grey disc" of clean lighter sand. 800wu lets scatter fill the central plaza zone (town-center props are now at 800–1000wu radius so they coexist with decos). Ring buildings are at R=5120wu so decos at 800–3800wu band sit well inside the ring.
-- 12 cluster centres (`N_CLUSTERS`), 280wu triangular-distribution radius per cluster
-- Stable seed (`12345`) — positions don't change between reloads
+**Current state (restored 2026-10-06, founder decision):**
+- `TARGET_COUNT = 60` — **rendered count 60** (pinned by `apps/web/src/lib/three/arena-terrain-decorations.test.ts`; it was 0 from 2026-06-15, when the world grew to `MAP_WIDTH` 22528 and the old `MAP_WIDTH × 1.4` cluster spread no longer reached the band).
+- Band: `DECO_INNER_EXCLUSION_R = 800` to `DECO_OUTER_R = 3800` wu from the world origin. The building ring is at R=4160 wu; the band stays inside fog-free distance (fog near 5000).
+- 12 cluster centres (`N_CLUSTERS`), polar sample inside the band: radius area-uniform in [1080, 3520] wu, angle uniform; a centre is redrawn until its site is clear. 280 wu triangular spread per cluster, 35 wu minimum spacing.
+- Stable seed (`12345`) — positions don't change between reloads or between clients.
+- **Visibility (2026-10-06, revised after the ac36e4e1 staging check):** two switches, like the other ground cover. The device profile's `ambientGroundCover` decides whether the scatter MOUNTS (`<ArenaTerrain decorationsMounted>`): phones and tablets never mount it and the scatter demands none of its 11 GLBs (8 of the paths still load through the ungated `land-ring-decorations.tsx`; `crayfish-ktx` is also an NPC model). On desktop it mounts on its first show (web-load T11: a profile that starts at tier 1, desktop-low, loads none of the 11 GLBs until the governor first reaches tier 0) and keeps its merged meshes; the governor's `groundCover` tier only flips an ancestor group's `visible` (`decorationsVisible`), so a tier change costs no merge, upload or dispose (a remount on tier recovery had spiked the frame and latched tier 1 for the session). Merged geometry is disposed only on a real unmount. Pinned by `apps/web/src/lib/three/arena-terrain-decorations-mount.test.tsx`. The sand floor always renders.
+- **Placement centre (2026-10-06):** each prop's native bounding-box X/Z centre (rotated, scaled) is placed on its tested site and its lowest point on the sand (`decorationPlacement`). kelp.glb's mesh sits at native x −44.5, so before this every kelp prop rendered 945–2363 wu off its site (two at ~4840 / ~5040 wu from the plaza, past the band and the ring). The band check keeps the whole footprint inside: sites need r in [800 + 107, 3800 − 107] (107 = 150 wu × √½, the largest prop's reach). Pinned by `apps/web/src/lib/three/arena-terrain-decorations-bounds.test.ts` (native bounds table checked against the 12 GLB files).
+- **Placement rule** (`isDecorationSiteClear` in `arena-terrain-decorations.ts`): a prop must be inside the band, ≥800 wu from the spawn point, outside every building exclusion circle (`isNearBuilding`, 896 wu), outside every client collider AABB + 200 wu (all 12 buildings + the town props: sign, bazaar, marketplace, pavilion, quest NPC, Nori), outside every land-parcel square + 200 wu, with its whole footprint outside the 400 wu half-width approach lane from the plaza to each of the 12 buildings (site ≥ 400 + 107 wu from the lane axis; 107 = the largest prop's reach), ≥460 wu from each building resident, and clear of the entrance prompt bands + 200 wu (kelp portal 360, Trading Floor door 400, cove tunnel exit 500).
+- Result with seed 12345 (2026-10-06, after the full-footprint lane rule): 60 props, sites at r 2133–3675 wu, in the wedges between the approach lanes; the plaza inside r ~2100 wu stays clear because the widened lanes converge there. The corner-only lane test had let 5 props cross a lane by up to 25 wu; `arena-terrain-decorations-bounds.test.ts` now checks each prop's full footprint circle.
 
-**Rendered count today: 0 (verified 2026-10-04).** With cluster centres spread over ±15770 wu, no seed-12345 sample lands in the 800–3800 wu band, so `generateDecorations()` returns no entries. The 12 GLBs below still load (`MergedDecorationsInner` fetches all 12), but the merged group has no meshes. Restoring the scatter (or dropping the 12 fetches) is a separate decision: it changes the world's look and draw calls.
+The 11 GLBs load after the decorative release: `UnderwaterDecorations` warm-reads them outside React (web-load T8) and only then mounts `MergedDecorationsInner`, whose merged group joins the warm queue last (priority ∞), so the props appear after the rest of the deferred world. Measured locally 2026-10-06 with T8 (RTX 3080, 3/3): visible from 16.5-19.1 s, 10-11 s after the loader is gone, and for the rest of the 90 s window (before T8 the governor hid them after 2 s and latched tier 1: visible in 4 of 175 polls). CPU 4x, desktop-low: mounted (hidden at tier 1) at 37.0-38.2 s, before T8 50.0 / 64.7 s.
 
-**Failure handling (2026-10-04):** the 12 GLBs load through `useOptionalGLTFWithKTX2`. A GLB whose own load fails is skipped: a request failure after the shared loader's 2 retries, or a corrupt file (never retried). Each skip logs one `console.error` naming the phase. The rest of the world stays up (`3dStructure.md` §9a).
+**Failure handling (2026-10-04):** the decoration GLBs (11 since 2026-10-06) load through `useOptionalGLTFWithKTX2`. A GLB whose own load fails is skipped: a request failure after the shared loader's 2 retries, or a corrupt file (never retried). Each skip logs one `console.error` naming the phase. The rest of the world stays up (`3dStructure.md` §9a).
 
 Code: `MergedDecorationsInner` + `generateDecorations` in `arena-terrain.tsx`.
 
-**Asset list** (`DECO_TYPES`, weighted random):
-| Model | Weight | Scale range |
-|---|---|---|
-| coral-reef1.glb | 3 | 4–15 |
-| coral-reef2.glb | 3 | 3–13 |
-| coral-reef3.glb | 3 | 3–12 |
-| kelp.glb | 3 | 6–15 |
-| building-shell.glb | 5 | 2–12 |
-| building-seashell.glb | 5 | 2–12 |
-| building-anchor.glb | 4 | 3–14 |
-| building-barrel.glb | 4 | 3–10 |
-| building-chest.glb | 4 | 3–12 |
-| building-lantern.glb | 3 | 4–12 |
-| crayfish.glb | 3 | 3–10 |
-| building-tower2.glb | 2 | 4–14 |
+**Asset list** (`DECO_TYPES`, weighted random). Since 2026-10-06 the range is the TARGET world max-dimension in wu, not a raw scale: `MergedDecorationsInner` measures each GLB scene's bounding box once and uses `decorationTransform` (scale = size / native max-dim; the lowest point sits on the sand at y = −2). Ranges = the old scale range × 10 wu, capped at 150 wu (a VRM avatar is 179 wu tall). The old raw scales rendered 1–860 wu because the native sizes differ by 200× (chest 0.43, crayfish 86):
+| Model | Weight | World size (wu) | Native max-dim | Old render (wu) |
+|---|---|---|---|---|
+| coral-reef1-ktx.glb | 3 | 40–150 | 7.44 (flat 8-piece strip) | 30–112 |
+| coral-reef2-ktx.glb | 3 | 30–130 | 6.66 | 20–87 |
+| coral-reef3-ktx.glb | 3 | 30–120 | 7.63 | 23–92 |
+| kelp.glb | 3 | 60–150 | 2.82 | 17–42 |
+| building-shell-ktx.glb | 5 | 20–120 | 1.68 | 3–20 |
+| building-seashell-ktx.glb | 5 | 20–120 | 5.26 | 11–63 |
+| building-anchor.glb | 4 | 30–140 | 6.54 | 20–92 |
+| building-barrel.glb | 4 | 30–100 | 1.35 | 4–13 |
+| building-chest.glb | 4 (capped at 3 per layout: `DECO_MAX_CHESTS`) | 30–120 | 0.43 | 1–5 |
+| building-lantern-ktx.glb | 3 | 40–120 | 0.93 | 4–11 |
+| crayfish-ktx.glb | 3 | 30–100 | 85.98 | 258–860 |
 
-**Render strategy:** all entries → bucketed by `(3×3 grid cell, material UUID)` → `mergeGeometries` per bucket → one Mesh per bucket. Static, `matrixAutoUpdate=false`, default frustum-cull (tight per-bucket AABB).
+**Render strategy:** all entries → bucketed by `(3×3 grid cell, material UUID)` → `mergeGeometries` per bucket → one Mesh per bucket. Static, `matrixAutoUpdate=false`, default frustum-cull (tight per-bucket AABB). With seed 12345: **52 merged meshes, 148,444 triangles in total** (budget ≤ 56 / ≤ 150k, the 81eb1901 cost; pinned with the exact values by `apps/web/src/lib/three/arena-terrain-decorations-bounds.test.ts`, computed from the native table (triangles and materials per GLB checked against the files) and the real `decoGridCell`). Lead decision 2026-10-06, performance first: **building-tower2.glb removed** from the mix and the GLB list (7 materials, so each grid cell it landed in cost 7 merged meshes; 11 decoration downloads now) and chests capped at 3 (12,400 triangles + 4 materials each). Largest share now: 9 coral-reef1 at 6,080 triangles each (54,720). Not re-measured live (no build).
 
 ---
 
@@ -237,7 +252,7 @@ Tracked here so they don't get lost across sessions:
 
 - [ ] **Duplicate `<TownDirectorySign>` render** — `World3DCanvas.tsx` L773 was added as a diagnostic and should be removed. Net cost: 1 extra mesh tree.
 - [ ] **`<BountyBoardObject>` import path** — verify it's actually mounted by any production flow; if not, drop the import.
-- [x] **Decoration density per zone** — 2026-05-13: TARGET_COUNT 30→60, annulus 1500–3800wu. Audit script (`scripts/audit-decorations.mjs`) verifies placement.
+- [x] **Decoration density per zone** — 2026-05-13: TARGET_COUNT 30→60, annulus 1500–3800wu. Placement is pinned by `apps/web/src/lib/three/arena-terrain-decorations.test.ts`, which runs the real generator (the old replica script scripts/audit-decorations.mjs was deleted 2026-10-06: it still used a 5120 wu map and a different RNG).
 
 ---
 
@@ -245,6 +260,10 @@ Tracked here so they don't get lost across sessions:
 
 Compact log. Single line per change.
 
+- 2026-10-06 — §5 decorations **mount on first show** (branch `perf/load-items`, 58d7d91b + the Codex E3 fix commit, web-load T11): a tier-1-start profile (desktop-low) no longer loads the 11 decoration GLBs (staging 4fe13447 at CPU 4x: 10 requests + parse with 0.89-1.79 s long tasks and a 1.07-2.0 s warm compile, for props that never showed); they mount when the governor first reaches tier 0, then tier changes only toggle visibility. The governor now degrades after 2 consecutive windows below 55 FPS (was one below 58), so desktop sessions keep the decorations visible.
+- 2026-10-06 — §5 decorations **stay visible after load on desktop** (branch `perf/load-items`, commit pending, web-load T8): the adaptive governor no longer counts load-time frames and seaweed/kelp no longer remount on recovery, so the tier-1 latch that hid the props for the session is gone locally (decorations visible 163-165/175 polls, was 4/175); the 11 decoration GLBs are warm-read outside React before the merged group mounts (no Suspense retry). Needs Codex E3 + staging.
+- 2026-10-06 — §5 decoration **sizes normalized** (branch `perf/load-items`, commit pending): `DECO_TYPES` holds target world max-dims (20–150 wu) instead of raw scales; each GLB's native box sets the scale and grounds it on the sand. Before, chests rendered 1–5 wu, barrels 4–13 wu and the crayfish 258–860 wu. Same positions, meshes and triangles.
+- 2026-10-06 — §5 seabed decorations **restored, 0 → 60 props** (founder decision; branch `perf/load-items`, commit pending). Cluster centres now come from the 800–3800 wu band instead of `MAP_WIDTH` extents; new placement rule keeps buildings, approach lanes, residents, entrances, spawn, town props and parcels clear. Pure scatter moved to `arena-terrain-decorations.ts` + test. 57 merged meshes / 145,810 triangles; at the spawn view +24 draws / +60,184 triangles. Stale replica scripts/audit-decorations.mjs deleted.
 - 2026-10-04 — §5 decorations: docs now state the true rendered count (0 at `MAP_WIDTH` 22528) and the 12 cluster centres; the 12 decoration GLBs load through `useOptionalGLTFWithKTX2`, so one failed GLB skips only that model instead of crashing the world canvas (commit pending, branch `fix/deco-glb-fetch-retry`).
 - 2026-09-30 — Trading Floor **big board + trade tape → Trading Arena paper contest** (commit pending, branch `feat/trading-floor-arena`). Board: arena leaderboard with contest header, countdown, prize line, HOUSE tags, basis line and tape row. Tape: arena entries left / exits right, three-row chip faces. Same plane, canvas, meshes and draw calls. Browser check owed.
 - 2026-09-20 — Trading Floor **TRADE TAPE** (commit pending). The house traders' recent verified trades render as 12 emissive slabs flying the hall in two lanes (x ±890, y 520, z −900 → +720 over 18 s, then wrapping) — green gain, red loss, cyan buy, slate where there is no figure; face shows the token name or the venue, never a mint. ONE mesh + ONE atlas = **+1 draw call**; reuses the board's `useHouseTraders` query, so no route, no fetch, no poller. Lane x is pinned on both sides by test (desk face 985 outboard; board-unoccluded-from-spawn inboard, a 1.08x projection rather than a clearance) and mutation-verified. New §2a row; draw-call line 24 → expected 25. No asset bytes, no GLB, no `?v=` bump. Full numbers in `3dStructure.md` §9h.

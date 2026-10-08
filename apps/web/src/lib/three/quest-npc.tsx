@@ -29,10 +29,27 @@ import * as THREE from 'three/webgpu';
 import { color, float, sin, time } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import {
+  preloadKTX2Bytes,
+  readGLTFWithKTX2,
+  useGLTFWithKTX2,
+} from '@/lib/three/use-gltf-ktx2';
 import { onBootStreamEligible } from '@/lib/three/decorative-release';
 import { bootStreamPriority } from '@/lib/three/use-boot-stream-release';
 import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
+
+/** The model path: ONE constant for the byte-warm, the render read
+ * (QuestNpcInner) and the warm read, so they hit the same cache entry. */
+const QUEST_NPC_MODEL = '/models/crayfish-ktx.glb?v=2';
+
+/** web-load T10-C: NON-HOOK read of the exact cache entry QuestNpcInner's
+ * useGLTFWithKTX2 call reads (same drei call, path, flags and extender).
+ * BootStreamedContent awaits it outside React at post-reveal admission,
+ * so the release render never suspends into a starvable retry lane.
+ * Module-level, so it is referentially stable. */
+function readQuestNpcGltf(): unknown {
+  return readGLTFWithKTX2(QUEST_NPC_MODEL);
+}
 
 // ---------------------------------------------------------------------------
 // World-space position
@@ -53,7 +70,7 @@ const QUEST_NPC_FLOOR_Y = -2;
 // like every other town-center unit; its byte-warm fires at eligibility.
 if (typeof window !== 'undefined') {
   onBootStreamEligible(
-    () => preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2'),
+    () => preloadKTX2Bytes(QUEST_NPC_MODEL),
     Number.NEGATIVE_INFINITY,
   );
 }
@@ -110,7 +127,7 @@ const QuestNpcInner = memo(function QuestNpcInner() {
   const animRef    = useRef<THREE.Group>(null!);
   const hoveredRef = useRef(false);
 
-  const { scene } = useGLTFWithKTX2('/models/crayfish-ktx.glb?v=2');
+  const { scene } = useGLTFWithKTX2(QUEST_NPC_MODEL);
 
   // Clone + normalize to ~61 world units (×1.75 of original 35, matches 2026-04-23
   // CHARACTER_HEIGHT bump 55→96 in arena-location-npcs.tsx so the town-center
@@ -198,6 +215,7 @@ export default function QuestNpc() {
   return (
     <BootStreamedContent
       cohortId="npc:quest-npc"
+      warmRead={readQuestNpcGltf}
       priority={bootStreamPriority(0, QUEST_NPC_X, QUEST_NPC_Z)}
     >
       <QuestNpcInner />

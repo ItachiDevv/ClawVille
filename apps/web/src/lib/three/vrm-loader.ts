@@ -1191,8 +1191,36 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
  * `disposeVRMInstance(path, instanceId)`.
  */
 export function useVRMInstance(path: string, instanceId: string): VRM {
+  return readVRMInstance(path, instanceId);
+}
+
+/**
+ * NON-HOOK read of the exact cache entry `useVRMInstance(path, instanceId)`
+ * reads (web-load T9). It IS the hook's body (useVRMInstance only calls it),
+ * so a warm read and the render read can never diverge: same cacheKey, same
+ * pending/resolved/rejected entry, same generation bookkeeping. It calls no
+ * React hook, so it is safe outside render.
+ *
+ * For `warmSuspenseRead` (suspense-cache-warm.ts): resolve a figure's VRM
+ * OUTSIDE React before the figure mounts, so its first render reads a
+ * resolved entry and never needs a Suspense retry lane (retry lanes starve
+ * under the 5 Hz SyncLane world-stream renders).
+ *
+ * Ownership: a missing entry is CREATED here (pending) exactly like the
+ * render read. No refcount is taken (this file has none: retain = cancel a
+ * scheduled dispose), and a scheduled dispose is only EXTENDED, never
+ * cancelled. The caller must sit under a mounted
+ * retainVRMInstance/disposeVRMInstance bracket for the same (path,
+ * instanceId) (arena-npcs useVRMOrphanCancel) and must stop reading once
+ * that bracket's cleanup ran, so an unmount before the figure commits still
+ * disposes (and cancels) the entry this read created.
+ *
+ * Throws the entry promise while loading, the tagged ModelLoadError when
+ * the load failed, and returns the VRM when resolved.
+ */
+export function readVRMInstance(path: string, instanceId: string): VRM {
   const cacheKey = `${path}#${instanceId}`;
-  // Render-time re-acquire EXTENDS any scheduled dispose (never cancels —
+  // Render/warm-time re-acquire EXTENDS any scheduled dispose (never cancels —
   // React can abandon a render before its effects commit; the authoritative
   // cancel is retainVRMInstance() in the consumer's committed effect setup).
   extendPendingDispose(cacheKey);

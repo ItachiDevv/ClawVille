@@ -1,0 +1,647 @@
+/**
+ * Stream commit budget (web-load T10): position-only world-stream snapshots
+ * and idle time must NOT commit the R3F root.
+ *
+ * Why: the R3F root committed ~6 times a second forever (measured 5.9/s, N6
+ * CPU 4x and unthrottled). Every such render discards pending Suspense retry
+ * lanes (reconciler 0.31: retry lanes never expire, wait for the 300 ms
+ * reveal throttle, and prepareFreshStack cancels the waiting commit), so on a
+ * slow machine parts of the world never appeared
+ * (gotchas/suspense-retry-lane-starvation-sync-store-updates.md). Sources:
+ *   (A) ActivityIndicators selected NEW snapshot objects through useShallow,
+ *       which never bails: one render per 200 ms snapshot while any NPC talks;
+ *   (B) NpcSpeechBubbles ran a 1 s setInterval tick that committed even when
+ *       it rendered nothing.
+ *
+ * Mounts the REAL ArenaNpcs, NpcSpeechBubbles, ActivityIndicators and
+ * RemotePlayers in ONE real R3F root (fake renderer, frameloop 'never'), each
+ * inside its own <Profiler>, and drives the REAL store write paths the world
+ * stream calls (useNpcStore.updateFromSnapshot + usePlayerStore
+ * .updateFromSnapshot, see world-presence-controller callbacks). Stand-ins,
+ * as in arena-npcs-vrm-warm-read.test.tsx: GLTFLoader.parseAsync (a fake VRM
+ * per path), fetch, VRMCharacterAnimator, DeferredWarmAttachment
+ * (pass-through), decorative release (already released).
+ *
+ * Asserts, after the figures settled:
+ *   phase 1: 25 position-only snapshots over 5 s (NPCs walk, two NPCs talk,
+ *            one bubble lives, remote players stand still) -> 0 commits
+ *            (before T10: ~25 indicator + ~5 bubble-tick commits);
+ *   gap:     the bubble expiry -> exactly ONE bubble commit (the removal);
+ *   phase 2: 5 s idle, no bubbles -> 0 commits (before T10: 5 tick commits
+ *            + the 5 s cleanup interval re-rendered the indicators).
+ * The second test pins T3: a remote player that MOVES commits nothing either
+ * (the players store mutates position in place, like the NPC store).
+ * Runs in its own process (mock.module is process-global).
+ */
+import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { Fragment, Profiler, Suspense, createElement, type ReactNode } from 'react';
+import { Window } from 'happy-dom';
+import type * as THREE from 'three';
+import type { PlayerSnapshot } from '@clawville/shared';
+import type { NpcStoreState } from '@/stores/npc';
+
+const testWindow = new Window({ url: 'http://localhost/game' });
+const globalNames = [
+  'window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLCanvasElement',
+  'HTMLDivElement', 'Event', 'ErrorEvent', 'requestAnimationFrame', 'cancelAnimationFrame',
+  'IS_REACT_ACT_ENVIRONMENT',
+] as const;
+const saved = new Map<string, PropertyDescriptor | undefined>();
+const originalFetch = globalThis.fetch;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const threeCjs = require('three') as typeof import('three');
+
+// ---------------------------------------------------------------------------
+// Stand-ins (same as arena-npcs-vrm-warm-read.test.tsx)
+// ---------------------------------------------------------------------------
+
+class FakeGLTFLoader {
+  setMeshoptDecoder(): this {
+    return this;
+  }
+  register(): this {
+    return this;
+  }
+  async parseAsync(buffer: ArrayBuffer): Promise<unknown> {
+    const path = new TextDecoder().decode(buffer);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const scene = new threeCjs.Group();
+    scene.name = `fake-vrm:${path}`;
+    scene.add(new threeCjs.Mesh(new threeCjs.BoxGeometry(0.5, 1.6, 0.3), new threeCjs.MeshBasicMaterial()));
+    const vrm = { scene, meta: { metaVersion: '1' }, update: () => undefined };
+    return { userData: { vrm }, parser: { associations: new Map() } };
+  }
+}
+
+mock.module('three/addons/loaders/GLTFLoader.js', () => ({ GLTFLoader: FakeGLTFLoader }));
+mock.module('./deferred-warm-attachment', () => ({
+  DeferredWarmAttachment: ({ children }: { children: ReactNode | ((ready: boolean) => ReactNode) }) =>
+    createElement(Fragment, null, typeof children === 'function' ? children(true) : children),
+}));
+
+const reported: unknown[] = [];
+const reportErrorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'reportError');
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+const consoleErrors: string[] = [];
+
+type R3F = typeof import('@react-three/fiber');
+let r3f: R3F;
+let ArenaNpcs: () => ReactNode;
+let NpcSpeechBubbles: () => ReactNode;
+let ActivityIndicators: () => ReactNode;
+let RemotePlayers: () => ReactNode;
+let vrmPathForSpecies: (species: string) => string;
+let getNpcRenderGroup: (id: string) => THREE.Object3D | undefined;
+let HALF_W = 0;
+let useNpcStore: typeof import('@/stores/npc').useNpcStore;
+let usePlayerStore: typeof import('@/stores/players').usePlayerStore;
+
+beforeAll(async () => {
+  for (const name of globalNames) {
+    saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    const value =
+      name === 'IS_REACT_ACT_ENVIRONMENT'
+        ? true
+        : name === 'window'
+          ? testWindow
+          : name === 'requestAnimationFrame'
+            ? (cb: (t: number) => void) => setTimeout(() => cb(0), 0) as unknown as number
+            : name === 'cancelAnimationFrame'
+              ? (id: number) => clearTimeout(id)
+              : (testWindow as unknown as Record<string, unknown>)[name];
+    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  }
+  Object.defineProperty(globalThis, 'reportError', {
+    value: (error: unknown) => {
+      reported.push(error);
+    },
+    configurable: true,
+    writable: true,
+  });
+  console.error = (...args: unknown[]) => {
+    consoleErrors.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '));
+  };
+  console.warn = () => undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (/\.vrm(?:\?|$)/.test(url)) return new Response(new TextEncoder().encode(url), { status: 200 });
+    return new Response('missing', { status: 404 });
+  }) as typeof fetch;
+
+  const realAnimator = await import('./vrm-character-animator');
+  class StubAnimator {
+    init(): Promise<void> {
+      return Promise.resolve();
+    }
+    update(): void {}
+    dispose(): void {}
+    setSurfaceClip(): void {}
+  }
+  mock.module('./vrm-character-animator', () => ({
+    ...realAnimator,
+    VRMCharacterAnimator: StubAnimator,
+    preloadMixamoClips: () => undefined,
+  }));
+  const realRelease = await import('./decorative-release');
+  mock.module('./decorative-release', () => ({
+    ...realRelease,
+    isDecorativeReleased: () => true,
+    onDecorativeReleaseStaggered: (callback: () => void) => {
+      callback();
+      return () => undefined;
+    },
+  }));
+
+  r3f = await import('@react-three/fiber');
+  r3f.extend(threeCjs as never);
+  const npcs = await import('./arena-npcs');
+  ArenaNpcs = npcs.default as unknown as () => ReactNode;
+  vrmPathForSpecies = npcs.vrmPathForSpecies;
+  getNpcRenderGroup = npcs.getNpcRenderGroup;
+  HALF_W = (await import('@/lib/pixi/tilemap-data')).MAP_WIDTH / 2;
+  NpcSpeechBubbles = (await import('./npc-speech-bubbles')).default as unknown as () => ReactNode;
+  ActivityIndicators = (await import('./activity-indicators')).default as unknown as () => ReactNode;
+  RemotePlayers = (await import('./remote-players')).default as unknown as () => ReactNode;
+  ({ useNpcStore } = await import('@/stores/npc'));
+  ({ usePlayerStore } = await import('@/stores/players'));
+  // The world stream is connected: this stops the client demo wander loop
+  // (a 100 ms store write that the live world never runs while connected).
+  useNpcStore.getState().setConnected(true);
+  // Only the snapshot roster renders (not the offline demo cast).
+  useNpcStore.setState({ npcs: [], chatBubbles: [] });
+});
+
+afterAll(async () => {
+  globalThis.fetch = originalFetch;
+  console.error = originalConsoleError;
+  console.warn = originalConsoleWarn;
+  if (reportErrorDescriptor) Object.defineProperty(globalThis, 'reportError', reportErrorDescriptor);
+  else delete (globalThis as Record<string, unknown>).reportError;
+  for (const [name, descriptor] of saved) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete (globalThis as Record<string, unknown>)[name];
+  }
+  await testWindow.happyDOM.close();
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function fakeRenderer(canvas: unknown) {
+  return {
+    domElement: canvas,
+    shadowMap: { enabled: false, type: 0, needsUpdate: false },
+    outputColorSpace: '',
+    toneMapping: 0,
+    render() {},
+    setSize() {},
+    setPixelRatio() {},
+    getPixelRatio: () => 1,
+    dispose() {},
+  };
+}
+
+async function settle(ms: number): Promise<void> {
+  await r3f.act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  });
+}
+
+async function waitFor(ready: () => boolean, what: string, timeoutMs = 8_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for: ${what}`);
+    await settle(5);
+  }
+}
+
+const LAYERS = ['npcs', 'bubbles', 'indicators', 'players'] as const;
+type Layer = (typeof LAYERS)[number];
+const commits: Record<Layer, number> = { npcs: 0, bubbles: 0, indicators: 0, players: 0 };
+
+function resetCommits(): void {
+  for (const layer of LAYERS) commits[layer] = 0;
+}
+
+function snapshotCommits(): Record<Layer, number> {
+  return { ...commits };
+}
+
+function profiled(layer: Layer, component: () => ReactNode): ReactNode {
+  return createElement(
+    Profiler,
+    {
+      id: layer,
+      onRender: () => {
+        commits[layer] += 1;
+      },
+    },
+    createElement(component),
+  );
+}
+
+async function mountWorld() {
+  const canvas = testWindow.document.createElement('canvas');
+  testWindow.document.body.appendChild(canvas);
+  const root = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
+  await root.configure({
+    gl: fakeRenderer(canvas) as never,
+    size: { width: 320, height: 200, top: 0, left: 0 },
+    frameloop: 'never',
+  });
+  let store!: ReturnType<typeof root.render>;
+  await r3f.act(async () => {
+    store = root.render(
+      createElement(
+        Fragment,
+        null,
+        profiled('npcs', ArenaNpcs),
+        profiled('bubbles', NpcSpeechBubbles),
+        profiled('indicators', ActivityIndicators),
+        profiled('players', RemotePlayers),
+      ),
+    );
+  });
+  const committed = (path: string) =>
+    store.getState().scene.getObjectByName(`fake-vrm:${path}`) as THREE.Object3D | undefined;
+  return { root, store, committed };
+}
+
+type ServerSnapshot = Parameters<NpcStoreState['updateFromSnapshot']>[0];
+
+/** Four wandering NPCs: two walk east, two stand and talk to each other. */
+const ROSTER = [
+  { id: 't10-walker-a', species: 'milady_official_7', walks: true, talks: false },
+  { id: 't10-walker-b', species: 'milady_official_8', walks: true, talks: false },
+  { id: 't10-talker-a', species: 'milady_official_2', walks: false, talks: true },
+  { id: 't10-talker-b', species: 'hermes_female', walks: false, talks: true },
+] as const;
+
+/** One snapshot at tick `tick`: only walker x changes between ticks. */
+function npcSnapshot(tick: number, conversationActive: boolean): ServerSnapshot {
+  return {
+    npcs: ROSTER.map((n, i) => ({
+      id: n.id,
+      name: n.id,
+      x: 3_000 + i * 400 + (n.walks ? tick * 44 : 0),
+      y: 3_000,
+      direction: n.walks ? 'right' : 'idle',
+      species: n.species,
+      color: 0xffffff,
+      hp: 100,
+      maxHp: 100,
+      isDead: false,
+      hasSword: false,
+      inCombat: false,
+      inConversation: n.talks,
+      inventory: [],
+      isOpenClaw: false,
+    })),
+    conversations: conversationActive
+      ? [
+          {
+            id: 't10-convo',
+            npc1Id: 't10-talker-a',
+            npc2Id: 't10-talker-b',
+            messages: [{ npcId: 't10-talker-a', npcName: 'Vivi', text: 'gm, the reef is calm today' }],
+            currentIndex: 0,
+            state: 'active',
+          },
+        ]
+      : [],
+    combats: [],
+    timestamp: Date.now(),
+  };
+}
+
+function playerSnapshot(tick: number, moving: boolean): PlayerSnapshot[] {
+  return [
+    {
+      id: 't10-remote-a',
+      userId: null,
+      kind: 'guest',
+      name: 'Visitor',
+      x: 4_000 + (moving ? tick * 30 : 0),
+      y: 4_000,
+      dirZ: 0,
+      activity: moving ? 'walking' : 'idle',
+      species: 'milady_official_5',
+      color: 0xffffff,
+    } as PlayerSnapshot,
+  ];
+}
+
+async function pushSnapshot(tick: number, opts: { conversation: boolean; playersMoving: boolean }): Promise<void> {
+  await r3f.act(async () => {
+    useNpcStore.getState().updateFromSnapshot(npcSnapshot(tick, opts.conversation));
+    usePlayerStore.getState().updateFromSnapshot(playerSnapshot(tick, opts.playersMoving));
+  });
+}
+
+const SNAPSHOT_MS = 200;
+const SNAPSHOTS = 25; // 5 s at the live 5 Hz cadence
+
+/** The world after mount: figures committed, one bubble, two talkers. */
+async function settledWorld(playersMoving: boolean) {
+  const world = await mountWorld();
+  await pushSnapshot(0, { conversation: true, playersMoving });
+  await waitFor(
+    () =>
+      ROSTER.every((n) => world.committed(vrmPathForSpecies(n.species)) !== undefined) &&
+      world.committed(vrmPathForSpecies('milady_official_5')) !== undefined,
+    'every NPC figure and the remote player committed',
+  );
+  // Let mount-time state (stagger release, warm reads) finish committing.
+  await settle(400);
+  // The warm-up bubble must outlive any test window, however slow the figure
+  // loads were (the store dedupes the repeated line by npcId + text, so it
+  // keeps this object). Test 1 sets its own expiry on the held clock.
+  const created = useNpcStore.getState().chatBubbles.find((b) => b.npcId === 't10-talker-a');
+  if (created) {
+    await r3f.act(async () => {
+      useNpcStore.setState({ chatBubbles: [{ ...created, expiresAt: Date.now() + 120_000 }] });
+    });
+    await settle(50);
+  }
+  return world;
+}
+
+// ---------------------------------------------------------------------------
+// Held clock: Date.now() returns `heldNow` while held. The NPC store and the
+// speech-bubble layer read Date.now(), so a bubble expiry depends only on how
+// far the test moves this clock, never on how slow the runner is. Timers
+// still run in real time: a bubble timer that fires before the held clock
+// reached the expiry re-arms without a commit.
+// ---------------------------------------------------------------------------
+const realDateNow = Date.now;
+let heldNow: number | null = null;
+
+function holdClock(): void {
+  heldNow = realDateNow();
+  Date.now = () => heldNow ?? realDateNow();
+}
+
+function advanceClock(ms: number): void {
+  if (heldNow === null) throw new Error('clock is not held');
+  heldNow += ms;
+}
+
+function releaseClock(): void {
+  heldNow = null;
+  Date.now = realDateNow;
+}
+
+async function teardown(root: { unmount: () => void }): Promise<void> {
+  await r3f.act(async () => root.unmount());
+  await r3f.act(async () => {
+    useNpcStore.setState({ npcs: [], chatBubbles: [] });
+    usePlayerStore.getState().clear();
+  });
+  await settle(700);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('stream commit budget (web-load T10)', () => {
+  test(
+    'position-only snapshots + idle time commit nothing (indicators, bubbles, NPCs, still players)',
+    async () => {
+      const { root } = await settledWorld(false);
+      const created = useNpcStore.getState().chatBubbles.find((b) => b.npcId === 't10-talker-a');
+      expect(created).toBeDefined();
+
+      let phase1: Record<Layer, number>;
+      let gap: Record<Layer, number>;
+      let phase2: Record<Layer, number>;
+      holdClock();
+      try {
+        // The bubble lives 6 s of HELD time; phase 1 moves the clock 5 s.
+        const bubble = { ...created!, expiresAt: Date.now() + 6_000 };
+        await r3f.act(async () => {
+          useNpcStore.setState({ chatBubbles: [bubble] });
+        });
+        await settle(100);
+
+        // Phase 1: 25 position-only snapshots, 200 ms of clock apart. The
+        // same conversation line repeats (deduped: no new bubble); the
+        // walkers move.
+        resetCommits();
+        for (let tick = 1; tick <= SNAPSHOTS; tick += 1) {
+          advanceClock(SNAPSHOT_MS);
+          await pushSnapshot(tick, { conversation: true, playersMoving: false });
+          await settle(SNAPSHOT_MS);
+        }
+        phase1 = snapshotCommits();
+        // The walkers really moved (mutated in place on the SAME objects).
+        const walker = useNpcStore.getState().npcs.find((n) => n.id === 't10-walker-a')!;
+        expect(walker.x).toBe(3_000 + SNAPSHOTS * 44);
+
+        // Gap: the clock passes the expiry -> exactly one bubble commit
+        // removes it (when the armed real-time timer next fires).
+        resetCommits();
+        advanceClock(1_200);
+        await waitFor(() => commits.bubbles > 0, 'the expiry commit', 10_000);
+        await settle(100);
+        gap = snapshotCommits();
+
+        // Phase 2: 5 s idle with no bubble (the 5 s store cleanup runs inside
+        // it). Short act slices: one long act batches separate timer updates
+        // into one commit, which a browser never does.
+        resetCommits();
+        for (let slice = 0; slice < 52; slice += 1) {
+          advanceClock(100);
+          await settle(100);
+        }
+        phase2 = snapshotCommits();
+      } finally {
+        releaseClock();
+      }
+
+      // One assertion over all three windows, so a failure shows every count.
+      expect({ phase1, gap, phase2 }).toEqual({
+        phase1: { npcs: 0, bubbles: 0, indicators: 0, players: 0 },
+        gap: { npcs: 0, bubbles: 1, indicators: 0, players: 0 },
+        phase2: { npcs: 0, bubbles: 0, indicators: 0, players: 0 },
+      });
+
+      expect(reported).toEqual([]);
+      await teardown(root);
+    },
+    60_000,
+  );
+
+  // T3 (RemotePlayers / players store): before T3 a remote player that moved
+  // got a NEW store object per snapshot, so RemotePlayers committed on every
+  // snapshot (measured: 20 commits for 10 snapshots). Now position-only
+  // snapshots mutate the store object in place and the body reads it live
+  // (remote-players.test.tsx pins the motion), so every layer stays at 0.
+  test(
+    'T3: a MOVING remote player commits nothing; every layer stays at 0',
+    async () => {
+      const { root } = await settledWorld(true);
+      resetCommits();
+      for (let tick = 1; tick <= 10; tick += 1) {
+        await pushSnapshot(tick, { conversation: true, playersMoving: true });
+        await settle(SNAPSHOT_MS);
+      }
+      const counts = snapshotCommits();
+      await teardown(root);
+      expect({ npcs: counts.npcs, bubbles: counts.bubbles, indicators: counts.indicators }).toEqual({
+        npcs: 0,
+        bubbles: 0,
+        indicators: 0,
+      });
+      expect(counts.players).toBe(0);
+      expect(reported).toEqual([]);
+    },
+    30_000,
+  );
+
+  test(
+    'indicators + bubbles follow the RENDERED (smoothed) body from getNpcRenderGroup, with 0 commits',
+    async () => {
+      const { root, store } = await settledWorld(false);
+      const body = getNpcRenderGroup('t10-talker-a');
+      expect(body).toBeDefined();
+      expect(body!.getObjectByName(`fake-vrm:${vrmPathForSpecies('milady_official_2')}`)).toBeDefined();
+      const scene = store.getState().scene;
+      const indicatorGroup = () => {
+        let found: THREE.Object3D | undefined;
+        scene.traverse((o) => {
+          const mesh = o as THREE.Mesh;
+          if (found || !mesh.isMesh) return;
+          if ((mesh.material as THREE.MeshBasicMaterial).color?.getHex() === 0x00e5ff) found = mesh.parent!;
+        });
+        return found!; // the first indicator = talker-a (store order)
+      };
+      const bubbleAnchor = () => {
+        let found: THREE.Object3D | undefined;
+        scene.traverse((o) => {
+          if (!found && (o as THREE.Group).isGroup && o.position.y === 150) found = o;
+        });
+        return found!;
+      };
+      const frame = async () => {
+        await r3f.act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 16));
+          r3f.advance(performance.now(), true, store.getState());
+        });
+      };
+      await frame(); // seeds the body at its confirmed target
+
+      // A confirmed move far east, written the way updateFromSnapshot does
+      // (in place, no store write): the body DAMPS toward it over frames.
+      resetCommits();
+      const talker = useNpcStore.getState().npcs.find((n) => n.id === 't10-talker-a')!;
+      talker.prevX = talker.x;
+      talker.x += 2_000;
+      talker.ts = Date.now();
+      talker.tsDelta = 200;
+      const rawX = talker.x - HALF_W;
+      for (let i = 0; i < 3; i += 1) {
+        await frame();
+        const before = body!.position.x;
+        await frame();
+        const after = body!.position.x;
+        // The overlays read the body in the same frame loop (before or after
+        // the body's own callback): never the raw store position.
+        expect([before, after]).toContain(indicatorGroup().position.x);
+        expect([before, after]).toContain(bubbleAnchor().position.x);
+        expect(after).not.toBe(rawX);
+        expect(indicatorGroup().position.x).not.toBe(rawX);
+      }
+      expect(snapshotCommits()).toEqual({ npcs: 0, bubbles: 0, indicators: 0, players: 0 });
+      expect(reported).toEqual([]);
+      await teardown(root);
+      // Unmount removes every entry.
+      expect(getNpcRenderGroup('t10-talker-a')).toBeUndefined();
+      expect(getNpcRenderGroup('t10-walker-a')).toBeUndefined();
+    },
+    30_000,
+  );
+
+  test(
+    'registry: a newer same-id body stays registered when the older one unmounts; its own unmount removes it',
+    async () => {
+      const { root } = await settledWorld(false);
+      const older = getNpcRenderGroup('t10-talker-a');
+      expect(older).toBeDefined();
+
+      const { root2, newer } = await mountSameIdBody(older!);
+
+      // The OLDER body unmounts (the NPC leaves the store): the live entry stays.
+      await r3f.act(async () => {
+        useNpcStore.setState({ npcs: useNpcStore.getState().npcs.filter((n) => n.id !== 't10-talker-a') });
+      });
+      await settle(50);
+      expect(older!.parent).toBeNull();
+      expect(getNpcRenderGroup('t10-talker-a')).toBe(newer);
+
+      // The newer body's own unmount removes it.
+      await r3f.act(async () => root2.unmount());
+      expect(getNpcRenderGroup('t10-talker-a')).toBeUndefined();
+      expect(reported).toEqual([]);
+      await teardown(root);
+    },
+    30_000,
+  );
+
+  test(
+    'registry: a newer same-id body unmounting FIRST leaves the older, still-mounted body registered',
+    async () => {
+      const { root } = await settledWorld(false);
+      const older = getNpcRenderGroup('t10-talker-a');
+      expect(older).toBeDefined();
+      const { root2, newer } = await mountSameIdBody(older!);
+      expect(getNpcRenderGroup('t10-talker-a')).toBe(newer);
+
+      // The NEWER body unmounts while the older one stays mounted: the
+      // overlays must keep following the older body, not drop to raw.
+      await r3f.act(async () => root2.unmount());
+      expect(older!.parent).not.toBeNull();
+      expect(getNpcRenderGroup('t10-talker-a')).toBe(older);
+
+      // The older body's own unmount removes the last entry.
+      await r3f.act(async () => {
+        useNpcStore.setState({ npcs: useNpcStore.getState().npcs.filter((n) => n.id !== 't10-talker-a') });
+      });
+      await settle(50);
+      expect(getNpcRenderGroup('t10-talker-a')).toBeUndefined();
+      expect(reported).toEqual([]);
+      await teardown(root);
+    },
+    30_000,
+  );
+});
+
+/** A second body with the SAME id as 't10-talker-a' (a fallback / remount)
+ * in its own root; another species, so it is its own VRM instance. */
+async function mountSameIdBody(older: THREE.Object3D) {
+  const talker = useNpcStore.getState().npcs.find((n) => n.id === 't10-talker-a')!;
+  const { VRMNpcMesh } = await import('./arena-npcs');
+  const canvas = testWindow.document.createElement('canvas');
+  testWindow.document.body.appendChild(canvas);
+  const root2 = r3f.createRoot(canvas as unknown as HTMLCanvasElement);
+  await root2.configure({
+    gl: fakeRenderer(canvas) as never,
+    size: { width: 320, height: 200, top: 0, left: 0 },
+    frameloop: 'never',
+  });
+  await r3f.act(async () => {
+    root2.render(
+      createElement(
+        Suspense,
+        { fallback: null },
+        createElement(VRMNpcMesh, { npc: { ...talker, species: 'milady_official_1' } }),
+      ),
+    );
+  });
+  await waitFor(() => getNpcRenderGroup('t10-talker-a') !== older, 'the newer same-id body registered');
+  const newer = getNpcRenderGroup('t10-talker-a')!;
+  expect(newer.getObjectByName(`fake-vrm:${vrmPathForSpecies('milady_official_1')}`)).toBeDefined();
+  return { root2, newer };
+}

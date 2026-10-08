@@ -1,4 +1,5 @@
-import { Connection } from '@solana/web3.js';
+import type { Connection } from '@solana/web3.js';
+import { createMainnetConnection } from './solana-mainnet-rpc';
 
 /**
  * ONE mainnet RPC knob for the Trading Floor fleet.
@@ -13,7 +14,13 @@ import { Connection } from '@solana/web3.js';
  *   1. `HELIUS_RPC_URL` — explicit override (must be https and a mainnet host).
  *   2. `HELIUS_API_KEY` — the canonical knob; Helius mainnet URL is derived.
  *   3. null — execution refuses `not_configured`; background loops stay idle.
- * The public mainnet-beta endpoint is deliberately NOT a fallback for execution.
+ * The public mainnet-beta endpoint is deliberately NOT a substitute for this
+ * configuration: with neither knob set the fleet stays `not_configured`.
+ *
+ * 2026-10-08 Helius quota outage: a CONFIGURED primary now fails over per request
+ * to the public mainnet RPC (`solana-mainnet-rpc.ts`) when Helius answers 429 /
+ * 5xx / transport error, so arena chain-checks keep reading. If BOTH endpoints
+ * fail, the read still throws and every caller still fails closed.
  */
 export function tradingMainnetRpcUrl(): string | null {
   const explicit = process.env.HELIUS_RPC_URL?.trim();
@@ -41,7 +48,7 @@ export function tradingRpcConfigured(): boolean {
 export function tradingConnection(): Connection {
   const url = tradingMainnetRpcUrl();
   if (!url) throw new Error('[trading-floor] RPC is not configured');
-  return new Connection(url, 'confirmed');
+  return createMainnetConnection('confirmed', url);
 }
 
 const lastAlertAt = new Map<string, number>();
