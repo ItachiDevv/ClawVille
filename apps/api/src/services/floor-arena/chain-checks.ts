@@ -655,7 +655,8 @@ let loggedOutageEpisode: string | null = null;
  * - episode open and `now < downUntil`: check NOTHING, return `skipped: 'rpc_outage'`. The breaker would send every
  *   read to the public fallback, which refuses `getTokenLargestAccounts` (HTTP 429 on a single call, measured
  *   2026-10-08), so no check could complete and each attempt would only burn the public budget that money paths share.
- *   No verdict is written: coins stay chain_pending (no entry), the same as `rpc_not_configured`. One log per episode.
+ *   No new verdict is written: a coin with no pass verdict stays chain_pending (no entry), the same as `rpc_not_configured`;
+ *   a pass verdict still inside the 30-minute entry freshness window keeps its normal effect. One log per episode.
  * - episode open and `now >= downUntil` (half-open): check OUTAGE_PROBE_CHECKS coin, alone. Its first read goes to the
  *   primary: a good answer closes the episode (the next tick is normal); a failure opens a new window (the next tick
  *   skips again) and the coin stores a transient `chain_check_error`, never a pass.
