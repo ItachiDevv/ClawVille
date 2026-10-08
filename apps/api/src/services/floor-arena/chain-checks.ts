@@ -692,7 +692,8 @@ export async function runChainCheckTick(
         loggedOutageEpisode = episode;
         console.warn(
           `[floor-arena] chain checks paused: mainnet RPC primary down until ${status.downUntil}; the public fallback `
-          + 'refuses getTokenLargestAccounts, so coins stay chain_pending until the primary answers',
+          + 'refuses getTokenLargestAccounts, so no new verdicts until the primary answers (coins with no fresh pass '
+          + 'verdict stay chain_pending)',
         );
       }
       return { checked: 0, passed: 0, errors: 0, skipped: 'rpc_outage' };
