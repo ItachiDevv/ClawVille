@@ -61,6 +61,8 @@ const CHECK_CONCURRENCY = 4;
  * the fallback: at 2 coins per tick, 52 of 60 checks still failed `rpc_rate_limited`, and each attempt only burned the
  * shared public budget that wallet withdraw, agent pay and land refunds need. While a breaker episode is open, a tick
  * checks nothing inside the window and exactly OUTAGE_PROBE_CHECKS coin, alone, after it (see runChainCheckTick).
+ * Verified on staging `bb4b46da` (2026-10-08 10:24Z, Helius quota-dead): no chain verdict and no fallback HTTP 429
+ * during the window, one "chain checks paused" log line, while money-path reads answered through the fallback.
  */
 export const OUTAGE_PROBE_CHECKS = 1;
 /**
