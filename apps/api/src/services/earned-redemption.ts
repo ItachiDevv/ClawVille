@@ -57,6 +57,7 @@ import {
 import { enqueueClvBuy, getClvSwapWalletPubkey } from './clv-swap-executor';
 import { executeQueuedClvBuy } from './clv-swap-live';
 import { getClvMainnetConnection, loadClvSwapKeypair } from './clv-swap-custody';
+import { confirmSignatureByPolling } from './solana-mainnet-rpc';
 import { decryptSecretKey } from './keypair-vault';
 import { readSplTokenBalance } from './solana-token-balance';
 import { CLV_MINT } from './clv-price-oracle';
@@ -678,17 +679,20 @@ async function loadBackingKeypair(walletId: string): Promise<Keypair> {
 async function confirm(
   conn: Connection,
   signature: string,
-  blockhash: string,
+  _blockhash: string,
   lastValidBlockHeight: number,
 ): Promise<{ outcome: 'confirmed' | 'failed'; slot: number }> {
-  const out = await conn.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
-  if (out.value.err) return { outcome: 'failed', slot: out.context.slot };
-  const statuses = await conn.getSignatureStatuses([signature], { searchTransactionHistory: true });
-  const status = statuses.value[0];
-  if (!status || status.err || !status.confirmationStatus || status.confirmationStatus === 'processed') {
-    throw new Error('confirmed_signature_slot_indeterminate');
-  }
-  return { outcome: 'confirmed', slot: status.slot };
+  // HTTP status polling, no websocket (the ws URL is Helius-derived and dies
+  // with a Helius quota outage). It returns only a 'confirmed'/'finalized'
+  // status, with that status's own slot; 'expired' THROWS = ambiguous →
+  // reconcile, as a web3.js confirm throw did. Expiry is judged by
+  // `lastValidBlockHeight` (the signed tx is bound to its blockhash).
+  const res = await confirmSignatureByPolling(conn, signature, {
+    lastValidBlockHeight,
+    commitment: 'confirmed',
+  });
+  if (res.status === 'expired') throw new Error('confirmed_signature_slot_indeterminate');
+  return { outcome: res.status === 'failed' ? 'failed' : 'confirmed', slot: res.slot };
 }
 
 async function markRedemptionReconcile(id: string, reason: string): Promise<void> {

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn, type Mock } from 'bun:test';
+import type { Connection } from '@solana/web3.js';
 import * as alertModule from '../alert-error';
 import {
   PUBLIC_MAINNET_RPC_URL,
+  confirmSignatureByPolling,
   __resetMainnetRpcStateForTests,
   __setMainnetRpcNowForTests,
   createMainnetConnection,
@@ -295,5 +297,111 @@ describe('createMainnetConnection', () => {
   it('accepts a ConnectionConfig and keeps its commitment', () => {
     expect(createMainnetConnection({ commitment: 'finalized' }).commitment).toBe('finalized');
     expect(createMainnetConnection().rpcEndpoint).toBe(PRIMARY);
+  });
+});
+
+describe('confirmSignatureByPolling (HTTP only, no websocket)', () => {
+  type St = { err: unknown; confirmationStatus: string | null; slot: number } | null;
+  function fakeConn(statuses: St[], heights: number[]) {
+    const statusCalls: Array<{ searchTransactionHistory: boolean }> = [];
+    let heightCalls = 0;
+    const conn = {
+      getSignatureStatuses: async (_sigs: string[], cfg: { searchTransactionHistory: boolean }) => {
+        statusCalls.push(cfg);
+        const v = statuses.length > 1 ? statuses.shift()! : statuses[0];
+        return { context: { slot: 1 }, value: [v] };
+      },
+      getBlockHeight: async () => {
+        heightCalls += 1;
+        return heights.length > 1 ? heights.shift()! : heights[0];
+      },
+    };
+    return { conn: conn as unknown as Connection, statusCalls, heights: () => heightCalls };
+  }
+  const noSleep = async () => {};
+
+  it('confirmed: returns once the status reaches confirmed', async () => {
+    const f = fakeConn(
+      [null, { err: null, confirmationStatus: 'processed', slot: 9 }, { err: null, confirmationStatus: 'confirmed', slot: 10 }],
+      [100],
+    );
+    const r = await confirmSignatureByPolling(f.conn, 'sig', { lastValidBlockHeight: 200, sleep: noSleep });
+    expect(r).toEqual({ status: 'confirmed', slot: 10 });
+    expect(f.statusCalls.every((c) => c.searchTransactionHistory === false)).toBe(true);
+  });
+
+  it('err: final only at the commitment level; a processed err is not final', async () => {
+    const f = fakeConn(
+      [
+        { err: { InstructionError: [0, 'Custom'] }, confirmationStatus: 'processed', slot: 5 },
+        { err: { InstructionError: [0, 'Custom'] }, confirmationStatus: 'confirmed', slot: 6 },
+      ],
+      [100],
+    );
+    const r = await confirmSignatureByPolling(f.conn, 'sig', { lastValidBlockHeight: 200, sleep: noSleep });
+    expect(r).toEqual({ status: 'failed', err: { InstructionError: [0, 'Custom'] }, slot: 6 });
+    expect(f.statusCalls.length).toBe(2);
+  });
+
+  it('expired-then-found: past lastValidBlockHeight, the history check finds it confirmed', async () => {
+    const f = fakeConn([null, { err: null, confirmationStatus: 'finalized', slot: 77 }], [201]);
+    const r = await confirmSignatureByPolling(f.conn, 'sig', { lastValidBlockHeight: 200, sleep: noSleep });
+    expect(r).toEqual({ status: 'confirmed', slot: 77 });
+    expect(f.statusCalls.map((c) => c.searchTransactionHistory)).toEqual([false, true]);
+  });
+
+  it('expired-not-found: returns expired after ONE history check', async () => {
+    const f = fakeConn([null], [150, 201]);
+    const r = await confirmSignatureByPolling(f.conn, 'sig', { lastValidBlockHeight: 200, sleep: noSleep });
+    expect(r).toEqual({ status: 'expired' });
+    expect(f.statusCalls.map((c) => c.searchTransactionHistory)).toEqual([false, false, true]);
+  });
+
+  it('finalized commitment: confirmed is not enough', async () => {
+    const f = fakeConn(
+      [{ err: null, confirmationStatus: 'confirmed', slot: 3 }, { err: null, confirmationStatus: 'finalized', slot: 3 }],
+      [100],
+    );
+    const r = await confirmSignatureByPolling(f.conn, 'sig', { lastValidBlockHeight: 200, commitment: 'finalized', sleep: noSleep });
+    expect(r).toEqual({ status: 'confirmed', slot: 3 });
+    expect(f.statusCalls.length).toBe(2);
+  });
+
+  it('transient RPC errors are retried; N consecutive errors throw (ambiguous) with the key redacted', async () => {
+    let n = 0;
+    const conn = {
+      getSignatureStatuses: async () => {
+        n += 1;
+        throw new Error(`fetch failed ${PRIMARY}`);
+      },
+      getBlockHeight: async () => 1,
+    } as unknown as Connection;
+    const err = await confirmSignatureByPolling(conn, 'sig', {
+      lastValidBlockHeight: 200,
+      sleep: noSleep,
+      maxConsecutiveRpcErrors: 3,
+    }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toContain(SECRET);
+    expect(n).toBe(3);
+  });
+
+  it('through the failover connection: Helius quota-dead, public RPC answers, no websocket used', async () => {
+    primaryHandler = quota;
+    fallbackHandler = (_url, init) => {
+      const req = JSON.parse(String(init?.body)) as { id: string; method: string };
+      const result = req.method === 'getSignatureStatuses'
+        ? { context: { slot: 50 }, value: [{ slot: 49, confirmations: 1, err: null, confirmationStatus: 'confirmed' }] }
+        : 10;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const conn = createMainnetConnection('confirmed', PRIMARY);
+    const r = await confirmSignatureByPolling(conn, '1'.repeat(64), { lastValidBlockHeight: 200, sleep: async () => {} });
+    expect(r).toEqual({ status: 'confirmed', slot: 49 });
+    expect(primaryCalls()).toBe(1);
+    expect(fallbackCalls()).toBe(1);
   });
 });

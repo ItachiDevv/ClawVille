@@ -97,6 +97,7 @@ import {
   legacySettlementAmounts,
   type X402SettlementAmounts,
 } from '../services/x402-settlement-accounting';
+import { prepareWithMainnetRpcFallback } from '../services/agent-pay';
 
 export const ctTopupRoutes = new Hono<ActivityAuthContext>();
 
@@ -182,8 +183,12 @@ export async function prepareInboundCustodialAttempt(
   const nowMs = Date.now();
   const permit = acquirePayAiCircuitPermit(nowMs);
   try {
+    // Each prepare only builds + payer-signs (nothing is transmitted), so a
+    // MAINNET Helius RPC failure retries that prepare once on the public
+    // mainnet RPC (`prepareWithMainnetRpcFallback`). The permit and the
+    // facilitator fee payer are NOT re-acquired by the retry.
     if (!permit) {
-      const meridian = await prepareInboundMeridianPayment(input);
+      const meridian = await prepareWithMainnetRpcFallback(input, prepareInboundMeridianPayment);
       return meridian
         ? { permit: null, prepared: { payerPubkey: input.payerPubkey, meridian }, skipPayAi: true }
         : null;
@@ -191,14 +196,17 @@ export async function prepareInboundCustodialAttempt(
 
     const feePayer = await resolveFacilitatorFeePayer(input.network);
     if (feePayer) {
-      const prepared = await prepareInboundCustodialExactPayment({ ...input, feePayer });
+      const prepared = await prepareWithMainnetRpcFallback(
+        { ...input, feePayer },
+        prepareInboundCustodialExactPayment,
+      );
       return { permit, prepared, skipPayAi: false };
     }
 
     // `/supported` was unavailable. Do not burn/observe the permit as a verify
     // failure; direct Meridian is still allowed and the finally path releases
     // an unobserved half-open probe with a refreshed cooldown.
-    const meridian = await prepareInboundMeridianPayment(input);
+    const meridian = await prepareWithMainnetRpcFallback(input, prepareInboundMeridianPayment);
     if (!meridian) {
       releasePayAiCircuitPermitWithoutObservation(permit, Date.now());
       return null;

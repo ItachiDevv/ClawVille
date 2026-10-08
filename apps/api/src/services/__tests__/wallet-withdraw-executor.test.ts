@@ -90,6 +90,10 @@ const {
   WalletWithdrawCustodyError,
   WITHDRAW_TX_FEE_LAMPORTS,
 } = await import('../wallet-withdraw-executor');
+const { getClvMainnetConnection, _resetClvSwapCustodyCachesForTest } = await import(
+  '../clv-swap-custody'
+);
+const { __resetMainnetRpcStateForTests } = await import('../solana-mainnet-rpc');
 
 if (!DB_URL_WAS_SET) {
   delete process.env.DATABASE_URL;
@@ -954,6 +958,92 @@ describe('HAPPY PATHS — each asset; capture-before-send ordering', () => {
     expect(data[0]).toBe(12);
     expect(data.readBigUInt64LE(1)).toBe(123_456n);
     expect(data[9]).toBe(6);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('RPC FAILOVER — Helius quota out (2026-10-08); same signed bytes, same signature', () => {
+  it('Helius 429 "max usage reached" on sendTransaction → public RPC gets the IDENTICAL body; ws-free confirm; row records that signature', async () => {
+    const origFetch = globalThis.fetch;
+    const origKey = process.env.HELIUS_API_KEY;
+    process.env.HELIUS_API_KEY = 'test-key';
+    _resetClvSwapCustodyCachesForTest();
+    __resetMainnetRpcStateForTests();
+    const calls: { host: string; method: string; body: string }[] = [];
+    let fallbackEchoed: string | null = null;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const host = new URL(url).host;
+      const body = typeof init?.body === 'string' ? init.body : '';
+      const req = body ? (JSON.parse(body) as { id: unknown; method: string; params: unknown[] }) : null;
+      calls.push({ host, method: req?.method ?? '', body });
+      if (host === 'mainnet.helius-rpc.com') {
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: req?.id, error: { code: -32429, message: 'max usage reached' } }),
+          { status: 429, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (host === 'api.mainnet-beta.solana.com' && req?.method === 'sendTransaction') {
+        const tx = Transaction.from(Buffer.from(req.params[0] as string, 'base64'));
+        fallbackEchoed = bs58.encode(tx.signature!);
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: fallbackEchoed }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (host === 'api.mainnet-beta.solana.com' && req?.method === 'getSignatureStatuses') {
+        // Only the row's own signature may be confirmed.
+        const asked = (req.params[0] as string[])[0];
+        const value = asked === fallbackEchoed
+          ? [{ slot: 321, confirmations: 1, err: null, confirmationStatus: 'confirmed' }]
+          : [null];
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { context: { slot: 322 }, value } }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response('not found', { status: 404 });
+    }) as typeof fetch;
+    try {
+      const h = makeHarness();
+      const conn = getClvMainnetConnection();
+      // The endpoint string guards read is still the Helius MAINNET URL.
+      expect(conn.rpcEndpoint).toContain('mainnet.helius-rpc.com');
+      expect(() => assertMainnetWithdrawConnection(conn)).not.toThrow();
+      // Real web3.js send AND the default confirm (HTTP status polling, no
+      // websocket: nothing answers a ws here) through the failover
+      // connection; only the blockhash stays harness-mocked.
+      const deps: WalletWithdrawDeps = {
+        ...h.deps,
+        connection: () => conn,
+        sendRawTransaction: undefined,
+        confirmTransaction: undefined,
+      };
+      const res = await requestWithdrawal(requestOf(), deps);
+      expect(res.ok).toBe(true);
+      if (!res.ok) throw new Error('unreachable');
+
+      const primarySends = calls.filter((c) => c.host === 'mainnet.helius-rpc.com' && c.method === 'sendTransaction');
+      const fallbackSends = calls.filter((c) => c.host === 'api.mainnet-beta.solana.com' && c.method === 'sendTransaction');
+      expect(calls.some((c) => c.method === 'getSignatureStatuses')).toBe(true);
+      expect(h.log).not.toContain('confirm'); // the harness confirm mock was NOT used
+      expect(primarySends.length).toBe(1); // one try, no web3.js 429 retry storm
+      expect(fallbackSends.length).toBe(1); // re-posted exactly once
+      expect(fallbackSends[0].body).toBe(primarySends[0].body); // byte-identical signed tx, no re-sign
+      const row = [...h.rows.values()][0];
+      expect(row.status).toBe('sent');
+      expect(fallbackEchoed).not.toBeNull();
+      expect(row.txSignature).toBe(fallbackEchoed!);
+      expect(res.withdrawal.txSignature).toBe(fallbackEchoed!);
+      // The api key never reaches the fallback request.
+      expect(calls.filter((c) => c.host === 'api.mainnet-beta.solana.com').every((c) => !c.body.includes('test-key'))).toBe(true);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (origKey === undefined) delete process.env.HELIUS_API_KEY;
+      else process.env.HELIUS_API_KEY = origKey;
+      _resetClvSwapCustodyCachesForTest();
+      __resetMainnetRpcStateForTests();
+    }
   });
 });
 

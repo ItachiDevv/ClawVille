@@ -287,3 +287,92 @@ export function __resetMainnetRpcStateForTests(): void {
 export function __setMainnetRpcNowForTests(fn?: () => number): void {
   nowFn = fn ?? (() => Date.now());
 }
+
+export type PolledConfirmation =
+  | { status: 'confirmed'; slot: number }
+  | { status: 'failed'; err: unknown; slot: number }
+  | { status: 'expired' };
+
+export interface ConfirmByPollingOptions {
+  /** The `lastValidBlockHeight` returned with the blockhash the tx was signed with. */
+  lastValidBlockHeight: number;
+  /** The level that counts, for success AND for failure. Default 'confirmed'. */
+  commitment?: 'confirmed' | 'finalized';
+  pollMs?: number;
+  signal?: AbortSignal;
+  /** Throw after this many consecutive failed RPC rounds (both endpoints). Default 5. */
+  maxConsecutiveRpcErrors?: number;
+  /** History checks after the block height passed `lastValidBlockHeight`, while the tx is seen but below `commitment`. Default 15. */
+  maxChecksAfterExpiry?: number;
+  /** Test seam. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function reachedCommitment(
+  status: string | null | undefined,
+  commitment: 'confirmed' | 'finalized',
+): boolean {
+  return commitment === 'finalized' ? status === 'finalized' : status === 'confirmed' || status === 'finalized';
+}
+
+/**
+ * Confirm a sent signature over HTTP only, with no websocket.
+ *
+ * web3.js `confirmTransaction` sends its one HTTP status check only after the
+ * websocket subscription is up, and the websocket URL is derived from the
+ * primary (Helius) URL. With Helius quota out the subscription never comes
+ * up, and a landed tx expires as "unconfirmed". This polls
+ * `getSignatureStatuses` and `getBlockHeight` through the connection's
+ * (failover) fetch instead.
+ *
+ * - The status counts (success OR error) only once `confirmationStatus`
+ *   reaches `commitment`. A `processed` error is never final: that fork can
+ *   drop and the same signed tx can still land elsewhere.
+ * - After the block height passes `lastValidBlockHeight` it checks with
+ *   `searchTransactionHistory: true`: reached -> confirmed / failed, not seen
+ *   -> 'expired', seen below `commitment` -> keep checking (bounded).
+ * - It never sends anything. 'expired' and a throw are AMBIGUOUS for the
+ *   caller (the same meaning as a web3.js confirm throw).
+ */
+export async function confirmSignatureByPolling(
+  connection: Connection,
+  signature: string,
+  opts: ConfirmByPollingOptions,
+): Promise<PolledConfirmation> {
+  const commitment = opts.commitment ?? 'confirmed';
+  const pollMs = opts.pollMs ?? 2_000;
+  const maxErrors = opts.maxConsecutiveRpcErrors ?? 5;
+  const maxAfterExpiry = opts.maxChecksAfterExpiry ?? 15;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let rpcErrors = 0;
+  let expired = false;
+  let checksAfterExpiry = 0;
+  for (;;) {
+    if (opts.signal?.aborted) throw opts.signal.reason ?? new Error('confirm aborted');
+    try {
+      const { value } = await connection.getSignatureStatuses([signature], {
+        searchTransactionHistory: expired,
+      });
+      const s = value[0];
+      if (s && reachedCommitment(s.confirmationStatus, commitment)) {
+        return s.err ? { status: 'failed', err: s.err, slot: s.slot } : { status: 'confirmed', slot: s.slot };
+      }
+      rpcErrors = 0;
+      if (expired) {
+        checksAfterExpiry += 1;
+        if (!s || checksAfterExpiry >= maxAfterExpiry) return { status: 'expired' };
+      } else if ((await connection.getBlockHeight(commitment)) > opts.lastValidBlockHeight) {
+        expired = true;
+        continue; // the history check runs now, without a sleep
+      }
+    } catch (err) {
+      rpcErrors += 1;
+      if (rpcErrors >= maxErrors) {
+        throw new Error(
+          `[${SOURCE}] confirm polling failed ${rpcErrors}x: ${redactRpcUrl(err instanceof Error ? err.message : String(err))}`,
+        );
+      }
+    }
+    await sleep(pollMs);
+  }
+}

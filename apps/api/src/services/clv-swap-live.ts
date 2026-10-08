@@ -124,6 +124,7 @@ import {
   loadX402MerchantKeypair,
   getClvMainnetConnection,
 } from './clv-swap-custody';
+import { confirmSignatureByPolling } from './solana-mainnet-rpc';
 import { USDC_MINT_MAINNET, SOLANA_MAINNET_CAIP2 } from './x402-payai';
 import { loadX402Config } from './x402-config';
 import { resolveTopupNetwork } from '../routes/ct-topup';
@@ -1309,12 +1310,19 @@ function resolveDeps(deps?: ClvSwapLiveDeps): Required<ClvSwapLiveDeps> {
       (async (conn, raw) => conn.sendRawTransaction(raw, { skipPreflight: false })),
     confirmTransaction:
       deps?.confirmTransaction ??
-      (async (conn, signature, blockhash, lastValidBlockHeight) => {
-        const res = await conn.confirmTransaction(
-          { signature, blockhash, lastValidBlockHeight },
-          'confirmed',
-        );
-        return res.value.err ? 'failed' : 'confirmed';
+      (async (conn, signature, _blockhash, lastValidBlockHeight) => {
+        // HTTP status polling, no websocket (the ws URL is Helius-derived
+        // and dies with a Helius quota outage). Only a 'confirmed'-level
+        // status counts; 'expired' THROWS = ambiguous, as a web3.js
+        // confirm throw did.
+        const res = await confirmSignatureByPolling(conn, signature, {
+          lastValidBlockHeight,
+          commitment: 'confirmed',
+        });
+        if (res.status === 'expired') {
+          throw new Error(`signature ${signature} not confirmed before lastValidBlockHeight`);
+        }
+        return res.status === 'failed' ? 'failed' : 'confirmed';
       }),
     sleep: deps?.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     alert: deps?.alert ?? alertError,

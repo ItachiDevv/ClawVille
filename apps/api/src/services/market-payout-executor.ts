@@ -111,6 +111,7 @@ import {
   sql,
 } from '@clawville/database';
 import { loadClvSwapKeypair, getClvMainnetConnection } from './clv-swap-custody';
+import { confirmSignatureByPolling } from './solana-mainnet-rpc';
 import { assertMainnetRealMoneyContext } from './clv-swap-live';
 import { usdcToMicro } from './clv-swap-executor';
 import { CLV_MINT } from './clv-price-oracle';
@@ -621,12 +622,19 @@ function resolveDeps(deps?: MarketPayoutDeps): Required<MarketPayoutDeps> {
       (async (conn, raw) => conn.sendRawTransaction(raw, { skipPreflight: false })),
     confirmTransaction:
       deps?.confirmTransaction ??
-      (async (conn, signature, blockhash, lastValidBlockHeight) => {
-        const res = await conn.confirmTransaction(
-          { signature, blockhash, lastValidBlockHeight },
-          'confirmed',
-        );
-        return res.value.err ? 'failed' : 'confirmed';
+      (async (conn, signature, _blockhash, lastValidBlockHeight) => {
+        // HTTP status polling, no websocket (the ws URL is Helius-derived
+        // and dies with a Helius quota outage). Only a 'confirmed'-level
+        // status counts; 'expired' THROWS = ambiguous, as a web3.js
+        // confirm throw did.
+        const res = await confirmSignatureByPolling(conn, signature, {
+          lastValidBlockHeight,
+          commitment: 'confirmed',
+        });
+        if (res.status === 'expired') {
+          throw new Error(`signature ${signature} not confirmed before lastValidBlockHeight`);
+        }
+        return res.status === 'failed' ? 'failed' : 'confirmed';
       }),
     getSignatureStatus:
       deps?.getSignatureStatus ??

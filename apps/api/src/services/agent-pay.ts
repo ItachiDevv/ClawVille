@@ -51,6 +51,11 @@ import {
 } from './custodial-x402';
 import { alertError } from './alert-error';
 import {
+  createMainnetConnection,
+  fallbackMainnetRpcUrl,
+  redactRpcUrl,
+} from './solana-mainnet-rpc';
+import {
   acquirePayAiCircuitPermit,
   recordPayAiCircuitAvailable,
   recordPayAiCircuitFailure,
@@ -659,13 +664,69 @@ export function resolveAgentPayRail(): AgentPayRail {
   return { network, rpcUrl, allowed: isHostedPayAiFacilitatorUrl(cfg.facilitatorUrl) };
 }
 
+/**
+ * True only for an https Helius MAINNET host (the same host test
+ * `solana-mainnet-rpc.ts` uses to arm its failover). A devnet Helius host,
+ * the public endpoint, and any other operator override return false.
+ */
+export function isHeliusMainnetRpcUrl(rpcUrl: string): boolean {
+  try {
+    const u = new URL(rpcUrl);
+    const host = u.hostname.toLowerCase();
+    return u.protocol === 'https:' && host.endsWith('helius-rpc.com') && host.includes('mainnet');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read connection for the agent-pay rail (balances, ATA probe, resume
+ * signature lookup, Tier-1 poster balance). A MAINNET rail on a Helius
+ * mainnet URL fails over per request to the public mainnet RPC
+ * (2026-10-08 Helius quota outage); `rpcEndpoint` stays `rail.rpcUrl`.
+ * Devnet and every other override keep the plain Connection, unchanged.
+ */
+export function agentPayConnection(rail: Pick<AgentPayRail, 'network' | 'rpcUrl'>): Connection {
+  return rail.network === 'mainnet' && isHeliusMainnetRpcUrl(rail.rpcUrl)
+    ? createMainnetConnection('confirmed', rail.rpcUrl)
+    : new Connection(rail.rpcUrl, 'confirmed');
+}
+
+/**
+ * Prepare (build + payer-sign) with one retry on the public mainnet RPC.
+ * The x402 SVM client reads the mint and a blockhash through its own
+ * transport, so the fetch-level failover cannot reach it. Prepare never
+ * transmits anything (PayAI submits later, in `execute`), so a failed first
+ * attempt left nothing on the wire: the retry signs a NEW payload with a
+ * fresh blockhash and the first one is discarded unsent. Only a MAINNET
+ * prepare on a Helius mainnet URL retries; devnet and other overrides throw
+ * the first error unchanged.
+ */
+export async function prepareWithMainnetRpcFallback<
+  I extends { network: X402Network; rpcUrl: string },
+  R,
+>(input: I, prepare: (input: I) => Promise<R>): Promise<R> {
+  try {
+    return await prepare(input);
+  } catch (err) {
+    if (input.network !== 'mainnet' || !isHeliusMainnetRpcUrl(input.rpcUrl)) throw err;
+    const fallbackUrl = fallbackMainnetRpcUrl();
+    console.warn(
+      `[agent-pay] mainnet prepare failed on the primary RPC (${redactRpcUrl(
+        err instanceof Error ? err.message : String(err),
+      )}); retrying once on ${new URL(fallbackUrl).host}`,
+    );
+    return prepare({ ...input, rpcUrl: fallbackUrl });
+  }
+}
+
 function deps(input?: AgentPayDeps) {
   return {
     db: input?.db ?? defaultDb,
     readUsdcBalance: input?.readUsdcBalance ?? (async (network: X402Network, owner: string) => {
       const rail = (input?.resolveRail ?? resolveAgentPayRail)();
       const balance = await readSplTokenBalance(
-        new Connection(rail.rpcUrl, 'confirmed'), usdcMintForNetwork(network), owner,
+        agentPayConnection(rail), usdcMintForNetwork(network), owner,
       );
       return balance.amountAtomic;
     }),
@@ -674,7 +735,7 @@ function deps(input?: AgentPayDeps) {
         try {
           const rail = (input?.resolveRail ?? resolveAgentPayRail)();
           return await readAssociatedTokenAccountExists(
-            new Connection(rail.rpcUrl, 'confirmed'),
+            agentPayConnection(rail),
             usdcMintForNetwork(network),
             owner,
           );
@@ -692,7 +753,9 @@ function deps(input?: AgentPayDeps) {
       if (publicKey !== row.publicKey) throw new Error('custodial wallet pubkey mismatch');
       return { publicKey, secretKey: keypair.secretKey };
     }),
-    prepare: input?.prepare ?? prepareCustodialExactPayment,
+    prepare: input?.prepare
+      ?? ((prepInput: Parameters<typeof prepareCustodialExactPayment>[0]) =>
+        prepareWithMainnetRpcFallback(prepInput, prepareCustodialExactPayment)),
     execute: input?.execute ?? ((prep: PreparedCustodialExactPayment) => executePreparedExactPayment(prep)),
     mintEarned: input?.mintEarned ?? mintEarned,
     resolveFeePayer: input?.resolveFeePayer ?? resolveFacilitatorFeePayer,
