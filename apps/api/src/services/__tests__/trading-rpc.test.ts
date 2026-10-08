@@ -9,7 +9,7 @@ import {
   tradingMainnetRpcUrl,
   tradingRpcConfigured,
 } from '../trading-rpc';
-import { __resetMainnetRpcStateForTests } from '../solana-mainnet-rpc';
+import { __resetMainnetRpcStateForTests, __markFallbackProvenForTests } from '../solana-mainnet-rpc';
 
 const saved = {
   HELIUS_RPC_URL: process.env.HELIUS_RPC_URL,
@@ -23,7 +23,7 @@ afterEach(() => {
     else process.env[name] = value;
   }
   globalThis.fetch = realFetch;
-  __resetMainnetRpcStateForTests();
+  __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
   resetTradingLoopAlertsForTest();
 });
 
@@ -80,7 +80,7 @@ describe('trading mainnet RPC resolver (2026-09-16 pager-storm fix)', () => {
     expect(await tradingConnection().getSlot('confirmed')).toBe(424_242);
     expect(hosts).toEqual(['mainnet.helius-rpc.com', 'api.mainnet-beta.solana.com']);
 
-    __resetMainnetRpcStateForTests();
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
     stubMainnetFetch(503);
     await expect(tradingConnection().getSlot('confirmed')).rejects.toThrow();
   });

@@ -1428,7 +1428,7 @@ const { agentPayConnection, prepareWithMainnetRpcFallback } = await import('../a
 const { readSplTokenBalance } = await import('../solana-token-balance');
 const { prepareCustodialExactPayment } = await import('../custodial-x402');
 const { usdcMintForNetwork } = await import('../x402-payai');
-const { __resetMainnetRpcStateForTests } = await import('../solana-mainnet-rpc');
+const { __resetMainnetRpcStateForTests, __markFallbackProvenForTests } = await import('../solana-mainnet-rpc');
 
 describe('agent-pay rail — Helius quota-dead primary fails over to the public mainnet RPC', () => {
   const HELIUS = 'https://mainnet.helius-rpc.com/?api-key=agentpay-test-key';
@@ -1442,7 +1442,7 @@ describe('agent-pay rail — Helius quota-dead primary fails over to the public 
   ): Promise<T> {
     const realFetch = globalThis.fetch;
     const seen: Seen[] = [];
-    __resetMainnetRpcStateForTests();
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       const host = new URL(url).host;
@@ -1467,7 +1467,7 @@ describe('agent-pay rail — Helius quota-dead primary fails over to the public 
       return await run(seen);
     } finally {
       globalThis.fetch = realFetch;
-      __resetMainnetRpcStateForTests();
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
     }
   }
 

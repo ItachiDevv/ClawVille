@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Keypair } from '@solana/web3.js';
-import { __resetMainnetRpcStateForTests } from '../solana-mainnet-rpc';
+import { __resetMainnetRpcStateForTests, __markFallbackProvenForTests } from '../solana-mainnet-rpc';
 import { getWalletClvBalance } from '../linked-wallet-clv-balance';
 import { CLV_MINT, fetchHeliusPrice } from '../clv-price-oracle';
 import { createDefaultTradeObserverDeps } from '../trade-observer';
@@ -38,12 +38,12 @@ beforeEach(() => {
   process.env.HELIUS_API_KEY = 'test-key';
   delete process.env.HELIUS_RPC_URL;
   delete process.env.SOLANA_MAINNET_FALLBACK_RPC_URL;
-  __resetMainnetRpcStateForTests();
+  __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
 });
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  __resetMainnetRpcStateForTests();
+  __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
   for (const [k, v] of savedEnv) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;

@@ -93,7 +93,7 @@ const {
 const { getClvMainnetConnection, _resetClvSwapCustodyCachesForTest } = await import(
   '../clv-swap-custody'
 );
-const { __resetMainnetRpcStateForTests } = await import('../solana-mainnet-rpc');
+const { __resetMainnetRpcStateForTests, __markFallbackProvenForTests } = await import('../solana-mainnet-rpc');
 
 if (!DB_URL_WAS_SET) {
   delete process.env.DATABASE_URL;
@@ -968,7 +968,7 @@ describe('RPC FAILOVER — Helius quota out (2026-10-08); same signed bytes, sam
     const origKey = process.env.HELIUS_API_KEY;
     process.env.HELIUS_API_KEY = 'test-key';
     _resetClvSwapCustodyCachesForTest();
-    __resetMainnetRpcStateForTests();
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
     const calls: { host: string; method: string; body: string }[] = [];
     let fallbackEchoed: string | null = null;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -1042,7 +1042,7 @@ describe('RPC FAILOVER — Helius quota out (2026-10-08); same signed bytes, sam
       if (origKey === undefined) delete process.env.HELIUS_API_KEY;
       else process.env.HELIUS_API_KEY = origKey;
       _resetClvSwapCustodyCachesForTest();
-      __resetMainnetRpcStateForTests();
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
     }
   });
 });

@@ -73,7 +73,7 @@ import {
   type VerifyWalletRow,
 } from '../land-hold-transfer-verify';
 import type { AlertErrorParams } from '../alert-error';
-import { __resetMainnetRpcStateForTests } from '../solana-mainnet-rpc';
+import { __resetMainnetRpcStateForTests, __markFallbackProvenForTests } from '../solana-mainnet-rpc';
 
 const SERVICE_PATH = resolve(import.meta.dir, '../land-hold-transfer-verify.ts');
 /** Service source, for the structural invariants that guard money paths. */
@@ -1081,7 +1081,7 @@ describe('T4 mainnet RPC seam', () => {
     // Real RPC seam (getConnection), real keypair decrypt; only the store, alert sink and clock stay fake.
     _resetLandHoldVerifyDepsForTest();
     _setLandHoldVerifyDepsForTest({ store, alert: async (params) => { alerts.push(params); }, now: () => clockMs });
-    __resetMainnetRpcStateForTests();
+    __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
     const realFetch = globalThis.fetch;
     const rpcHosts: string[] = [];
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
@@ -1106,7 +1106,7 @@ describe('T4 mainnet RPC seam', () => {
       expect(alerts.filter((a) => /balance_unknown/.test(JSON.stringify(a)))).toHaveLength(0);
     } finally {
       globalThis.fetch = realFetch;
-      __resetMainnetRpcStateForTests();
+      __resetMainnetRpcStateForTests(); __markFallbackProvenForTests();
       if (savedFallback === undefined) delete process.env.SOLANA_MAINNET_FALLBACK_RPC_URL;
       else process.env.SOLANA_MAINNET_FALLBACK_RPC_URL = savedFallback;
     }
