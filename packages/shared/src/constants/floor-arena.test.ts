@@ -298,7 +298,7 @@ describe('floor arena static tables', () => {
   });
 
   test('paper costs, add-on catalog and add-on caps', () => {
-    expect(FLOOR_ARENA_PAPER_COSTS).toEqual({ buy_haircut_pct: 2.5, sell_haircut_pct: 1.0 });
+    expect(FLOOR_ARENA_PAPER_COSTS).toEqual({ buy_haircut_pct: 1.0, sell_haircut_pct: 0.5, mark_fallback_pool_fee_pct: 1.25 });
     expect(FLOOR_ARENA_ADDONS.map((addon) => addon.id)).toEqual([
       'nansen-token-screener-sol',
       'nansen-smart-money-dex-trades-sol',

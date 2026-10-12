@@ -54,7 +54,9 @@ export function ContestRules({
           ))}
           <li>
             Every paper buy costs {FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% and every paper sell costs{' '}
-            {FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% on top of the live quote, which is what a real swap costs.
+            {FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% on top of the live quote. The quote already includes the pool fee, and
+            these costs cover the network fees and account rent of a real swap. A sell filled at the DexScreener price, when
+            no quote works, also pays a {FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee.
           </li>
         </ul>
       </ArenaBlock>

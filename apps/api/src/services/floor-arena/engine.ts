@@ -206,7 +206,7 @@ export function tpSkipRunUpdate(prev: FloorArenaExitRun | null, quoteRefusal: st
 
 /**
  * A take-profit leg sells ONLY when the sell QUOTE confirms it (as the Python runner judged TP on the quote): the
- * quoted multiple for the leg = quoted proceeds / the leg's entry cost, BEFORE the 1 % sell haircut, which equals
+ * quoted multiple for the leg = quoted proceeds / the leg's entry cost, BEFORE the sell haircut, which equals
  * quoted price / entry price. The DexScreener mark only raises the trigger. No quote = not confirmed.
  * (Staging tape 2026-09-30 14:46:47Z: a TP fired on a 1.10x mark and booked a loss at the quote.)
  */

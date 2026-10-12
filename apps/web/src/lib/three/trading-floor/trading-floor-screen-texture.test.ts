@@ -213,8 +213,8 @@ const GUTTER = 6;
 
 const BASIS = {
   positionUsd: 20,
-  buyCostPct: 2.5,
-  sellCostPct: 1,
+  buyCostPct: 1,
+  sellCostPct: 0.5,
   maxOpen: 5,
 } as const;
 
@@ -1000,16 +1000,16 @@ describe('Trading Floor board — header and footer', () => {
     const mixed = houseColumns();
     mixed[1] = { ...mixed[1]!, mode: 'live' };
     expect(footerText(draw().painted)).toEqual([
-      'PAPER: $20 A POSITION, 2.5% BUY + 1% SELL COSTS. P&L = REALISED, CONTEST',
+      'PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, CONTEST',
     ]);
     expect(footerText(draw({ window: '24h' }).painted)).toEqual([
-      'PAPER: $20 A POSITION, 2.5% BUY + 1% SELL COSTS. P&L = REALISED, 24H',
+      'PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, 24H',
     ]);
     expect(footerText(draw({ columns: mixed }).painted)).toEqual([
-      'PAPER COLUMNS: $20 EACH, 2.5% BUY + 1% SELL COSTS. P&L = REALISED, CONTEST',
+      'PAPER COLUMNS: $20 EACH, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, CONTEST',
     ]);
     expect(footerText(draw({ columns: mixed, window: '24h' }).painted)).toEqual([
-      'PAPER COLUMNS: $20 EACH, 2.5% BUY + 1% SELL COSTS. P&L = REALISED, 24H',
+      'PAPER COLUMNS: $20 EACH, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, 24H',
     ]);
     expect(footerText(draw({ columns: houseColumns({ mode: 'live' }) }).painted)).toEqual(['P&L = REALISED, CONTEST']);
     expect(footerText(draw({ columns: houseColumns({ mode: 'live' }), window: '24h' }).painted)).toEqual([
@@ -1022,7 +1022,7 @@ describe('Trading Floor board — header and footer', () => {
     // An unreadable figure says N/A; a line too wide for the canvas falls back
     // to one that still says PAPER, never a cut figure and never off the canvas.
     expect(footerText(draw({ basis: { ...BASIS, positionUsd: 1e30 } }).painted)).toEqual([
-      'PAPER: N/A A POSITION, 2.5% BUY + 1% SELL COSTS. P&L = REALISED, CONTEST',
+      'PAPER: N/A A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, CONTEST',
     ]);
     expect(footerText(draw({ basis: { ...BASIS, positionUsd: 123_456.78 } }).painted)).toEqual([
       'PAPER TRADES. P&L = REALISED, CONTEST',
@@ -1282,7 +1282,7 @@ describe('Trading Floor board — page B, the contest leaderboard', () => {
     const fill = (value: string) => painted.find((p) => p.kind === 'text' && p.value === value)?.fill;
     expect(fill('+$12.40')).toBe(COLOR.gain);
     expect(fill('-$5.20')).toBe(COLOR.drop);
-    expect(footerText(painted)).toEqual(['PAPER: $20 A POSITION, 2.5% BUY + 1% SELL COSTS. P&L = REALISED, CONTEST']);
+    expect(footerText(painted)).toEqual(['PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, CONTEST']);
   });
 
   test('an empty leaderboard says NO TRADERS YET, never fake rows', () => {
