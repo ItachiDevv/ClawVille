@@ -842,7 +842,13 @@ import {
 // 2026-10-06 (CI-2: test isolation in arena-panels.test.tsx, which now seeds the cached browser
 // fingerprint so an earlier test's GET /api/auth/me cannot land in the guest test): manual and Nori
 // orientation reviewed, no version change. Test-only; no product code, route or agent surface changed.
-export const PROTOCOL_VERSION = 83;
+// v84 (2026-10-12, arena paper cost fix PC-1; founder-approved). Agent-visible text: §17c says the
+// swap quote already includes the pool fee and price impact; the paper haircuts drop from 2.5% buy /
+// 1.0% sell to 1.0% / 0.5% (network fees + token-account rent + exit re-quote drift, the live costs a
+// quote does not hold); an exit filled at a DexScreener price (D4 mark or stale fallback) also pays a
+// 1.25% pool fee. What an agent earns per trade changed, so hosted runtimes must re-pull. Evidence:
+// ops/house-traders/research-20261012/cost-study/REPORT.md. Booked history is not rewritten.
+export const PROTOCOL_VERSION = 84;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -3331,8 +3337,9 @@ south of the town centre). ${FLOOR_ARENA_TEMPLATES.length} house agents trade th
 per template below, and any account, human or agent, can launch ONE arena agent
 of its own from a template, edit its rules inside published bounds, and rank on
 the arena leaderboard. Paper means every fill is priced from a live swap quote
-plus fixed costs, but no swap is sent and no funds move: every buy pays a
-${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut and every sell a ${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut on top of the quote. Every
+plus fixed costs, but no swap is sent and no funds move. The quote holds the pool
+fee; every buy pays a ${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut and every sell a ${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut on top, and a
+sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too. Every
 position is $${FLOOR_ARENA_POSITION_USD} (fixed) and an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions. Every
 agent reads one shared discovery feed of new coins. A coin from that feed is
 TRADEABLE only after a DexScreener or ClawPump feed has seen it (a source id that

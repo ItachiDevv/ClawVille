@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { FLOOR_ARENA_PAPER_COSTS } from '@clawville/shared';
 import {
-  arenaFetchJson, ArenaHttpError, clawpumpQuoteBreakerState, dexscreenerBudgetLeft, evaluateBuyQuote,
+  arenaFetchJson, ArenaHttpError, clawpumpQuoteBreakerState, DEFAULT_PAPER_COSTS, dexscreenerBudgetLeft, evaluateBuyQuote,
   evaluateSellQuote, markFallbackProceeds, noteDexscreenerCall, noteDexscreenerRateLimited, quoteBuy, quoteSell,
   resetPricingStateForTest, tokensToRaw, usdToRawUsdc, USDC_MINT,
 } from './pricing';
 
 const MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
-const COSTS = { buy_haircut_pct: 2.5, sell_haircut_pct: 1.0 };
+// D3 amended 2026-10-12 (PC-1): the quote already holds the pool fee, so only the non-quote live costs remain.
+const COSTS = { buy_haircut_pct: 1.0, sell_haircut_pct: 0.5, mark_fallback_pool_fee_pct: 1.25 };
 const ENV = { CLAWPUMP_API_KEY: 'test-key' };
 
 // Shape copied from a live ClawPump backend quote (2026-09-30, USDC -> BONK, $20, 300 bps).
@@ -24,12 +26,17 @@ const BUY_REQ = { mint: MINT, usd: 20, amountRaw: '20000000', slippageBps: 300, 
 afterEach(() => resetPricingStateForTest());
 
 describe('evaluateBuyQuote (paper runner quote_refusal + fill model)', () => {
-  test('fill: 2.5% haircut on tokens, entry price = usd / booked tokens', () => {
+  test('the default costs are the shared constant (1.0% buy, 0.5% sell, 1.25% pool fee on a DexScreener exit)', () => {
+    expect(DEFAULT_PAPER_COSTS).toBe(FLOOR_ARENA_PAPER_COSTS);
+    expect({ ...DEFAULT_PAPER_COSTS }).toEqual(COSTS);
+  });
+
+  test('fill: 1.0% haircut on tokens, entry price = usd / booked tokens', () => {
     const r = evaluateBuyQuote(buyQuote(), BUY_REQ, COSTS);
     if (!r.ok) throw new Error(r.reason);
     expect(r.quotedTokens).toBe(1_000_000);
-    expect(r.tokens).toBeCloseTo(975_000, 6);
-    expect(r.entryPriceUsd).toBeCloseTo(20 / 975_000, 12);
+    expect(r.tokens).toBeCloseTo(990_000, 6);
+    expect(r.entryPriceUsd).toBeCloseTo(20 / 990_000, 12);
     expect(r.impactPct).toBeCloseTo(0.1, 9);
     expect(r.driftPct).toBeCloseTo(0, 9);
     expect(r.decimals).toBe(5);
@@ -98,11 +105,16 @@ describe('evaluateSellQuote and the mark fallback', () => {
   }
   const REQ = { mint: MINT, tokens: 975_000, amountRaw: '97500000000', markPriceUsd: 0.000022 as number | null, referencePriceUsd: null as number | null };
 
-  test('proceeds = quoted USD minus 1%; no impact gate on exits', () => {
+  test('a quote sell books quoted x (1 - 0.5/100): the quote already holds the pool fee; no impact gate on exits', () => {
     const r = evaluateSellQuote(sellQuote('22'), REQ, COSTS);
     if (!r.ok) throw new Error(r.reason);
     expect(r.quotedUsd).toBe(22);
-    expect(r.proceedsUsd).toBeCloseTo(21.78, 9);
+    expect(r.proceedsUsd).toBeCloseTo(22 * (1 - 0.5 / 100), 9);
+    expect(r.proceedsUsd).toBeCloseTo(21.89, 9);
+    // The default (no costs argument) is the same model: no pool fee on a quote fill.
+    const d = evaluateSellQuote(sellQuote('22'), REQ);
+    if (!d.ok) throw new Error(d.reason);
+    expect(d.proceedsUsd).toBeCloseTo(21.89, 9);
     expect(r.priceUsd).toBeCloseTo(22 / 975_000, 12);
   });
 
@@ -119,7 +131,7 @@ describe('evaluateSellQuote and the mark fallback', () => {
     expect(low).toMatchObject({ ok: false, reason: 'quote_far_below_reference' });
     if (low.ok || !low.fill) throw new Error('expected a carried fill');
     expect(low.fill.quotedUsd).toBe(0.05);
-    expect(low.fill.proceedsUsd).toBeCloseTo(0.0495, 9);
+    expect(low.fill.proceedsUsd).toBeCloseTo(0.04975, 9);
     expect(evaluateSellQuote(sellQuote('9.75'), { ...REQ, markPriceUsd: null, referencePriceUsd: 0.00002 }, COSTS).ok).toBe(true);
     // The above-mark rule needs a fresh mark: with only a reference a high quote stands.
     expect(evaluateSellQuote(sellQuote('90'), { ...REQ, markPriceUsd: null, referencePriceUsd: 0.00002 }, COSTS).ok).toBe(true);
@@ -147,8 +159,10 @@ describe('evaluateSellQuote and the mark fallback', () => {
     expect(evaluateSellQuote(sellQuote('22', { status: 'failed' }), REQ, COSTS)).toMatchObject({ reason: 'quote_failed' });
   });
 
-  test('mark fallback = tokens x mark x (1 - 1%), never negative', () => {
-    expect(markFallbackProceeds(975_000, 0.00002, COSTS)).toBeCloseTo(19.305, 9);
+  test('mark fallback = tokens x mark x (1 - (0.5 + 1.25)/100): a DexScreener price holds no pool fee; never negative', () => {
+    expect(markFallbackProceeds(975_000, 0.00002, COSTS)).toBeCloseTo(975_000 * 0.00002 * (1 - (0.5 + 1.25) / 100), 9);
+    expect(markFallbackProceeds(975_000, 0.00002, COSTS)).toBeCloseTo(19.15875, 9);
+    expect(markFallbackProceeds(975_000, 0.00002)).toBeCloseTo(19.15875, 9);
     expect(markFallbackProceeds(975_000, 0, COSTS)).toBe(0);
     expect(markFallbackProceeds(Number.NaN, 1, COSTS)).toBe(0);
   });

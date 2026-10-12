@@ -89,6 +89,11 @@
 
 ## TRADING FLOOR
 
+### Arena paper costs no longer count the pool fee twice (session tradeLead3, 2026-10-12, STAGING)
+- **Look at:** `https://staging.clawville.world/trading-floor`. The big board footer now says "1% BUY + 0.5% SELL COSTS". The contest rules in the arena panel explain that the quote already holds the pool fee.
+- **Why:** the old 2.5% + 1% came from the live haircut, which WAS the pool fee, and the quote already holds that fee. Paper P&L was about $0.35 per $20 trade worse than a live trade.
+- **Feedback wanted:** none needed unless the wording reads badly. Old trades keep their booked P&L, so 7-day and all-time numbers mix both cost models for a week.
+
 ### Trading Floor small fixes: house-agent walk-up on a phone in landscape, name pills, no-avatar card (session tradeProd, 2026-10-03, STAGING)
 - **Look at:** `https://staging.clawville.world/game`, walk into the Trading Floor, walk up to a house agent under the big board.
 - **On a real phone turned sideways:** the "Choose this trading style" panel now sits at the top, right of "Back to World", and scrolls inside itself. Do both joysticks stay free? Can you reach and tap its buttons? (Browser tests cannot show the phone's safe area.)

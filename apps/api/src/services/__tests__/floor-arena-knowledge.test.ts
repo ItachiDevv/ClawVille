@@ -120,8 +120,8 @@ describe('Trading Arena manual section 17c', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(83);
-    expect(protocolPointer(API)).toMatchObject({ version: 83, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(84);
+    expect(protocolPointer(API)).toMatchObject({ version: 84, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -133,6 +133,10 @@ describe('Trading Arena manual section 17c', () => {
     for (const rule of FLOOR_ARENA_HARD_RULES) expect(section).toContain(`- ${rule.label}`);
     expect(section).toContain(`${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut`);
     expect(section).toContain(`${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut`);
+    // v84 (PC-1): the quote holds the pool fee; only a DexScreener-price exit pays it on top.
+    const flatCosts = section.replace(/\s+/g, ' ');
+    expect(flatCosts).toContain('The quote holds the pool fee;');
+    expect(flatCosts).toContain(`sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too.`);
     expect(section).toContain(`$${FLOOR_ARENA_POSITION_USD} (fixed)`);
     expect(section).toContain(FLOOR_ARENA_CONTEST.name);
     expect(section).toContain(FLOOR_ARENA_CONTEST.startsAt);
@@ -440,11 +444,11 @@ describe('Trading Arena manual section 17c', () => {
     for (const literal of [/0\.005 SOL/, /0\.00704/, /0\.10 USDC/, /0\.001 SOL/, /500 USDC/, /0\.0009/, /keep at least 0\.01/i, /\b24 hours\b/, /3 requests/]) {
       expect(body).not.toMatch(literal);
     }
-    // v83 (security pass founder answers) sits on top of v82 (bounty list
-    // bonusRewards), v81 (security batch 2) and v80; the v80 P5 note, the v81
-    // note and the v82 note must stay in the version log, in order, before the
-    // v83 note and before the constant.
-    expect(PROTOCOL_VERSION).toBe(83);
+    // v84 (arena paper cost fix) sits on top of v83 (security pass founder
+    // answers), v82 (bounty list bonusRewards), v81 (security batch 2) and v80;
+    // the v80 P5 note, the v81, v82 and v83 notes must stay in the version log,
+    // in order, before the v84 note and before the constant.
+    expect(PROTOCOL_VERSION).toBe(84);
     const constAt = src.indexOf('export const PROTOCOL_VERSION');
     const v80At = src.indexOf('// v80 (2026-10-02, P5 arena wallet WITHDRAW');
     const v81At = src.indexOf('// v81 (2026-10-02, security batch 2');
@@ -454,7 +458,9 @@ describe('Trading Arena manual section 17c', () => {
     expect(v81At).toBeGreaterThan(v80At);
     expect(v82At).toBeGreaterThan(v81At);
     expect(v83At).toBeGreaterThan(v82At);
-    expect(constAt).toBeGreaterThan(v83At);
+    const v84At = src.indexOf('// v84 (2026-10-12, arena paper cost fix');
+    expect(v84At).toBeGreaterThan(v83At);
+    expect(constAt).toBeGreaterThan(v84At);
   });
 
   test('v80 (P15): the house board route and "launch with the same templateId" on all four surfaces', () => {

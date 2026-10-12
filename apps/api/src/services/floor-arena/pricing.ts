@@ -11,7 +11,8 @@ import type { FloorArenaSnapshot } from './filters';
  *
  * Fills: ClawPump backend `POST /swap/quote` (Enterprise key) — the same quote a live buy would take, with the
  * refusals of the paper runner's `quote_refusal` (echo, venue price impact > 3 %, drift > 35 % from DexScreener).
- * Costs on top of the quote: FLOOR_ARENA_PAPER_COSTS (2.5 % buy haircut on tokens, 1.0 % sell haircut on USD).
+ * Costs on top of the quote: FLOOR_ARENA_PAPER_COSTS (1.0 % buy haircut on tokens, 0.5 % sell haircut on USD; the quote
+ * already holds the pool fee). An exit at a DexScreener price (no pool fee in it) also pays mark_fallback_pool_fee_pct.
  * Marks: the latest DexScreener snapshot, at most 60 s old. No Jupiter call anywhere (D3).
  *
  * Every outbound call goes through `arenaFetchJson`, which refuses any host outside the allowlist.
@@ -33,7 +34,7 @@ export const ARENA_DATA_HOSTS: ReadonlySet<string> = new Set(['api.dexscreener.c
 const HTTP_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_CHARS = 2_000_000;
 
-export interface PaperCosts { buy_haircut_pct: number; sell_haircut_pct: number }
+export interface PaperCosts { buy_haircut_pct: number; sell_haircut_pct: number; mark_fallback_pool_fee_pct: number }
 export const DEFAULT_PAPER_COSTS: PaperCosts = FLOOR_ARENA_PAPER_COSTS;
 
 // ---------------------------------------------------------------- allowlisted HTTP
@@ -373,10 +374,15 @@ export function evaluateSellQuote(
   return fill;
 }
 
-/** D4: after 3 failed sell quotes over >= 45 s, the exit fills at the DexScreener mark minus the sell haircut. */
+/**
+ * D4: after 3 failed sell quotes over >= 45 s, the exit fills at a DexScreener price (the fresh mark, or the stale
+ * fallback price). A DexScreener price is a mid price with NO pool fee, so the fill pays the sell haircut AND the
+ * sell-leg pool fee: tokens x price x (1 - (sell_haircut_pct + mark_fallback_pool_fee_pct) / 100). A quote fill pays
+ * only the sell haircut (the quote already holds the fee).
+ */
 export function markFallbackProceeds(tokens: number, markPriceUsd: number, costs: PaperCosts = DEFAULT_PAPER_COSTS): number {
   if (!Number.isFinite(tokens) || tokens <= 0 || !Number.isFinite(markPriceUsd) || markPriceUsd <= 0) return 0;
-  return tokens * markPriceUsd * (1 - costs.sell_haircut_pct / 100);
+  return tokens * markPriceUsd * (1 - (costs.sell_haircut_pct + costs.mark_fallback_pool_fee_pct) / 100);
 }
 
 // ---------------------------------------------------------------- ClawPump calls

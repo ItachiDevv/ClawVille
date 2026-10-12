@@ -336,9 +336,18 @@ export const FLOOR_ARENA_HARD_RULES = deepFreeze([
 ] as const);
 export type FloorArenaHardRuleId = (typeof FLOOR_ARENA_HARD_RULES)[number]['id'];
 
-/** D3: the measured execution cost (memory 2026-09-21), applied on top of the
- *  ClawPump quote on every paper fill. */
-export const FLOOR_ARENA_PAPER_COSTS = deepFreeze({ buy_haircut_pct: 2.5, sell_haircut_pct: 1.0 } as const);
+/** D3 (amended 2026-10-12): the live costs that a ClawPump quote does NOT contain, applied on top of
+ *  the quote on every paper fill. The quote already holds the PumpSwap pool fee and our price impact,
+ *  so the old 2.5 % / 1.0 % (the 2026-09-21 live haircut, which WAS the two-leg pool fee) counted the
+ *  fee twice. What is left: SOL network and priority fees, the unrefunded token-account rent and the
+ *  exit re-quote drift, about $0.31 per $20 round trip (ops/house-traders/research-20261012/cost-study/REPORT.md).
+ *  A DexScreener price holds no pool fee, so an exit booked at a DexScreener price (D4 mark fallback,
+ *  including the stale-price fallback) also pays `mark_fallback_pool_fee_pct`, the top pump fee tier per leg. */
+export const FLOOR_ARENA_PAPER_COSTS = deepFreeze({
+  buy_haircut_pct: 1.0,
+  sell_haircut_pct: 0.5,
+  mark_fallback_pool_fee_pct: 1.25,
+} as const);
 
 export interface FloorArenaContest {
   id: 'arena-week-1';
