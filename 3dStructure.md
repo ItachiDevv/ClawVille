@@ -1,6 +1,6 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-12 06:20Z (arena paper cost fix: the Trading Floor big board basis line now reads "1% BUY + 0.5% SELL COSTS", from `FLOOR_ARENA_PAPER_COSTS`; no render, geometry or texture-size change).** Drift note: §9 basis-line row said 2.5% + 1%.
+**Last Audited: 2026-10-12 06:17Z (arena paper cost fix: the Trading Floor big board basis line now reads "1% BUY + 0.5% SELL COSTS", from `FLOOR_ARENA_PAPER_COSTS`; no render, geometry or texture-size change).** Drift note: §9 basis-line row said 2.5% + 1%.
 
 **Prior Last Audited: 2026-10-06 15:55Z (web-load T11, Codex E3 on 58d7d91b: the adaptive quality governor degrades only after 2 consecutive 2.5 s windows below 55 FPS; the post-arming busy-window skip is REMOVED (every window after arming counts); the seabed decorations mount on their first show, so a tier-1 start loads none of their GLBs).** Drift note: §3 governor paragraph; §5 seabed decorations line; §13 entry.
 
