@@ -7,7 +7,7 @@ const read = (path: string) => readFileSync(resolve(repoRoot, path), 'utf8');
 
 describe('trade_token grammar and floor-state parity', () => {
   test('manual and tool schema name every forbidden reason delimiter', () => {
-    const manual = read('apps/api/src/services/skill-protocol.ts');
+    const manual = read('apps/api/src/services/skill-protocol-topics/actions.ts');
     const tools = read('packages/shared/src/constants/building-tools.ts');
     const route = read('apps/api/src/routes/trading-floor.ts');
     const rule = 'parentheses, brackets, commas, or equals signs';

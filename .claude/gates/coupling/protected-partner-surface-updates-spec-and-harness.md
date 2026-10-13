@@ -11,6 +11,7 @@
     "apps/api/src/services/partner-signature.ts",
     "apps/api/src/services/service-issuer.ts",
     "apps/api/src/services/skill-protocol.ts",
+    "apps/api/src/services/skill-protocol-topics/*.ts",
     "apps/api/src/services/agent-substrate-client.ts",
     "apps/api/src/services/agent-session-config.ts",
     "apps/api/src/services/hatcher-config.ts",

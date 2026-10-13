@@ -438,7 +438,7 @@ describe('Trading Arena manual section 17c', () => {
     // GET /me carries the withdraw summary.
     expect(flat).toContain('Returns `{ agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw }`');
     // The builder never types a withdraw number by hand (E6.2).
-    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
+    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol-topics', 'trading.ts'), 'utf8') + readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
     const start = src.indexOf('function buildTradingArenaSection(');
     const body = src.slice(start, src.indexOf('\n}\n', start));
     for (const literal of [/0\.005 SOL/, /0\.00704/, /0\.10 USDC/, /0\.001 SOL/, /500 USDC/, /0\.0009/, /keep at least 0\.01/i, /\b24 hours\b/, /3 requests/]) {
@@ -545,7 +545,7 @@ describe('Trading Arena manual section 17c', () => {
     expect(section).toMatch(new RegExp(`and in the ${kind} reports, it is left out`));
     expect(section).toMatch(new RegExp(`read your own\\s+${kind} report;`));
     // The builder source must not type these numbers back in.
-    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
+    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol-topics', 'trading.ts'), 'utf8');
     const start = src.indexOf('function buildTradingArenaSection(');
     const body = src.slice(start, src.indexOf('\n}\n', start));
     expect(start).toBeGreaterThan(0);

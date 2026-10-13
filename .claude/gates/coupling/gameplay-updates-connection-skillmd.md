@@ -30,12 +30,14 @@
     "packages/database/src/schema/quests*.ts",
     "packages/database/src/schema/bounties*.ts",
     "apps/api/src/services/skill-protocol.ts",
+    "apps/api/src/services/skill-protocol-topics/*.ts",
     "apps/api/src/services/npc-simulation.ts",
     "packages/shared/src/constants/hatcher-actions.ts"
   ],
   "requires": [
     [
-      "apps/api/src/services/skill-protocol.ts"
+      "apps/api/src/services/skill-protocol.ts",
+      "apps/api/src/services/skill-protocol-topics/*.ts"
     ]
   ],
   "selector": "any"
