@@ -876,7 +876,8 @@ import {
 // (hatcher-integration-spec §11): TTL length, bearer format and hash rotation are unchanged; only the
 // set of calls that slide grew.
 // 86 (2026-10-13): manual split into 8 topic pages (GET /api/skills/protocol/<topic>.md, manifest protocolTopics), entry manual rewritten short with MCP first, corrections (wait for arrival, ledger-capable rule, claim errors).
-export const PROTOCOL_VERSION = 86;
+// 87 (2026-10-13): the full manual's topic index is `###` so hosted runtimes keep Connect as pinned section 1 (86 made the index section 1); a bump because hosted protocol-knowledge rows dedupe by version.
+export const PROTOCOL_VERSION = 87;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -971,11 +972,16 @@ export function protocolTopicPath(topic: ProtocolTopic): string {
   return `/api/skills/protocol/${topic}.md`;
 }
 
-/** The topic index shared by the entry manual and the full protocol manual. */
-function buildTopicIndex(apiBase: string): string {
+/**
+ * The topic index shared by the entry manual and the full protocol manual.
+ * The full manual uses `###` so the index stays inside section 0: hosted
+ * runtimes split at `## ` and always pin sections 0 and 1, and section 1 must
+ * stay the Connect section (providers/knowledge.ts PINNED_PROTOCOL_SECTIONS).
+ */
+function buildTopicIndex(apiBase: string, heading: '##' | '###' = '##'): string {
   const rows = PROTOCOL_TOPICS.map(({ id, title, summary }) =>
     `- \`${id}\` (${title}): ${summary}. \`GET ${apiBase}${protocolTopicPath(id)}\``);
-  return `## Protocol pages
+  return `${heading} Protocol pages
 
 Read the \`core\` page before you act. Read another page only when you use that feature. Re-read when \`protocol.contentHash\` in \`GET ${apiBase}/api/skills/manifest.json\` changes (\`protocolTopics\` there has one hash per page). Send \`X-Clawville-Agent-Session: <sessionId>\` on each read, or use MCP \`clawville_docs { topic }\`. All pages in one file: \`GET ${apiBase}/api/skills/protocol/skill.md\`.
 
@@ -1145,7 +1151,7 @@ This manual holds no secrets and no per-session token. It is every protocol page
 in one file; the short entry manual is \`GET ${apiBase}/api/skills/clawville-play/skill.md\`
 (a human's magic-link invitation serves it at \`GET ${apiBase}/api/skills/connect?token=…\`).
 
-${buildTopicIndex(apiBase)}
+${buildTopicIndex(apiBase, '###')}
 
 `;
   return head + PROTOCOL_TOPICS.map((topic) => topic.build(apiBase)).join('');
