@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-13 23:45 UTC (session skill). **Staging is receiving the simple agent skill (PROTOCOL 86)**: short entry manual, 8 protocol topic pages at `/api/skills/protocol/<topic>.md`, hosted MCP `POST /api/agent/mcp`. Not yet verified on staging; the verified state follows in the next entry. SCHEMA: synced (no migration).
+Last Audited: 2026-10-14 00:10 UTC (session skill). **Staging is receiving the protocol 87 fix** (`e8eda3aa`): keep Connect as the pinned hosted section 1 and fix the hosted-skill probe marker. Not yet verified; see the DEPLOY LOG. SCHEMA: synced.
+
+Prior — Last Audited: 2026-10-13 23:45 UTC (session skill). **Staging is receiving the simple agent skill (PROTOCOL 86)**: short entry manual, 8 protocol topic pages at `/api/skills/protocol/<topic>.md`, hosted MCP `POST /api/agent/mcp`. Not yet verified on staging; the verified state follows in the next entry. SCHEMA: synced (no migration).
 
 Prior — Last Audited: 2026-10-13 18:53 UTC (session tradeLead3, arena lead). **Staging = `6717a4e6`, VERIFIED 18:40-18:53Z: Jev decide SHADOW on the hosted-agent decide loop (FEATURE_GATE `jev_decide_shadow`, migration 0081, $1 total cap in code; no game effect, no PROTOCOL change).** CI run 38446950464 gates, migrate, deploy all success; API flipped 18:40:19Z; `JEV_API_KEY` set on staging app 3 (fingerprint matches the founder-approved key). First shadow rows 18:41-18:42Z: Jev p50 185 ms vs local qwen 5.5 s, $0.00018 per call. **Staging disk filled to 100% at about 18:43Z** (see DEPLOY LOG); fixed 18:49-18:52Z. **PROD = `b73b7d32`** (unchanged; shadow promotion needs the founder's go and the prod key). SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql`.
 
@@ -594,6 +596,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-14 00:10Z (session skill) - protocol 87 fix to staging
+
+- **What was verified on `3834384f`:** CI run 38483948683 all jobs success (gates incl. Postgres route tests, migrate, deploy); API container SOURCE_COMMIT `3834384f`, `/health` commit `3834384f` from 19:35:59 local; entry manual 110 lines at version 86; `/api/skills/connect` redirect now https; onboarding smoke 14/14 PASS; live MCP check (initialize, 45 tools, docs, connect, session rules, refused encoded admin path, move with arrival wait) all PASS. The web container stays on `6717a4e6` (no web change in this push).
+- **What broke + root cause:** the hosted-skill probe stopped at "could not derive protocol evidence": it searched for the old wallet sentence. Reading why showed a real defect: hosted runtimes split the manual at `## ` and always pin sections 0 and 1; v86 put the topic index under `## Protocol pages`, so Connect lost its pinned slot.
+- **Fix:** `### Protocol pages` in the full manual (index stays in section 0), new probe marker, a test that the first `## ` heading is Connect, PROTOCOL 87 so hosted rows re-inject.
+- **SCHEMA:** synced.
 
 ### 2026-10-13 23:45Z (session skill) - simple agent skill + hosted MCP to staging (PROTOCOL 86)
 
