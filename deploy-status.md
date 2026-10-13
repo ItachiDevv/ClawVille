@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-13 18:53 UTC (session tradeLead3, arena lead). **Staging = `6717a4e6`, VERIFIED 18:40-18:53Z: Jev decide SHADOW on the hosted-agent decide loop (FEATURE_GATE `jev_decide_shadow`, migration 0081, $1 total cap in code; no game effect, no PROTOCOL change).** CI run 38446950464 gates, migrate, deploy all success; API flipped 18:40:19Z; `JEV_API_KEY` set on staging app 3 (fingerprint matches the founder-approved key). First shadow rows 18:41-18:42Z: Jev p50 185 ms vs local qwen 5.5 s, $0.00018 per call. **Staging disk filled to 100% at about 18:43Z** (see DEPLOY LOG); fixed 18:49-18:52Z. **PROD = `b73b7d32`** (unchanged; shadow promotion needs the founder's go and the prod key). SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql`.
+Last Audited: 2026-10-13 23:45 UTC (session skill). **Staging is receiving the simple agent skill (PROTOCOL 86)**: short entry manual, 8 protocol topic pages at `/api/skills/protocol/<topic>.md`, hosted MCP `POST /api/agent/mcp`. Not yet verified on staging; the verified state follows in the next entry. SCHEMA: synced (no migration).
+
+Prior — Last Audited: 2026-10-13 18:53 UTC (session tradeLead3, arena lead). **Staging = `6717a4e6`, VERIFIED 18:40-18:53Z: Jev decide SHADOW on the hosted-agent decide loop (FEATURE_GATE `jev_decide_shadow`, migration 0081, $1 total cap in code; no game effect, no PROTOCOL change).** CI run 38446950464 gates, migrate, deploy all success; API flipped 18:40:19Z; `JEV_API_KEY` set on staging app 3 (fingerprint matches the founder-approved key). First shadow rows 18:41-18:42Z: Jev p50 185 ms vs local qwen 5.5 s, $0.00018 per call. **Staging disk filled to 100% at about 18:43Z** (see DEPLOY LOG); fixed 18:49-18:52Z. **PROD = `b73b7d32`** (unchanged; shadow promotion needs the founder's go and the prod key). SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql`.
 
 Prior — Last Audited: 2026-10-13 17:17 UTC (session tradeLead3, arena lead). **PROD = `b73b7d32` (PROMOTION #7, PR #316: agent session TTL slide, PROTOCOL 85), VERIFIED 17:15-17:17Z.** Founder go 2026-10-13 ("1 is good"). PR checks all pass; merged 17:03:52Z; run 38435613598 gates, migrate, deploy all success; Coolify 404 (api) + 405 (web) built together and both finished (no image miss this time); both prod containers `b73b7d32` healthy (api 17:13:24Z, web 17:15:06Z); `/health` 3x commit b73b7d32; running `PROTOCOL_VERSION = 85`; `CLAWVILLE_ENV=production`, `ALLOW_TEST_PARTNER_PUBKEY` absent; 0 "TTL slide failed" lines in the first minutes. Headless `/game` 17:16Z: WebGPU, loader gone 7.2 s, 0 windows under 55 FPS, 0 page errors, 0 5xx (only the guest 401s on /api/auth/me and /api/avatars/me). No live slide probe on prod (it would create a real user; the staging probe is the proof). Staging = `a54e4dc7` (same app code `809b7f91`). SCHEMA: `synced`.
 
@@ -592,6 +594,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-13 23:45Z (session skill) - simple agent skill + hosted MCP to staging (PROTOCOL 86)
+
+- **What changed:** branch `feat/agent-skill-simple-20261013` on `cc2e402c`. The protocol manual is split into 8 topic files (`apps/api/src/services/skill-protocol-topics/`), audited against code (about 20 wrong facts fixed) and about 40 percent shorter; new `GET /api/skills/protocol/:topic.md` and manifest `protocolTopics`. The entry manual `clawville-play` is about 110 lines (was 300). New hosted MCP `POST /api/agent/mcp` (Codex pass 3 APPROVE). Gateway SSE loops exit on disconnect; `/api/skills/connect` redirect uses the configured API base.
+- **Who it is for:** every agent that connects (BYO, MCP clients, hosted, Hatcher re-pull at 86).
+- **Local evidence:** tsc 0; CI service lane copy 3654 pass 0 fail plus 36 isolated files pass; MCP + manual tests 207 pass; scripts/ci 28 pass; coupling gates and doc path guard pass.
+- **SCHEMA:** synced (no migration).
 
 ### 2026-10-13 18:53Z (session tradeLead3, arena lead) - Jev decide shadow to staging + staging disk-full DB outage
 
