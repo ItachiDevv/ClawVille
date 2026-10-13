@@ -87,6 +87,7 @@ import {
 } from './agent-autonomy-state';
 import { queryDurableAgentEventsNewest, type AgentHistoryScope } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
+import { fireJevDecideShadow } from './jev-decide-shadow';
 import { resolveBuildingId } from './building-center';
 import { armAutonomy, isAutonomyActive } from './autonomy-standby';
 import {
@@ -1323,7 +1324,18 @@ class AgentAutonomyDriver {
       buildTargets,
       tradingDesk,
     );
+    const decideStartedAt = Date.now();
     const reply = await decide(prompt);
+    // Jev SHADOW (FEATURE_GATE jev_decide_shadow): fire-and-forget measurement
+    // only. Never awaited, never throws, and its answer changes nothing here.
+    fireJevDecideShadow({
+      prompt,
+      avatarId: entry.avatarId,
+      isHouse: entry.isHouse,
+      localVerb: parseDriverAction(reply)?.verb ?? null,
+      localEmpty: reply.trim() === '',
+      localMs: Date.now() - decideStartedAt,
+    });
     // This also fences decisions based on known-null state, which have no
     // directive SHA claim to detect a new instruction received during inference.
     if (entry.directiveRevision !== directiveRevision) return;

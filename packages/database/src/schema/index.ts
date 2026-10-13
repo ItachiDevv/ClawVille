@@ -177,6 +177,9 @@ export * from './tokenomics-redeem';
 // LEDGER-ONLY: nothing here touches avatars.clawTokens. Migration 0017
 // (idempotent, by hand — NEVER db:push).
 export * from './market';
+// Jev decide SHADOW ledger (2026-10-13): measurement only, no game reader.
+// Migration 0081 (idempotent, by hand — NEVER db:push).
+export * from './jev-shadow';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
