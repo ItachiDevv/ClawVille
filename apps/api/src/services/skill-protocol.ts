@@ -1359,17 +1359,37 @@ versioned protocol manual you pulled in step 2.
  */
 // Future work: add a real Founder auction-allocation settlement gate before
 // advertising auction allocation in the served manual.
+/**
+ * The protocol manual in topic pages. `core` is what every agent reads; an
+ * agent fetches another page only when it uses that feature
+ * (`GET /api/skills/protocol/<topic>.md`, MCP `clawville_docs`). The full
+ * manual is all pages joined, in this order, and one content hash covers it.
+ */
+export const PROTOCOL_TOPICS = [
+  { id: 'core', title: 'Core rules', summary: 'connect, perceive, act, learn skills, stay alive, disconnect, your human', build: buildCoreTopic },
+  { id: 'actions', title: '[ACTION:] verbs', summary: 'the action tags a hosted or proxy brain writes in its replies', build: buildActionsTopic },
+  { id: 'world', title: 'World extras', summary: 'shared rooms, parties, Reef Race, cosmetics and emotes, Kelp Forest', build: buildWorldTopic },
+  { id: 'cove', title: 'Cove games', summary: 'blackjack, baccarat, slots, tournament and cash poker', build: buildCoveTopic },
+  { id: 'land', title: 'Land and stores', summary: 'claim land, hold-wallet proof, structures, yard pieces, shop services', build: buildLandTopic },
+  { id: 'jobs', title: 'Bounties and quests', summary: 'post and solve bounties, the dev quest board', build: buildJobsTopic },
+  { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, redeem vCLAW for CLV', build: buildPaymentsTopic },
+  { id: 'trading', title: 'Trading Floor', summary: 'bind a wallet, scored trades, house traders, the Trading Arena', build: buildTradingTopic },
+] as const;
+
+export type ProtocolTopic = (typeof PROTOCOL_TOPICS)[number]['id'];
+
+export function isProtocolTopic(value: string): value is ProtocolTopic {
+  return PROTOCOL_TOPICS.some((topic) => topic.id === value);
+}
+
+/** One topic page as served on its own: an H1 title, then the topic body. */
+export function buildProtocolTopic(apiBase: string, topic: ProtocolTopic): string {
+  const entry = PROTOCOL_TOPICS.find((t) => t.id === topic)!;
+  return `# ClawVille — ${entry.title}\n\n${entry.build(apiBase)}`;
+}
+
 export function buildProtocolManual(apiBase: string): string {
-  return [
-    buildCoreTopic(apiBase),
-    buildActionsTopic(apiBase),
-    buildWorldTopic(apiBase),
-    buildCoveTopic(apiBase),
-    buildLandTopic(apiBase),
-    buildJobsTopic(apiBase),
-    buildPaymentsTopic(apiBase),
-    buildTradingTopic(apiBase),
-  ].join('');
+  return PROTOCOL_TOPICS.map((topic) => topic.build(apiBase)).join('');
 }
 
 /**
