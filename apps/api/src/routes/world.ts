@@ -541,6 +541,7 @@ worldRoutes.post('/join', async (c) => {
   // group. Re-issued every join so the 15-min TTL slides forward while the
   // session stays active.
   const roomTicket = signRoomTicket({ roomId: room.id, sessionId: presence.sessionId });
+  presence.slideTtl?.();
 
   return c.json({
     roomId: room.id,
@@ -558,8 +559,10 @@ worldRoutes.post('/join', async (c) => {
 });
 
 worldRoutes.post('/leave', async (c) => {
-  const { sessionId } = await resolveWorldPresence(c);
+  const presence = await resolveWorldPresence(c);
+  const { sessionId } = presence;
   const result = roomRegistry.leavePlayer(sessionId);
+  presence.slideTtl?.();
   forgetWorldPositionThrottle(sessionId);
   worldPresenceWsHub.dropSession(sessionId, {
     control: null,
@@ -588,6 +591,7 @@ worldRoutes.post('/position', async (c) => {
     // the client error path explicit so it can re-join automatically.
     throw new HTTPException(409, { message: 'Session is not in a room — call /api/world/join first' });
   }
+  presence.slideTtl?.();
   return c.json({ ok: true });
 });
 
@@ -788,6 +792,7 @@ worldRoutes.get(
       ipSlotToken,
       membershipOk: memberRoomId === roomId,
     });
+    if (memberRoomId === roomId) presence.slideTtl?.();
     await next();
   },
   upgradeWebSocket((c) => {
@@ -834,6 +839,7 @@ worldRoutes.get('/:roomId/stream', async (c) => {
         message: 'Not a member of this room (call /api/world/join first)',
       });
     }
+    presence.slideTtl?.();
   }
 
   return streamSSE(c, async (stream) => {

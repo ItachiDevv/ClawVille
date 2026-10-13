@@ -53,6 +53,7 @@ import {
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession, AGENT_SESSION_HEADER } from '../middleware/require-auth-or-agent';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import { noStorePrivate } from '../middleware/no-store';
 import { runSpin, type MachineSlug, type SpinResult } from '../services/slot-engine';
 import {
@@ -155,6 +156,9 @@ async function resolveSubject(c: Context<AppContext>): Promise<Subject> {
     // bound to an active avatar. Scope by that bound userId so the agent sees
     // exactly the rows its spins wrote (which used the SAME userId).
     if (resolved && resolved.userId && resolved.ledgerCapable) {
+      // PROTOCOL 85: the caller's own ledger-capable session bound to a user +
+      // avatar; slide its 24h TTL (fire-and-forget, throttled, never throws).
+      if (resolved.avatarId) slideAgentSessionTtl(resolved.agentId, agentSessionId);
       return { kind: 'user', id: resolved.userId };
     }
     // else: unknown/expired/non-ledger/unbound — fall through to guest scoping.

@@ -27,6 +27,7 @@
  */
 
 import { Hono } from 'hono';
+import { slideOwnLiveAgentSession } from '../services/agent-session-ttl';
 import type { MiddlewareHandler } from 'hono';
 import { db, buildingSkills, avatars, eq } from '@clawville/database';
 import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
@@ -138,6 +139,9 @@ const agentSessionOrPartnerKey: MiddlewareHandler<AppContext> = async (c, next) 
     try {
       const { validateLiveAgentSession } = await import('../middleware/require-auth-or-agent');
       live = await validateLiveAgentSession(sessionId);
+      // PROTOCOL 85: the caller's own live bearer; slides only for a
+      // ledger-capable owner session (throttled, never throws).
+      if (live) slideOwnLiveAgentSession(live, sessionId);
     } catch {
       live = null;
     }
@@ -333,7 +337,12 @@ async function hasEndUserIdentity(c: import('hono').Context<AppContext>): Promis
     try {
       const { validateLiveAgentSession } = await import('../middleware/require-auth-or-agent');
       const live = await validateLiveAgentSession(agentSessionHeader);
-      if (live) return true;
+      if (live) {
+        // PROTOCOL 85: the caller's own live bearer; slides only for a
+        // ledger-capable owner session (throttled, never throws).
+        slideOwnLiveAgentSession(live, agentSessionHeader);
+        return true;
+      }
     } catch {
       /* fall through */
     }

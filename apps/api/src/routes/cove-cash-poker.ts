@@ -40,6 +40,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { noStorePrivate } from '../middleware/no-store';
 import { cashTableManager } from '../services/poker/cash-table-manager-singleton';
@@ -109,6 +110,9 @@ async function resolveSubject(c: {
         message: 'agent_session_has_no_active_avatar: connect an avatar before playing',
       });
     }
+    // PROTOCOL 85: the caller's own bound session passed every gate; slide its
+    // 24h TTL (fire-and-forget, throttled, never throws).
+    slideAgentSessionTtl(resolved.agentId, agentSessionId);
     return {
       kind: 'agent',
       userId: resolved.userId,

@@ -88,6 +88,7 @@ import {
 import type { BaccaratLastCoupSnapshot } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
 import { createServerSeed, sha256Hex } from '../services/provable-rng';
@@ -296,6 +297,9 @@ async function getSubject(c: {
           'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real vCLAW',
       });
     }
+    // PROTOCOL 85: the caller's own bound session passed every gate; slide its
+    // 24h TTL (fire-and-forget, throttled, never throws).
+    slideAgentSessionTtl(resolved.agentId, agentSessionId);
     return {
       kind: 'agent',
       userId: resolved.userId,

@@ -5,6 +5,7 @@ import { characterRoomId } from '@clawville/agent-runtime';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { agentOrchestrator } from './agent-orchestrator';
+import { slideAgentSessionTtl } from './agent-session-ttl';
 import { getSystemAgent } from './system-npc-seeder';
 import { systemAgentRewardLimiter } from './system-agent-reward-limiter';
 import { creditWithDailyRewardCap } from './daily-reward-cap';
@@ -51,6 +52,9 @@ export async function conductSystemAgentChat(input: {
   if (input.actor.kind === 'agent' && (!avatar || avatar.id !== subject.avatarId || canonicalGuest)) {
     throw new HTTPException(403, { message: 'Nori chat requires a non-guest bound active avatar' });
   }
+  // PROTOCOL 85: the caller's own ledger-capable, non-guest, bound session passed
+  // every gate above; slide its 24h TTL (fire-and-forget, throttled, never throws).
+  if (input.actor.kind === 'agent' && subject.agentId) slideAgentSessionTtl(subject.agentId, input.actor.sessionId);
   if (!input.content.trim() || input.content.length > 4000) {
     throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
   }

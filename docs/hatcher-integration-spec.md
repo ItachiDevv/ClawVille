@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-10-12 06:45Z (arena paper cost fix; PROTOCOL_VERSION 83 -> 84).** Drift note: PROTECTED file `services/skill-protocol.ts` changed in the manual text only: §17c now says the ClawPump quote already holds the pool fee, the paper haircuts are 1.0% buy and 0.5% sell, and an exit at a DexScreener price also pays a 1.25% pool fee (`FLOOR_ARENA_PAPER_COSTS`). No signing, session bearer/TTL, SSRF, cognition body, `hatcher:` namespace, `[ACTION:]` or leaderboard change. Staging `3fcd9406` gates 2026-10-12: mock-Hatcher harness ALL ASSERTIONS PASSED 06:39Z (protocol pointer version 84), onboarding smoke 14/14 06:33Z, hosted-skill probe ALL PASS 16 checks 06:34Z; contract-probe not rerun (no register/PATCH schema change). Test signer set 06:34Z, removed 06:39Z (both rows), api redeployed without it, absent verified 06:44Z.
+**Last Audited: 2026-10-13 11:22Z (agent session TTL slides on every header-authed call; PROTOCOL_VERSION 84 -> 85).** Drift note: the bearer/TTL model changed in one place only: the set of calls that slide the sliding 24h TTL grew. PROTECTED `middleware/require-auth-or-agent.ts` `requireAuthOrAgentSession` and `services/skill-protocol.ts` (manual §5 + §17c text, v85 note) changed; new `slideAgentSessionTtl` + conditional `slideLiveSessionTtl` in the new light module `services/agent-session-ttl.ts` (re-exported by `services/agent-session-sweeper.ts`, which also moved `computeSessionExpiresAt` there). TTL length, bearer format, hash rotation and the fail-closed liveness gate are unchanged; the slide runs only after that gate passed, only for a ledger-capable session bound to a user + avatar, and its UPDATE requires the row to be live at database write time, the owner to have an active avatar, the row to hold the caller's bearer hash and to have a non-guest owner (no revival after disconnect/sweep, no extension of a replacement bearer). Release gates (mock-Hatcher harness, onboarding smoke, hosted-skill probe) are owed on staging before promotion; not run in this diff.
+
+**Prior Last Audited: 2026-10-12 06:45Z (arena paper cost fix; PROTOCOL_VERSION 83 -> 84).** Drift note: PROTECTED file `services/skill-protocol.ts` changed in the manual text only: §17c now says the ClawPump quote already holds the pool fee, the paper haircuts are 1.0% buy and 0.5% sell, and an exit at a DexScreener price also pays a 1.25% pool fee (`FLOOR_ARENA_PAPER_COSTS`). No signing, session bearer/TTL, SSRF, cognition body, `hatcher:` namespace, `[ACTION:]` or leaderboard change. Staging `3fcd9406` gates 2026-10-12: mock-Hatcher harness ALL ASSERTIONS PASSED 06:39Z (protocol pointer version 84), onboarding smoke 14/14 06:33Z, hosted-skill probe ALL PASS 16 checks 06:34Z; contract-probe not rerun (no register/PATCH schema change). Test signer set 06:34Z, removed 06:39Z (both rows), api redeployed without it, absent verified 06:44Z.
 
 **Prior Last Audited: 2026-10-06 21:48Z (CI-2: arena-panels test isolation; manual reviewed, unchanged at 83).** Drift note: a comment-only note in the PROTECTED `skill-protocol.ts`; the only other change is the test file `apps/web/src/components/game/trading-floor/arena/arena-panels.test.tsx`, which seeds the cached browser fingerprint. No manual text, wire, signing, session, bearer/TTL, cognition body, `hatcher:` namespace, `[ACTION:]` verb or leaderboard weight changed. No harness run needed (no protected behavior changed).
 
@@ -354,6 +356,17 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
   "protocol": { "version": 46, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
+**What slides the 24h TTL** (`extendSessionTtl`, `services/agent-session-sweeper.ts`): every `/:sessionId/*`
+gateway action through `resolveSession()` (FIX-4), hosted avatar-agent sessions, and since PROTOCOL 85
+(2026-10-13) every accepted caller-own header-authed call (`requireAuthOrAgentSession`, the cove /
+special-events / wager-read / support resolvers, Nori chat, appearance updates, the openclaw exports, world
+presence, skills reads) through `slideAgentSessionTtl`: one write per bearer per 60 s, only for a ledger-capable
+session bound to a user + avatar (guest-owned, restored or unproven sessions never slide). Its conditional UPDATE
+(`slideLiveSessionTtl`) writes only while `session_expires_at > clock_timestamp()` (database write time), the owner still has an active avatar, `session_key_hash` equals the caller's
+bearer hash (a NULL hash never matches) and the owner is not a guest, and never clears `session_swept_at`; so a
+request validated just before /disconnect, the sweep or a rotation can neither revive the row nor extend the
+replacement bearer. An authentication 401/403 never slides (a business-rule refusal after authentication still counts as activity, as on the gateway), and `resolveAgentSession` itself never slides (it also resolves
+other sessions).
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
 only when none does). `DELETE …` unregisters the body (an overridden NPC reverts to native AI).

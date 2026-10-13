@@ -4,9 +4,11 @@
  * Every external agent session carries a 24h sliding TTL on
  * `openclaw_bots.session_expires_at`. Each activity-bearing request calls
  * `extendSessionTtl()` to push the expiry forward another 24h: location chat
- * (openclaw.ts), heartbeat, building visit/activity match, AND — since FIX-4
- * (2026-06-13) — every mutating connected-agent gateway action, which all
- * route through `agent-gateway.ts resolveSession()`. An agent that stops
+ * (openclaw.ts), heartbeat, building visit/activity match, every mutating
+ * connected-agent gateway action (FIX-4, 2026-06-13, via `agent-gateway.ts
+ * resolveSession()`), AND — since PROTOCOL 85 (2026-10-13) — every accepted
+ * caller-own header-authed call of a ledger-capable bound session via
+ * `slideAgentSessionTtl()` (its own conditional UPDATE; see below). An agent that stops
  * acting for 24h gets swept:
  *
  *   1. Any in-process Eliza runtime tied to the bot's `agents.id` is
@@ -24,31 +26,23 @@
 import { and, eq, lt, or, isNull } from 'drizzle-orm';
 import { db, agentBots, agents, sql } from '@clawville/database';
 import { agentOrchestrator } from './agent-orchestrator';
+import { computeSessionExpiresAt, resolveTtlMs } from './agent-session-ttl';
 import { logEvent } from './event-logger';
 import { notifyHatcherSessionEnded } from './hatcher-session-webhook';
 import { npcSimulation } from './npc-simulation';
 import { agentAutonomyDriver } from './agent-autonomy-driver';
 
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-
-/** Override the TTL via env for load tests or shorter-lived environments. */
-function resolveTtlMs(): number {
-  const raw = process.env.AGENT_SESSION_TTL_MS;
-  if (!raw) return DEFAULT_TTL_MS;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 60_000) return DEFAULT_TTL_MS;
-  return n;
-}
-
-/**
- * Compute the next expiry timestamp from the configured TTL. Callers
- * use this both for initial session creation and for the sliding
- * extension on activity — one source of truth keeps the sweep and the
- * extend path in lockstep.
- */
-export function computeSessionExpiresAt(now: Date = new Date()): Date {
-  return new Date(now.getTime() + resolveTtlMs());
-}
+// TTL math and the PROTOCOL 85 header-authed slide live in the light
+// `agent-session-ttl.ts` (no orchestrator / autonomy / webhook imports), so
+// request-path modules can slide without pulling this sweeper's graph.
+export {
+  computeSessionExpiresAt,
+  slideAgentSessionTtl,
+  slideLiveSessionTtl,
+  slideOwnLiveAgentSession,
+  SESSION_SLIDE_THROTTLE_MS,
+  __resetSessionSlideThrottleForTests,
+} from './agent-session-ttl';
 
 /**
  * Slide the session TTL forward on activity. Idempotent, fire-and-forget
@@ -82,6 +76,7 @@ export async function extendSessionTtl(agentId: string): Promise<void> {
       console.warn(`[SessionSweeper] Failed to extend TTL for ${agentId}:`, err);
     });
 }
+
 
 /**
  * Flip a single session to expired-now. Called by `/api/agent/disconnect`
