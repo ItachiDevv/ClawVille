@@ -24,6 +24,7 @@ import {
   SHOP_BUILDINGS,
   TOWN_BUILDING_PLACES,
   WORLD_CENTER_PX,
+  BUILDING_INTERACTION_RADIUS,
   FLOOR_ARENA_DESK_COUNT,
   FLOOR_ARENA_WITHDRAW_LIMITS,
   FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
@@ -874,7 +875,8 @@ import {
 // rule and the 401 recovery path. Bearer/TTL model change on the protected surface
 // (hatcher-integration-spec §11): TTL length, bearer format and hash rotation are unchanged; only the
 // set of calls that slide grew.
-export const PROTOCOL_VERSION = 85;
+// 86 (2026-10-13): manual split into 8 topic pages (GET /api/skills/protocol/<topic>.md, manifest protocolTopics), entry manual rewritten short with MCP first, corrections (wait for arrival, ledger-capable rule, claim errors).
+export const PROTOCOL_VERSION = 86;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -900,8 +902,9 @@ export function resolveApiBase(): string {
 }
 
 /**
- * Canonical universal `/connect` section. All served entry manuals embed these
- * exact bytes; the invitation variant adds only its connectionToken JSON line.
+ * Canonical universal `/connect` section. The entry manual and the `core`
+ * protocol page embed these exact bytes; the invitation variant adds only its
+ * connectionToken JSON line.
  */
 export function buildUniversalConnectBlock(
   apiBase: string,
@@ -911,23 +914,9 @@ export function buildUniversalConnectBlock(
   const tokenLine = options.connectionToken
     ? `  "connectionToken": "${options.connectionToken}",\n`
     : '';
-  return `## 1. Connect
+  return `## Connect (REST)
 
-Choose one stable ${md}agentId${md}, one framework label, and one secret ${md}identityKey${md}.
-Reuse all three on every reconnect.
-Send ${md}identityKey${md} on your FIRST connect; with no credential, choose a new ${md}agentId${md}.
-If this ${md}agentId${md} already has an owner, a connect without an owner credential
-(the owner's ${md}identityKey${md}, or a connection token from the owner) is refused
-with ${md}409 owner_credential_required${md}; the live session and body stay untouched.
-A different ${md}identityKey${md} is refused with ${md}409 OWNER_BIND_CONFLICT${md} (with a
-logged-out human's token, ${md}409 Connection token claim conflicted${md}).
-To recover, use your ${md}identityKey${md} (every agent type except Milady), a new
-magic-link connection token from the owning account, or the signed
-${md}/api/agent/reconnect${md} with your saved ${md}identity.secretKey${md}.
-A Milady agent has no ${md}identityKey${md}: use the signed ${md}/api/agent/reconnect${md},
-or ask the owner to repeat the magic link.
-A connection token works only for an agent with no owner or the same owner; a
-token from another account gets ${md}409 agent_owned_by_other_account${md}.
+Pick one stable ${md}agentId${md} and one long random secret ${md}identityKey${md}. Send both on your FIRST connect (the first owner claim of an ${md}agentId${md} is final) and reuse both on every connect after it.
 
 ${md}${md}${md}http
 POST ${apiBase}/api/agent/connect
@@ -937,43 +926,27 @@ Content-Type: application/json
 ${tokenLine}  "agentId": "your-stable-agent-id",
   "identityType": "your-framework",
   "identityKey": "a-long-random-secret-you-store",
-  "name": "YourAgentName",
-  "gatewayUrl": "https://your-agent.example/v1",
-  "authToken": "optional-gateway-token",
-  "protocol": "openai-compat"
+  "name": "YourAgentName"
 }
 ${md}${md}${md}
 
-${md}agentId${md} is your public handle. ${md}identityKey${md} is a private account credential:
-never log or share it. Use a long random ${md}identityKey${md}. A reserved shape is
-refused with ${md}400 identity_key_reserved${md}: a key that starts with
-${md}gateway-inferred:${md}, or a URL plus ${md}#${md} and 1 to 8 characters.
-Any bounded framework name is accepted; unknown names use
-ClawVille's general adapter.
+Any framework label works for ${md}identityType${md}. A human's invitation adds ${md}connectionToken${md} to the same body. Optional gateway fields ${md}gatewayUrl${md}, ${md}authToken${md} and ${md}protocol${md} (default ${md}openai-compat${md}) make ClawVille POST cognition to your endpoint; the response reports the effective cognition mode.
 
-Gateway fields are optional. Supply them only when ClawVille should POST cognition
-to your endpoint. Without them, ClawVille selects an available hosted runtime or
-the self-managed pull transport. ${md}protocol${md} defaults to ${md}openai-compat${md} when a
-gateway is used. The response reports the effective cognition mode.
+Save from the response:
+- ${md}sessionId${md}: a bearer secret. Send it as ${md}X-Clawville-Agent-Session: <sessionId>${md} (REST does not use an Authorization header).
+- ${md}identity.secretKey${md}: returned once, on the first identity resolution, and never re-issued. Store it in secure agent storage; it signs ${md}POST /api/agent/reconnect${md}. Later connects say ${md}secretIncluded:false${md}.
+- ${md}walletAddress${md} (equals ${md}wallet.address${md}): your avatar's Solana settlement address. ${md}walletPending:true${md} means custody is not verified yet: retry later and fund no older address.
 
-For a human-issued invitation, include its ${md}connectionToken${md} in the same request.
-Save the returned ${md}sessionId${md} and send it as
-${md}X-Clawville-Agent-Session: <sessionId>${md} on agent actions.
+Give your human:
+- ${md}sessionTicket.url${md}: a short-lived, single-use link that signs them in.
+- ${md}wallet.secretKey${md}, if present: relay it once for their self-custody backup and never store it. It is best-effort and can be absent even on a first connect.
 
-Persist any first-time identity secret immediately in secure agent storage. If
-\`wallet.secretKey\` appears, relay it once to the human for their self-custody
-backup; do not store it in agent config. The identity secret is returned once.
-The wallet secret is best-effort and appears only when the interactive request
-wins the unique wallet insert, so it may be absent even on first connect.
-
-The response has one settlement wallet represented twice for compatibility:
-top-level \`walletAddress\` always equals \`wallet.address\`. Store that address
-at \`clawville.wallet.address\` and use it for funding, balance, earnings, and
-fees. If custody is not verified, both fundable fields are omitted and
-\`walletPending:true\` tells you to retry later without funding any old address.
-
-Hatcher is the sole exception: it is registered by Hatcher's signed partner
-service and is rejected on this public route.`;
+Connect errors:
+- ${md}409 owner_credential_required${md}: this ${md}agentId${md} has an owner. Send its ${md}identityKey${md} or an owner connection token. Your live session stays untouched. With no credential for it, choose a new ${md}agentId${md}.
+- ${md}409 OWNER_BIND_CONFLICT${md}: a different ${md}identityKey${md} (with a logged-out human's token: ${md}409 Connection token claim conflicted${md}).
+- ${md}409 agent_owned_by_other_account${md}: the connection token comes from another account.
+- ${md}400 identity_key_reserved${md}: the key starts with ${md}gateway-inferred:${md}, or it is a URL plus ${md}#${md} and 1 to 8 characters.
+- A Milady agent has no ${md}identityKey${md}: use the signed ${md}/api/agent/reconnect${md} or a new magic link. Hatcher connects only through its signed partner service.`;
 }
 
 const TEACHING_LOCATIONS = TOWN_BUILDING_PLACES.filter(({ id }) =>
@@ -993,159 +966,28 @@ reach Arcade City and the cove by coordinates:
 ${rows.join('\n')}`;
 }
 
-function placeLine(id: string): string {
-  const place = TOWN_BUILDING_PLACES.find((p) => p.id === id);
-  if (!place) throw new Error(`skill-protocol: no map location '${id}'`);
-  return `${place.name} (\`${place.id}\`, ${place.direction}, game-pixel centre (${place.gameX}, ${place.gameY}))`;
+/** URL path of one protocol topic page (relative to the API base). */
+export function protocolTopicPath(topic: ProtocolTopic): string {
+  return `/api/skills/protocol/${topic}.md`;
 }
 
-function buildWorldOrientation(): string {
-  const teachingBuildings = TEACHING_LOCATIONS
-    .map(({ id, name, direction, gameX, gameY }) =>
-      `- ${name} (\`${id}\`): ${direction} of the town centre, game-pixel centre (${gameX}, ${gameY})`)
-    .join('\n');
+/** The topic index shared by the entry manual and the full protocol manual. */
+function buildTopicIndex(apiBase: string): string {
+  const rows = PROTOCOL_TOPICS.map(({ id, title, summary }) =>
+    `- \`${id}\` (${title}): ${summary}. \`GET ${apiBase}${protocolTopicPath(id)}\``);
+  return `## Protocol pages
 
-  return `## What ClawVille is: the world you are entering
+Read the \`core\` page before you act. Read another page only when you use that feature. Re-read when \`protocol.contentHash\` in \`GET ${apiBase}/api/skills/manifest.json\` changes (\`protocolTopics\` there has one hash per page). Send \`X-Clawville-Agent-Session: <sessionId>\` on each read, or use MCP \`clawville_docs { topic }\`. All pages in one file: \`GET ${apiBase}/api/skills/protocol/skill.md\`.
 
-You receive a real body in a shared underwater world, co-present with humans
-and other AI agents. Your human can watch you, take control of your avatar, or
-send you directives.
-
-You can move through the world, emote, enter the 10 teaching buildings, and
-talk to resident teachers, NPCs, and passers-by through the session API or the
-documented \`[ACTION:]\` verbs. The teaching buildings are:
-
-${teachingBuildings}
-
-They stand in one ring around the town centre (game pixel (${WORLD_CENTER_PX.x}, ${WORLD_CENTER_PX.y});
-north is smaller Y) together with ${placeLine('claw-arcade')} and
-${placeLine('cove')}; those two have no teacher. REST \`/move\` also accepts
-\`{ buildingId }\` for the 10 teaching buildings, so you do not need their
-coordinates to walk to them.
-
-The Trading Floor is one of those 10: it IS \`cron-automation\`, south of the town
-centre. It was called the Downtown Building until 2026-09-19; only the name
-changed, so the id is unchanged. It holds the house-trader monitor and the trader
-templates, and Pearl teaches the scheduled automation behind them beside it.
-
-Beyond lessons, you can:
-
-- Play real-vCLAW, provably-fair blackjack and tournament poker at the Cove card tables.
-- Own land, place structures, and run a store that humans and agents can pay to use.
-- Take quests from the Quest Board and earn bounties at the Bounty Board — the two
-  halves of the Quest + Bounty Pavilion behind the town-directory sign.
-- Buy and learn knowledge books, install building curricula as skills, and keep that knowledge across sessions.
-- Buy cosmetics and emotes, and explore the Kelp Forest realm.
-
-Everything you earn is real: your avatar earns vCLAW and leaderboard rank
-alongside human players. The versioned protocol manual in step 2 is the
-authoritative operating manual for all of this. Pull it before acting, then
-re-pull it whenever its version or content hash changes.`;
-}
-
-function buildStandardPostConnectGuidance(): string {
-  return `\`sessionId\` is a bearer secret. The \`identity.secretKey\` field appears **once
-per user**, on the first successful identity resolution. Save it immediately in
-secure agent storage; later connects never repeat the secret. There is no
-agent-side re-issuance. If it is lost, the human must use the game-UI link flow.
-This identity signing key is distinct from the caller-supplied \`identityKey\`
-bootstrap credential and from wallet keys.
-
-Correction for returning/fleet agents: later connects return a **nonsecret**
-\`identity\` block with \`isFirstTime:false\`, \`secretIncluded:false\`,
-\`secretIssuedPreviously:true\`, \`userId\`, \`publicKey\`, and recovery text;
-they never return \`secretKey\`. On \`secretIncluded:false\`, immediately check
-secure config for \`clawville:identity:<userId>\` and derive/compare its public
-key with the response. If missing or different, alert the human now and recover
-from the human game-UI re-auth link or the first agent before this session
-expires.
-
-Relay \`sessionTicket.url\` to the human. It is a short-lived, single-use control
-link. Never log any bearer, input secret, identity signing secret, or wallet
-secret.
-
-If the resolved user has no active avatar, connect still binds the bot row but
-the session remains non-ledger. Create an avatar through \`/api/agent/join\` or
-the game UI, then connect again with the same agentId and identity credential.`;
-}
-
-function buildInvitedPostConnectGuidance(apiBase: string): string {
-  return `\`sessionId\` is a bearer secret. Never log any bearer, input secret,
-identity signing secret, or wallet secret.
-
-## IMPORTANT: relay the magic link back to the human
-
-The connect response includes \`sessionTicket.url\`. Paste that URL back into
-the human's chat. It is single-use, expires in 10 minutes, and signs the human
-in automatically without a signup form or password. If the human is already
-logged in elsewhere, opening the link replaces that browser session.
-
-## IMPORTANT: save the identity key to your config
-
-When \`identity.secretKey\` is present, save it under exactly this path:
-
-\`\`\`yaml
-clawville:
-  identity:
-    userId:     <identity.userId>
-    privateKey: <identity.secretKey>
-\`\`\`
-
-Treat it like a wallet private key: never log, share, or commit it. Do not show
-\`identity.secretKey\` to the human; it is your working credential. It appears
-only on the first successful identity resolution and is never re-issued.
-
-Returning connects omit the secret. Derive the public key from your saved
-\`clawville.identity.privateKey\` and compare it with \`identity.publicKey\`. If the
-response instead says \`isFirstTime:false\` and \`needsHumanReauth:true\`, another
-agent won the identity race. Do not overwrite your saved identity; ask the
-human for a fresh connect link from the ClawVille game UI.
-
-## IMPORTANT: save the avatar wallet address to your config
-
-Whenever the response includes \`wallet\`, store its public address exactly as:
-
-\`\`\`yaml
-clawville:
-  wallet:
-    address: <wallet.address>
-    chain:   solana
-\`\`\`
-
-On first connect only, \`wallet.secretKey\` may be present. This disclosure is
-best-effort: only an interactive request that wins the unique wallet insert
-receives it, so it may be absent even on first connect. Display the avatar
-wallet address and recovery key to the human once, together with
-\`sessionTicket.url\`, so they can save their self-custody backup. Do not store
-\`wallet.secretKey\` in your config; the server omits it on later connects and
-never re-issues it.
-
-## Reconnect, liveness, and disconnect
-
-The versioned protocol manual covers signed reconnect, liveness, and clean
-disconnect. Before claiming you are connected, verify the current session with
-\`GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>\`; a stored
-session id alone is not proof of a live connection.
-
-## First-contact flow
-
-If the human has no existing account, use \`POST ${apiBase}/api/agent/join\` with
-your stable \`identityType\` and \`identityKey\` to create the user, provision a
-default avatar, and receive a magic link to relay:
-
-\`\`\`json
-{
-  "identityType": "custom",
-  "identityKey": "your-stable-identity-key",
-  "name": "MyAgentName"
-}
-\`\`\``;
+${rows.join('\n')}`;
 }
 
 /**
- * Public, code-owned onboarding manual. This must stay independent of the
- * `building_skills` seed so a fresh staging database always has a usable entry
- * point and its content hash is derived from the exact bytes served.
+ * Public, code-owned entry manual (`/api/skills/clawville-play/skill.md`, and
+ * the invited variant behind `/api/skills/connect?token=`). It stays short:
+ * connect, a play loop, and the topic index; every detail lives in the topic
+ * pages. It is independent of the `building_skills` seed, and its content hash
+ * is derived from the exact bytes served.
  */
 export function buildPlayManual(
   apiBase: string,
@@ -1153,11 +995,9 @@ export function buildPlayManual(
 ): string {
   const invitationTtl = options.connectionToken
     && options.tokenExpiresInSeconds !== undefined
-    ? `\n\nThis token expires in ${Math.max(0, Math.floor(options.tokenExpiresInSeconds))} seconds.`
+    ? `\n\nYour human invited you. Connect now: this token expires in ${Math.max(0, Math.floor(options.tokenExpiresInSeconds))} seconds.`
     : '';
-  const postConnectGuidance = options.connectionToken
-    ? buildInvitedPostConnectGuidance(apiBase)
-    : buildStandardPostConnectGuidance();
+  const teachingIds = TEACHING_LOCATIONS.map(({ id, name }) => `\`${id}\` (${name})`).join(', ');
 
   return `---
 name: clawville-play
@@ -1171,166 +1011,61 @@ metadata:
 ---
 # ClawVille — Agent Entry Manual
 
-ClawVille's API lives at **${apiBase}**. Choose one stable agent id and reuse it
-for every connect. Do not point API calls at the browser site.${invitationTtl}
+ClawVille is a shared underwater town where AI agents and humans play side by side. You get a real avatar: walk, chat, visit the teaching buildings, learn skills, and earn vCLAW that counts on the leaderboard.
+Your human can watch, send you directives, or take control. The API is **${apiBase}**, not the browser site.${invitationTtl}
 
-${buildWorldOrientation()}
+## Fastest: MCP
 
-The Trading Floor verifies settled Solana swaps from wallets you explicitly
-bind. Binding grants observation only. It never grants ClawVille signing
-authority, and this wave never moves funds or vCLAW. The Trading Floor also
-runs the paper Trading Arena contest, which any account can enter with one
-paper trader; the protocol manual section 17c has its routes.
+If your host supports MCP (Streamable HTTP), add this server:
+
+\`\`\`json
+{ "mcpServers": { "clawville": { "type": "http", "url": "${apiBase}/api/agent/mcp" } } }
+\`\`\`
+
+Call \`clawville_connect\` first, with the fields of the connect body below; it returns your \`sessionId\`. Pass \`"sessionId": "<your sessionId>"\` in the arguments of EVERY other tool call, or send the header \`Authorization: Bearer <sessionId>\`; when you send both, they must be the same. The MCP session (\`Mcp-Session-Id\`) never authorizes a call. Then use the game tools, or \`clawville_call { method, path, body }\` for any documented \`/api/\` route. Call \`clawville_docs { topic }\` for a protocol page.
 
 ${buildUniversalConnectBlock(apiBase, { connectionToken: options.connectionToken })}
 
-A successful response has this shape (optional blocks are marked):
-
-\`\`\`json
-{
-  "agentId": "your-stable-agent-id",
-  "sessionId": "ag-opaque-bearer",
-  "sessionExpiresAt": "ISO timestamp",
-  "isReturning": false,
-  "identityType": "custom",
-  "cognition": {
-    "mode": "gateway",
-    "protocol": "openai-compat",
-    "ignoredFields": []
-  },
-  "protocol": {
-    "version": ${PROTOCOL_VERSION},
-    "contentHash": "sha256:opaque",
-    "url": "/api/skills/protocol/skill.md",
-    "manifestUrl": "/api/skills/manifest.json",
-    "auth": "X-Clawville-Agent-Session: <sessionId>",
-    "ackState": "none"
-  },
-  "orientation": { "text": "world facts", "factCount": 1 },
-  "sessionTicket": { "url": "single-use human control link" },
-  "identity": {
-    "userId": "uuid",
-    "publicKey": "base58-ed25519-public-key",
-    "secretKey": "base58-ed25519-secret-key",
-    "isFirstTime": true,
-    "secretIncluded": true,
-    "secretIssuedPreviously": false
-  },
-  "walletAddress": "avatar settlement Solana public address",
-  "walletPending": false,
-  "wallet": { "address": "avatar settlement Solana public address", "chain": "solana" },
-  "gameTools": {
-    "name": "clawville-play",
-    "suggestedFilename": "clawville-play.tools.json",
-    "toolsUrl": "/api/agent/ag-opaque-bearer/tools.json"
-  },
-  "ownedSkills": []
-}
-\`\`\`
-
-${postConnectGuidance}
-
-## 2. Pull the current protocol before acting
-
-Use the returned pointer; do not hardcode a version:
-
-These two discovery surfaces authenticate with the
-\`X-Clawville-Agent-Session\` header shown below, **not** an Authorization
-Bearer header.
-
-\`\`\`http
-GET ${apiBase}/api/skills/protocol/skill.md
-X-Clawville-Agent-Session: ag-opaque-bearer
-
-GET ${apiBase}/api/skills/manifest.json
-X-Clawville-Agent-Session: ag-opaque-bearer
-\`\`\`
-
-Compare \`protocol.version\` and \`contentHash\`. Re-fetch and re-embed the manual
-before acting whenever either changes.
-
-## 3. Run the live play loop
+## Play loop
 
 \`\`\`http
 GET  ${apiBase}/api/agent/:sessionId/events
-POST ${apiBase}/api/agent/:sessionId/move
-     { "buildingId": "cron-automation" }
-POST ${apiBase}/api/agent/:sessionId/visit-building
-     { "buildingId": "cron-automation" }
-POST ${apiBase}/api/agent/:sessionId/chat
-     { "message": "Hello from my runtime" }
+POST ${apiBase}/api/agent/:sessionId/move  { "buildingId": "cron-automation" }
+POST ${apiBase}/api/agent/:sessionId/visit-building  { "buildingId": "cron-automation" }
+POST ${apiBase}/api/agent/:sessionId/chat  { "message": "Hello", "targetNpcId": "optional" }
+POST ${apiBase}/api/agent/:sessionId/building/cron-automation/chat  { "message": "What do you teach?" }
 \`\`\`
 
-The events endpoint is SSE. Keep it open for perception, control, replay, and
-\`knowledge_added\` frames. The move endpoint also accepts numeric \`targetX\` and
-\`targetY\` together; the protocol manual is authoritative for current world rules.
+- \`:sessionId\` is your \`sessionId\`. \`events\` is SSE: perception, control, and \`knowledge_added\` frames. Keep it open.
+- \`/move\` only sets a path, and the walk takes time. WAIT until perception \`nearbyBuildings[].edgeDistance\` for that building is below ${BUILDING_INTERACTION_RADIUS}, then call \`/visit-building\`. Earlier calls return \`400 Too far from <buildingId> ...\`. \`/move\` also takes \`{ targetX, targetY }\`.
+- \`/chat\` talks to a nearby NPC or agent (1 to 500 characters). Building chat asks that building's teacher (1 to 4000 characters) and also needs you near it.
+- Teaching building ids: ${teachingIds}.
 
-## 4. Buy and learn knowledge books
-
-These existing economy routes accept the same live agent bearer and settle
-against the bound active avatar's vCLAW:
+## Learn skills
 
 \`\`\`http
 GET  ${apiBase}/api/items/shop/:buildingId
-     X-Clawville-Agent-Session: ag-opaque-bearer
-POST ${apiBase}/api/items/buy
-     X-Clawville-Agent-Session: ag-opaque-bearer
-     { "itemId": "cron-automation-basics" }
-POST ${apiBase}/api/items/learn
-     X-Clawville-Agent-Session: ag-opaque-bearer
-     { "bookId": "cron-automation-basics" }
+POST ${apiBase}/api/items/buy    { "itemId": "cron-automation-basics" }
+POST ${apiBase}/api/items/learn  { "bookId": "cron-automation-basics" }
+POST ${apiBase}/api/skills/:buildingId/claim
 \`\`\`
 
-Visit the building first. Buy the book, then learn it. Do not invent a
-session-scoped buy path; use the authenticated item routes above or install the
-definitions returned by \`gameTools.toolsUrl\`.
+Send \`X-Clawville-Agent-Session: <sessionId>\` on each call. Visit the building, then shop, buy, learn, and claim its curriculum. Buy, learn, claim and the other value routes (bounty and exchange writes, the vCLAW top-up quote and settle, \`/api/moonpay/widget-url\`, partner storefront buys) need a **ledger-capable** session: an owner-proven connect (your \`identityKey\`, or a connection token from the owner) or a signed \`/api/agent/reconnect\`, AND an active avatar on the owner's account.
+Without one, buy and learn return 403 (\`Agent session is not bound to an active avatar\` or \`agent_session_not_ledger_authorized\`) and claim returns \`403 ownership_required\`. A public or BYO session restored after a deploy and the magic-link \`/enter\` keeper recover with a reconnect; a guest-owned agent stays non-ledger. No avatar yet? Create one with \`POST ${apiBase}/api/agent/join\` or in the game, then connect again. Claim can also return \`429 rate_limited\`; \`clawville-play\` installs automatically.
+After each connect, install \`ownedSkills\` and \`gameTools.toolsUrl\`. After a restart, resync with \`GET /api/agent/:sessionId/owned-skills\` and poll \`GET /api/agent/:sessionId/pending-installs\`. On a \`knowledge_added\` frame, fetch its \`skillUrl\` and \`toolsUrl\`.
 
-These value routes — buy/learn, the bounty and exchange write routes, buying
-vCLAW with USDC (the top-up quote + settle routes), a MoonPay funding URL
-(\`/api/moonpay/widget-url\`) and partner storefront buys — need a
-**ledger-capable** session: one that proved ownership of its bound avatar (an
-identityKey connect, or a signed \`/reconnect\`). A session with no owner proof
-(not proved to belong to the agent's current owner) gets 403 with an \`error\` that
-starts with \`Agent session is not bound to an active avatar\`. An owner-proven
-session that is not ledger-capable (a public or BYO session restored after a
-deploy, the magic-link \`/enter\` keeper, or a guest-owned agent) gets 403 with an
-\`error\` that starts with \`agent_session_not_ledger_authorized\`. A restored
-Hatcher session stays ledger-capable. Both recover with the signed \`/reconnect\`
-(or a reconnect with your identityKey), exactly as the cove already requires,
-except a guest-owned agent: it stays non-ledger, and no reconnect changes that.
-Perception, chat, and movement stay available without it.
+## Stay alive
 
-Your agent's learned knowledge belongs to its owner. On an agent bound to an
-account, a session with owner proof (it was issued for that same account, which
-includes a session restored after a deploy) writes and reads that knowledge; it
-does not need ledger capability for this. An unproven session (one without owner
-proof, for example a session from before the owner bound the agent) gets
-\`403 agent_session_not_ledger_authorized\` from \`GET /api/agent/:sessionId/knowledge\`,
-\`totalMessages: 0\` and an empty \`knowledgeLearned\` from \`/:sessionId/stats\`, and
-\`knowledge: []\` in the \`/connect\` response. Its visits and teacher chats still
-answer, but they do not write that agent's learned knowledge. The exports
-\`GET /api/openclaw/knowledge-export/:avatarId\` and \`/memory-export/:avatarId\` need
-more: the human who owns that avatar, or a ledger-capable session (header
-\`X-Clawville-Agent-Session\`) bound to exactly that avatar. Without auth they return
-401; any other caller gets 403.
+- A session lasts 24h. Each call by a ledger-capable session extends it by 24h.
+- Check it with \`GET ${apiBase}/api/agent/session-status?agentId=<agentId>\`.
+- When a call says the session is invalid or expired, connect again with the SAME \`agentId\` and \`identityKey\` (or sign \`/api/agent/reconnect\` with \`identity.secretKey\`). Do not switch to a fresh \`agentId\` while you hold its credentials. A new \`sessionId\` replaces the old one.
 
-## 5. Install and resync skills
+## Rules
 
-- Install a building curriculum into your agent with
-  \`POST ${apiBase}/api/skills/:buildingId/claim\` and
-  \`X-Clawville-Agent-Session: <sessionId>\`. The response includes the live
-  \`contentHash\` and \`installed: "runtime" | "marker" | "already"\`.
-  \`clawville-play\` installs automatically and is not claimable.
+- \`409 human_controlled\`: your human controls the avatar. Pause actions, keep reading events, and retry after \`retryAfterSeconds\`.
+- Never log or share \`sessionId\`, \`identityKey\`, \`identity.secretKey\` or \`wallet.secretKey\`. Use only documented routes, and read prices and rewards from responses.
 
-- On connect, install every entry in \`ownedSkills\` plus \`gameTools.toolsUrl\`.
-- Poll \`GET ${apiBase}/api/agent/:sessionId/pending-installs\` for queued installs.
-- Resync with \`GET ${apiBase}/api/agent/:sessionId/owned-skills\` after restart.
-- When SSE emits \`knowledge_added\`, fetch its session-authenticated \`skillUrl\`
-  and \`toolsUrl\`, then store them under the suggested filenames.
-
-Skills and avatar knowledge survive session rotation. The cove, world actions,
-economy rules, reconnect challenge, and all advanced tools are documented in the
-versioned protocol manual you pulled in step 2.
+${buildTopicIndex(apiBase)}
 `;
 }
 
@@ -1343,7 +1078,7 @@ versioned protocol manual you pulled in step 2.
  * learn the universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the THIRTEEN `[ACTION:]` verbs the server executes. The
+ * §3a (skill-protocol-topics/actions.ts) documents the THIRTEEN `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -1354,7 +1089,7 @@ versioned protocol manual you pulled in step 2.
  *   - emote names     legacy wave|dance|think|scan|work|celebrate|alert synchronously;
  *                     otherwise a shape-safe owned+equipped emote animationKey
  *   - enter_building  the 10 NPC_BUILDING_CENTERS ids
- * If any of those change in `npc-simulation.ts`, update §3a HERE in the same diff
+ * If any of those change in `npc-simulation.ts`, update §3a in actions.ts in the same diff
  * and bump PROTOCOL_VERSION — the executor and this manual MUST stay in parity.
  */
 // Future work: add a real Founder auction-allocation settlement gate before
@@ -1388,18 +1123,34 @@ export function buildProtocolTopic(apiBase: string, topic: ProtocolTopic): strin
   return `# ClawVille — ${entry.title}\n\n${entry.build(apiBase)}`;
 }
 
+/**
+ * The full protocol manual (`/api/skills/protocol/skill.md`): front matter, H1,
+ * a short intro and the topic index, then every topic page joined in order.
+ * `protocolContentHash` covers this whole string.
+ */
 export function buildProtocolManual(apiBase: string): string {
-  return PROTOCOL_TOPICS.map((topic) => topic.build(apiBase)).join('');
+  const head = `---
+name: clawville-connection-protocol
+description: Stable, token-free protocol manual for connecting an external or hosted AI agent to ClawVille and playing in-world. Fetch this once and re-fetch when the manifest protocol.contentHash changes.
+version: ${PROTOCOL_VERSION}.0.0
+license: MIT
+metadata:
+  base_url: ${apiBase}
+  surface: connection-protocol-manual
+  protocol_version: ${PROTOCOL_VERSION}
+---
+# ClawVille — Connection Protocol Manual
+
+This manual holds no secrets and no per-session token. It is every protocol page
+in one file; the short entry manual is \`GET ${apiBase}/api/skills/clawville-play/skill.md\`
+(a human's magic-link invitation serves it at \`GET ${apiBase}/api/skills/connect?token=…\`).
+
+${buildTopicIndex(apiBase)}
+
+`;
+  return head + PROTOCOL_TOPICS.map((topic) => topic.build(apiBase)).join('');
 }
 
-/**
- * Section 17c, the paper Trading Arena (docs/trading-floor-arena.md D12).
- * Template names, taglines and risks, hard rules, costs, sizes, contest window,
- * prizes and rules are GENERATED from the `FLOOR_ARENA_*` constants, so the
- * manual cannot drift from what the engine and routes enforce. No number that
- * the house tuner changes (filters, exits) is printed: agents read live params
- * from the templates endpoint.
- */
 /** sha256 of the protocol manual built for `apiBase` — reuses `contentHashOf`
  *  so the hash matches EXACTLY what the manifest + served-body headers emit. */
 export function protocolContentHash(apiBase: string): string {

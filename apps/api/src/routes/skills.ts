@@ -41,11 +41,15 @@ import { requirePartnerKey, partnerRateLimit } from '../middleware/partner-key';
 import { createRateLimiter } from '../middleware/rate-limit';
 import { sessionDigest } from '../services/session-digest';
 import {
+  PROTOCOL_TOPICS,
   PROTOCOL_VERSION,
   buildPlayManual,
   buildProtocolManual,
+  buildProtocolTopic,
   contentHashOf,
+  isProtocolTopic,
   protocolPointer,
+  protocolTopicPath,
   resolveApiBase,
 } from '../services/skill-protocol';
 import {
@@ -250,6 +254,13 @@ skillsRoutes.get(
     const body: Record<string, unknown> = {
       generatedAt: new Date().toISOString(),
       protocol: protocolPointer(apiBase),
+      protocolTopics: PROTOCOL_TOPICS.map(({ id, title, summary }) => ({
+        id,
+        title,
+        summary,
+        url: protocolTopicPath(id),
+        contentHash: contentHashOf(buildProtocolTopic(apiBase, id)),
+      })),
       orientation: {
         version: PROTOCOL_VERSION,
         contentHash: contentHashOf(playMd),
@@ -283,6 +294,37 @@ skillsRoutes.get(
         'Content-Disposition': 'attachment; filename="clawville-connection-protocol.md"',
         'Cache-Control': 'private, max-age=60',
         'X-Skill-Name': 'clawville-connection-protocol',
+        'X-Skill-Version': String(PROTOCOL_VERSION),
+        'X-Skill-Content-Hash': contentHashOf(md),
+        'Access-Control-Expose-Headers':
+          'Content-Disposition, X-Skill-Name, X-Skill-Version, X-Skill-Content-Hash',
+      },
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/skills/protocol/:topic.md — one protocol topic page (PROTOCOL_TOPICS).
+// ---------------------------------------------------------------------------
+//
+// Same auth gate as /protocol/skill.md (registered above, so `skill.md` never
+// reaches this handler). Registered BEFORE the `:buildingId` wildcard routes.
+skillsRoutes.get(
+  '/protocol/:topicFile{[^/]+\\.md}',
+  agentSessionOrPartnerKey,
+  (c) => {
+    const topic = c.req.param('topicFile').slice(0, -'.md'.length);
+    if (!isProtocolTopic(topic)) {
+      return c.json({ error: 'unknown_topic', topics: PROTOCOL_TOPICS.map((t) => t.id) }, 404);
+    }
+    const md = buildProtocolTopic(resolveApiBase(), topic);
+    return new Response(md, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': `attachment; filename="clawville-protocol-${topic}.md"`,
+        'Cache-Control': 'private, max-age=60',
+        'X-Skill-Name': `clawville-protocol-${topic}`,
         'X-Skill-Version': String(PROTOCOL_VERSION),
         'X-Skill-Content-Hash': contentHashOf(md),
         'Access-Control-Expose-Headers':

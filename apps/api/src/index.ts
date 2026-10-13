@@ -61,6 +61,8 @@ import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
 import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
+import { agentMcpRoutes, setMcpDispatcher } from './routes/agent-mcp';
+import { resolveApiBase } from './services/skill-protocol';
 // pendingConnections is exported but only used internally by agent-gateway routes
 import { agentExportRoutes } from './routes/agent-export';
 import { avatarManifestRoutes } from './routes/avatar-manifest';
@@ -246,6 +248,14 @@ app.use(
 // FINGERPRINT_SECRET is missing — fail-fast is intentional.
 app.use('*', fingerprintMiddleware);
 
+// Hosted MCP server (POST /api/agent/mcp). Mounted BEFORE jsonBodyGuard on
+// purpose and before agentGatewayRoutes: the MCP route caps the body at 256 KB
+// before anything reads it (jsonBodyGuard would buffer an unbounded body first)
+// and answers malformed JSON with a JSON-RPC -32700, not jsonBodyGuard's 400.
+// Its tools call the other routes in-process through `app.fetch` (see the
+// setMcpDispatcher call after the last route mount).
+app.route('/api/agent', agentMcpRoutes);
+
 // Reject malformed, non-empty JSON before route handlers call `c.req.json()`.
 // Raw-body signed/HMAC endpoints are exempt inside the guard so their exact
 // request bytes remain available to signature verification. Must stay before
@@ -347,9 +357,11 @@ app.route('/api/agent', agentGatewayRoutes);
 app.route('/api/agent', agentExportRoutes);
 // Alias: /api/skills/connect → /api/agent/connect-skill (user-facing SKILL.md URL)
 app.get('/api/skills/connect', (c) => {
+  // resolveApiBase(), not the request origin: behind the TLS proxy c.req.url
+  // is http://, which sent agents to a plain-http Location. The token is
+  // URL-encoded so it cannot add query parameters.
   const token = c.req.query('token') ?? '';
-  const url = new URL(c.req.url);
-  return c.redirect(`${url.origin}/api/agent/connect-skill?token=${token}`);
+  return c.redirect(`${resolveApiBase()}/api/agent/connect-skill?token=${encodeURIComponent(token)}`);
 });
 app.route('/api/quests', questRoutes);
 app.route('/api/bounties', bountyRoutes);
@@ -540,6 +552,9 @@ if (process.env.X402_MOCK_FACILITATOR === 'true') {
     '[x402-mock] Mock facilitator MOUNTED at /api/x402-mock — TEST ONLY, never enable in prod.',
   );
 }
+
+// Every route is mounted: MCP tools may now call them in-process.
+setMcpDispatcher((req) => Promise.resolve(app.fetch(req)));
 
 // Error handler — expected errors (HTTPException, InsufficientTokens) return
 // typed responses without alerting; unexpected exceptions fire an immediate

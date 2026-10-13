@@ -588,7 +588,7 @@ describe('migration 0060 — schema contract', () => {
       ],
       [
         'skill-protocol.ts',
-        section(protocol, '### Verify the hold wallet before claiming', 'Release requires a fresh'),
+        section(protocol, '### Hold wallet: declare and verify', '### Land over REST'),
       ],
       [
         'town-guide.ts',
@@ -1117,7 +1117,9 @@ describe('protocol manual parity', () => {
   });
 
   it('documents the requirement, the REST signature door, custodial attest and the error', () => {
-    expect(protocol).toContain('### Verify the hold wallet before claiming (REQUIRED since 2026-08-10)');
+    // The dated "(REQUIRED since 2026-08-10)" heading was history noise (agent-skill-simple);
+    // declare and verify are now one section.
+    expect(protocol).toContain('### Hold wallet: declare and verify');
     expect(protocol).toContain('wallet_not_verified');
     expect(protocol).toContain('/api/land/hold-wallet/verify/challenge');
     expect(protocol).toContain('/api/land/hold-wallet/verify/signature');

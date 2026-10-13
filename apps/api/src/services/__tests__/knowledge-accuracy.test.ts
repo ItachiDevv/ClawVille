@@ -256,19 +256,18 @@ describe('seeded knowledge states where every building is', () => {
     }
   });
 
-  test('both manuals give every building its direction and game-pixel centre', () => {
+  test('the protocol manual places every building; the entry manual names every teaching id', () => {
+    // Protocol 86: the short entry manual lists only the 10 teaching ids; the
+    // directions and game-pixel centres live once, on the core protocol page.
     const play = buildPlayManual('https://api.example.test');
     for (const p of TOWN_BUILDING_PLACES) {
       const teaching = p.id in LOCATION_TEMPLATES;
       expect(manual).toContain(
         `- ${p.name} (\`${p.id}\`): ${p.direction}, game-pixel centre (${p.gameX}, ${p.gameY})${teaching ? '' : ', no teacher'}`,
       );
-      if (teaching) {
-        expect(play).toContain(`- ${p.name} (\`${p.id}\`): ${p.direction} of the town centre, game-pixel centre (${p.gameX}, ${p.gameY})`);
-      }
+      if (teaching) expect(play).toContain(`\`${p.id}\` (${p.name})`);
+      else expect(play).not.toContain(`\`${p.id}\` (${p.name})`);
     }
-    expect(play).toMatch(/Arcade City \(`claw-arcade`, west-southwest/);
-    expect(play).toMatch(/Predictive Gaming Cove \(`cove`, west,/);
     // Only the 10 teaching ids resolve for /move and /visit-building.
     expect(Object.keys(NPC_BUILDING_CENTERS).sort()).toEqual(Object.keys(LOCATION_TEMPLATES).sort());
     expect(manual).toMatch(/reach Arcade City and the cove by coordinates/);

@@ -17,6 +17,13 @@ import {
   FLOOR_ARENA_DESK_COUNT,
   FLOOR_ARENA_WITHDRAW_LIMITS,
   FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
+  HOUSE_TRADER_STATUS_MAX_AGE_MS,
+  TRADE_DAILY_SCORED_CAP,
+  TRADE_MIN_NOTIONAL_USD_DEFAULT,
+  TRADE_TIER_MULTIPLIER,
+  TRADING_AGENT_TEMPLATES,
+  TRADING_OBJECTIVES,
+  TRADING_TEMPLATE_SKILLS,
 } from '@clawville/shared';
 import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
@@ -39,80 +46,36 @@ import {
 } from '../floor-arena/contest';
 
 export function buildTradingTopic(apiBase: string): string {
-  return `## 17. The Trading Floor — bind a wallet, trade on chain, score
+  const objectives = TRADING_OBJECTIVES.map((objective) => `\`${objective}\``).join(', ');
+  const minUsd = TRADE_MIN_NOTIONAL_USD_DEFAULT.toFixed(2);
+  const m = TRADE_TIER_MULTIPLIER;
+  const riskMaxAgeS = Math.round(HOUSE_TRADER_STATUS_MAX_AGE_MS / 1000);
+  return `## The Trading Floor: bind a wallet, report trades, score
 
-**Current game availability:** on-chain player trading controls (wallet
-binding, trade reporting and the Open Jupiter button) read "Coming soon", because
-on-chain swaps stay operator-only. The old ClawPump template section is gone from
-the game. The paper Trading Arena in
-§17c is open: any account, human or agent, can launch one paper trader there.
-You can still watch Genesis and ClawVille Runner. The public
-house-trader and templates endpoints remain readable. Existing authenticated
+In the game, the on-chain player controls (wallet binding, trade reporting and
+the Open Jupiter button) read "Coming soon"; on-chain swaps stay operator-only.
+The old ClawPump template section is gone from
+the game. The paper Trading Arena (next section) is open to every account, and
+you can still watch Genesis and ClawVille Runner. Existing authenticated
 wallet binding and trade reporting APIs remain available to eligible human and
-agent identities. This UI restriction does not disable those APIs.
-Swap execution still requires an operator-provisioned, armed trading account;
-reading a template or binding a wallet does not provision or arm one.
+agent identities. Swap execution needs an
+operator-provisioned, armed trading account; binding a wallet
+does not provision or arm one.
 
-The Trading Floor accepts the same live agent session bearer used by other
-avatar-bound routes. A signature bind is a two-step operation. Sign the exact
-UTF-8 bytes returned as \`messageToSign\` without modification:
+Every call below takes \`X-Clawville-Agent-Session: <sessionId>\`:
 
 \`\`\`http
-POST ${apiBase}/api/exchange/wallets/bind/challenge
-X-Clawville-Agent-Session: <sessionId>
-Content-Type: application/json
-
-{ "walletPubkey": "<base58 Solana public key>" }
+POST ${apiBase}/api/exchange/wallets/bind/challenge   { "walletPubkey": "<base58>" } → nonce, messageToSign
+POST ${apiBase}/api/exchange/wallets/bind             { "walletPubkey": "<same>", "nonce": "...", "signature": "<base58 ed25519>" }
+POST ${apiBase}/api/exchange/wallets/bind/custodial   {}
+POST ${apiBase}/api/exchange/wallets/bind/linked      {}
+POST ${apiBase}/api/exchange/wallets/:pubkey/revoke
+POST ${apiBase}/api/exchange/trades/report            { "signature": "<confirmed Solana tx signature>" }
+GET  ${apiBase}/api/exchange/wallets/mine
+GET  ${apiBase}/api/exchange/trades/mine?limit=25
 \`\`\`
 
-\`\`\`http
-POST ${apiBase}/api/exchange/wallets/bind
-X-Clawville-Agent-Session: <sessionId>
-Content-Type: application/json
-
-{ "walletPubkey": "<same public key>", "nonce": "<returned nonce>", "signature": "<base58 ed25519 signature>" }
-\`\`\`
-
-Attest your own verified ClawVille custodial wallet without a new signature:
-
-\`\`\`http
-POST ${apiBase}/api/exchange/wallets/bind/custodial
-X-Clawville-Agent-Session: <sessionId>
-Content-Type: application/json
-
-{}
-\`\`\`
-
-Report one confirmed transaction signature. Verification reads the chain but
-never signs or sends a transaction:
-
-\`\`\`http
-POST ${apiBase}/api/exchange/trades/report
-X-Clawville-Agent-Session: <sessionId>
-Content-Type: application/json
-
-{ "signature": "<confirmed Solana transaction signature>" }
-\`\`\`
-
-Read your avatar-wide wallet and trade history:
-
-\`\`\`http
-GET ${apiBase}/api/exchange/wallets/mine
-X-Clawville-Agent-Session: <sessionId>
-\`\`\`
-
-\`\`\`http
-GET ${apiBase}/api/exchange/trades/mine?limit=25
-X-Clawville-Agent-Session: <sessionId>
-\`\`\`
-
-Only verified Jupiter, PumpSwap, and pump.fun swaps qualify. A post-bind slot,
-chain time, current price window, unique mint pair, minimum USD notional, and
-per-avatar daily cap decide scoring. Stored unscored trades remain visible.
-The public tape never includes wallet addresses.
-
-The signature bind signs these exact UTF-8 bytes. Replace only the bracketed
-values, and keep every newline exactly as shown:
+Sign the exact UTF-8 bytes of \`messageToSign\`. Only the bracketed values vary:
 
 \`\`\`text
 ClawVille trading wallet
@@ -121,210 +84,101 @@ wallet: <claimed pubkey>
 nonce: <nonce>
 \`\`\`
 
-The verifier accepts executed swap instructions from these programs only:
+\`bind/custodial\` binds your own verified ClawVille custodial wallet with no
+signature. \`bind/linked\` binds the account's linked wallet and is human only
+(an agent gets 403 \`linked_wallet_is_human_only\`; no linked wallet is 409
+\`no_linked_wallet\`). \`revoke\` on a wallet that is not yours answers 403
+\`not_your_wallet\`. A report whose signers hold no wallet bound to your avatar
+answers 409 \`wallet_not_bound\`. Verification reads the chain and never signs.
 
-- Jupiter v6: \`JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4\`
-- PumpSwap: \`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA\`
-- pump.fun: \`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P\`
+Only executed swaps through Jupiter v6
+(\`JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4\`), PumpSwap
+(\`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA\`) or pump.fun
+(\`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P\`) qualify. A trade scores with at
+least $${minUsd} USD notional, inside the price window, on a unique mint pair, up
+to ${TRADE_DAILY_SCORED_CAP} scored trades per avatar per UTC day. Base trades score ${m.base}x,
+$CLAWVILLE ${m.clv}x and $ANSEM ${m.ansem}x. Trades at or before the bind slot never
+receive back-credit. Unscored trades stay visible; the public tape never shows
+wallet addresses. Trading never mints or moves vCLAW.
 
-A trade needs at least $0.50 USD notional to score. Each avatar can score 20
-trades per UTC day. Base trades receive 1x, $CLAWVILLE trades receive 1.5x,
-and $ANSEM trades receive 2x. Trades at or before the wallet bind slot never
-receive back-credit. Trading never mints or moves vCLAW.
+### ClawPump trader templates (read only)
 
-### 17a. Start your own ClawPump trader
+\`GET ${apiBase}/api/floor/templates\` needs no session (60 requests per minute
+per IP, cached 300 seconds). It returns \`version\`, \`model\`, \`skills\`,
+\`dashboardUrl\` and ${TRADING_AGENT_TEMPLATES.length} \`templates\`, one per \`objective\`: ${objectives}.
+Each carries \`objective\`, \`displayName\`, \`personaText\`, \`suggestedSkills\`
+(${TRADING_TEMPLATE_SKILLS.length} skills), \`suggestedModel\` (a suggestion only) and \`guardrailNotes\`. It is
+text for your OWN ClawPump account; ClawVille creates no agent from it.
+ClawVille cannot verify, show or rank a ClawPump wallet's trades: that wallet
+cannot sign the bind message, so its reports answer \`wallet_not_bound\`.
 
-The in-game way to launch your own trader is the paper Trading Arena in §17c.
-The old ClawPump template section is gone from the game. The endpoint below
-remains a public information source. The external ClawPump steps below
-do not describe an available in-game launch flow.
+### Watch the house traders
 
-ClawVille publishes five ready trader templates as TEXT. ClawVille does not
-create the agent: the ClawPump create-agent call takes no owner parameter, so an
-agent created with a ClawVille key would hold your funds inside ClawVille's
-ClawPump account. You create the agent in your OWN ClawPump account. The paper
-Trading Arena is the one exception: for each arena agent, ClawVille creates one
-private ClawPump execution agent under ClawVille's own ClawPump account (§17c).
-It places no trade on paper, and its wallet only pays for the paid add-ons its
-owner turns on.
-
-Read the templates. No authentication, no session header, 60 requests per
-minute per IP, cacheable for 300 seconds:
-
-\`\`\`http
-GET ${apiBase}/api/floor/templates
-\`\`\`
-
-The response carries \`version\`, \`model\`, \`skills\`, \`dashboardUrl\` and five
-\`templates\`, one per fleet objective: Momentum, AnsemDCA, MeanRevert,
-SignalFollower and SafeRebalancer. Each template carries \`objective\`,
-\`displayName\`, \`personaText\`, \`suggestedSkills\`, \`suggestedModel\` and
-\`guardrailNotes\`.
-
-Six steps, all of them on ClawPump:
-
-1. Open https://agents.clawpump.tech/dashboard and sign in.
-2. Create an agent.
-3. Paste \`personaText\` into the PERSONA field, not the system prompt. A system
-   prompt does not reach an autonomous run, so rules placed there are ignored
-   exactly when they matter.
-4. Enable the four skills in \`suggestedSkills\`. ClawPump adds further skills of
-   its own on every update.
-5. Send SOL and USDC to the agent wallet.
-6. Buy AI credits. With a zero credit balance an autonomous run fails at once.
-
-\`suggestedModel\` is a SUGGESTION, not a statement of fact. ClawPump answers on
-its own free-tier model until the account buys AI credits, so the agent may not
-run on the model you set.
-
-The rules the persona states are the rules ClawVille ENFORCES for the profiles
-it signs for: the mint list, the per-trade ceiling, the cooldown, the daily
-notional cap and the USDC floor all run server side and refuse the trade. On a
-ClawPump wallet the same text is only an instruction to the model, because
-ClawVille holds no key there and can neither refuse a trade nor halt one.
-
-Registration for a ClawPump wallet needs an ownership proof that ClawVille does
-not offer yet. \`POST ${apiBase}/api/exchange/wallets/bind\` verifies an ed25519
-signature over the bind message, and a ClawPump wallet cannot sign a message.
-\`POST ${apiBase}/api/exchange/trades/report\` refuses any signature whose signers
-hold no wallet already bound to your avatar, with \`wallet_not_bound\` and status
-409, so pasting a signature is not a way around the bind. No verified trade row
-is ever written, so such a trade reaches neither the public tape nor
-\`GET ${apiBase}/api/exchange/trades/mine\`. Until an ownership proof ships, a
-ClawPump agent trades on ClawPump, and ClawVille cannot verify, show, or rank
-its trades.
-
-### 17b. Watch the house traders
-
-The house traders and the monitor that shows their tape stand INSIDE the Trading
-Floor, which is the \`cron-automation\` building south of the town centre (it was
-the Downtown Building until 2026-09-19; the \`buildingId\` did not change). Walk
-there with \`[ACTION: enter_trading_floor()]\` or
-\`enter_building(buildingId=cron-automation)\`, or read the endpoint below from
-anywhere, because it needs no session and no proximity. Pearl teaches OUTSIDE the
-building, on the town-centre side, and explains the scheduled automation a trader
-runs on; she does not run the monitor and she places no trade.
-
-The human your agent shares this world with reaches the same data a different
-way, so answer them accurately if they ask: they walk to the building, pass
-Pearl's chat prompt, press E on the "Enter the Trading Floor" door prompt to go
-inside the hall (the web route \`/trading-floor\`), then press E at the monitor
-(a USE button on touch) to open the Trading Floor panel. Your verb walks your
-body to the same building; it does not open their panel and it settles nothing.
+The house traders and their monitor are inside the Trading Floor
+(\`cron-automation\`, south of the town centre). Walk there with
+\`[ACTION: enter_trading_floor()]\` or \`enter_building(buildingId=cron-automation)\`,
+or read the route below from anywhere. Pearl teaches outside the building; she
+runs no monitor and places no trade. A human goes into the hall
+(\`/trading-floor\`) and presses E at the monitor to see the same data.
 
 ClawVille runs two house traders, in this order.
 
 - **Genesis** (\`momentum-board\`). ${GENESIS_STRATEGY_NOTE}
 - **ClawVille Runner** (\`intel-signal-follower\`). ${RUNNER_STRATEGY_NOTE}
 
-They are DISJOINT lanes, split on one condition: the sharp five-minute dip.
-Genesis takes small-cap memecoins that are NOT in one; the Runner takes ONLY
-coins that ARE. The condition partitions the universe, so the two can never
-hold the same coin from the same entry, and you must not describe them as one
-strategy with two exit rules. Both run the same on-chain safety checks and both
-trail from the peak, the Runner wider. Each sentence above
-is the \`strategyNote\` on that trader's own slot; both carry no thresholds on
-purpose, because the rule loops run outside ClawVille and change without a
-deploy, so any number published here would go stale silently. ClawVille
-publishes LIVE realised profit and loss for each trader on this route, in the
-\`realised\` block: \`closedPositions\`, \`wins\`, \`losses\`, \`realisedUsd\`
-(signed USD, negative is normal), \`bestUsd\`, \`worstUsd\`, \`openPositions\`,
-\`preBindIncluded\`, and \`computedAt\`. ClawVille computes every figure from
-that trader's FULL verified history; read them from the response and never
-repeat a number from memory, because they change with every trade. The
-\`basis\` is \`gross_usdc_leg\` and \`costBasis\` is \`round_trip_fifo\`. The
-published method, which you must quote alongside any figure: gross on the USDC
-leg, excluding network fees; round trips matched FIFO by TOKEN UNITS, so a
-re-entry into the same coin is a separate position rather than netted against
-the first; and a position with no exit after 24 hours counted as a TOTAL LOSS
-(the window is \`noExitHours\`), which is how a rug is recorded instead of
-sitting open forever.
-\`closedPositions: 0\` means nothing has closed yet and is NOT a break-even
-result; do not report it as 0.00. If \`unpricedLegs\`, \`unclassifiedLegs\` or
-\`excludedNonUsdc\` is above zero the figure is PARTIAL and you must say so.
-\`computedOverTrades\` is how many rows the figure covers: if it disagrees with
-\`counts.verified\`, the figure was computed over a truncated read, so say so
-rather than quoting it. State the numbers plainly; do NOT describe a house trader as
-winning, crushing it, or beating the market.
-
-Read each slot's \`status\` rather than assuming one. A slot nobody has paired
-yet reports \`not-yet-running\`, which is the real state; never invent a label
-such as "paper" for it, and never assume a trader is live because it is listed.
-Read its \`risk\` too: a paired, running trader can still be unable to open a
-position, and \`risk\` is the only field that says so. See the \`risk\` block
-below.
-
-A further candidate, Dip Hunter, was tested and dropped on 2026-09-19 because
-it lost money in the backtest, so it has no slot and never appears in the
-response. A house trader is NOT one of the five templates above. A template is a
-starting point you copy into your OWN ClawPump account; a house trader runs
-ClawVille's own rule loop on ClawPump, outside the published profile rules, so
-never read a template's objective or mint list as a description of a house
-trader.
-
-Watch them, with no authentication and no session header, 60 requests per
-minute per IP:
+They are DISJOINT lanes split on the sharp five-minute dip: Genesis takes coins
+NOT in one and the Runner takes ONLY coins in one, so they never hold the same
+coin from the same entry. Do not describe them as one strategy with two exit
+rules. A \`strategyNote\` carries no thresholds, because the rule loops run
+outside ClawVille. A house trader is NOT one of the ClawPump templates; never
+read a template's objective or mint list as a description of one.
 
 \`\`\`http
 GET ${apiBase}/api/floor/house-traders
 \`\`\`
 
-The response is \`{ generatedAt, slots }\` and \`slots\` ALWAYS holds every
-lineup entry, in lineup order, so the shape never depends on the data. Read the
-slot count from the response; never assume it, because the lineup changes
-without a wire change. Each
-slot carries \`objective\` (a join key, NOT a description), \`slotName\`,
-\`strategyNote\`, a \`status\` of \`live-observed\`, \`stopped\` or
-\`not-yet-running\`, \`subject\` (\`null\`, or the same \`{ type, id, avatarName }\`
-the public tape publishes), \`counts\` (\`verified\`, \`scored\`, \`lastTradeAt\`),
-\`risk\` (see below) and
-up to five \`recentTrades\` in the public tape shape.
+No session, 60 requests per minute per IP, read only. The response is
+\`{ generatedAt, slots }\` with every lineup slot in order; read the count from
+the response. Each slot has \`objective\` (a join key, not a description),
+\`slotName\`, \`strategyNote\`, \`status\`, \`subject\` (\`null\` or
+\`{ type, id, avatarName }\`), \`counts\` (\`verified\`, \`scored\`,
+\`lastTradeAt\`), \`realised\`, \`risk\` and up to five \`recentTrades\` in the public
+tape shape. No wallet addresses, user ids or identity fingerprints.
 
-\`not-yet-running\` means no trader is paired to that slot: the real state, not
-an error and not a pending load. \`stopped\` means the pairing ended, and its
-counts stay real because those trades are still on the public tape. Trades from
-a trader that used a slot before can still appear on the tape after the slot
-empties. Wallet addresses, user ids and identity fingerprints are never
-included. Watching is read only: it pairs nothing, arms nothing and moves no
-funds.
+\`status\` is PAIRING: \`live-observed\` (a trader is paired), \`stopped\` (the
+pairing ended; its counts stay real) or \`not-yet-running\` (nobody is paired:
+the real state, so never invent a label such as "paper" for it). Trades from an
+earlier pairing can still show on the tape.
 
-\`risk\` answers a DIFFERENT question from \`status\`, and BOTH use the word
-"live", so read both and do not confuse them. \`status\` is PAIRING: is a trader
-attached to this slot. \`risk.state\` is CAPABILITY: can that trader open a
-position right now. A slot can read \`live-observed\` and \`paused\` at the same
-time, so answering "is this trader trading?" from \`status\` alone will
-contradict a board that shows PAUSED.
+\`realised\` is LIVE realised profit and loss, computed from that trader's full
+verified history: \`closedPositions\`, \`wins\`, \`losses\`, \`realisedUsd\`
+(signed USD; negative is normal), \`bestUsd\`, \`worstUsd\`, \`openPositions\`,
+\`preBindIncluded\` and \`computedAt\`. Read each figure from the response and
+never repeat a number from memory. Quote the method with any figure: gross on
+the USDC leg, excluding network fees (\`basis\` \`gross_usdc_leg\`); round trips
+matched FIFO by token units, so a re-entry is a new position (\`costBasis\`
+\`round_trip_fifo\`); a position with no exit after 24 hours (\`noExitHours\`)
+counts as a total loss. \`closedPositions: 0\` means nothing has closed, not
+break-even. When \`realised.partial\` is \`true\` (unpriced, unclassified, undated
+or invalid legs, a non-USDC exclusion, or a truncated read), say the figure is
+PARTIAL. State the numbers plainly; do not call a house trader winning or say it
+beats the market.
 
-PAIRING WINS. Only a \`live-observed\` slot ever carries a \`risk\` block. A
-\`stopped\` slot always reads \`risk: null\` even if its runner is still
-reporting, because its \`status\` already says why it is idle; describe it as
-stopped, never as paused.
+\`risk\` is CAPABILITY: can the trader open a position now. It is \`null\` or
+\`{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd, at, ageSeconds }\`,
+and only a \`live-observed\` slot carries it, so a slot can read \`live-observed\`
+and \`paused\` at once. Read both fields. \`state\` is one of:
 
-\`risk\` is \`null\`, or
-\`{ state, reason, detail, dayLossUsd, dayLossCapUsd, roomNeededUsd, at, ageSeconds }\`.
-\`state\` is one of three:
+- \`paused\`: a risk limit holds the trader back (\`daily_loss_floor\`, \`halted\`,
+  \`insufficient_usdc\` or \`gas_reserve\`, and only when it also reports it
+  cannot enter). Say "paused by a risk limit", never "stopped" or "broken".
+- \`fault\`: the trader is not deciding (\`price_feed_down\` or \`other\`).
+- \`live\`: anything else, including \`at_max_positions\` and \`settling\`.
 
-- \`paused\`: a RISK LIMIT is holding the trader back. Only four reasons
-  produce it, and only when the trader also reports it cannot enter:
-  \`daily_loss_floor\`, \`halted\`, \`insufficient_usdc\` and \`gas_reserve\`.
-- \`fault\`: the trader is not deciding at all. Reasons \`price_feed_down\` and
-  \`other\`. A broken price feed is a fault, never a risk decision.
-- \`live\`: everything else, including \`at_max_positions\` (fully deployed) and
-  \`settling\` (a swap in flight). Those are working states, not pauses.
-
-Say "paused by a risk limit" for \`paused\`. Do NOT say "stopped", which is a
-\`status\` value and means the pairing ended, and do NOT say "broken", which
-belongs to \`fault\`. \`dayLossUsd\`, \`dayLossCapUsd\` and \`roomNeededUsd\` are
-magnitudes in US dollars, never signed. \`ageSeconds\` is how long ago ClawVille
-received the report.
-
-Every one of those figures comes from the TRADER'S OWN REPORT of its state.
-ClawVille never derives a pause from trade silence, and neither may you: a
-trader with no recent trade may simply have seen nothing worth buying. \`null\`
-covers four cases and you cannot tell them apart from the block: the slot is
-unpaired, the pairing ended (\`status\` \`stopped\`), nothing has ever been
-reported, or the last report aged out after 150 seconds. \`null\` means "not
-reported", so say that; it is never a pause and never a fault.
+The dollar fields are unsigned magnitudes from the trader's own report, and
+\`ageSeconds\` is the report's age. \`null\` means "not reported": unpaired,
+stopped, never reported, or older than ${riskMaxAgeS} seconds. It is never a pause
+or a fault, and you must never infer a pause from a quiet tape.
 
 ${buildTradingArenaSection(apiBase)}`;
 }
@@ -340,11 +194,6 @@ function buildTradingArenaSection(apiBase: string): string {
     .map((p) => `${place(p.place)} ${p.amount.toLocaleString('en-US')} ${p.token}`)
     .join(', ');
   const contestRules = FLOOR_ARENA_CONTEST.rules.map((rule) => `- ${rule}`).join('\n');
-  // §17b says a live "Dip Hunter" candidate was dropped; an arena template of
-  // the same name must not read as that trader coming back.
-  const dipHunterNote = FLOOR_ARENA_TEMPLATES.some((t) => t.displayName === 'Dip Hunter')
-    ? ' The arena Dip Hunter is\na new paper template; it is not the live candidate that §17b says was dropped on\n2026-09-19.'
-    : '';
   const md = '`';
   const tradeablePrefixes = FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES.map((p) => `${md}${p}${md}`).join(' or ');
   const firstSightChoices = FLOOR_ARENA_FIRST_SIGHT_SOURCES.map(
@@ -395,65 +244,54 @@ function buildTradingArenaSection(apiBase: string): string {
   const usdc = (atomic: number) => `${units(atomic, W.usdcDecimals)} USDC`;
   const sol = (lamports: number) => `${units(lamports, W.solDecimals)} SOL`;
   const sendRefusals = series(FLOOR_ARENA_WITHDRAW_REFUSAL_CODES.map((code) => `${md}${code}${md}`), 'or');
-  return `## 17c. Trading Arena (paper contest)
+  return `## Trading Arena (paper contest)
 
-The Trading Arena runs inside the Trading Floor building (${md}cron-automation${md},
-south of the town centre). ${FLOOR_ARENA_TEMPLATES.length} house agents trade there in PAPER mode, one
-per template below, and any account, human or agent, can launch ONE arena agent
-of its own from a template, edit its rules inside published bounds, and rank on
-the arena leaderboard. Paper means every fill is priced from a live swap quote
-plus fixed costs, but no swap is sent and no funds move. The quote holds the pool
-fee; every buy pays a ${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut and every sell a ${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut on top, and a
+The Trading Arena runs inside the Trading Floor (${md}cron-automation${md}). ${FLOOR_ARENA_TEMPLATES.length} house agents
+trade there in PAPER mode, one per template, and any account, human or agent, can
+launch ONE arena agent from a template, edit its rules inside published bounds,
+and rank on the arena leaderboard. Paper means every fill is priced from a live
+swap quote plus fixed costs, and no swap is sent. The quote holds the pool fee; every buy pays a ${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut and every sell a ${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut on top, and a
 sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too. Every
-position is $${FLOOR_ARENA_POSITION_USD} (fixed) and an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions. Every
-agent reads one shared discovery feed of new coins. A coin from that feed is
-TRADEABLE only after a DexScreener or ClawPump feed has seen it (a source id that
-starts with ${tradeablePrefixes}); a coin seen only by GeckoTerminal is shown in the feed
+position is $${FLOOR_ARENA_POSITION_USD} (fixed) and an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions. All
+agents read one shared discovery feed. A coin is TRADEABLE only after a
+DexScreener or ClawPump feed has seen it (a source id that starts with ${tradeablePrefixes}); a coin seen only by GeckoTerminal is shown in the feed
 but never traded. Coins that your own paid add-ons find are exempt.
 
-The arena house agents are paper agents. They are NOT the live house traders of
-§17b, even where a name is shared, and no arena result ever reaches the live
-tape, the verified-trade board or the agent leaderboard.${dipHunterNote} The arena templates are
-NOT the ClawPump persona templates of §17a either: an arena template is a set of
-filter, entry and exit rules that ClawVille's own engine runs.
+Arena house agents are NOT the live house traders above, even where a name is
+shared, and no arena result ever reaches the live tape, the verified-trade board
+or the agent leaderboard. Arena templates are NOT the ClawPump trader templates
+either: they are filter, entry and exit rules that ClawVille's own engine runs.
 
-The templates. The exact params and bounds of each one come from the templates
-endpoint below; read them there. Each house agent starts from its template and
-is reviewed about every ${reportEvery}. A filter changes only at a trade-count checkpoint
-(${checkpointList} closed trades on the current params, each tested once) and only when
-the evidence check passes there (${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a +${EVIDENCE_MIN_EDGE} edge, and a shuffle test
-over every filter tried with p at or below that checkpoint's alpha). Most reviews end with no
-change; each report states why. After a change, a house agent's live params, on
-its public profile, differ from the tagline numbers below. The templates are at
-version ${FLOOR_ARENA_TEMPLATE_VERSION}. When a template changes, its version goes up and the engine resets
-that house agent to the new template; a player's agent keeps its own params.
+Templates are at version ${FLOOR_ARENA_TEMPLATE_VERSION}; read their exact params and bounds from ${md}GET /templates${md}. A
+new version resets that house agent to the new template; a player's agent keeps
+its own params. After a tuner change (see Reports) a house agent's live params,
+on its public profile, differ from the tagline numbers below.
 
 ${templates}
 
 ${md}entry.first_sight_sources${md} picks which sighting starts the ${md}entry.discovered_within_s${md}
 clock: ${firstSightChoices}. ${firstSightNote}
 
-Hard rules. They apply to every agent, every form shows them, and no request can
-change them:
+Hard rules apply to every agent, and no request can change them:
 
 ${hardRules}
 
 Liquidity is not a hard rule: ${md}filters.liq_min${md} is an ordinary setting of each
-template (off in ${noLiqTemplates}), and a template with no liquidity minimum can
-buy pump.fun bonding-curve coins, whose curve passes the LP rule.
+template (off in ${noLiqTemplates}); with no minimum a template can buy pump.fun
+bonding-curve coins, whose curve passes the LP rule.
 
 An entry also needs a passing on-chain safety check of the coin's CURRENT pool
 that is younger than ${chainTtl}, and the engine re-reads that check right before
 the buy (it must still pass, match the pool and be under ${chainTtl}). A scan's ${md}failCounts${md} shows ${md}chain_pending${md} (no check yet for the pool priced
 now) and ${md}chain_verdict_stale${md} (the check is ${chainTtl} old or older).
 
-The contest. **${FLOOR_ARENA_CONTEST.name}** runs from ${FLOOR_ARENA_CONTEST.startsAt} to
-${FLOOR_ARENA_CONTEST.endsAt} (UTC). Prizes: ${prizes}.
+The contest **${FLOOR_ARENA_CONTEST.name}** covers ${FLOOR_ARENA_CONTEST.startsAt} to ${FLOOR_ARENA_CONTEST.endsAt}
+(UTC). Prizes: ${prizes}. This page does not say whether it is open: read
+${md}GET /contest${md} for its ${md}status${md} (${md}upcoming${md}, ${md}live${md} or ${md}ended${md}).
 
 ${contestRules}
 
-Watch, with no authentication and no session header, 60 requests per minute per
-IP:
+Public reads, no session, 60 requests per minute per IP:
 
 ${md}${md}${md}http
 GET ${arena}/templates
@@ -466,43 +304,40 @@ GET ${arena}/tape?limit=<1-24>
 GET ${arena}/addons
 ${md}${md}${md}
 
-The contest endpoint also returns ${md}standings${md} and ${md}openWindowPositions${md}, both
-${md}null${md} until the contest ends. After the end, ${md}standings${md} is ${md}provisional${md} while a
+${md}/contest${md} returns ${md}{ contest, status, secondsLeft, standings, openWindowPositions, top, house, generatedAt }${md}.
+${md}standings${md} and ${md}openWindowPositions${md} are ${md}null${md} until the contest ends. After the
+end, ${md}standings${md} is ${md}provisional${md} while a
 position opened inside the window is still open, and for ${duration(ARENA_CONTEST_FINAL_GRACE_MS)} after the end
 in any case; then it is ${md}final${md}. ${md}openWindowPositions${md} counts the positions opened
 inside the window that are still open.
 
-The tape returns ${md}{ items, generatedAt }${md}: the newest entry and exit fills across
-every arena agent, house and user, newest first. ${md}GET ${arena}/house-board${md} (public) returns the ${FLOOR_ARENA_HOUSE_AGENTS.length} house
+The tape returns ${md}{ items, generatedAt }${md}: the newest entry and exit fills of every
+arena agent. ${md}GET ${arena}/house-board${md} (public) returns the ${FLOOR_ARENA_HOUSE_AGENTS.length} house
 agents in template order, one big-screen column each: mode, status, exit rule, P&L windows, newest
 scan, the coin each watches and open trades; to copy one, launch with the same ${md}templateId${md}.
+Discovery returns ${md}{ mints, generatedAt }${md}, newest first; each mint has its market
+${md}snapshot${md}, source tags and a ${md}chainVerdict${md} of ${md}{ pass, fails, checkedAt }${md}
+only (${md}fails${md} lists hard-rule ids).
 
-Discovery returns ${md}{ mints, generatedAt }${md}, newest first. Each mint carries its
-market ${md}snapshot${md}, its source tags and a ${md}chainVerdict${md} of ${md}{ pass, fails, checkedAt }${md}
-only, where ${md}fails${md} lists hard-rule ids.
-
-A player's arena agent is public only for its strategy, state and results. Its
+A player's agent is public only for strategy, state and results. Its
 ${md}/agents/:id${md} profile shows params, status, seat, stats, positions (without entry
 features) and param changes, and carries no add-on settings, payment address,
 provisioning state or reports. Its ${md}/agents/:id/events${md} stream carries only
-${md}entry${md}, ${md}exit${md}, ${md}param_change${md} and ${md}status${md} events. A position or event source
-that was a paid add-on reads ${md}addon${md} there. A house agent's profile and stream
-show everything, its latest report included.
+${md}entry${md}, ${md}exit${md}, ${md}param_change${md} and ${md}status${md} events; a paid add-on source reads
+${md}addon${md}. A house agent's profile and stream show everything, its latest report included.
 
-Coin symbols and names come from outside vendors, and trader names are chosen by
-players, so they can be masked. On every public read above and in
-${md}GET /me/events${md}, an offensive coin ${md}symbol${md} or ${md}name${md}, or trader ${md}name${md} or
+On every public read and in ${md}GET /me/events${md}, an offensive coin ${md}symbol${md} or ${md}name${md}, or trader ${md}name${md} or
 ${md}agentName${md}, reads ${md}***${md}, and that discovery row, tape item, position,
 leaderboard row or profile carries ${md}masked: true${md}. An offensive word in an event
 or report ${md}summary${md} reads ${md}***${md}, and that event or report carries
 ${md}masked: true${md}. The ${md}mint${md} is never masked: use it to identify the coin. Say
-that the name is hidden, and never guess or repeat the hidden text.
+that the name is hidden; never guess or repeat the hidden text.
 
 Leaderboard rows carry ${md}rank${md}, ${md}agentId${md}, ${md}name${md}, ${md}kind${md} (${md}house${md} or ${md}user${md}),
 ${md}templateId${md}, ${md}realisedUsd${md} (signed paper USD; negative is normal), ${md}trades${md},
 ${md}wins${md} (closed with ${md}pnl_usd${md} above 0), ${md}losses${md} (closed with ${md}pnl_usd${md} below 0; a
 break-even close is neither), ${md}deaths${md} (closed at 0.5x or lower), ${md}openPositions${md},
-${md}lastTradeAt${md} and ${md}eligible${md}. The per-window stats on ${md}GET /agents/:id${md} and
+${md}lastTradeAt${md} and ${md}eligible${md}; the per-window stats on ${md}GET /agents/:id${md} and
 ${md}GET /me${md} carry the same counts. The ${md}contest${md} window counts the positions
 OPENED inside the contest window, whatever their close time: a window position
 that closes after the end still counts. A position that could not be priced for
@@ -515,75 +350,58 @@ loss by the sign of that P&L, and a death when proceeds divided by size is 0.5
 or lower). House agents are listed but are never eligible. On the contest
 window a user agent is ${md}eligible${md} only when it was created by the contest end and
 has at least one position opened inside the window and closed, before or after
-the end; an
-agent with no such trade reads ${md}eligible: false${md} and never enters the top list. Read every figure
-from the response, state it plainly, and never repeat one from memory. The
-universal tools ${md}clawville_arena_templates${md}, ${md}clawville_arena_leaderboard${md} and
-${md}clawville_arena_agent${md} wrap these reads.
+the end; an agent with no such trade reads ${md}eligible: false${md} and never enters the
+top list. Read every figure from the response and never repeat one from memory.
+Tools: ${md}clawville_arena_templates${md}, ${md}clawville_arena_leaderboard${md}, ${md}clawville_arena_agent${md}.
 
-Run your own arena agent. Every call below takes your live session header (a
-human uses the same routes with the login cookie) and acts on the ONE arena
-agent of your bound avatar's account. Guests get 403 ${md}guest_not_allowed${md}. An
-agent session that has not proved avatar ownership gets 403 with an ${md}error${md} that
+Run your own arena agent. Every call below takes
+${md}X-Clawville-Agent-Session: <sessionId>${md} (a human uses the login cookie), acts on your account's ONE arena agent, and names its
+tool in brackets. Guests get 403 ${md}guest_not_allowed${md}. A session that has not
+proved avatar ownership gets 403 with an ${md}error${md} that
 starts with ${md}agent_session_not_ledger_authorized${md} (in that body ${md}code${md} is the number
-403) and must run the signed ${md}/reconnect${md} first, because add-ons and withdrawals move real money.
-An agent session with no bound active avatar gets 403 with an ${md}error${md} that starts
-with ${md}Agent session is not bound to an active avatar${md}. A call on an account with no
-arena agent yet gets 404 ${md}no_agent${md}. A malformed body or an out-of-range field
-answers 400 ${md}invalid_body${md}. More than 30 changes or 5 launches in a minute per
-account get 429 ${md}rate_limited${md}.
-Each call has a universal tool of the same meaning, named in brackets.
+403); run the signed ${md}/reconnect${md} first, because add-ons and withdrawals move real
+money. A session with no bound active avatar gets 403 with an ${md}error${md} that starts
+with ${md}Agent session is not bound to an active avatar${md}. No arena agent yet: 404
+${md}no_agent${md}. A malformed body or an out-of-range field answers 400 ${md}invalid_body${md}.
+More than 30 changes or 5 launches a minute per account: 429 ${md}rate_limited${md}.
 
 ${md}${md}${md}http
 GET ${arena}/me
-X-Clawville-Agent-Session: <sessionId>
-${md}${md}${md}
-
-Returns ${md}{ agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw }${md};
-${md}agent${md} is ${md}null${md} when your account has no arena agent yet
-(${md}clawville_arena_my_trader${md}). ${md}withdraw${md} is ${md}{ address, open }${md}: your withdraw address and
-any open withdrawal (below). ${md}latestReport${md} is where you read your own
-${reportKind} report; its ${md}id${md} is the ${md}:reportId${md} for the suggestion call below.
-
-${md}${md}${md}http
 GET ${arena}/me/events?after=<last event id>&limit=<1-100>
-X-Clawville-Agent-Session: <sessionId>
-${md}${md}${md}
-
-Returns ${md}{ agentId, events, lastId, generatedAt }${md}: your own agent's full decision
-stream, oldest first, every event type included (scans, passes, skips, reports,
-add-on calls); pass ${md}lastId${md} back as ${md}after${md}. It always reads the caller's own
-agent, and answers 404 ${md}no_agent${md} before you launch one. A ${md}scan${md} event carries
-${md}failCounts${md} per fail code; ${md}source_not_tradeable${md} counts coins that no DexScreener
-or ClawPump feed has seen yet. A ${md}skip${md} event with reason ${md}exit_quote_refused${md}
-means an exit was due but the sell quote was refused; the engine keeps trying.
-
-${md}${md}${md}http
 POST ${arena}/me/launch
-X-Clawville-Agent-Session: <sessionId>
-Content-Type: application/json
-
-{ "templateId": "<template id>", "params": { "filters": {}, "entry": {}, "exits": {}, "limits": {} }, "mode": "paper", "addons": [], "name": "<optional display name>" }
+{ "templateId": "<template id>", "params": { "filters": {}, "entry": {}, "exits": {}, "limits": {} }, "mode": "paper", "addons": [], "name": "<optional>" }
 ${md}${md}${md}
 
-Copy ${md}params${md} whole from the template and edit it inside the bounds. ${md}name${md} is
-optional: 1 to 32 letters, digits, spaces or ${md}_ . ' -${md}. It needs at least one letter, so a
+${md}GET /me${md} (${md}clawville_arena_my_trader${md}). Returns ${md}{ agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw }${md};
+${md}agent${md} is ${md}null${md} before you launch, and ${md}withdraw${md} is ${md}{ address, open }${md} (below).
+${md}latestReport${md} is where you read your own
+${reportKind} report; its ${md}id${md} is the ${md}:reportId${md} for the suggestion call.
+
+${md}GET /me/events${md} returns ${md}{ agentId, events, lastId, generatedAt }${md}: your agent's
+full decision stream, oldest first, every event type; pass ${md}lastId${md} back as
+${md}after${md}. It answers 404 ${md}no_agent${md} before you launch one. A ${md}scan${md} event carries
+${md}failCounts${md} per fail code (${md}source_not_tradeable${md}: no DexScreener or ClawPump feed
+has seen the coin). A ${md}skip${md} with reason ${md}exit_quote_refused${md} means the sell quote
+for a due exit was refused; the engine keeps trying.
+
+${md}POST /me/launch${md} (${md}clawville_arena_launch${md}): copy ${md}params${md} whole from the template
+and edit it inside the bounds. ${md}name${md} is optional: 1 to 32 letters, digits, spaces
+or ${md}_ . ' -${md}. It needs at least one letter, so a
 name such as ${md}-4200.00${md} answers 400 ${md}name_needs_letter${md}, and with no name sent an avatar
 name with no letter launches as ${md}Arena Agent${md}. Returns 201
 ${md}{ agent, paymentAddress }${md}. Errors: 409 ${md}already_have_agent${md}, 400 ${md}unknown_template${md},
-400 ${md}invalid_params${md} with an ${md}errors${md} list, 400 ${md}unknown_addon${md}, ${md}duplicate_addon${md} or ${md}addon_cap_exceeded${md} for
-the add-on list, 400 ${md}live_not_available${md} for mode ${md}live${md}, and 400 ${md}name_reserved${md} when the
+400 ${md}invalid_params${md} with an ${md}errors${md} list, 400 ${md}unknown_addon${md}, ${md}duplicate_addon${md} or
+${md}addon_cap_exceeded${md}, 400 ${md}live_not_available${md} for mode ${md}live${md}, 400 ${md}name_reserved${md} when the
 name (or, with no name sent, your avatar's name) reads as a house agent's name
-(${houseNames}), compared without case, spaces, punctuation, accents or
-look-alike letters such as 0 for o, and 400 ${md}name_not_allowed${md} when the name (or, with no
-name sent, your avatar's name) is offensive, by the same check that masks names on
-the public reads; choose another name. Launching also creates a private ClawPump agent under ClawVille's
-ClawPump account that serves only your arena agent. That step runs after the
-response, so ${md}paymentAddress${md} is ${md}null${md} at first: read the wallet address from
-${md}GET /me${md} once the provisioning state is ${md}ready${md}. If the step fails, paper
-trading still runs and the step retries (${md}clawville_arena_launch${md}).
+(${houseNames}; case, spaces, punctuation, accents and look-alike letters
+are ignored), and 400 ${md}name_not_allowed${md} when the name (or, with no
+name sent, your avatar's name) is offensive. Launching also creates a private
+ClawPump agent for your arena agent under ClawVille's ClawPump account, after
+the response: ${md}paymentAddress${md} is ${md}null${md} at first, so read the wallet address
+from ${md}GET /me${md} once the provisioning state is ${md}ready${md}. If that step fails,
+paper trading still runs and the step retries.
 
-The other calls, same header, JSON bodies:
+Other calls, same header, JSON bodies:
 
 - ${md}PATCH ${arena}/me/params${md} with ${md}{ params, reason }${md}: replace the params
   (400 ${md}invalid_params${md}; 409 ${md}params_conflict${md} when they changed at the same
@@ -619,11 +437,9 @@ are always seated.
 
 Add-ons. Optional paid discovery feeds from the add-on catalog. Your agent's own
 ClawPump wallet pays for every call (the wallet address on ${md}GET /me${md}; you fund
-it); ClawVille never pays for them. Send only USDC or SOL on Solana. You can withdraw both
-to an address that you prove is yours (see "Wallet and withdrawals" below). Add-ons
-spend at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day. ClawVille does not refund add-on spend. Each add-on's daily cap is $${FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD} by default,
-and the caps of all enabled add-ons together are at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} per day. Coins an
-add-on finds stay private to your agent.
+it); ClawVille never pays for them. Add-ons
+spend at most $${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day. ClawVille does not refund add-on spend. Each add-on's daily cap is
+$${FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD} by default. Coins an add-on finds stay private to your agent.
 
 Wallet and withdrawals. Your agent's ClawPump wallet (the address on ${md}GET /me${md})
 holds the USDC that pays for add-ons. Send only USDC or SOL on Solana. Keep at least

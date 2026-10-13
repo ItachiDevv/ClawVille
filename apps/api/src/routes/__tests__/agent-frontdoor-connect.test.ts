@@ -272,7 +272,8 @@ describe('logged-out front-door agent connect', () => {
     const skill = await skillResponse.text();
     expect(skill).toContain('https://api-staging.clawville.world/api/agent/connect');
     expect(skill).not.toContain('https://api.clawville.world/api/agent/connect');
-    expect(skill).toContain('## What ClawVille is: the world you are entering');
+    expect(skill).toContain('# ClawVille — Agent Entry Manual');
+    expect(skill).toContain('https://api-staging.clawville.world/api/agent/mcp');
   });
 
   test('hard-limits public mint to five requests per minute per trusted IP', async () => {
