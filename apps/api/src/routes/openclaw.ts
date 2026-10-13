@@ -26,6 +26,7 @@ import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../service
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { generateSkillMd } from '../services/skill-generator';
 import { computeSessionExpiresAt } from '../services/agent-session-sweeper';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import { sha256Hex } from '../services/session-digest';
 import {
   isReservedPartnerAgentId,
@@ -969,7 +970,11 @@ async function exportOwner(
   if (!agent.ledgerCapable) {
     return { refusal: c.json(AGENT_SESSION_NOT_LEDGER_AUTHORIZED_BODY, 403) };
   }
-  return agent.avatarId === avatarId && agent.userId ? { ownerUserId: agent.userId } : notOwned();
+  if (agent.avatarId !== avatarId || !agent.userId) return notOwned();
+  // PROTOCOL 85: the caller's own ledger-capable session, bound to this avatar;
+  // slide its 24h TTL (fire-and-forget, throttled, never throws).
+  slideAgentSessionTtl(agent.agentId, agentSessionId);
+  return { ownerUserId: agent.userId };
 }
 
 /** True only while avatar `avatarId` still belongs to `ownerUserId` (read-time owner predicate). */

@@ -5,6 +5,7 @@ import {
   AGENT_SESSION_HEADER,
   validateLiveAgentSession,
 } from '../middleware/require-auth-or-agent';
+import { slideOwnLiveAgentSession } from './agent-session-ttl';
 import type { AppContext } from '../types';
 import {
   deriveGuestPresenceKey,
@@ -23,6 +24,13 @@ export interface ResolvedPresence {
   guestPresenceKey?: string;
   /** Whether the guest key came from a verified binding cookie. */
   guestBindingFromCookie?: boolean;
+  /**
+   * PROTOCOL 85: slide the caller's own agent-session TTL. Set only for a live
+   * agent bearer. The route calls it AFTER its own authorization (room
+   * membership, rate gate) passed, so a refused request never extends the TTL.
+   * Throttled, fire-and-forget, never throws. Server-only; never serialized.
+   */
+  slideTtl?: () => void;
 }
 
 /**
@@ -60,6 +68,9 @@ export async function resolveWorldPresence(
         sessionId: `a:${live.config.agentId}`,
         kind: 'agent',
         userId: ownerUserId,
+        // PROTOCOL 85: the route slides after its own authorization passed;
+        // only a ledger-capable owner session slides (throttled, never throws).
+        slideTtl: () => slideOwnLiveAgentSession(live, agentSessionId),
       };
     }
   }

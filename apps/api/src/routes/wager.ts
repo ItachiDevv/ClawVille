@@ -70,6 +70,7 @@ import {
   AGENT_SESSION_HEADER,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import { isGuestUser, requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -240,6 +241,9 @@ async function resolveOptionalWagerReadIdentity(c: any): Promise<WagerReadIdenti
   if (resolved.ledgerCapable !== true) {
     throw new HTTPException(403, { message: 'agent_session_not_ledger_authorized' });
   }
+  // PROTOCOL 85: the caller's own bound session passed every gate; slide its
+  // 24h TTL (fire-and-forget, throttled, never throws).
+  slideAgentSessionTtl(resolved.agentId, sessionId);
   return {
     kind: 'agent',
     userId: resolved.userId,

@@ -43,6 +43,7 @@ import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { adminOnly } from '../middleware/admin-only';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import { noStorePrivate } from '../middleware/no-store';
 import {
   tournamentManager,
@@ -122,6 +123,9 @@ async function resolveRegisterSubject(c: {
           'agent_session_has_no_active_avatar: connect an avatar before entering a tournament',
       });
     }
+    // PROTOCOL 85: the caller's own bound session passed every gate; slide its
+    // 24h TTL (fire-and-forget, throttled, never throws).
+    slideAgentSessionTtl(resolved.agentId, agentSessionId);
     return {
       kind: 'agent',
       userId: resolved.userId,

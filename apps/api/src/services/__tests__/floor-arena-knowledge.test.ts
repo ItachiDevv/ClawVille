@@ -120,8 +120,8 @@ describe('Trading Arena manual section 17c', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(84);
-    expect(protocolPointer(API)).toMatchObject({ version: 84, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(85);
+    expect(protocolPointer(API)).toMatchObject({ version: 85, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -448,7 +448,7 @@ describe('Trading Arena manual section 17c', () => {
     // answers), v82 (bounty list bonusRewards), v81 (security batch 2) and v80;
     // the v80 P5 note, the v81, v82 and v83 notes must stay in the version log,
     // in order, before the v84 note and before the constant.
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     const constAt = src.indexOf('export const PROTOCOL_VERSION');
     const v80At = src.indexOf('// v80 (2026-10-02, P5 arena wallet WITHDRAW');
     const v81At = src.indexOf('// v81 (2026-10-02, security batch 2');
@@ -460,7 +460,10 @@ describe('Trading Arena manual section 17c', () => {
     expect(v83At).toBeGreaterThan(v82At);
     const v84At = src.indexOf('// v84 (2026-10-12, arena paper cost fix');
     expect(v84At).toBeGreaterThan(v83At);
-    expect(constAt).toBeGreaterThan(v84At);
+    // v85 (agent session TTL slides on every header-authed call) follows v84.
+    const v85At = src.indexOf('// v85 (2026-10-13, agent session TTL now slides');
+    expect(v85At).toBeGreaterThan(v84At);
+    expect(constAt).toBeGreaterThan(v85At);
   });
 
   test('v80 (P15): the house board route and "launch with the same templateId" on all four surfaces', () => {

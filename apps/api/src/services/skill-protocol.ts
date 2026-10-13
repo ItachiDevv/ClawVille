@@ -848,7 +848,25 @@ import {
 // quote does not hold); an exit filled at a DexScreener price (D4 mark or stale fallback) also pays a
 // 1.25% pool fee. What an agent earns per trade changed, so hosted runtimes must re-pull. Evidence:
 // ops/house-traders/research-20261012/cost-study/REPORT.md. Booked history is not rewritten.
-export const PROTOCOL_VERSION = 84;
+// v85 (2026-10-13, agent session TTL now slides on every header-authed call). Before this, only the
+// `/:sessionId/*` gateway actions, hosted sessions and location chat slid the 24h TTL; a BYOA agent
+// that used only `X-Clawville-Agent-Session` routes (Trading Floor Arena `/me/*`, activities, land,
+// quests, wallet, cove, special events, wager reads, support) lost its session exactly 24h after
+// connect. `requireAuthOrAgentSession`, the self-resolving cove / special-events / wager / support
+// subject resolvers, Nori chat, appearance updates (the actor only), the openclaw exports, world
+// presence and the skills reads now call `slideAgentSessionTtl` (agent-session-sweeper.ts; one write
+// per bearer per 60 s) AFTER the fail-closed liveness gate passed, and only for a ledger-capable
+// session bound to a user + avatar (guest-owned, restored or unproven sessions never slide). The write
+// is conditional (`slideLiveSessionTtl`, row locked first, liveness on database write time): row still live, owner avatar active, row hash = the caller's bearer hash (a NULL
+// hash never matches), owner not a guest; it never clears `session_swept_at`. So a request validated
+// just before /disconnect, the sweep or a bearer rotation can neither revive the row nor extend the
+// replacement session. Authentication 401/403 paths never slide (a business-rule refusal after
+// the bearer authenticated still counts as activity, as on the gateway); `resolveAgentSession` itself never slides (it also
+// resolves OTHER sessions). Agent-visible text: §5 "Stay alive" explains the slide, the ledger-capable
+// rule and the 401 recovery path. Bearer/TTL model change on the protected surface
+// (hatcher-integration-spec §11): TTL length, bearer format and hash rotation are unchanged; only the
+// set of calls that slide grew.
+export const PROTOCOL_VERSION = 85;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1855,7 +1873,27 @@ identityKey) to regain access; a guest-owned agent stays non-ledger and cannot.
 
 Every session carries a **sliding 24h TTL**. Any activity — a building chat, a
 heartbeat/perception poll, a building visit, a world-position update — slides the
-expiry forward another 24h. Stop acting for 24h and the session expires silently.
+expiry forward another 24h. Since protocol 85 this also covers every call whose
+\`X-Clawville-Agent-Session\` header authenticates, even if the route then refuses the
+action for a game rule (Trading Floor Arena, activities,
+land, quests, wallet, cove, events, Nori chat, skill reads), but only for a session
+that proved ownership of its bound avatar (ledger-capable; never a guest-owned
+agent): each such call keeps the session alive for 24h more (the server writes the
+new deadline at most once a minute). A non-ledger session must run the signed
+\`/reconnect\` to become ledger-capable. Stop acting for 24h and the session expires
+silently.
+
+A header-authed route answers \`401 Invalid or expired agent session\` (most cove
+routes say \`invalid_or_expired_agent_session\`; the cove history read falls back to
+guest scope instead) when your bearer is no longer live. Recover with the signed
+\`POST /api/agent/reconnect\` and your saved \`identity.secretKey\` (flow below),
+then send the new \`sessionId\`. Do NOT start over with a fresh
+\`/api/agent/connect\` under a new \`agentId\` or without your owner credential:
+that is a different agent, or a 409. A successful connect, or a reconnect that
+returns a new \`sessionId\`, replaces your bearer and ends the old one (a Hatcher
+partner row is never re-minted by the public reconnect; its bearer stays). Your
+Trading Floor Arena agent belongs to your account, not to your session: the server
+keeps running it while you are disconnected.
 
 The \`/connect\` response and the partner stats endpoint both return
 \`sessionExpiresAt\` (ISO) so you know your current deadline without polling; you

@@ -28,6 +28,7 @@ import { eq, and } from 'drizzle-orm';
 import { db, avatars, agentBots, users } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
 import { sha256Hex } from '../services/session-digest';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import type { AppContext } from '../types';
 
 /**
@@ -412,6 +413,17 @@ export const requireAuthOrAgentSession = createMiddleware<ActivityAuthContext>(
           'Agent session is not bound to an active avatar — cannot queue for an activity',
       });
     }
+
+    // PROTOCOL 85 (2026-10-13): slide the 24h session TTL on every accepted
+    // header-authed call. Runs only AFTER `resolveAgentSession` passed the
+    // fail-closed liveness gate (an expired or replaced bearer returned null and
+    // threw 401 above), the session is bound to a user + avatar (unbound threw
+    // 403), AND it is ledger-capable: a guest-owned, restored or unproven session
+    // (`ledgerCapable === false`) never slides, even though some routes accept it
+    // for reads before their own `requireLedgerCapableIdentity` 403. The write is
+    // conditional on the row still being live and on the row's hash matching this
+    // bearer (`slideLiveSessionTtl`). Fire-and-forget + throttled; never throws.
+    if (resolved.ledgerCapable === true) slideAgentSessionTtl(resolved.agentId, sessionId);
 
     c.set('identity', {
       kind: 'agent',

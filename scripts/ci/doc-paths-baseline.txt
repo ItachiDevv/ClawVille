@@ -42,7 +42,6 @@ ARCHITECTURE.md	scripts/deploy/.env.deploy
 ARCHITECTURE.md	scripts/i18n/translate-with-gemini.ts
 ARCHITECTURE.md	scripts/x402/reconcile-checkouts.ts
 GameFeatures.md	apps/api/src/routes/casino-slots.types.ts
-GameFeatures.md	apps/api/src/services/openclaw-session-sweeper.ts
 GameFeatures.md	apps/web/public/assets/slot-symbols/s0..s7.svg
 GameFeatures.md	apps/web/src/app/casino/page.tsx
 GameFeatures.md	apps/web/src/app/casino/verify/[sessionId]/page.tsx

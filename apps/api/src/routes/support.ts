@@ -23,6 +23,7 @@ import {
   AGENT_SESSION_HEADER,
   resolveAgentSession,
 } from '../middleware/require-auth-or-agent';
+import { slideAgentSessionTtl } from '../services/agent-session-ttl';
 import type { AppContext } from '../types';
 
 export const supportRouter = new Hono<AppContext>();
@@ -160,6 +161,9 @@ supportRouter.post('/tickets', async (c) => {
       if (resolved.ledgerCapable) {
         userId = resolved.userId ?? null;
         avatarId = resolved.avatarId ?? null;
+        // PROTOCOL 85: the caller's own session, bound to a user + avatar;
+        // slide its 24h TTL (fire-and-forget, throttled, never throws).
+        if (userId && avatarId && sessionId) slideAgentSessionTtl(resolved.agentId, sessionId);
       }
     } else {
       subjectType = 'guest';

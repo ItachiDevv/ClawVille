@@ -25,9 +25,22 @@ import { KELP_REALM_BEACON_GRAPH } from '@clawville/shared';
 const API_BASE = 'https://api.example.test';
 
 describe('open-agent onboarding manuals', () => {
+  test('protocol 85: every header-authed call slides the 24h TTL; a 401 recovers via signed reconnect', () => {
+    const manual = buildProtocolManual(API_BASE);
+    expect(PROTOCOL_VERSION).toBe(85);
+    const flat = manual.replace(/\s+/g, ' ');
+    expect(flat).toContain('Since protocol 85 this also covers every call whose `X-Clawville-Agent-Session` header authenticates, even if the route then refuses the action for a game rule');
+    expect(flat).toContain('but only for a session that proved ownership of its bound avatar (ledger-capable; never a guest-owned agent)');
+    expect(flat).toContain('each such call keeps the session alive for 24h more');
+    expect(flat).toContain('the cove history read falls back to guest scope instead');
+    expect(flat).toContain('Recover with the signed `POST /api/agent/reconnect` and your saved `identity.secretKey`');
+    expect(flat).toContain('A successful connect, or a reconnect that returns a new `sessionId`, replaces your bearer and ends the old one (a Hatcher partner row is never re-minted by the public reconnect; its bearer stays).');
+    expect(flat).toContain('Your Trading Floor Arena agent belongs to your account, not to your session: the server keeps running it while you are disconnected.');
+  });
+
   test('protocol 72 documents the bounded my-bounties and my-attempts lists', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     expect(manual).toContain('the newest 200 rows by default, plus every live row');
     expect(manual).toMatch(/pass the response's `nextBefore` back\s+verbatim as `before`/);
     expect(manual).toMatch(/key rows by `id` \(a live row can reappear on the\s+history page/);
@@ -46,7 +59,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('protocol 71 and Nori explain multiline replies without exposing operator capabilities', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     expect(manual).toContain('Human avatar chat preserves line breaks in replies');
     expect(manual).toContain('Integrations should preserve line breaks');
     expect(manual).toContain('long avatar conversations scroll inside the chat panel');
@@ -59,8 +72,8 @@ describe('open-agent onboarding manuals', () => {
 
   test('appearance reaches protocol, pointer, Nori and deciding scope with version 71', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(84);
-    expect(agentProtocolPointer(API_BASE).version).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
+    expect(agentProtocolPointer(API_BASE).version).toBe(85);
     expect(manual).toContain('PATCH /api/avatars/me/appearance');
     expect(manual).toContain('clawville_update_appearance');
     expect(manual).toContain('[ACTION: update_appearance(color=blue)]');
@@ -73,7 +86,7 @@ describe('open-agent onboarding manuals', () => {
   });
   test('publishes Nori REST and executable hosted discovery in the refreshed manual', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     expect(manual).toContain(`POST ${API_BASE}/api/chat/system/town-guide`);
     expect(manual).toContain('clawville_chat_nori');
     expect(manual).toContain('[ACTION: chat_nori(message=<text>)]');
@@ -89,7 +102,7 @@ describe('open-agent onboarding manuals', () => {
     // The same current version/hash reaches connected pointers and hosted
     // protocol-knowledge refresh, rather than a separate unversioned hint.
     expect(protocolPointer(API_BASE)).toMatchObject({
-      version: 84,
+      version: 85,
       contentHash: contentHashOf(manual),
     });
   });
@@ -201,7 +214,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('v82: the bounty lists name bonusRewards in the manual, Nori and the pointer', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     expect(manual).toMatch(
       /Each bounty in `GET \/api\/bounties`, `\/featured`, and `\/my-bounties` carries\s+`bonusRewards`: an array of `\{ rewardType, bookId, agentConfigId,\s+customDescription \}` \(`\[\]` when the bounty has no bonus\)\. `GET \/api\/bounties\/:id`\s+returns the same rows as `rewards`\./,
     );
@@ -210,15 +223,15 @@ describe('open-agent onboarding manuals', () => {
     expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((entry) => entry.includes(line))).toBe(true);
     expect(townGuide.knowledge.some((entry) => entry.includes(line))).toBe(true);
     // Hosted runtimes refresh on version/hash: the pointer carries the current version and the hash of these bytes.
-    expect(protocolPointer(API_BASE)).toMatchObject({ version: 84, contentHash: contentHashOf(manual) });
+    expect(protocolPointer(API_BASE)).toMatchObject({ version: 85, contentHash: contentHashOf(manual) });
   });
 
   test('v83: caps, event-history owner proof, required expectedPriceCt and USDC prepay reach all surfaces', () => {
     const manual = buildProtocolManual(API_BASE);
     const flat = manual.replace(/\s+/g, ' ');
-    expect(PROTOCOL_VERSION).toBe(84);
-    expect(manual).toContain('version: 84.0.0');
-    expect(manual).toContain('protocol_version: 84');
+    expect(PROTOCOL_VERSION).toBe(85);
+    expect(manual).toContain('version: 85.0.0');
+    expect(manual).toContain('protocol_version: 85');
 
     // (a) Daily earning caps, rendered from DAILY_REWARD_CAPS.
     const { building_visit: visits, nori_chat: nori, activity } = DAILY_REWARD_CAPS;
@@ -283,7 +296,7 @@ describe('open-agent onboarding manuals', () => {
     }
 
     // Hosted runtimes refresh on version/hash.
-    expect(protocolPointer(API_BASE)).toMatchObject({ version: 84, contentHash: contentHashOf(manual) });
+    expect(protocolPointer(API_BASE)).toMatchObject({ version: 85, contentHash: contentHashOf(manual) });
   });
 
   test('batch-2 fix wave: export recovery names the guest-owned exception', () => {
@@ -296,7 +309,7 @@ describe('open-agent onboarding manuals', () => {
 
   test('explains the bounded late-expiry recovery and unclaimed binding', () => {
     const manual = buildProtocolManual(API_BASE);
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     expect(manual).toContain('no seated players for 30 minutes');
     expect(manual).toContain('`expired` means you must not send a new payment');
     expect(manual).toMatch(/challenge is still unbound,\s+it can still become `verified`/);
@@ -320,7 +333,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     expect(protocolManual).toContain(
       '{ challengeId, state, rejectedReason, refundState, inboundSignature, refundSignature, destination, lamports, memo, expiresAt }',
     );
@@ -531,7 +544,7 @@ describe('open-agent onboarding manuals', () => {
     // fallback documented; new `wallet_not_verified` refusal).
     // 56 = hosted materials-only HOME-yard placement and BUILD TARGETS.
     // 57 = SAP removal: USDC bounties document the Tier-1 PayAI rail only.
-    expect(PROTOCOL_VERSION).toBe(84);
+    expect(PROTOCOL_VERSION).toBe(85);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

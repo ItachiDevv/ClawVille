@@ -48,6 +48,13 @@ const fakeDb: any = {
   select: () => ({ from: () => ({ where: () => ({ limit: async () => platform ? [platform] : [] }) }) }),
 };
 mock.module('@clawville/database', () => ({ ...database, db: fakeDb }));
+// The TTL slide (PROTOCOL 85) has its own tests; here it would open a second
+// fake transaction whose rollback resets this file's avatar state. Record it.
+const slides: string[] = [];
+const actualTtl = await import('../../services/agent-session-ttl');
+mock.module('../../services/agent-session-ttl', () => ({ ...actualTtl,
+  slideAgentSessionTtl: (agentId: string) => { slides.push(agentId); },
+}));
 mock.module('../../middleware/auth', () => ({
   sessionMiddleware: async (c: any, next: any) => { c.set('user', c.req.header('Cookie') ? { id: 'human-owner' } : null); c.set('session', null); await next(); },
   requireAuth: async (c: any, next: any) => { if (!c.get('user')) throw new HTTPException(401); await next(); },

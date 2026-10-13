@@ -5,6 +5,7 @@ import { AGENT_MODEL_KEYS, AVATAR_ARCHETYPES, AVATAR_COLORS, getAgentModel } fro
 import type { AgentModelKey, AgentCategory } from '@clawville/shared';
 import { z } from 'zod';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { slideAgentSessionTtl } from './agent-session-ttl';
 import { appearanceAgentConfigMerge } from './avatar-appearance-config';
 import { logEvent } from './event-logger';
 import { npcSimulation } from './npc-simulation';
@@ -298,6 +299,10 @@ export async function updateAvatarAppearance(input: {
       console.error('[avatars] appearance event log failed:', err);
     });
   }
+
+  // PROTOCOL 85: the ACTOR's own ledger-capable bound session passed every
+  // gate and the edit committed; slide its 24h TTL. Never a projection target.
+  if (identity.kind === 'agent') slideAgentSessionTtl(identity.agentId, identity.sessionId);
 
   return { avatar: updated };
   });
