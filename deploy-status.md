@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-14 08:16 UTC (session tradeLead3, arena lead). **Staging = `8f5973a6`, VERIFIED 08:03-08:16Z: Jev ENTRY SHADOW + virtual-twin report on the Trading Floor paper bots** (FEATURE_GATE `jev_arena_entry_shadow`, migration 0082, $1 cap in code, stored only, no trade effect, no PROTOCOL change; on top of the session-skill PROTOCOL 87 work below, which stays verified). CI run 38531119276 gates, migrate, deploy all success; API `8f5973a6` healthy 08:03Z; first rows 08:15Z: model `jev-1.13.0`, 130 ms, 1,375 input tokens, $0.000058 per call, every column written. Promotion needs the founder's go (it also carries PROTOCOL 86/87). SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql, 0082_floor_arena_jev_entry.sql`.
+Last Audited: 2026-10-14 10:02 UTC (session tradeLead3, arena lead). **PROD API = `c3bf4fd0` (PROMOTION #8, PR #317), VERIFIED 09:48-09:57Z; PROD WEB = `b73b7d32` (first web build FAILED, pinned rebuild queued 09:56Z, NOT yet verified).** Founder go 2026-10-14. Run 38544119153 gates, migrate (0081 + 0082), deploy success. API container `c3bf4fd0` healthy 09:48:47Z; `/health` 3x c3bf4fd0; running `PROTOCOL_VERSION = 87`; `CLAWVILLE_ENV=production`; `ALLOW_TEST_PARTNER_PUBKEY` absent; `JEV_API_KEY` set (fingerprint ba523b51); Jev arena shadow rows from 09:53Z (57 ms, $0.000058/call). Web: Coolify job 407 failed in `next build` with a Turbopack internal panic (`Failed to write app endpoint /api/auth/login/route ... failed to convert rope into string`); the web code is identical to staging `f9823dff`, which built clean, so the panic is treated as a one-off; pinned solo redeploy `wesisiqvfecy64lq9f6h0n6g` queued 09:56:01Z. NEXT SESSION: confirm web container `c3bf4fd0` + browser check of /game; if it failed again, root-cause the Turbopack panic (do not loop rebuilds). SCHEMA: `synced`.
+
+Prior — Last Audited: 2026-10-14 08:16 UTC (session tradeLead3, arena lead). **Staging = `8f5973a6`, VERIFIED 08:03-08:16Z: Jev ENTRY SHADOW + virtual-twin report on the Trading Floor paper bots** (FEATURE_GATE `jev_arena_entry_shadow`, migration 0082, $1 cap in code, stored only, no trade effect, no PROTOCOL change; on top of the session-skill PROTOCOL 87 work below, which stays verified). CI run 38531119276 gates, migrate, deploy all success; API `8f5973a6` healthy 08:03Z; first rows 08:15Z: model `jev-1.13.0`, 130 ms, 1,375 input tokens, $0.000058 per call, every column written. Promotion needs the founder's go (it also carries PROTOCOL 86/87). SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql, 0082_floor_arena_jev_entry.sql`.
 
 Prior — Last Audited: 2026-10-14 00:50 UTC (session skill). **Staging = `f9823dff`, VERIFIED 00:30-00:46Z: simple agent skill, PROTOCOL 87** (short entry manual, 8 protocol topic pages, hosted MCP `POST /api/agent/mcp`, injection stop fix). CI run 38489240071 all success; API and web containers `f9823dff`; `/health` commit f9823dff; release gates: hosted-skill probe ALL PASS 16, mock-Hatcher harness ALL ASSERTIONS PASSED, onboarding smoke 14/14, live MCP check 12/12; test signer removed (0 rows) and absent from the running API. SCHEMA: synced. Prod unchanged (`b73b7d32`, PROTOCOL 85).
 
@@ -602,6 +604,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-14 10:02Z (session tradeLead3, arena lead) - promotion #8 (PR #317, merge c3bf4fd0)
+
+- **What changed:** Jev decide shadow (0081), Jev arena entry shadow + virtual-twin report (0082), simple agent skill + hosted MCP (PROTOCOL 87, session `skill`). `JEV_API_KEY` added to prod api app 2 through the Coolify model setter (temp files deleted).
+- **Verified:** run 38544119153 all success; API `c3bf4fd0` healthy, `/health` 3x, PROTOCOL 87, prod env checks; first prod Jev arena rows 09:53-09:54Z, 1 closed trade joined; prod disk 34%.
+- **What broke + root cause:** web job 407 failed: Turbopack internal panic in `next build` on `/api/auth/login/route` ("failed to convert rope into string"). No web code differs from staging `f9823dff`, which built clean; cause not proven (likely a one-off build fault). Prod web kept serving `b73b7d32` (Coolify removed the failed version).
+- **Fix:** pinned solo redeploy queued 09:56:01Z (`wesisiqvfecy64lq9f6h0n6g`). Result NOT verified in this session; the founder restarted the computer. Next session must verify the web flip and do the /game browser check.
+- **Who it's for:** founder (Jev 1-day virtual-twin report owed ~10-15 10:00Z; see `ops/house-traders/KICKOFF_2026-10-14.md`).
+- SCHEMA: `synced` (0081, 0082 applied by the CI migrate job).
 
 ### 2026-10-14 08:16Z (session tradeLead3, arena lead) - Jev entry shadow on the arena paper bots to staging
 
