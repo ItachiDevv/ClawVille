@@ -3565,7 +3565,7 @@ agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
 // play the game" capability set, not the gated curriculum. Building-
 // specific tools live at /api/agent/:sid/skills/:bid/tools.json.
 // Trading Floor tools are discovery schemas here. Their executable path is the
-// session-authenticated REST request documented in protocol manual section 17.
+// session-authenticated REST request documented on the protocol `trading` page.
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/tools.json', async (c) => {
   const sessionId = c.req.param('sessionId');
@@ -4022,6 +4022,12 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   }
 
   return stream(c, async (stream) => {
+    // Client gone (MCP review 2026-10-13): the loop below used to run forever
+    // after a disconnect, re-resolving (and TTL-sliding) the session every 2 s.
+    // `stream.aborted` flips when the response body is cancelled; the request
+    // signal aborts when the caller hangs up or an in-process caller aborts.
+    const clientGone = () => stream.aborted || c.req.raw.signal.aborted;
+
     // --- D7 slice-1: durable catch-up on (re)connect BEFORE the live loop ----
     // Replay whitelisted, agent-scoped durable rows since the cursor so a
     // disconnect never drops a settlement/knowledge event. Each frame carries a
@@ -4031,7 +4037,7 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
     // distinguish them from live frames; the inner `eventType` drives dispatch.
     if (catchupScope && replayCursor != null) {
       let cur = replayCursor;
-      for (let page = 0; page < SSE_REPLAY_MAX_PAGES; page++) {
+      for (let page = 0; page < SSE_REPLAY_MAX_PAGES && !clientGone(); page++) {
         const rows = await queryDurableAgentEvents(catchupScope, cur, REPLAY_LIMIT_MAX);
         if (rows.length === 0) break;
         for (const row of rows) {
@@ -4052,8 +4058,9 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
     // instead of having to diff every perception itself.
     let lastHumanControlled: boolean | null = null;
 
-    while (true) {
+    while (!clientGone()) {
       await stream.sleep(2000);
+      if (clientGone()) break;
 
       // Re-validate session each tick — break if expired
       const current = await resolveSession(sessionId);
@@ -5208,7 +5215,7 @@ const COVE_POKER_TOOLS = [
   {
     name: 'poker_act',
     description:
-      'Submit ONE betting decision on your live hand when it is your turn (check poker_get_state.view.isYourTurn first). `handNumber` + `actionSeq` come from your current view and make the action idempotent (a retransmit is a stable no-op). `amount` on a bet/raise is the TOTAL chips-in-front target ("raise to X"), clamped to your legal min/max. If it is not your turn the server rejects it (409 not_your_turn).',
+      'Submit ONE betting decision on your live hand when it is your turn (check poker_get_state.view.isYourTurn first). `handNumber` comes from poker_get_state (`view.handNumber`). The view does NOT return `actionSeq`: you keep that counter yourself — start at 0 on each new hand and add 1 for each new decision. Re-sending the same `handNumber` + `actionSeq` is a safe retransmit that returns the stored result; reusing an old `actionSeq` for a new decision is silently ignored. `amount` on a bet/raise is the TOTAL chips-in-front target ("raise to X"), clamped to your legal min/max. If it is not your turn the server rejects it (409 not_your_turn).',
     input_schema: {
       type: 'object',
       properties: {

@@ -20,13 +20,13 @@ import {
 } from '@clawville/shared';
 import { buildProtocolManual, PROTOCOL_VERSION } from '../skill-protocol';
 
-/** Section 17b only. Since protocol 74 the paper Trading Arena (`## 17c.`, its
- *  own embedding chunk) follows it, and 17c legitimately says "paper" and names
- *  its own house agents, so the house-trader gates below must not read past
- *  the 17c heading. */
+/** The house-trader section only. The paper Trading Arena (`## Trading Arena`,
+ *  its own embedding chunk) follows it, and the arena legitimately says "paper"
+ *  and names its own house agents, so the house-trader gates below must not
+ *  read past the arena heading. (Section numbers left the manual in v86.) */
 function houseTraderSection(manual: string): string {
-  const start = manual.indexOf('### 17b.');
-  const end = manual.indexOf('\n## 17c.');
+  const start = manual.indexOf('### Watch the house traders');
+  const end = manual.indexOf('\n## Trading Arena (paper contest)');
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return manual.slice(start, end);
@@ -37,7 +37,7 @@ describe('Trading Floor frozen constants', () => {
   // sat stale at 61 through the v62, v63 and v64 bumps because only the
   // assertion below was updated.
   test('pins the current protocol version and the multiplier contracts', () => {
-    expect(PROTOCOL_VERSION).toBe(85);
+    expect(PROTOCOL_VERSION).toBe(87);
     expect(TRADE_TIER_WEIGHTS).toEqual({ base: 20, clv: 30, ansem: 40 });
     expect(TRADE_TIER_MULTIPLIER).toEqual({ base: 1, clv: 1.5, ansem: 2 });
     expect(TRADE_DAILY_SCORED_CAP).toBe(20);
@@ -83,7 +83,7 @@ describe('Trading Floor frozen constants', () => {
 
   test('publishes the complete protocol and decision knowledge', () => {
     const manual = buildProtocolManual('https://api.example.test');
-    expect(manual).toContain('## 17. The Trading Floor');
+    expect(manual).toContain('## The Trading Floor');
     expect(manual).toContain('ClawVille trading wallet');
     expect(manual).toContain('/api/exchange/trades/report');
     expect(manual).toContain('$0.50');
@@ -96,7 +96,7 @@ describe('Trading Floor frozen constants', () => {
 
   test('publishes the ClawPump template surface on every agent-facing knowledge path', () => {
     const manual = buildProtocolManual('https://api.example.test');
-    expect(manual).toContain('## 17a.');
+    expect(manual).toContain('### ClawPump trader templates (read only)');
     expect(manual).toContain('/api/floor/templates');
     // The honest limit: an unbound ClawPump wallet cannot be scored by pasting
     // a signature, because `reportTradeSignature` refuses it 409.
@@ -142,7 +142,9 @@ describe('Trading Floor frozen constants', () => {
     // the next lineup change moves this pin with it.
     for (const surface of [CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n'), section]) {
       for (const entry of HOUSE_TRADER_LINEUP) expect(surface).toContain(entry.label);
-      expect(surface).toContain('tested and dropped on 2026-09-19');
+      // The manual dropped the dated Dip Hunter history (agent-skill-simple:
+      // noise); orientation still carries it.
+      if (surface !== section) expect(surface).toContain('tested and dropped on 2026-09-19');
       // Dip Hunter is named only as dropped, never as a live trader.
       expect(surface).not.toMatch(/Dip Hunter, which buys|and Dip Hunter\./);
     }
@@ -317,7 +319,7 @@ describe('Trading Floor frozen constants', () => {
     // Em dashes are NOT gated: the manual carries about 120 in prose that
     // predates this change. Removing them is a separate, deliberate copy pass.
     // The two sections this diff adds carry none, which is asserted here.
-    for (const heading of ['### 17a.', '### 17b.', '## 17c.']) {
+    for (const heading of ['### ClawPump trader templates (read only)', '### Watch the house traders', '## Trading Arena (paper contest)']) {
       const section = manual.slice(manual.indexOf(heading));
       expect(manual.includes(heading)).toBe(true);
       expect(section.slice(0, section.indexOf('\n## ') + 1 || undefined)).not.toContain('—');

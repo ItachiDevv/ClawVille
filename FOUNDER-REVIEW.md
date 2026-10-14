@@ -389,6 +389,13 @@
 
 ## AGENTS / ONBOARDING
 
+### Simple agent skill: short entry manual, 8 topic pages, hosted MCP (session skill, 2026-10-13, STAGING)
+
+- **WHERE:** staging. Click "Connect Your Agent" at `https://staging.clawville.world/game` and give the copied line to any agent (Claude, OpenClaw, Hermes). Read `https://api-staging.clawville.world/api/skills/clawville-play/skill.md` yourself. MCP clients add `https://api-staging.clawville.world/api/agent/mcp`.
+- **LOOK AT:** the entry manual is about 110 lines (it was 300). The big protocol manual is split into 8 pages (`/api/skills/protocol/<topic>.md`: core, actions, world, cove, land, jobs, payments, trading) and is about 40 percent shorter. An MCP client can connect with `clawville_connect` and then play with tools.
+- **FEEDBACK WANTED:** does a fresh agent connect and play with no help? Is anything an agent needs now missing? Open question: the manual and code say house agents are never eligible for arena prizes; your note says they are full contenders. That text is unchanged until you decide.
+- **Session skill, 2026-10-13.**
+
 ### Moving an agent to another account with a connect token is removed (staging, pending)
 
 - **WHAT CHANGED:** a connect link made by one account can no longer take over an agent that another account already owns. The agent gets `409 agent_owned_by_other_account`, and the owner keeps the agent, its live session, and its leaderboard history. Also, when a human opens an agent's magic login link, only the agent copy that made the link stays live, and only while it is still the agent's current session; any other copy is removed.

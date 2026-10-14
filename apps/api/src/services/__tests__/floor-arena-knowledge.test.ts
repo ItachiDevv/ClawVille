@@ -39,7 +39,7 @@ import { resolveLeaderboardBounds } from '../floor-arena/leaderboard';
 import { PROTOCOL_VERSION, buildProtocolManual, contentHashOf, protocolPointer } from '../skill-protocol';
 
 // Trading Arena (paper contest) knowledge surfaces, docs/trading-floor-arena.md
-// D12: manual section 17c, the clawville_arena_* tools, shared orientation and
+// D12: the protocol trading page, the clawville_arena_* tools, shared orientation and
 // Nori. Every fact below is compared against the FLOOR_ARENA_* constants, so a
 // template, rule or contest change that skips the served copy fails here.
 
@@ -71,8 +71,9 @@ function checkpointAlphaGroups(): { alpha: number; at: number[] }[] {
 
 function arenaSection(): string {
   const manual = buildProtocolManual(API);
-  const start = manual.indexOf('## 17c. Trading Arena (paper contest)');
-  expect(start).toBeGreaterThan(manual.indexOf('### 17b.'));
+  // v86 (agent-skill-simple): section numbers left the manual headings.
+  const start = manual.indexOf('## Trading Arena (paper contest)');
+  expect(start).toBeGreaterThan(manual.indexOf('### Watch the house traders'));
   return manual.slice(start);
 }
 
@@ -106,7 +107,7 @@ function amountText(atomic: number, decimals: number): string {
   return fraction ? `${whole}.${fraction.padEnd(2, '0')}` : whole;
 }
 
-describe('Trading Arena manual section 17c', () => {
+describe('Trading Arena section of the trading page', () => {
   test('is its own hosted-runtime chunk, and no chunk nears the embedding input limit', () => {
     // Hosted runtimes embed the manual one `## ` section per row, and an
     // embedding call over the model's input limit fails and SKIPS that whole
@@ -115,13 +116,13 @@ describe('Trading Arena manual section 17c', () => {
     // well under the 8,191-token limit of text-embedding-3-small.
     const manual = buildProtocolManual(API);
     const chunks = manual.split(/\n(?=## )/);
-    expect(chunks.some((chunk) => chunk.startsWith('## 17c. Trading Arena (paper contest)'))).toBe(true);
+    expect(chunks.some((chunk) => chunk.startsWith('## Trading Arena (paper contest)'))).toBe(true);
     for (const chunk of chunks) expect(chunk.length).toBeLessThan(24_000);
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(85);
-    expect(protocolPointer(API)).toMatchObject({ version: 85, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(87);
+    expect(protocolPointer(API)).toMatchObject({ version: 87, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -309,7 +310,10 @@ describe('Trading Arena manual section 17c', () => {
     expect(tool('clawville_arena_seat').description).toContain('Standing up stops new entries and paid add-on calls');
     expect(tool('clawville_arena_set_status').description).toContain('makes no paid add-on calls');
     // P5 (protocol 80): the funding line names both assets and the withdraw path, cap rendered.
-    expect(section).toMatch(new RegExp(`Send only USDC or SOL on Solana\\. You can withdraw both\\s+to an address that you prove is yours \\(see "Wallet and withdrawals" below\\)\\. Add-ons\\s+spend at most \\$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day\\. ClawVille does not refund add-on spend\\.`));
+    // agent-skill-simple: the add-on paragraph no longer repeats "Send only USDC or SOL" (it stays once,
+    // in "Wallet and withdrawals", pinned in the P5 test below).
+    expect(section).toMatch(new RegExp(`Add-ons\\s+spend at most \\$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day\\. ClawVille does not refund add-on spend\\.`));
+    expect(section.match(/Send only USDC or SOL on Solana/g)?.length).toBe(1);
     expect(tool('clawville_arena_addons').description).toContain(
       'Send only USDC or SOL on Solana; you can withdraw both to an address you prove (clawville_arena_withdraw)',
     );
@@ -438,7 +442,7 @@ describe('Trading Arena manual section 17c', () => {
     // GET /me carries the withdraw summary.
     expect(flat).toContain('Returns `{ agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw }`');
     // The builder never types a withdraw number by hand (E6.2).
-    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
+    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol-topics', 'trading.ts'), 'utf8') + readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
     const start = src.indexOf('function buildTradingArenaSection(');
     const body = src.slice(start, src.indexOf('\n}\n', start));
     for (const literal of [/0\.005 SOL/, /0\.00704/, /0\.10 USDC/, /0\.001 SOL/, /500 USDC/, /0\.0009/, /keep at least 0\.01/i, /\b24 hours\b/, /3 requests/]) {
@@ -448,7 +452,7 @@ describe('Trading Arena manual section 17c', () => {
     // answers), v82 (bounty list bonusRewards), v81 (security batch 2) and v80;
     // the v80 P5 note, the v81, v82 and v83 notes must stay in the version log,
     // in order, before the v84 note and before the constant.
-    expect(PROTOCOL_VERSION).toBe(85);
+    expect(PROTOCOL_VERSION).toBe(87);
     const constAt = src.indexOf('export const PROTOCOL_VERSION');
     const v80At = src.indexOf('// v80 (2026-10-02, P5 arena wallet WITHDRAW');
     const v81At = src.indexOf('// v81 (2026-10-02, security batch 2');
@@ -496,7 +500,7 @@ describe('Trading Arena manual section 17c', () => {
     expect(orientation).toContain(`optional paid add-ons spend only USDC that the player sends to the agent's own wallet; the owner, human or agent, can withdraw USDC or SOL from that wallet to an address the owner proved (a new address works after ${delay}; keep at least ${L.recommendedSolText} SOL there for network fees);`);
     expect(orientation).not.toMatch(/[.;,][A-Z]/);
     const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: you can take money out of your arena trader'));
-    expect(nori).toBe(`Nori says: you can take money out of your arena trader's wallet. Open your trader in the Trading Floor tab, find the Wallet block, prove an address with your wallet or pick your linked wallet, then withdraw USDC or SOL. A new address waits ${delay} before it works. Keep at least ${L.recommendedSolText} SOL in the trader's wallet for network fees. Agents find the routes in protocol manual section 17c.`);
+    expect(nori).toBe(`Nori says: you can take money out of your arena trader's wallet. Open your trader in the Trading Floor tab, find the Wallet block, prove an address with your wallet or pick your linked wallet, then withdraw USDC or SOL. A new address waits ${delay} before it works. Keep at least ${L.recommendedSolText} SOL in the trader's wallet for network fees. Agents find the routes on the protocol \`trading\` page (/api/skills/protocol/trading.md).`);
     expect(nori!).not.toMatch(/[.;,][A-Z]/);
     // Nori carries the orientation line too (she spreads the shared list).
     expect(townGuide.knowledge).toContain(orientation);
@@ -514,8 +518,8 @@ describe('Trading Arena manual section 17c', () => {
     const list = series(TUNER_CHECKPOINTS, 'and');
     const alphas = checkpointAlphaGroups().map((g) => `${g.alpha} at ${series(g.at, 'and')}`).join(', ');
     expect(alphas).toBe('0.01 at 20, 40, 80 and 160, 0.005 at 200, 0.0025 at 400 and 800');
-    // Templates paragraph: a change comes only at a checkpoint.
-    expect(section).toMatch(new RegExp(`A filter changes only at a trade-count checkpoint\\s+\\(${list} closed trades on the current params, each tested once\\)`));
+    // agent-skill-simple: the templates paragraph no longer repeats the checkpoint rule; it points at Reports.
+    expect(section).toMatch(/After a tuner change \(see Reports\)/);
     // Reports paragraph: the full rule.
     expect(section).toMatch(new RegExp(`For each version of your params it tests only at\\s+trade-count checkpoints: ${list} closed trades on the current params,\\s+each checkpoint ONCE, at its own alpha \\(${alphas}\\)\\. The alphas\\s+add up to ${EVIDENCE_MAX_SEARCH_P}, the budget of one params version\\.`));
     expect(section).toMatch(/At a due report the tuner tests the\s+largest untested checkpoint that the trade count has reached; a smaller checkpoint\s+that it skipped is lost\./);
@@ -536,7 +540,7 @@ describe('Trading Arena manual section 17c', () => {
     const section = arenaSection();
     const every = durationLabel(ARENA_REPORT_INTERVAL_MS);
     // D33: the honest cadence claim (TUNER_CHECK 2026-10-01: 0 changes in 104 house reports).
-    expect(section).toMatch(new RegExp(`is reviewed about every ${every}\\. A filter changes only at a trade-count checkpoint\\s+\\(${series(TUNER_CHECKPOINTS, 'and')} closed trades on the current params, each tested once\\) and only when\\s+the evidence check passes there \\(${EVIDENCE_MIN_PER_SIDE} kept and ${EVIDENCE_MIN_PER_SIDE} excluded, a \\+${EVIDENCE_MIN_EDGE} edge, and a shuffle test\\s+over every filter tried with p at or below that checkpoint's alpha\\)\\. Most reviews end with no\\s+change; each report states why\\.`));
+    // agent-skill-simple: stated once, in Reports ("Most reviews end with no change" is pinned in the D33 test).
     expect(section).not.toMatch(/re-tuned|fine-tuned/);
     expect(section).toContain(`Reports. About every ${every} each agent with activity`);
     expect(section).toContain(`at most once per ${durationLabel(ARENA_AUTO_CHANGE_MIN_GAP_MS)},`);
@@ -545,7 +549,7 @@ describe('Trading Arena manual section 17c', () => {
     expect(section).toMatch(new RegExp(`and in the ${kind} reports, it is left out`));
     expect(section).toMatch(new RegExp(`read your own\\s+${kind} report;`));
     // The builder source must not type these numbers back in.
-    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol.ts'), 'utf8');
+    const src = readFileSync(join(import.meta.dir, '..', 'skill-protocol-topics', 'trading.ts'), 'utf8');
     const start = src.indexOf('function buildTradingArenaSection(');
     const body = src.slice(start, src.indexOf('\n}\n', start));
     expect(start).toBeGreaterThan(0);
@@ -554,14 +558,13 @@ describe('Trading Arena manual section 17c', () => {
     }
   });
 
-  test('keeps paper arena agents apart from the live house traders and the 17a personas', () => {
+  test('keeps paper arena agents apart from the live house traders and the ClawPump templates', () => {
     const section = arenaSection();
-    expect(section).toMatch(/They are NOT the live house traders of\s+§17b/);
+    // v86: no section numbers; the dated Dip Hunter history note was removed as noise.
+    expect(section).toMatch(/Arena house agents are NOT the live house traders above/);
     expect(section).toMatch(/no arena result ever reaches the live\s+tape/);
-    expect(section).toMatch(/NOT the ClawPump persona templates of §17a/);
-    if (FLOOR_ARENA_TEMPLATES.some((t) => t.displayName === 'Dip Hunter')) {
-      expect(section).toMatch(/The arena Dip Hunter is\s+a new paper template/);
-    }
+    expect(section).toMatch(/Arena templates are NOT the ClawPump trader templates/);
+    expect(section).not.toMatch(/§\d/);
   });
 
   test('uses no em dash, no banned outward word and no boast', () => {
@@ -689,7 +692,7 @@ describe('Trading Arena orientation and Nori', () => {
     expect(line).toBeDefined();
     expect(line).toContain('inside the Trading Floor building (`cron-automation`, south of the town centre)');
     expect(line).toContain('/api/floor/arena/leaderboard');
-    expect(line).toContain('protocol manual section 17c');
+    expect(line).toContain('/api/skills/protocol/trading.md');
     expect(line).toContain('clawville_arena_');
     expect(line).toContain('opens positions only while seated');
     expect(line).toContain(FLOOR_ARENA_CONTEST.name);
@@ -709,7 +712,7 @@ describe('Trading Arena orientation and Nori', () => {
     expect(nori).toContain('south side of the ring');
     expect(nori).toContain('only buys while it is seated');
     expect(nori).toContain('Pearl teaches outside and does not run the arena');
-    expect(nori).toContain('protocol manual section 17c');
+    expect(nori).toContain('/api/skills/protocol/trading.md');
     expect(nori).toContain(`${FLOOR_ARENA_TEMPLATES.length} house agents`);
     expect(nori).toContain('open at least one position inside the contest window that has closed, even if it closes after the end');
     expect(nori).not.toContain('open and close at least one position inside the contest window');

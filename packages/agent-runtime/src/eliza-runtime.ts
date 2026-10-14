@@ -1119,6 +1119,11 @@ export class ElizaRuntime {
 
       let wrote = 0;
       for (let i = 0; i < chunks.length; i++) {
+        // The orchestrator can stop this runtime mid-injection (a skill install
+        // reloads it about 1 s after start). Stop here: writes into a stopped
+        // runtime fail, and the next start re-injects the missing sections
+        // (stable per-section ids).
+        if (this.state !== 'running' || !this.runtime) break;
         const section = chunks[i]!;
         try {
           // Embed FIRST — an un-vectored row is invisible to searchMemories, so on

@@ -14,7 +14,21 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-13 12:47 UTC (session tradeLead3, arena lead). **Staging = `809b7f91`, VERIFIED 12:33-12:47Z: agent session TTL slide fix, PROTOCOL 85** (branch `fix/agent-session-slide` on top of `9cb8285e`; first CI run failed one test, fixed in `809b7f91`; API needed a solo pinned redeploy after a concurrent-build image miss). A BYOA agent that used only `X-Clawville-Agent-Session` routes lost its session 24h after connect; now every authenticated header call slides the 24h TTL (conditional, locked write; details in the DEPLOY LOG entry). Protected Hatcher surface: Codex 5 rounds, final APPROVE; all three staging release gates PASS (DEPLOY LOG entry). No migration. Promotion needs the founder's explicit go. **PROD = `edcd7f99`** (unchanged). SCHEMA: `synced`.
+Last Audited: 2026-10-14 08:16 UTC (session tradeLead3, arena lead). **Staging = `8f5973a6`, VERIFIED 08:03-08:16Z: Jev ENTRY SHADOW + virtual-twin report on the Trading Floor paper bots** (FEATURE_GATE `jev_arena_entry_shadow`, migration 0082, $1 cap in code, stored only, no trade effect, no PROTOCOL change; on top of the session-skill PROTOCOL 87 work below, which stays verified). CI run 38531119276 gates, migrate, deploy all success; API `8f5973a6` healthy 08:03Z; first rows 08:15Z: model `jev-1.13.0`, 130 ms, 1,375 input tokens, $0.000058 per call, every column written. Promotion needs the founder's go (it also carries PROTOCOL 86/87). SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql, 0082_floor_arena_jev_entry.sql`.
+
+Prior — Last Audited: 2026-10-14 00:50 UTC (session skill). **Staging = `f9823dff`, VERIFIED 00:30-00:46Z: simple agent skill, PROTOCOL 87** (short entry manual, 8 protocol topic pages, hosted MCP `POST /api/agent/mcp`, injection stop fix). CI run 38489240071 all success; API and web containers `f9823dff`; `/health` commit f9823dff; release gates: hosted-skill probe ALL PASS 16, mock-Hatcher harness ALL ASSERTIONS PASSED, onboarding smoke 14/14, live MCP check 12/12; test signer removed (0 rows) and absent from the running API. SCHEMA: synced. Prod unchanged (`b73b7d32`, PROTOCOL 85).
+
+Prior — Last Audited: 2026-10-14 00:35 UTC (session skill). **Staging is receiving the protocol-injection stop fix** (`ElizaRuntime.injectProtocolKnowledge` stops when the runtime stops). `0ff1cf9a` (protocol 87) was verified first; see the DEPLOY LOG. SCHEMA: synced.
+
+Prior — Last Audited: 2026-10-14 00:10 UTC (session skill). **Staging is receiving the protocol 87 fix** (`e8eda3aa`): keep Connect as the pinned hosted section 1 and fix the hosted-skill probe marker. Not yet verified; see the DEPLOY LOG. SCHEMA: synced.
+
+Prior — Last Audited: 2026-10-13 23:45 UTC (session skill). **Staging is receiving the simple agent skill (PROTOCOL 86)**: short entry manual, 8 protocol topic pages at `/api/skills/protocol/<topic>.md`, hosted MCP `POST /api/agent/mcp`. Not yet verified on staging; the verified state follows in the next entry. SCHEMA: synced (no migration).
+
+Prior — Last Audited: 2026-10-13 18:53 UTC (session tradeLead3, arena lead). **Staging = `6717a4e6`, VERIFIED 18:40-18:53Z: Jev decide SHADOW on the hosted-agent decide loop (FEATURE_GATE `jev_decide_shadow`, migration 0081, $1 total cap in code; no game effect, no PROTOCOL change).** CI run 38446950464 gates, migrate, deploy all success; API flipped 18:40:19Z; `JEV_API_KEY` set on staging app 3 (fingerprint matches the founder-approved key). First shadow rows 18:41-18:42Z: Jev p50 185 ms vs local qwen 5.5 s, $0.00018 per call. **Staging disk filled to 100% at about 18:43Z** (see DEPLOY LOG); fixed 18:49-18:52Z. **PROD = `b73b7d32`** (unchanged; shadow promotion needs the founder's go and the prod key). SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql`.
+
+Prior — Last Audited: 2026-10-13 17:17 UTC (session tradeLead3, arena lead). **PROD = `b73b7d32` (PROMOTION #7, PR #316: agent session TTL slide, PROTOCOL 85), VERIFIED 17:15-17:17Z.** Founder go 2026-10-13 ("1 is good"). PR checks all pass; merged 17:03:52Z; run 38435613598 gates, migrate, deploy all success; Coolify 404 (api) + 405 (web) built together and both finished (no image miss this time); both prod containers `b73b7d32` healthy (api 17:13:24Z, web 17:15:06Z); `/health` 3x commit b73b7d32; running `PROTOCOL_VERSION = 85`; `CLAWVILLE_ENV=production`, `ALLOW_TEST_PARTNER_PUBKEY` absent; 0 "TTL slide failed" lines in the first minutes. Headless `/game` 17:16Z: WebGPU, loader gone 7.2 s, 0 windows under 55 FPS, 0 page errors, 0 5xx (only the guest 401s on /api/auth/me and /api/avatars/me). No live slide probe on prod (it would create a real user; the staging probe is the proof). Staging = `a54e4dc7` (same app code `809b7f91`). SCHEMA: `synced`.
+
+Prior — Last Audited: 2026-10-13 12:47 UTC (session tradeLead3, arena lead). **Staging = `809b7f91`, VERIFIED 12:33-12:47Z: agent session TTL slide fix, PROTOCOL 85** (branch `fix/agent-session-slide` on top of `9cb8285e`; first CI run failed one test, fixed in `809b7f91`; API needed a solo pinned redeploy after a concurrent-build image miss). A BYOA agent that used only `X-Clawville-Agent-Session` routes lost its session 24h after connect; now every authenticated header call slides the 24h TTL (conditional, locked write; details in the DEPLOY LOG entry). Protected Hatcher surface: Codex 5 rounds, final APPROVE; all three staging release gates PASS (DEPLOY LOG entry). No migration. Promotion needs the founder's explicit go. **PROD = `edcd7f99`** (unchanged). SCHEMA: `synced`.
 
 Prior — Last Audited: 2026-10-12 07:32 UTC (session tradeLead3, arena lead). **PROD = `edcd7f99` (PROMOTION #6, PR #315: arena paper cost fix, PROTOCOL 84), VERIFIED 07:29-07:31Z.** Founder go 2026-10-12 ("yes i do want to deploy it now"). Merge commit carries `[skip-nori-update]` on its own line; run 38217123780: gates, migrate, deploy all success; both prod containers `edcd7f99` healthy (07:23:54Z); `/health` 3x commit edcd7f99; prod `GET /api/floor/arena/templates` paperCosts {1, 0.5, 1.25}; prod api Helius key fp e06bda62 (paid); arena engine opened a house position 07:29:44Z; headless prod /game 07:30Z: WebGPU, loader gone 9.4 s, 0 windows < 55 FPS, 0 long tasks, 0 errors, 0 5xx. SCHEMA: synced (no migration).
 
@@ -588,6 +602,52 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-14 08:16Z (session tradeLead3, arena lead) - Jev entry shadow on the arena paper bots to staging
+
+- **What changed:** `8f5973a6`. Right before `quoteBuy`, `runAgentEntries` fires (never awaits) one Jev call per (agent, mint) per 10 min with a banded state and six questions built from the bot's exits; a v0 verdict is computed in code and stored only in `floor_arena_jev_entry` (migration 0082). `apps/api/scripts/floor-arena-jev-report.ts` prints actual vs virtual twin (actual minus vetoes) per bot, answer buckets and a threshold sweep. Model pinned to `jev-1.13.0` after a live call showed score answers come back as a decimal (the first build rejected them; fixed: the stored level is the most probable level). Codex r1 REQUEST_CHANGES (unbounded shadow writes on the shared pool; 120 s report join could attach a refused attempt's verdict) fixed: every ledger write of BOTH Jev shadows runs with lock_timeout 2 s / statement_timeout 3 s; join window 30 s. Tests 92/92 (jev-entry, engine, decide shadow, autonomy round 1); api + database tsc 0; coupling gate 0.
+- **Verified:** CI 38531119276 all success (migrate applied 0082); API flipped 08:03Z; old API container gone 08:04Z; staging disk 75% before and after; report and a direct row read at 08:15-08:16Z: 2 `ok` rows (house:late-bloomer and one user bot), `jev-1.13.0`, 130-132 ms, every answer column filled, verdict `pass`, $0.000116 total.
+- **What broke:** nothing.
+- **Who it's for:** founder (fast Jev decision step for the trading bots; 1-day virtual-twin result).
+- SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql, 0082_floor_arena_jev_entry.sql` (both additive).
+
+### 2026-10-14 00:50Z (session skill) - `f9823dff` verified; release gates
+
+- **Verified:** API flipped 00:29Z, web 00:32Z (both `f9823dff`). Hosted-skill probe ALL PASS 16 checks with 0 `injectProtocolKnowledge write failed` lines (the stop fix works). One earlier probe run failed only its cleanup check (transient, during the web build); its fixture (user, avatar, platform agent, canary skill, 36 memories) was deleted by hand with the probe's own cleanup SQL. Mock-Hatcher harness ALL ASSERTIONS PASSED with the test signer; signer removed, API redeployed, absent verified 00:44Z. Onboarding smoke 14/14; live MCP check 12/12 (3 disposable `mcp-live-check-*` agents left connected; their sessions expire in 24 h).
+- **Disk:** removed unused images (web `0ff1cf9a`, API `0ff1cf9a`); 11 GB free after the builds. The box still needs a disk alert or a larger disk.
+- **SCHEMA:** synced.
+
+### 2026-10-14 00:35Z (session skill) - protocol 87 verified; injection stop fix to staging
+
+- **`0ff1cf9a` (protocol 87):** CI run 38485978165 all success. The first Coolify API build (queue 4042) FAILED: staging disk full again (98%, "failed to extract layer ... no space"); the web build finished. Fix: removed the unused web images `6717a4e6` and `3834384f` and the broken partial API image (disk 84%, 12 GB free), marked stale row 4042 failed, queued app 3 alone at `0ff1cf9a`; API flipped 00:10Z. Follow-up from the earlier entry still stands: the staging box needs a disk alert.
+- **Verified on `0ff1cf9a`:** hosted-skill probe ALL PASS (16 checks) twice; onboarding smoke 14/14 (on `3834384f`, no connect change since).
+- **What broke + root cause:** API logs showed 21-23 `injectProtocolKnowledge write failed` per probe run. The claim route reloads the runtime about 1 s after start; the injection loop kept embedding and writing sections into the stopped runtime (Postgres logged no error; the client failed). Missing sections are written on the next start (stable ids), so no data loss, but wasted embeddings and log noise.
+- **Fix:** the loop stops when the runtime is no longer running (+ unit test).
+- **SCHEMA:** synced.
+
+### 2026-10-14 00:10Z (session skill) - protocol 87 fix to staging
+
+- **What was verified on `3834384f`:** CI run 38483948683 all jobs success (gates incl. Postgres route tests, migrate, deploy); API container SOURCE_COMMIT `3834384f`, `/health` commit `3834384f` from 19:35:59 local; entry manual 110 lines at version 86; `/api/skills/connect` redirect now https; onboarding smoke 14/14 PASS; live MCP check (initialize, 45 tools, docs, connect, session rules, refused encoded admin path, move with arrival wait) all PASS. The web container stays on `6717a4e6` (no web change in this push).
+- **What broke + root cause:** the hosted-skill probe stopped at "could not derive protocol evidence": it searched for the old wallet sentence. Reading why showed a real defect: hosted runtimes split the manual at `## ` and always pin sections 0 and 1; v86 put the topic index under `## Protocol pages`, so Connect lost its pinned slot.
+- **Fix:** `### Protocol pages` in the full manual (index stays in section 0), new probe marker, a test that the first `## ` heading is Connect, PROTOCOL 87 so hosted rows re-inject.
+- **SCHEMA:** synced.
+
+### 2026-10-13 23:45Z (session skill) - simple agent skill + hosted MCP to staging (PROTOCOL 86)
+
+- **What changed:** branch `feat/agent-skill-simple-20261013` on `cc2e402c`. The protocol manual is split into 8 topic files (`apps/api/src/services/skill-protocol-topics/`), audited against code (about 20 wrong facts fixed) and about 40 percent shorter; new `GET /api/skills/protocol/:topic.md` and manifest `protocolTopics`. The entry manual `clawville-play` is about 110 lines (was 300). New hosted MCP `POST /api/agent/mcp` (Codex pass 3 APPROVE). Gateway SSE loops exit on disconnect; `/api/skills/connect` redirect uses the configured API base.
+- **Who it is for:** every agent that connects (BYO, MCP clients, hosted, Hatcher re-pull at 86).
+- **Local evidence:** tsc 0; CI service lane copy 3654 pass 0 fail plus 36 isolated files pass; MCP + manual tests 207 pass; scripts/ci 28 pass; coupling gates and doc path guard pass.
+- **SCHEMA:** synced (no migration).
+
+### 2026-10-13 18:53Z (session tradeLead3, arena lead) - Jev decide shadow to staging + staging disk-full DB outage
+
+- **What changed:** `6717a4e6` adds `jev-decide-shadow.ts`: after the autonomy driver's `decide()` returns, a fire-and-forget call sends the same prompt to Jev (one `noul` question per action verb) and stores only verb, probabilities, latency, tokens and cost in the new table `jev_decide_shadow` (migration 0081). The agent still acts only on its own model's reply. Caps are code constants: production $0.90 total / $0.25 per UTC day, other envs $0.10 / $0.05; the reservation is an upper bound (UTF-8 bytes) under an advisory lock with lock/statement timeouts. Codex r1 REQUEST_CHANGES (estimate could undershoot, unbounded lock wait, doc overstatements) fixed before push. api tsc 0; shadow tests 13/13; driver tests 16/16; coupling gate exit 0.
+- **Verified:** API `6717a4e6` healthy 18:40Z; `JEV_API_KEY` present (value never printed); staging autonomy armed through `/api/dashboard/autonomy/arm` (staging defaults to standby); report script `apps/api/scripts/jev-decide-shadow-report.ts` ran against the real staging DB: 2 `ok` rows, Jev p50 185 ms, local p50 5,529 ms, $0.000366 spent, agreement 0/2 (too few rows to judge).
+- **What broke + root cause:** at about 18:43Z the staging root disk (75 GB) reached 100%. `clawville-db` could not write `postmaster.pid` and went into a restart loop; the API logged `EAI_AGAIN clawville-db`; Coolify's web job 4039 died in its health wait and left the old web container `809b7f91` running beside the new one. Disk use: ClawVille build cache 7.6 GB, two 5.7 GB web images, and a stopped carbon-road buildx state volume (10.3 GB, separate project, built about 24 min before the fill; NOT touched).
+- **Fix:** `docker builder prune -af` (7.6 GB, cache only); Postgres recovered 18:49:54Z ("ready to accept connections", healthy); stopped + removed the stale web container, set queue row 4039 to finished (the new web container was already healthy), removed the old web image `809b7f91`. Disk 76% (18 GB free) at 18:52Z; `EAI_AGAIN` count 0 in the next minute; `/game` 200 x3.
+- **Follow-up:** the staging box has no disk alert and each web image is 5.7 GB. The carbon-road builder state (10.3 GB) belongs to another project; its owner decides.
+- **Who it's for:** founder (Jev speed test for agent decisions).
+- SCHEMA: `prod-migration-pending: 0081_jev_decide_shadow.sql` (additive; CI migrate job applies it on promotion).
 
 ### 2026-10-13 11:55Z (session tradeLead3, arena lead) - agent session TTL slide to staging (PROTOCOL 85)
 

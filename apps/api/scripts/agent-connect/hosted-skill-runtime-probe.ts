@@ -344,7 +344,7 @@ function deriveProtocolEvidence(
     .find((line) => line.trim().endsWith(String(source.PROTOCOL_VERSION)) && line.includes('protocol_version'));
   const walletLine = manual
     .split('\n')
-    .find((line) => line.includes('top-level `walletAddress` always equals `wallet.address`'));
+    .find((line) => line.includes("`walletAddress` (equals `wallet.address`)"));
   if (!title || !versionLine || !walletLine) {
     throw new ProbeFailure('could not derive protocol evidence from the source-generated manual');
   }

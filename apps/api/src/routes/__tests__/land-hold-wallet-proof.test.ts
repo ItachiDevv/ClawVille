@@ -44,7 +44,7 @@ const verifyService = readFileSync(
   join(API_SRC, 'services', 'land-hold-transfer-verify.ts'),
   'utf8',
 );
-const protocol = readFileSync(join(API_SRC, 'services', 'skill-protocol.ts'), 'utf8');
+const protocol = readFileSync(join(API_SRC, 'services', 'skill-protocol-topics', 'land.ts'), 'utf8');
 const MIGRATIONS = join(ROOT, 'packages', 'database', 'migrations');
 const migration = readFileSync(join(MIGRATIONS, '0060_land_hold_wallet_proof.sql'), 'utf8');
 const enumMigration = readFileSync(join(MIGRATIONS, '0060a_land_hold_verify_purpose.sql'), 'utf8');
@@ -588,7 +588,7 @@ describe('migration 0060 — schema contract', () => {
       ],
       [
         'skill-protocol.ts',
-        section(protocol, '### Verify the hold wallet before claiming', 'Release requires a fresh'),
+        section(protocol, '### Hold wallet: declare and verify', '### Land over REST'),
       ],
       [
         'town-guide.ts',
@@ -1111,12 +1111,15 @@ describe('protocol manual parity', () => {
     // Land proof arrived in v51; later unrelated protocol additions must not
     // require copying the current version into this land-specific suite.
     expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(51);
-    expect(protocol).toContain(`export const PROTOCOL_VERSION = ${PROTOCOL_VERSION};`);
-    expect(protocol.match(/export const PROTOCOL_VERSION = /g) ?? []).toHaveLength(1);
+    const versionSrc = readFileSync(join(API_SRC, 'services', 'skill-protocol.ts'), 'utf8');
+    expect(versionSrc).toContain(`export const PROTOCOL_VERSION = ${PROTOCOL_VERSION};`);
+    expect(versionSrc.match(/export const PROTOCOL_VERSION = /g) ?? []).toHaveLength(1);
   });
 
   it('documents the requirement, the REST signature door, custodial attest and the error', () => {
-    expect(protocol).toContain('### Verify the hold wallet before claiming (REQUIRED since 2026-08-10)');
+    // The dated "(REQUIRED since 2026-08-10)" heading was history noise (agent-skill-simple);
+    // declare and verify are now one section.
+    expect(protocol).toContain('### Hold wallet: declare and verify');
     expect(protocol).toContain('wallet_not_verified');
     expect(protocol).toContain('/api/land/hold-wallet/verify/challenge');
     expect(protocol).toContain('/api/land/hold-wallet/verify/signature');

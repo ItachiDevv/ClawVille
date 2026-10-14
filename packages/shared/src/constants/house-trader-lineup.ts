@@ -93,7 +93,7 @@ import type { TradingObjective } from './trading-fleet';
  * ONE constant on purpose. It is both the lineup entry's `strategyNote` (what
  * the watch panel renders) and the description the three seeded-knowledge
  * surfaces use: Nori (`town-guide.ts`), `CLAWVILLE_ORIENTATION_KNOWLEDGE` and
- * protocol manual section 17b. A second "short form" constant existed for one
+ * protocol `trading` page (house traders). A second "short form" constant existed for one
  * revision and was collapsed into this: two strings saying the same thing is a
  * drift hazard with no benefit, and the panel and the manual should not be able
  * to describe the same live trader differently.
