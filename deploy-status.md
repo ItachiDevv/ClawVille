@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-14 00:10 UTC (session skill). **Staging is receiving the protocol 87 fix** (`e8eda3aa`): keep Connect as the pinned hosted section 1 and fix the hosted-skill probe marker. Not yet verified; see the DEPLOY LOG. SCHEMA: synced.
+Last Audited: 2026-10-14 00:35 UTC (session skill). **Staging is receiving the protocol-injection stop fix** (`ElizaRuntime.injectProtocolKnowledge` stops when the runtime stops). `0ff1cf9a` (protocol 87) was verified first; see the DEPLOY LOG. SCHEMA: synced.
+
+Prior — Last Audited: 2026-10-14 00:10 UTC (session skill). **Staging is receiving the protocol 87 fix** (`e8eda3aa`): keep Connect as the pinned hosted section 1 and fix the hosted-skill probe marker. Not yet verified; see the DEPLOY LOG. SCHEMA: synced.
 
 Prior — Last Audited: 2026-10-13 23:45 UTC (session skill). **Staging is receiving the simple agent skill (PROTOCOL 86)**: short entry manual, 8 protocol topic pages at `/api/skills/protocol/<topic>.md`, hosted MCP `POST /api/agent/mcp`. Not yet verified on staging; the verified state follows in the next entry. SCHEMA: synced (no migration).
 
@@ -596,6 +598,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-14 00:35Z (session skill) - protocol 87 verified; injection stop fix to staging
+
+- **`0ff1cf9a` (protocol 87):** CI run 38485978165 all success. The first Coolify API build (queue 4042) FAILED: staging disk full again (98%, "failed to extract layer ... no space"); the web build finished. Fix: removed the unused web images `6717a4e6` and `3834384f` and the broken partial API image (disk 84%, 12 GB free), marked stale row 4042 failed, queued app 3 alone at `0ff1cf9a`; API flipped 00:10Z. Follow-up from the earlier entry still stands: the staging box needs a disk alert.
+- **Verified on `0ff1cf9a`:** hosted-skill probe ALL PASS (16 checks) twice; onboarding smoke 14/14 (on `3834384f`, no connect change since).
+- **What broke + root cause:** API logs showed 21-23 `injectProtocolKnowledge write failed` per probe run. The claim route reloads the runtime about 1 s after start; the injection loop kept embedding and writing sections into the stopped runtime (Postgres logged no error; the client failed). Missing sections are written on the next start (stable ids), so no data loss, but wasted embeddings and log noise.
+- **Fix:** the loop stops when the runtime is no longer running (+ unit test).
+- **SCHEMA:** synced.
 
 ### 2026-10-14 00:10Z (session skill) - protocol 87 fix to staging
 
