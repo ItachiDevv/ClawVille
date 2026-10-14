@@ -181,7 +181,7 @@ export * from './market';
 // Migration 0081 (idempotent, by hand â€” NEVER db:push).
 export * from './jev-shadow';
 // Jev ENTRY SHADOW for the arena paper bots (2026-10-14): measurement only, no trade reader.
-// Migration 0082 (idempotent, by hand — NEVER db:push).
+// Migration 0082 (idempotent, by hand - NEVER db:push).
 export * from './floor-arena-jev';
 
 import { users, sessions } from './users';
