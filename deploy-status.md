@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-14 00:35 UTC (session skill). **Staging is receiving the protocol-injection stop fix** (`ElizaRuntime.injectProtocolKnowledge` stops when the runtime stops). `0ff1cf9a` (protocol 87) was verified first; see the DEPLOY LOG. SCHEMA: synced.
+Last Audited: 2026-10-14 00:50 UTC (session skill). **Staging = `f9823dff`, VERIFIED 00:30-00:46Z: simple agent skill, PROTOCOL 87** (short entry manual, 8 protocol topic pages, hosted MCP `POST /api/agent/mcp`, injection stop fix). CI run 38489240071 all success; API and web containers `f9823dff`; `/health` commit f9823dff; release gates: hosted-skill probe ALL PASS 16, mock-Hatcher harness ALL ASSERTIONS PASSED, onboarding smoke 14/14, live MCP check 12/12; test signer removed (0 rows) and absent from the running API. SCHEMA: synced. Prod unchanged (`b73b7d32`, PROTOCOL 85).
+
+Prior — Last Audited: 2026-10-14 00:35 UTC (session skill). **Staging is receiving the protocol-injection stop fix** (`ElizaRuntime.injectProtocolKnowledge` stops when the runtime stops). `0ff1cf9a` (protocol 87) was verified first; see the DEPLOY LOG. SCHEMA: synced.
 
 Prior — Last Audited: 2026-10-14 00:10 UTC (session skill). **Staging is receiving the protocol 87 fix** (`e8eda3aa`): keep Connect as the pinned hosted section 1 and fix the hosted-skill probe marker. Not yet verified; see the DEPLOY LOG. SCHEMA: synced.
 
@@ -598,6 +600,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-14 00:50Z (session skill) - `f9823dff` verified; release gates
+
+- **Verified:** API flipped 00:29Z, web 00:32Z (both `f9823dff`). Hosted-skill probe ALL PASS 16 checks with 0 `injectProtocolKnowledge write failed` lines (the stop fix works). One earlier probe run failed only its cleanup check (transient, during the web build); its fixture (user, avatar, platform agent, canary skill, 36 memories) was deleted by hand with the probe's own cleanup SQL. Mock-Hatcher harness ALL ASSERTIONS PASSED with the test signer; signer removed, API redeployed, absent verified 00:44Z. Onboarding smoke 14/14; live MCP check 12/12 (3 disposable `mcp-live-check-*` agents left connected; their sessions expire in 24 h).
+- **Disk:** removed unused images (web `0ff1cf9a`, API `0ff1cf9a`); 11 GB free after the builds. The box still needs a disk alert or a larger disk.
+- **SCHEMA:** synced.
 
 ### 2026-10-14 00:35Z (session skill) - protocol 87 verified; injection stop fix to staging
 
