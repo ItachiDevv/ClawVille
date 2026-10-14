@@ -281,6 +281,16 @@ export function createJevDecideShadow(deps: JevShadowDeps) {
   return { run, fire };
 }
 
+/** Every ledger write runs bounded (Codex r1 2026-10-14): a stalled shadow write must never hold a shared pool
+ *  connection that the trading / driver paths need. A timeout throws; the caller's catch logs it. */
+async function boundedWrite(query: ReturnType<typeof sql>): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    await tx.execute(sql`SET LOCAL statement_timeout = '3s'`);
+    await tx.execute(query);
+  });
+}
+
 /** Default ledger: `jev_decide_shadow` through the shared Drizzle client. */
 export const dbJevShadowLedger: JevShadowLedger = {
   async reserve(row, caps) {
@@ -313,7 +323,7 @@ export const dbJevShadowLedger: JevShadowLedger = {
   async finish(id, patch) {
     const probs = patch.jevProbs === null ? null : JSON.stringify(patch.jevProbs);
     const usd = patch.usd === null ? null : patch.usd.toFixed(8);
-    await db.execute(sql`
+    await boundedWrite(sql`
       UPDATE jev_decide_shadow SET
         status = ${patch.status},
         jev_verb = ${patch.jevVerb},
@@ -326,7 +336,7 @@ export const dbJevShadowLedger: JevShadowLedger = {
       WHERE id = ${id}`);
   },
   async recordSkippedCap(row, reason) {
-    await db.execute(sql`
+    await boundedWrite(sql`
       INSERT INTO jev_decide_shadow (avatar_id, is_house, status, local_verb, local_empty, local_ms, usd, error)
       VALUES (${row.avatarId}, ${row.isHouse}, 'skipped_cap', ${row.localVerb}, ${row.localEmpty},
               ${row.localMs}, 0, ${`cap_${reason}`})`);

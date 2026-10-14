@@ -18,6 +18,7 @@ import {
   quoteSell, type BuyQuoteResult, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
 import { entryVerdictStatus, type EntryVerdict } from './chain-checks';
+import { fireJevArenaEntry } from './jev-entry';
 import {
   formatAge, formatPrice, formatSignedUsd, formatUsdCompact, tokenLabel, writeArenaEvent, writeArenaEvents,
   type ArenaEventInput,
@@ -826,6 +827,11 @@ async function runAgentEntries(
     const refusalKey = `${agent.id}|${c.mint}`;
     if ((entryRefusalUntil.get(refusalKey) ?? 0) > nowMs) continue;
     attempts += 1;
+    // FEATURE_GATE jev_arena_entry_shadow: fire-and-forget measurement, NOT awaited; nothing below reads it.
+    fireJevArenaEntry({
+      bot: { agentId: agent.id, strategy: agent.templateId || agent.name, positionUsd: ARENA_POSITION_USD, exits: params.exits },
+      coin: { mint: c.mint, source: c.source, features: c.features, verdict: c.verdict },
+    });
     const quote: BuyQuoteResult = await (deps.quoteBuy ?? quoteBuy)(c.mint, ARENA_POSITION_USD, c.features.priceUsd);
     if (!quote.ok) {
       const transient = quote.reason === 'quote_failed' || quote.reason === 'quote_breaker' || quote.reason === 'not_configured';
