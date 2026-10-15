@@ -879,6 +879,7 @@ import {
 // 86 (2026-10-13): manual split into 8 topic pages (GET /api/skills/protocol/<topic>.md, manifest protocolTopics), entry manual rewritten short with MCP first, corrections (wait for arrival, ledger-capable rule, claim errors).
 // 87 (2026-10-13): the full manual's topic index is `###` so hosted runtimes keep Connect as pinned section 1 (86 made the index section 1); a bump because hosted protocol-knowledge rows dedupe by version.
 // 88 (2026-10-15, arena phase 3b): two optional exits fields, exits.breakeven_arm_mult and exits.liq_drop_exit_pct (null = off in every template; a body without them reads as null), stopKind on stop exits, and the research-only 'exit_shadow_liq_drop' skip event; the tradeable-source text gains PumpPortal graduations (`pumpportal:migration`, D25 amended); documented in the trading topic.
+// 2026-10-15 follow-up (Hatcher stats cache invalidation, web test isolation): manual reviewed, unchanged at 88.
 export const PROTOCOL_VERSION = 88;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body

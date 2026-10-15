@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-15 09:10Z (job arena-pipeline: Trading Arena breakeven stop + liquidity-drop exit, PumpPortal graduations tradeable, coin labels + PumpPortal flow + Codex decider shadow as research data; migrations 0083-0085; PROTOCOL_VERSION 87 -> 88).** Drift note: section 17g.3 said only DexScreener or ClawPump sightings are bought and listed no breakeven or liquidity-drop exit; both are now stated with a PARITY line (human: arena params form; agent: `PATCH /me/params`).
+**Last Audited: 2026-10-15 09:58Z (follow-up push: web test isolation + Hatcher stats cache freshness; no gameplay change).** Drift note: `floor-components.test.tsx` now stubs `fetch` and seeds the cached fingerprint (a test leak, no UI change); the partner stats cache fix changes no player or agent behavior.
+
+**Prior Last Audited: 2026-10-15 09:10Z (job arena-pipeline: Trading Arena breakeven stop + liquidity-drop exit, PumpPortal graduations tradeable, coin labels + PumpPortal flow + Codex decider shadow as research data; migrations 0083-0085; PROTOCOL_VERSION 87 -> 88).** Drift note: section 17g.3 said only DexScreener or ClawPump sightings are bought and listed no breakeven or liquidity-drop exit; both are now stated with a PARITY line (human: arena params form; agent: `PATCH /me/params`).
 
 **Prior Last Audited: 2026-10-14 07:45Z (Jev ENTRY SHADOW on the Trading Floor arena paper bots; FEATURE_GATE `jev_arena_entry_shadow`; migration 0082; no trade effect; no PROTOCOL_VERSION change).** Drift note: section 17g.3 did not say that arena entries are also sent to Jev; a measurement-only line is added. Agents and players see no change.
 
