@@ -1,4 +1,5 @@
 import { isFloorArenaTradeableSource, type FloorArenaFilters, type FloorArenaRankBy } from '@clawville/shared';
+import type { PumpFlowFacts } from './pumpportal-feed';
 
 /**
  * Pure entry filters and ranking for the Trading Floor Arena (docs/trading-floor-arena.md §2, §6).
@@ -44,6 +45,8 @@ export interface FloorArenaSnapshot {
 /** What the filters judge: the snapshot plus the chain-check top-10 holder share. */
 export interface FloorArenaFeatures extends FloorArenaSnapshot {
   top10Pct: number | null;
+  /** PumpPortal flow facts (pumpportal-feed.ts). DATA ONLY: no filter or rank reads it (no thresholds yet). */
+  pumpFlow?: PumpFlowFacts | null;
 }
 
 /** Every fail code the filters and the engine emit (the analysis groups by these). */

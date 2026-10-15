@@ -121,8 +121,8 @@ describe('Trading Arena section of the trading page', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(87);
-    expect(protocolPointer(API)).toMatchObject({ version: 87, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(88);
+    expect(protocolPointer(API)).toMatchObject({ version: 88, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -247,10 +247,10 @@ describe('Trading Arena section of the trading page', () => {
     expect(section).toContain('`exit_quote_refused`');
     expect(section).not.toContain('liq_floor');
     const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
-    expect(orientation).toContain('trades only after DexScreener or ClawPump has seen it');
+    expect(orientation).toContain('trades only after DexScreener, ClawPump or a PumpPortal graduation has seen it');
     expect(orientation).toContain('liquidity is a template setting, not a hard rule');
     const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: the Trading Floor now runs the Trading Arena'))!;
-    expect(nori).toContain('once DexScreener or ClawPump has spotted it');
+    expect(nori).toContain('once DexScreener, ClawPump or a PumpPortal graduation has spotted it');
   });
 
   test('states D28 (fresh chain check at entry) and D29 (reports kept as lessons), punch-list P4', () => {
@@ -452,7 +452,7 @@ describe('Trading Arena section of the trading page', () => {
     // answers), v82 (bounty list bonusRewards), v81 (security batch 2) and v80;
     // the v80 P5 note, the v81, v82 and v83 notes must stay in the version log,
     // in order, before the v84 note and before the constant.
-    expect(PROTOCOL_VERSION).toBe(87);
+    expect(PROTOCOL_VERSION).toBe(88);
     const constAt = src.indexOf('export const PROTOCOL_VERSION');
     const v80At = src.indexOf('// v80 (2026-10-02, P5 arena wallet WITHDRAW');
     const v81At = src.indexOf('// v81 (2026-10-02, security batch 2');
@@ -622,7 +622,9 @@ describe('Trading Arena tools', () => {
     // Review MINOR 4: an agent reading the board or a profile is told a row can be masked.
     expect(byName.get('clawville_arena_leaderboard')!.description).toContain('A row whose trader name is offensive carries masked: true and its name reads ***');
     expect(byName.get('clawville_arena_agent')!.description).toContain('An offensive trader name or coin symbol reads *** and that object carries masked: true');
-    expect(byName.get('clawville_arena_templates')!.description).toContain('a GeckoTerminal-only coin is shown but never traded');
+    expect(byName.get('clawville_arena_templates')!.description).toContain('a GeckoTerminal-only coin or a coin seen only as a new PumpPortal launch (pumpportal:new) is shown but never traded');
+    expect(byName.get('clawville_arena_update_params')!.description).toContain('exits.breakeven_arm_mult');
+    expect(byName.get('clawville_arena_update_params')!.description).toContain('exits.liq_drop_exit_pct');
     // The shared tool text cannot import the API's tuner constants, so pin it to them here.
     const settings = byName.get('clawville_arena_settings')!.description;
     expect(settings).toContain(`number at least ${EVIDENCE_MIN_PER_SIDE} each`);

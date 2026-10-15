@@ -411,12 +411,14 @@ export function toStats(aggregate: ArenaAgentAggregate | undefined): ArenaAgentS
 }
 
 /**
- * AR-1: `entry_features.firstSight` is research data (migration 0080). No API payload carries it, so the position
- * shape served to owners, agents and the public (house agents) stays as before.
+ * AR-1: `entry_features.firstSight` is research data (migration 0080), and so is `entry_features.pumpFlow`
+ * (PumpPortal flow facts, migration 0084; it names the creator wallet). No API payload carries either, so the
+ * position shape served to owners, agents and the public (house agents) stays as before.
  */
-function withoutResearchFeatures(features: unknown): unknown {
-  if (!features || typeof features !== 'object' || Array.isArray(features) || !('firstSight' in features)) return features;
-  const { firstSight: _research, ...rest } = features as Record<string, unknown>;
+export function withoutResearchFeatures(features: unknown): unknown {
+  if (!features || typeof features !== 'object' || Array.isArray(features)) return features;
+  if (!('firstSight' in features) && !('pumpFlow' in features)) return features;
+  const { firstSight: _research, pumpFlow: _flow, ...rest } = features as Record<string, unknown>;
   return rest;
 }
 

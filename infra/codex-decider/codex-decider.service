@@ -1,0 +1,29 @@
+[Unit]
+Description=ClawVille codex-decider (Codex CLI shadow decider for the Trading Floor arena; ChatGPT plan login)
+# The bind address is the docker network gateway; it exists only after docker has created the network.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codexd
+Group=codexd
+WorkingDirectory=/opt/codex-decider
+EnvironmentFile=/etc/codex-decider.env
+# PATH must reach both bun and codex for this user.
+Environment=PATH=/home/codexd/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/codexd/.bun/bin/bun /opt/codex-decider/server.ts
+Restart=always
+RestartSec=5
+# kill the whole cgroup (codex children included) on stop
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# codex refreshes its ChatGPT token in ~/.codex/auth.json and writes logs there
+ReadWritePaths=/home/codexd/.codex
+MemoryMax=2G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

@@ -159,7 +159,12 @@ function positivePrice(snapshot: FloorArenaSnapshot | null | undefined): number 
 }
 
 /** A DexScreener snapshot mark as stored in the DB; atMs is the snapshot time. */
-export interface SnapshotMark { priceUsd: number; atMs: number }
+export interface SnapshotMark {
+  priceUsd: number;
+  atMs: number;
+  /** Phase 3b: the same snapshot's DexScreener liquidity (USD); null when absent. Read from the same row, no extra call. */
+  liqUsd?: number | null;
+}
 
 type SqlExecutor = Pick<typeof db, 'execute'>;
 
@@ -190,7 +195,9 @@ export async function latestSnapshotMarks(mints: readonly string[], executor: Sq
     if (price === null || !Number.isFinite(at)) continue;
     const mint = String(row.mint);
     const prior = out.get(mint);
-    if (!prior || at > prior.atMs) out.set(mint, { priceUsd: price, atMs: at });
+    const liq = (row.snapshot as FloorArenaSnapshot | null)?.liqUsd;
+    const liqUsd = typeof liq === 'number' && Number.isFinite(liq) && liq >= 0 ? liq : null;
+    if (!prior || at > prior.atMs) out.set(mint, { priceUsd: price, atMs: at, liqUsd });
   }
   return out;
 }

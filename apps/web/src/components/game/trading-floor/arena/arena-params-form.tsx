@@ -60,6 +60,9 @@ const ON_DEFAULTS: Readonly<Record<string, number>> = {
   'exits.stop_mult': 0.8,
   'exits.trail_from_peak': 0.2,
   'exits.trail_arm_mult': 1.2,
+  // Phase 3b: form starting points only (not live values; every template has both off).
+  'exits.breakeven_arm_mult': 1.2,
+  'exits.liq_drop_exit_pct': 0.5,
 };
 
 function onDefault(path: string, bound: FloorArenaBound): number {
@@ -507,6 +510,22 @@ export function ArenaParamsForm({
             value={value.exits.max_hold_s}
             onChange={(next) => setExits({ max_hold_s: next ?? Number.NaN })}
             errors={byPath.get('exits.max_hold_s')}
+            disabled={disabled}
+          />
+          <NumberField
+            path="exits.breakeven_arm_mult"
+            bound={B.exits.breakeven_arm_mult}
+            value={value.exits.breakeven_arm_mult ?? null}
+            onChange={(next) => setExits({ breakeven_arm_mult: next })}
+            errors={byPath.get('exits.breakeven_arm_mult')}
+            disabled={disabled}
+          />
+          <NumberField
+            path="exits.liq_drop_exit_pct"
+            bound={B.exits.liq_drop_exit_pct}
+            value={value.exits.liq_drop_exit_pct ?? null}
+            onChange={(next) => setExits({ liq_drop_exit_pct: next })}
+            errors={byPath.get('exits.liq_drop_exit_pct')}
             disabled={disabled}
           />
         </div>

@@ -50,12 +50,14 @@ export type FloorArenaFirstSightSources = (typeof FLOOR_ARENA_FIRST_SIGHT_SOURCE
 /** Form labels for `entry.first_sight_sources`, in `FLOOR_ARENA_FIRST_SIGHT_SOURCES` order. */
 export const FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS: Readonly<Record<FloorArenaFirstSightSources, string>> = deepFreeze({
   any: 'First seen by any feed',
-  tradeable: 'First seen by a tradeable feed (DexScreener or ClawPump)',
+  tradeable: 'First seen by a tradeable feed (DexScreener, ClawPump or a PumpPortal graduation)',
 });
 
 /** D25: a shared-feed coin is tradeable only when at least one of its sources starts with one of
- *  these prefixes (a GeckoTerminal-only sighting is not). Mints from a paid add-on are exempt. */
-export const FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES = deepFreeze(['ds:', 'clawpump:'] as const);
+ *  these prefixes (a GeckoTerminal-only sighting is not). Mints from a paid add-on are exempt.
+ *  `pumpportal:migration` (job arena-pipeline T4, 2026-10-15): a pump.fun coin that graduated to PumpSwap. A
+ *  `pumpportal:new` sighting is NOT tradeable (about 400 new coins per hour would flood the chain-check budget). */
+export const FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES = deepFreeze(['ds:', 'clawpump:', 'pumpportal:migration'] as const);
 
 /** True when a discovery source id (e.g. `ds:token-profiles`) is a tradeable source (D25). */
 export function isFloorArenaTradeableSource(source: string): boolean {
@@ -101,6 +103,13 @@ export interface FloorArenaExits {
   trail_from_peak: number | null;
   trail_arm_mult: number | null;
   max_hold_s: number;
+  /** Phase 3b breakeven stop. Once the peak mark multiple reached this, the
+   *  effective stop is max(stop_mult ?? 0, the breakeven mark multiple after the
+   *  engine's sell costs). null (or missing in an older row) = off. */
+  breakeven_arm_mult?: number | null;
+  /** Phase 3b liquidity-drop exit, 0..1. Sell all when the fresh snapshot
+   *  liquidity (USD) is below entry liquidity x (1 - pct). null / missing = off. */
+  liq_drop_exit_pct?: number | null;
 }
 
 export interface FloorArenaLimits {
@@ -166,7 +175,11 @@ export const FLOOR_ARENA_FILTER_KEYS = deepFreeze([
 ] as const satisfies readonly (keyof FloorArenaFilters)[]);
 
 const ENTRY_KEYS = ['discovered_within_s', 'first_sight_sources', 'rank_by', 'entries_per_tick'] as const satisfies readonly (keyof FloorArenaEntry)[];
-const EXIT_KEYS = ['tp', 'stop_mult', 'trail_from_peak', 'trail_arm_mult', 'max_hold_s'] as const satisfies readonly (keyof FloorArenaExits)[];
+const EXIT_KEYS = [
+  'tp', 'stop_mult', 'trail_from_peak', 'trail_arm_mult', 'max_hold_s', 'breakeven_arm_mult', 'liq_drop_exit_pct',
+] as const satisfies readonly (keyof FloorArenaExits)[];
+/** Phase 3b exit keys: optional on input (a stored row or body without them reads as null = off). */
+const OPTIONAL_KEYS: readonly string[] = ['breakeven_arm_mult', 'liq_drop_exit_pct'];
 const LIMIT_KEYS = ['position_usd', 'max_open', 'reentry_cooldown_s'] as const satisfies readonly (keyof FloorArenaLimits)[];
 const SECTION_KEYS = {
   filters: FLOOR_ARENA_FILTER_KEYS,
@@ -228,6 +241,8 @@ export interface FloorArenaParamBounds {
     trail_from_peak: FloorArenaBound;
     trail_arm_mult: FloorArenaBound;
     max_hold_s: FloorArenaBound;
+    breakeven_arm_mult: FloorArenaBound;
+    liq_drop_exit_pct: FloorArenaBound;
   }>;
   limits: Readonly<Record<keyof FloorArenaLimits, FloorArenaBound>>;
 }
@@ -309,6 +324,9 @@ export const FLOOR_ARENA_PARAM_BOUNDS: FloorArenaParamBounds = deepFreeze({
     trail_from_peak: bound('Trailing stop from peak', 'fraction', 0.02, 0.6, 0.01, OFF),
     trail_arm_mult: bound('Arm the trailing stop at', 'multiple', 1, 5, 0.01, OFF),
     max_hold_s: bound('Max hold time', 'seconds', 60, 86_400, 60, { nullable: false, integer: true }),
+    // Phase 3b. The arm must sit above the breakeven mark multiple (~1.018x with the paper sell costs).
+    breakeven_arm_mult: bound('Move the stop to breakeven at', 'multiple', 1.05, 10, 0.01, OFF),
+    liq_drop_exit_pct: bound('Sell all when liquidity falls by', 'fraction', 0.1, 0.95, 0.01, OFF),
   },
   limits: {
     position_usd: bound('Position size', 'usd', FLOOR_ARENA_POSITION_USD, FLOOR_ARENA_POSITION_USD, 1, {
@@ -479,7 +497,9 @@ const NO_FILTERS: FloorArenaFilters = {
   top10_max_pct: null,
 };
 
-const NO_STOPS = { stop_mult: null, trail_from_peak: null, trail_arm_mult: null } as const;
+const NO_STOPS = {
+  stop_mult: null, trail_from_peak: null, trail_arm_mult: null, breakeven_arm_mult: null, liq_drop_exit_pct: null,
+} as const;
 const ARENA_LIMITS: FloorArenaLimits = {
   position_usd: FLOOR_ARENA_POSITION_USD,
   max_open: FLOOR_ARENA_MAX_OPEN_POSITIONS,
@@ -646,7 +666,7 @@ function checkKeys(obj: PlainObject, allowed: readonly string[], path: string, e
     if (!allowed.includes(key)) errors.push(`${path}.${key}: unknown key`);
   }
   for (const key of allowed) {
-    if (!(key in obj)) errors.push(`${path}.${key}: required`);
+    if (!(key in obj) && !(path === 'exits' && OPTIONAL_KEYS.includes(key))) errors.push(`${path}.${key}: required`);
   }
 }
 
@@ -760,14 +780,23 @@ export function validateFloorArenaParams(
       ? checkNumber(x.trail_arm_mult, B.exits.trail_arm_mult, 'exits.trail_arm_mult', errors)
       : undefined;
     const maxHold = 'max_hold_s' in x ? checkNumber(x.max_hold_s, B.exits.max_hold_s, 'exits.max_hold_s', errors) : undefined;
+    // Phase 3b: a missing key reads as null (off), so stored rows from before the fields existed stay valid.
+    const breakeven = x.breakeven_arm_mult === undefined
+      ? null : checkNumber(x.breakeven_arm_mult, B.exits.breakeven_arm_mult, 'exits.breakeven_arm_mult', errors);
+    const liqDrop = x.liq_drop_exit_pct === undefined
+      ? null : checkNumber(x.liq_drop_exit_pct, B.exits.liq_drop_exit_pct, 'exits.liq_drop_exit_pct', errors);
     if (typeof arm === 'number' && trail === null) {
       errors.push('exits.trail_arm_mult: needs exits.trail_from_peak');
     }
     if (tp !== undefined && stop !== undefined && trail !== undefined && tp.length === 0 && stop === null && trail === null) {
       errors.push('exits: needs a take-profit leg, a stop_mult or a trail_from_peak');
     }
-    if (tp !== undefined && stop !== undefined && trail !== undefined && arm !== undefined && typeof maxHold === 'number') {
-      exits = { tp, stop_mult: stop, trail_from_peak: trail, trail_arm_mult: arm, max_hold_s: maxHold };
+    if (tp !== undefined && stop !== undefined && trail !== undefined && arm !== undefined && typeof maxHold === 'number'
+      && breakeven !== undefined && liqDrop !== undefined) {
+      exits = {
+        tp, stop_mult: stop, trail_from_peak: trail, trail_arm_mult: arm, max_hold_s: maxHold,
+        breakeven_arm_mult: breakeven, liq_drop_exit_pct: liqDrop,
+      };
     }
   }
 
@@ -854,8 +883,11 @@ export function diffFloorArenaParams(a: FloorArenaParams, b: FloorArenaParams): 
     const from = a[section] as unknown as PlainObject;
     const to = b[section] as unknown as PlainObject;
     for (const key of SECTION_KEYS[section]) {
-      if (!sameLeaf(from[key], to[key])) {
-        changes.push({ path: `${section}.${key}`, from: leafValue(from[key]), to: leafValue(to[key]) });
+      // An optional exits key that is missing reads as null (off), so old rows never diff against new ones.
+      const f = from[key] === undefined ? null : from[key];
+      const t = to[key] === undefined ? null : to[key];
+      if (!sameLeaf(f, t)) {
+        changes.push({ path: `${section}.${key}`, from: leafValue(f), to: leafValue(t) });
       }
     }
   }

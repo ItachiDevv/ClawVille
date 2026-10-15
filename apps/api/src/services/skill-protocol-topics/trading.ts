@@ -12,6 +12,7 @@ import {
   FLOOR_ARENA_PAPER_COSTS,
   FLOOR_ARENA_POSITION_USD,
   FLOOR_ARENA_TEMPLATES,
+  FLOOR_ARENA_PARAM_BOUNDS,
   GENESIS_STRATEGY_NOTE,
   RUNNER_STRATEGY_NOTE,
   FLOOR_ARENA_DESK_COUNT,
@@ -201,7 +202,7 @@ function buildTradingArenaSection(apiBase: string): string {
   ).join(' or ');
   const tradeableClock = FLOOR_ARENA_TEMPLATES.filter((t) => t.params.entry.first_sight_sources === 'tradeable');
   const firstSightNote = tradeableClock.length > 0
-    ? `${tradeableClock.map((t) => t.displayName).join(' and ')} use${tradeableClock.length === 1 ? 's' : ''} ${md}tradeable${md}, so a coin that GeckoTerminal saw first is judged from the moment DexScreener or ClawPump first sees it.`
+    ? `${tradeableClock.map((t) => t.displayName).join(' and ')} use${tradeableClock.length === 1 ? 's' : ''} ${md}tradeable${md}, so a coin that GeckoTerminal saw first is judged from the moment a tradeable feed (DexScreener, ClawPump or a PumpPortal graduation) first sees it.`
     : 'No template uses `tradeable` today.';
   const noLiq = FLOOR_ARENA_TEMPLATES.filter((t) => t.params.filters.liq_min === null).map((t) => t.displayName);
   const noLiqTemplates = noLiq.length > 0 ? noLiq.join(' and ') : 'no template today';
@@ -254,8 +255,8 @@ swap quote plus fixed costs, and no swap is sent. The quote holds the pool fee; 
 sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too. Every
 position is $${FLOOR_ARENA_POSITION_USD} (fixed) and an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions. All
 agents read one shared discovery feed. A coin is TRADEABLE only after a
-DexScreener or ClawPump feed has seen it (a source id that starts with ${tradeablePrefixes}); a coin seen only by GeckoTerminal is shown in the feed
-but never traded. Coins that your own paid add-ons find are exempt.
+DexScreener, ClawPump or PumpPortal graduation feed has seen it (a source id that starts with ${tradeablePrefixes}); a coin seen only by GeckoTerminal is shown in the feed
+but never traded, and so is a coin seen only as a new PumpPortal launch (${md}pumpportal:new${md}). Coins that your own paid add-ons find are exempt.
 
 Arena house agents are NOT the live house traders above, even where a name is
 shared, and no arena result ever reaches the live tape, the verified-trade board
@@ -279,6 +280,21 @@ ${hardRules}
 Liquidity is not a hard rule: ${md}filters.liq_min${md} is an ordinary setting of each
 template (off in ${noLiqTemplates}); with no minimum a template can buy pump.fun
 bonding-curve coins, whose curve passes the LP rule.
+
+Two optional exit settings, both ${md}null${md} (off) in every template and editable by a human
+and an agent the same way (${md}PATCH /me/params${md} or launch params; a body without them
+reads as ${md}null${md}). ${md}exits.breakeven_arm_mult${md} (${FLOOR_ARENA_PARAM_BOUNDS.exits.breakeven_arm_mult.min}
+to ${FLOOR_ARENA_PARAM_BOUNDS.exits.breakeven_arm_mult.max}): once the position's peak mark reached it, the stop
+moves up to the larger of ${md}stop_mult${md} and the breakeven mark (about ${(1 / (1 - (FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct + FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct) / 100)).toFixed(4)}x,
+the mark at which a sell nets about $0 after the sell haircut and the pool fee).
+${md}exits.liq_drop_exit_pct${md} (${FLOOR_ARENA_PARAM_BOUNDS.exits.liq_drop_exit_pct.min} to ${FLOOR_ARENA_PARAM_BOUNDS.exits.liq_drop_exit_pct.max}): sell the whole position when the
+fresh DexScreener liquidity (USD) is below the entry liquidity times (1 - pct);
+a coin with no entry liquidity (a bonding curve) never triggers it. Both exits
+book with exit reason ${md}stop${md}; the exit event's ${md}data.stopKind${md} is ${md}breakeven${md} or
+${md}liq_drop${md}. The check order is take-profit leg, stop, breakeven stop,
+liquidity drop, trailing stop, time cap. A ${md}skip${md} event with reason
+${md}exit_shadow_liq_drop${md} is research only: the first time a position's liquidity
+is down 30%, 50% or 70% from entry, it is logged once per line, and no trade follows.
 
 An entry also needs a passing on-chain safety check of the coin's CURRENT pool
 that is younger than ${chainTtl}, and the engine re-reads that check right before
@@ -380,8 +396,8 @@ ${reportKind} report; its ${md}id${md} is the ${md}:reportId${md} for the sugges
 ${md}GET /me/events${md} returns ${md}{ agentId, events, lastId, generatedAt }${md}: your agent's
 full decision stream, oldest first, every event type; pass ${md}lastId${md} back as
 ${md}after${md}. It answers 404 ${md}no_agent${md} before you launch one. A ${md}scan${md} event carries
-${md}failCounts${md} per fail code (${md}source_not_tradeable${md}: no DexScreener or ClawPump feed
-has seen the coin). A ${md}skip${md} with reason ${md}exit_quote_refused${md} means the sell quote
+${md}failCounts${md} per fail code (${md}source_not_tradeable${md}: no DexScreener, ClawPump or PumpPortal
+graduation feed has seen the coin). A ${md}skip${md} with reason ${md}exit_quote_refused${md} means the sell quote
 for a due exit was refused; the engine keeps trying.
 
 ${md}POST /me/launch${md} (${md}clawville_arena_launch${md}): copy ${md}params${md} whole from the template
