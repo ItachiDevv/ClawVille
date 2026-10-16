@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-16 10:51 UTC (session tradeLead3, arena lead). **Staging = `adeee117`** (API 10:47Z and web 10:51Z verified by SOURCE_COMMIT): house paper bots provisioned their own private ClawPump agents (migration 0086, Codex APPROVE after 2 fixes), and `f59b1337` Jev world-decide demo (staging only, 1 listed agent). **PROD API + WEB = `6832a5cc`** (promotion #9, unchanged). SCHEMA: `prod-migration-pending: 0086_floor_arena_house_clawpump.sql`.
+Last Audited: 2026-10-16 11:27 UTC (session tradeLead3, arena lead). **PROD API + WEB = `b00d0b88` (PROMOTION #10, PR #320: house paper bots on their own private ClawPump agents, migration 0086; staging-only Jev demo inert on prod), VERIFIED 11:16-11:27Z.** Founder go 2026-10-16. Run 38892271409: 4 gates, migrate, deploy success; both containers `b00d0b88` healthy; `/health` commit b00d0b88. All 5 prod house rows `ready` with new ClawPump agents (e.g. `CV Arena · Genesis #housegenesis` 9819917d, private, 6 sticky default skills, no trading/x402). **Staging = `369668c5`.** SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-16 10:51 UTC (session tradeLead3, arena lead). **Staging = `adeee117`** (API 10:47Z and web 10:51Z verified by SOURCE_COMMIT): house paper bots provisioned their own private ClawPump agents (migration 0086, Codex APPROVE after 2 fixes), and `f59b1337` Jev world-decide demo (staging only, 1 listed agent). **PROD API + WEB = `6832a5cc`** (promotion #9, unchanged). SCHEMA: `prod-migration-pending: 0086_floor_arena_house_clawpump.sql`.
 
 Prior - Last Audited: 2026-10-16 10:01 UTC (session tradeLead3, arena lead). **PROD API + WEB = `6832a5cc` (PROMOTION #9, PR #319, arena pipeline, PROTOCOL 88), VERIFIED 09:51-10:00Z.** Founder go 2026-10-16. Run 38882862502: 4 gates, migrate (0083, 0084, 0085), deploy all success; Coolify jobs 411 (api) and 412 (web) finished; both containers `6832a5cc` healthy; `/health` commit 6832a5cc; running `PROTOCOL_VERSION = 88`; `ALLOW_TEST_PARTNER_PUBKEY` absent; `PUMPPORTAL_API_KEY` set (fp 9d4a5576; wallet `Dh3d1BHHyu2qvom1pXycTP1EuWpJwDJ5YPrSoUnfMut2` needs 0.02 SOL before trade-flow windows work). Prod rows at 09:57Z: coin labels 3, PumpPortal flow 8. `/game` in Chrome: world + HUD rendered, no console errors; FPS not measurable (background tab throttles rAF). Param change after the flip: midcap-climber `exits.tp` [[1.1,1]] -> [[1.2,1]] (params v2, source admin, cites the 10-15 exit replay). **Staging = `68910b2a`** (Jev gate renewal; both apps verified 09:45Z). SCHEMA: synced.
 
@@ -614,6 +616,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-16 11:27Z (session tradeLead3, arena lead) - promotion #10 (PR #320, b00d0b88)
+- **What changed:** prod gets migration 0086 + house ClawPump provisioning + the writer's permanent live-trader deny set; the Jev world demo code ships but is refused on production in code.
+- **Verified:** PR checks + run 38892271409 all success; prod api + web `b00d0b88` healthy; house rows ready: genesis 9819917d (wallet 7nxsc3HY...), runner 32093ca4 (7yZUQBgg...), dip-hunter 34f6e5a7 (EFsiojWd...), late-bloomer ca24ded8 (CxCoXYUB...), midcap-climber e8d971f3 (ASD2p9AS...). ClawPump `get_agent` on 9819917d: private, not accepting bids, persona/system prompt = execution wallet, no trading.
+- **What broke:** nothing.
+- **Who it is for:** the founder (he links ChatGPT on these agents in the ClawPump dashboard and funds the PumpPortal wallet). Note: the house agents' system prompt forbids following chat instructions; using them for Codex inference later needs a reviewed prompt change.
 
 ### 2026-10-16 10:51Z (session tradeLead3, arena lead) - staging f59b1337 (Jev world demo) + adeee117 (house ClawPump agents)
 - **What changed:** `f59b1337`: FEATURE_GATE `jev_world_decide_demo`, staging only, for avatars in `JEV_DECIDE_AVATAR_IDS` (set on staging api app 3 to Coralia `0b93c5e2`); Jev picks the action first (3 s), local model is the fallback; cap $0.25 total / $0.10 per day in code. `3548d4f5` + `adeee117`: the five house paper bots get their own private ClawPump agents via D8 (migration 0086), writer deny set = the 3 live trader ids on every path. Autonomy armed on staging via the admin route (120 min, process-local; re-armed after each API flip).
