@@ -164,11 +164,19 @@ export function pickJevVerb(
   return best ? { ...best, probs } : null;
 }
 
-function utcDay(ms: number): string {
+/**
+ * Rows of the staging world-decide demo (FEATURE_GATE jev_world_decide_demo,
+ * `jev-world-decide.ts`) share this table but carry a `demo_` status prefix.
+ * The shadow cap sums only non-demo rows and the demo cap sums only demo rows,
+ * so the two budgets stay separable.
+ */
+export const JEV_DEMO_STATUS_PREFIX = 'demo_';
+
+export function utcDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function redact(text: string, key: string): string {
+export function redact(text: string, key: string): string {
   const safe = key.length > 0 ? text.split(key).join('[redacted]') : text;
   return safe.slice(0, 200);
 }
@@ -283,7 +291,7 @@ export function createJevDecideShadow(deps: JevShadowDeps) {
 
 /** Every ledger write runs bounded (Codex r1 2026-10-14): a stalled shadow write must never hold a shared pool
  *  connection that the trading / driver paths need. A timeout throws; the caller's catch logs it. */
-async function boundedWrite(query: ReturnType<typeof sql>): Promise<void> {
+export async function boundedWrite(query: ReturnType<typeof sql>): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
     await tx.execute(sql`SET LOCAL statement_timeout = '3s'`);
@@ -305,7 +313,8 @@ export const dbJevShadowLedger: JevShadowLedger = {
                COALESCE(SUM(usd) FILTER (
                  WHERE created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
                ), 0)::text AS today
-        FROM jev_decide_shadow`);
+        FROM jev_decide_shadow
+        WHERE left(status, 5) <> ${JEV_DEMO_STATUS_PREFIX}`);
       const total = Number(sums[0]?.total ?? 0);
       const today = Number(sums[0]?.today ?? 0);
       if (total + row.estimateUsd > caps.totalUsd) return { ok: false, reason: 'total' } as const;
