@@ -381,8 +381,14 @@ function vendorError(payload: unknown): string | null {
   return error.trim().slice(0, 200);
 }
 
+/**
+ * Every writer call that names a ClawPump agent (read, x402 check, update, pay,
+ * live wallet read, transfer) starts here, so a LIVE trader id is refused
+ * before any request (Codex review of 3548d4f5, P1).
+ */
 function assertAgentId(agentId: string): void {
   if (!agentIdSchema.safeParse(agentId).success) throw new ClawPumpWriterError('invalid_agent_id');
+  if (isLiveTraderClawPumpId(agentId)) throw new ClawPumpWriterError('not_arena_agent');
 }
 
 /** True only for an arena agent name of THIS environment (`arenaAgentNamePrefix`). */
@@ -497,6 +503,8 @@ export async function createClawPumpAgent(
     is_public: parsed.data.is_public,
   }, options));
   if (!agentIdSchema.safeParse(created.id).success) throw new ClawPumpWriterError('schema_invalid');
+  // A create can never hand back a live trader for an arena row to save.
+  if (isLiveTraderClawPumpId(created.id)) throw new ClawPumpWriterError('not_arena_agent');
   return created;
 }
 
@@ -520,13 +528,17 @@ export async function updateClawPumpAgent(
   return updated;
 }
 
-/** GET /wallets/summary: SOL + USDC (UI units) for every agent of the account. */
+/**
+ * GET /wallets/summary: SOL + USDC (UI units) for every agent of the account,
+ * EXCEPT the live traders: their rows are dropped here, so no caller can ever
+ * read a live trader's wallet or balance through the arena writer.
+ */
 export async function getClawPumpWalletBalances(options: ClawPumpWriterOptions = {}): Promise<ClawPumpWalletBalance[]> {
   const parsed = walletSummaryWire.safeParse(
     await sendJson('GET', '/wallets/summary', undefined, options, undefined, MAX_LIST_RESPONSE_CHARS),
   );
   if (!parsed.success) throw new ClawPumpWriterError('schema_invalid');
-  return parsed.data.wallets.map((wire) => ({
+  return parsed.data.wallets.filter((wire) => !isLiveTraderClawPumpId(wire.agent_id)).map((wire) => ({
     agentId: wire.agent_id,
     walletAddress: wire.wallet_address?.trim() || null,
     sol: toAmount(wire.sol_balance),

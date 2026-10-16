@@ -10,8 +10,9 @@
 -- unchanged). The floor_arena_house_facts table and the house add-on-call index come with the feed task, not here.
 -- Idempotent and re-run safe:
 --   * A house row that holds a LIVE trader id is always cleared, whatever its state (a live id must never stay).
---   * A house row with no ClawPump id moves to 'pending' only from 'none' or 'failed', so a re-run never resets a
---     row that a worker holds ('creating') or that already has its new agent (its id is not a live id).
+--   * A house row with no ClawPump id moves to 'pending' only from 'none' (never provisioned), so a re-run never
+--     resets a row that a worker holds ('creating'), a row that already has its new agent (its id is not a live
+--     id), or a 'failed' row (its attempt count and retry delay bound duplicate ClawPump creates; Codex 2026-10-16).
 -- User rows (kind = 'user') are never touched. No DROP. No lock beyond the row locks of the 5 house rows.
 
 UPDATE "floor_arena_agents"
@@ -30,5 +31,5 @@ WHERE "kind" = 'house'
       '1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1', -- Runner (live)
       'a7d7c928-1725-4c1d-8d4c-b6eed7af559b'  -- Dip Hunter (live)
     )
-    OR ("clawpump_agent_id" IS NULL AND "provision_state" IN ('none', 'failed'))
+    OR ("clawpump_agent_id" IS NULL AND "provision_state" = 'none')
   );
