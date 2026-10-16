@@ -1,8 +1,8 @@
 // FEATURE_GATE: jev_arena_entry_shadow
 // Status: shadow + virtual twin (no trade effect)
 // Metric to graduate: virtual-twin net pnl beats actual across bots after >=1 day, founder go
-// Current reading: none (new)
-// Review deadline: 2026-10-17
+// Current reading: prod 2026-10-15 09:55Z (1 day, 239 trades): actual -$157.94, twin -$135.70, vetoed -$22.25; v0 helps only dip-hunter
+// Review deadline: 2026-10-23 (renewed 2026-10-16: founder "see what it learns"; one day is too small)
 // On deadline: delete, or enforce the gate on paper twins (founder decision)
 // Reference: docs/trading-floor-arena.md
 

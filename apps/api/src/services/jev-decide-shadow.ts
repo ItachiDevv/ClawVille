@@ -1,8 +1,8 @@
 // FEATURE_GATE: jev_decide_shadow
 // Status: shadow (no game effect)
 // Metric to graduate: Jev verb agreement with local model and latency over >=2 days, founder go
-// Current reading: none (new)
-// Review deadline: 2026-10-16
+// Current reading: prod 2026-10-15 09:55Z: 6 ok rows, verb agreement 1/6, Jev p50 69 ms vs local p50 6949 ms, $0.0011 spent
+// Review deadline: 2026-10-23 (renewed 2026-10-16: founder "see what it learns"; too few rows to judge)
 // On deadline: delete the shadow or promote Jev to decide with local fallback (founder decision)
 // Reference: ops/house-traders/research-20261007/JEV-AGENT-DECIDE-PLAN.md
 
