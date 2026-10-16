@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS } from '@clawville/shared';
 import {
   CLAWPUMP_HOUSE_AGENT_IDS,
+  CLAWPUMP_LIVE_TRADER_AGENT_IDS,
+  isLiveTraderClawPumpId,
+  readArenaWalletLive,
   arenaAgentNamePrefix,
   arenaAgentNameSuffix,
   isArenaAgentName,
@@ -180,6 +184,68 @@ describe('money audit N1: the env-correct prefix and the house-agent ids', () =>
     await expect(x402PayViaClawPump(HOUSE_ID, { url: 'https://api.nansen.ai/x', method: 'GET', maxAmountUsd: 0.1 }, OWNED, { env, fetchImpl }))
       .rejects.toMatchObject({ code: 'not_arena_agent' });
     expect(calls).toHaveLength(0);
+  });
+
+  test('SPEC T3: the deny set IS the 3 live trader ids, never empty, never derived from the (now null) house seed', () => {
+    const LIVE = [
+      '0f600d73-05a0-4c2e-8215-ab2a770ba192',
+      '1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1',
+      'a7d7c928-1725-4c1d-8d4c-b6eed7af559b',
+    ];
+    expect(CLAWPUMP_LIVE_TRADER_AGENT_IDS.size).toBe(3);
+    expect([...CLAWPUMP_LIVE_TRADER_AGENT_IDS].sort()).toEqual([...LIVE].sort());
+    expect([...FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS as readonly string[]].sort()).toEqual([...LIVE].sort());
+    for (const id of LIVE) {
+      expect(isLiveTraderClawPumpId(id)).toBe(true);
+      expect(isLiveTraderClawPumpId(id.toUpperCase())).toBe(true);
+    }
+    // The old name is the same set (no second, drifting list).
+    expect(CLAWPUMP_HOUSE_AGENT_IDS).toBe(CLAWPUMP_LIVE_TRADER_AGENT_IDS);
+    expect(isLiveTraderClawPumpId(ARENA_ID)).toBe(false);
+    expect(isLiveTraderClawPumpId(null)).toBe(false);
+    expect(FLOOR_ARENA_HOUSE_AGENTS.every((house) => house.clawpumpAgentId === null)).toBe(true);
+  });
+
+  test('SPEC T3: each live id is refused for update, pay and live wallet read EVEN when a (house or user) row names it', async () => {
+    for (const liveId of FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS) {
+      const name = 'CV Arena · Genesis #housegenesis';
+      const { fetchImpl, calls } = fakeFetch({
+        [`GET /agents/${liveId}`]: () => json(agentBody(liveId, name)),
+        [`PATCH /agents/${liveId}`]: () => json(agentBody(liveId, name)),
+        [`POST /agents/${liveId}/x402/x402_service_pay`]: () => json({ data: {} }),
+        [`GET /wallets/${liveId}/history`]: () => json({}),
+      });
+      for (const arenaAgentId of ['house:genesis', ROW_ID]) {
+        const asked: string[] = [];
+        // The DB proof says the row owns it: the deny set must refuse first anyway.
+        const rowNamesIt = { arenaAgentId, isOwnedBy: async (id: string) => { asked.push(id); return true; } };
+        await expect(updateClawPumpAgent(liveId, { enabled_skills: [] }, rowNamesIt, { env, fetchImpl }))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(x402PayViaClawPump(liveId, { url: 'https://api.nansen.ai/x', method: 'GET', maxAmountUsd: 0.1 }, rowNamesIt, { env, fetchImpl }))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(readArenaWalletLive(liveId, rowNamesIt, { env, fetchImpl }))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(clawPumpArenaWriter.updateAgent(liveId, { enabled_skills: [] }, arenaAgentId))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        expect(asked).toEqual([]);
+      }
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  test('SPEC T3: a NEW house agent (house row suffix) passes the config PATCH guard; the name must still match the row', async () => {
+    const houseName = 'CV Arena · Genesis #housegenesis';
+    const { fetchImpl, calls } = fakeFetch({
+      [`GET /agents/${ARENA_ID}`]: () => json(agentBody(ARENA_ID, houseName, { enabled_skills: [] })),
+      [`PATCH /agents/${ARENA_ID}`]: () => json(agentBody(ARENA_ID, houseName, { accepting_bids: false, is_public: false })),
+    });
+    const houseRow = { arenaAgentId: 'house:genesis', isOwnedBy: async () => true };
+    const updated = await updateClawPumpAgent(ARENA_ID, { accepting_bids: false, is_public: false, enabled_skills: [] }, houseRow, { env, fetchImpl });
+    expect(updated.id).toBe(ARENA_ID);
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'PATCH']);
+    // Another house row's suffix does not match this agent's name.
+    await expect(updateClawPumpAgent(ARENA_ID, { accepting_bids: false }, { arenaAgentId: 'house:runner', isOwnedBy: async () => true }, { env, fetchImpl }))
+      .rejects.toMatchObject({ code: 'not_arena_agent' });
   });
 });
 

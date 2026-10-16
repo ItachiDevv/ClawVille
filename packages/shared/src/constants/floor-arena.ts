@@ -627,11 +627,25 @@ export const FLOOR_ARENA_TEMPLATES: readonly FloorArenaTemplate[] = deepFreeze([
   },
 ]);
 
+/** The LIVE trading ClawPump agents (Genesis, Runner, Dip Hunter). PERMANENT deny set: no arena row (house or
+ *  user) may ever point at, update or pay from one of them. Never derive this list from the house seed below
+ *  (founder 2026-10-16: house bots get NEW private ClawPump agents; ops/house-traders/SPEC_house-clawpump-x402_2026-10-16.md TRAP A). */
+export const FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS = deepFreeze([
+  '0f600d73-05a0-4c2e-8215-ab2a770ba192', // Genesis
+  '1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1', // Runner
+  'a7d7c928-1725-4c1d-8d4c-b6eed7af559b', // Dip Hunter
+] as const);
+
+/** Total paid x402 data spend (USD) across ALL house agents per UTC day (founder 2026-10-16). A code constant:
+ *  no env or admin route may raise it. */
+export const FLOOR_ARENA_HOUSE_X402_DAILY_CAP_USD = 5;
+
 /** One house agent per template, always seated, never contest-eligible (D6/D7).
- *  `clawpumpAgentId` is the existing live ClawPump agent, when there is one. */
+ *  `clawpumpAgentId` is null in the seed: each house row gets its own NEW private ClawPump agent through the
+ *  D8 provisioning path (migration 0086 clears the live ids the old seed wrote). */
 export const FLOOR_ARENA_HOUSE_AGENTS: readonly FloorArenaHouseAgent[] = deepFreeze([
-  { id: 'house:genesis', name: 'Genesis', templateId: 'genesis', clawpumpAgentId: '0f600d73-05a0-4c2e-8215-ab2a770ba192' },
-  { id: 'house:runner', name: 'Runner', templateId: 'runner', clawpumpAgentId: '1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1' },
+  { id: 'house:genesis', name: 'Genesis', templateId: 'genesis', clawpumpAgentId: null },
+  { id: 'house:runner', name: 'Runner', templateId: 'runner', clawpumpAgentId: null },
   { id: 'house:dip-hunter', name: 'Dip Hunter', templateId: 'dip-hunter', clawpumpAgentId: null },
   { id: 'house:midcap-climber', name: 'Mid-Cap Climber', templateId: 'midcap-climber', clawpumpAgentId: null },
   { id: 'house:late-bloomer', name: 'Late Bloomer', templateId: 'late-bloomer', clawpumpAgentId: null },
