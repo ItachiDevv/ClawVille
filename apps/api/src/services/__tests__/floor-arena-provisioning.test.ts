@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
+import { FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS, FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
 import {
   CLAWPUMP_WRITER_BURST,
   CLAWPUMP_WRITER_REMOVAL_RESERVE,
@@ -96,7 +96,7 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
       claim: async (id, now, maxAttempts, leaseMs) => {
         // Mirrors claimArenaProvision's WHERE clause; JS runs it atomically.
         const row = rows.get(id);
-        if (!row || row.kind !== 'user' || !['pending', 'failed', 'creating'].includes(row.provisionState)) return null;
+        if (!row || !['user', 'house'].includes(row.kind) || !['pending', 'failed', 'creating'].includes(row.provisionState)) return null;
         if (row.provisionAttempts >= maxAttempts) return null;
         if (row.provisionNextAt && row.provisionNextAt > now) return null;
         log.push('claim');
@@ -105,7 +105,7 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
         return claimed;
       },
       listDue: async (now, maxAttempts) => [...rows.values()]
-        .filter((row) => row.kind === 'user' && ['pending', 'failed', 'creating'].includes(row.provisionState)
+        .filter((row) => ['user', 'house'].includes(row.kind) && ['pending', 'failed', 'creating'].includes(row.provisionState)
           && row.provisionAttempts < maxAttempts && (!row.provisionNextAt || row.provisionNextAt <= now))
         .map((row) => row.id),
       // Mirrors readArenaAgentLocked (the advisory lock is a no-op in one JS thread).
@@ -134,7 +134,7 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
       },
       // Mirrors readArenaX402RecentOff.
       listX402RecentOff: async (since, afterId, limit) => [...rows.values()]
-        .filter((row) => row.kind === 'user' && ['ready', 'failed'].includes(row.provisionState) && row.clawpumpAgentId !== null
+        .filter((row) => ['user', 'house'].includes(row.kind) && ['ready', 'failed'].includes(row.provisionState) && row.clawpumpAgentId !== null
           && !row.addons.some((addon) => addon.enabled) && (since === null || row.updatedAt.getTime() >= since.getTime())
           && row.id > afterId)
         .map((row) => row.id)
@@ -142,14 +142,14 @@ function harness(initial: ArenaAgentRecord, env: Record<string, string | undefin
         .slice(0, limit),
       // Mirrors readArenaX402OffAgents.
       listX402OffAgents: async (afterId, limit) => [...rows.values()]
-        .filter((row) => row.kind === 'user' && ['ready', 'failed'].includes(row.provisionState) && row.clawpumpAgentId !== null
+        .filter((row) => ['user', 'house'].includes(row.kind) && ['ready', 'failed'].includes(row.provisionState) && row.clawpumpAgentId !== null
           && !row.addons.some((addon) => addon.enabled) && row.id > afterId)
         .map((row) => row.id)
         .sort()
         .slice(0, limit),
       // Mirrors readArenaX402SweepAgents.
       listX402SweepAgents: async (afterId, limit) => [...rows.values()]
-        .filter((row) => row.kind === 'user' && ['ready', 'failed'].includes(row.provisionState) && row.clawpumpAgentId !== null
+        .filter((row) => ['user', 'house'].includes(row.kind) && ['ready', 'failed'].includes(row.provisionState) && row.clawpumpAgentId !== null
           && row.id > afterId)
         .map((row) => row.id)
         .sort()
@@ -458,12 +458,24 @@ describe('provisionArenaAgent state machine', () => {
     expect(h.log).toEqual([]);
   });
 
-  test('never touches a house agent, and a ready agent is a no-op', async () => {
-    const house = harness(record({ id: 'house:genesis', kind: 'house', ownerUserId: null }));
-    expect(await provisionArenaAgent('house:genesis', house.deps)).toBe('skipped');
-    expect(await removeUnwantedArenaX402('house:genesis', house.deps)).toBe('skipped');
-    expect(await ensureArenaX402ForPay('house:genesis', house.deps)).toBe('skipped');
-    expect(house.log).toEqual([]);
+  test('never touches a row (house or user) that names a LIVE trader ClawPump id, and a ready agent is a no-op', async () => {
+    for (const liveId of FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS) {
+      for (const state of ['pending', 'failed', 'ready'] as const) {
+        for (const base of [
+          record({ id: 'house:genesis', kind: 'house', ownerUserId: null, avatarId: null, name: 'Genesis' }),
+          record(),
+        ]) {
+          const h = harness({ ...base, provisionState: state, clawpumpAgentId: liveId, clawpumpWallet: WALLET });
+          expect(await provisionArenaAgent(base.id, h.deps)).toBe('skipped');
+          expect(await removeUnwantedArenaX402(base.id, h.deps)).toBe('skipped');
+          expect(await ensureArenaX402ForPay(base.id, h.deps)).toBe('skipped');
+          await runArenaProvisioningTick(NOW, h.deps);
+          expect(h.log).toEqual([]);
+          expect(h.seq).toEqual([]);
+          expect(h.events).toEqual([]);
+        }
+      }
+    }
     const ready = harness(record({ provisionState: 'ready', clawpumpAgentId: CP_ID }));
     expect(await provisionArenaAgent(AGENT_ID, ready.deps)).toBe('ready');
     expect(ready.log).toEqual([]);
@@ -1196,5 +1208,97 @@ describe('FX-PROV: provisioning and the shared ClawPump call budget', () => {
     expect(h.created).toEqual([]);
     expect(h.log).not.toContain('claim');
     expect(h.rows.get(AGENT_ID)).toMatchObject({ provisionState: 'pending', provisionAttempts: 0 });
+  });
+});
+
+describe('SPEC house-clawpump-x402 T3: house rows provision through the D8 path', () => {
+  function houseRecord(houseId = 'house:genesis', name = 'Genesis', overrides: Partial<ArenaAgentRecord> = {}): ArenaAgentRecord {
+    return record({
+      id: houseId, kind: 'house', ownerUserId: null, avatarId: null, name, templateId: 'genesis',
+      seated: true, contestId: null, ...overrides,
+    });
+  }
+
+  test('the 5 house names: the spec pattern on production, the (staging) marker elsewhere, <= 48 chars', () => {
+    const prodNames = FLOOR_ARENA_HOUSE_AGENTS.map((house) => arenaClawPumpAgentName(house.name, house.id, PROD));
+    expect(prodNames).toEqual([
+      'CV Arena · Genesis #housegenesis',
+      'CV Arena · Runner #houserunner',
+      'CV Arena · Dip Hunter #housediphunt',
+      'CV Arena · Mid-Cap Climber #housemidcapc',
+      'CV Arena · Late Bloomer #houselateblo',
+    ]);
+    for (const house of FLOOR_ARENA_HOUSE_AGENTS) {
+      const staging = arenaClawPumpAgentName(house.name, house.id, STAGING);
+      expect(staging.startsWith('CV Arena (staging) · ')).toBe(true);
+      expect(staging.length).toBeLessThanOrEqual(48);
+      expect(staging.endsWith(` #${house.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}`)).toBe(true);
+    }
+    // The house seed carries no ClawPump id at all (never a live trader's).
+    expect(FLOOR_ARENA_HOUSE_AGENTS.every((house) => house.clawpumpAgentId === null)).toBe(true);
+  });
+
+  test('a pending house row: create (private, NO skill), save, config PATCH for the house row, ready; no event', async () => {
+    const h = harness(houseRecord());
+    const inputs: Array<Record<string, unknown>> = [];
+    const createAgent = h.deps.writer.createAgent;
+    h.deps.writer.createAgent = async (input) => { inputs.push({ ...input }); return createAgent(input); };
+    expect(await provisionArenaAgent('house:genesis', h.deps)).toBe('ready');
+    expect(h.created).toEqual(['CV Arena · Genesis #housegenesis']);
+    expect(inputs[0]).toMatchObject({
+      enabled_skills: [], is_public: false, persona: ARENA_CLAWPUMP_PERSONA, system_prompt: ARENA_CLAWPUMP_SYSTEM_PROMPT,
+    });
+    expect(h.log).toEqual([
+      'claim',
+      'count 1',
+      'create [] public=false',
+      `save ${CP_ID}`,
+      `update ${CP_ID} {"accepting_bids":false,"is_public":false,"enabled_skills":[]}`,
+      'ready',
+    ]);
+    // Every PATCH names the house row (the writer's ownership proof binds to it).
+    expect(h.seq.filter((step) => step.startsWith('update'))).toEqual(['update for house:genesis']);
+    expect(h.rows.get('house:genesis')).toMatchObject({ provisionState: 'ready', clawpumpAgentId: CP_ID, clawpumpWallet: WALLET });
+    // No trading skill and no x402 on the agent; no 'addon' event (a house event stream is public).
+    expect(deniedSkillsPresent(h.skillsNow()!, false)).toEqual([]);
+    expect(h.skillsNow()).not.toContain('x402');
+    expect(h.events).toEqual([]);
+  });
+
+  test('a house row on staging gets the (staging) name; a denied skill left on it fails the attempt with no event', async () => {
+    const staging = harness(houseRecord('house:runner', 'Runner'), STAGING);
+    expect(await provisionArenaAgent('house:runner', staging.deps)).toBe('ready');
+    expect(staging.created).toEqual(['CV Arena (staging) · Runner #houserunner']);
+
+    const h = harness(houseRecord());
+    h.setSkills([...STICKY, 'defi-trading'], ['defi-trading']);
+    expect(await provisionArenaAgent('house:genesis', h.deps)).toBe('failed');
+    expect(h.rows.get('house:genesis')).toMatchObject({
+      provisionState: 'failed', provisionError: 'clawpump_denied_skill_present', provisionAttempts: 1,
+    });
+    expect(h.events).toEqual([]);
+  });
+
+  test('the engine pause blocks house provisioning (direct call and tick); the row stays due', async () => {
+    const h = harness(houseRecord());
+    const paused = { ...h.deps, paused: () => true };
+    expect(await provisionArenaAgent('house:genesis', paused)).toBe('skipped');
+    await runArenaProvisioningTick(NOW, paused);
+    expect(h.created).toEqual([]);
+    expect(h.log).not.toContain('claim');
+    expect(h.rows.get('house:genesis')).toMatchObject({ provisionState: 'pending', provisionAttempts: 0 });
+    // On resume the tick provisions it.
+    await runArenaProvisioningTick(NOW, h.deps);
+    expect(h.rows.get('house:genesis')).toMatchObject({ provisionState: 'ready', clawpumpAgentId: CP_ID });
+  });
+
+  test('x402 stays off on a ready house row: the reconcile removes it, ensureArenaX402ForPay never adds it', async () => {
+    const h = harness(houseRecord('house:genesis', 'Genesis', { provisionState: 'ready', clawpumpAgentId: CP_ID, clawpumpWallet: WALLET }));
+    h.setSkills([...STICKY, 'x402']);
+    expect(await removeUnwantedArenaX402('house:genesis', h.deps)).toBe('removed');
+    expect(h.skillsNow()).not.toContain('x402');
+    expect(await ensureArenaX402ForPay('house:genesis', h.deps)).toBe('off');
+    expect(h.skillsNow()).not.toContain('x402');
+    expect(h.created).toEqual([]);
   });
 });

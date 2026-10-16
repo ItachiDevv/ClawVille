@@ -1083,11 +1083,23 @@ export async function arenaAddonChargeRefSeen(agentId: string, ref: string): Pro
 
 /**
  * Codex r17 #4: row-specific ownership proof for the ClawPump writer. True
- * only when `clawpumpAgentId` is the ClawPump agent of the USER arena row
- * `arenaAgentId`. Read fresh every time (no cache), so a re-pointed or deleted
- * row stops the writer at once.
+ * only when `clawpumpAgentId` is the ClawPump agent of the USER or HOUSE arena
+ * row `arenaAgentId` (house rows: SPEC_house-clawpump-x402 T3, config PATCHes
+ * only). Read fresh every time (no cache), so a re-pointed or deleted row stops
+ * the writer at once. The writer's money calls (x402 pay, live wallet read,
+ * transfer) use isArenaUserClawPumpOwnedBy instead.
  */
 export async function isArenaClawPumpOwnedBy(clawpumpAgentId: string, arenaAgentId: string): Promise<boolean> {
+  const list = await rows(sql`
+    SELECT 1 FROM floor_arena_agents
+    WHERE id = ${arenaAgentId} AND kind IN ('user', 'house') AND clawpump_agent_id = ${clawpumpAgentId}
+    LIMIT 1
+  `);
+  return list.length > 0;
+}
+
+/** As isArenaClawPumpOwnedBy, USER rows only: the proof for every writer call that can move money. */
+export async function isArenaUserClawPumpOwnedBy(clawpumpAgentId: string, arenaAgentId: string): Promise<boolean> {
   const list = await rows(sql`
     SELECT 1 FROM floor_arena_agents
     WHERE id = ${arenaAgentId} AND kind = 'user' AND clawpump_agent_id = ${clawpumpAgentId}
@@ -1239,7 +1251,7 @@ export async function readArenaAddonAgents(): Promise<ArenaAgentRecord[]> {
 }
 
 /**
- * The R1 list: USER agents with a ClawPump agent, provision state ready or
+ * The R1 list: USER and HOUSE agents with a ClawPump agent, provision state ready or
  * failed, NO enabled add-on, and a row change at or after `since` (turning
  * add-ons off bumps updated_at); `since` null = every such agent (a new leader
  * term's full pass). Keyset pages by id after `afterId`, so no row limit.
@@ -1247,7 +1259,7 @@ export async function readArenaAddonAgents(): Promise<ArenaAgentRecord[]> {
 export async function readArenaX402RecentOff(since: Date | null, afterId: string, limit: number): Promise<string[]> {
   const list = await rows(sql`
     SELECT id FROM floor_arena_agents
-    WHERE kind = 'user' AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
+    WHERE kind IN ('user', 'house') AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
       AND NOT (addons @> '[{"enabled": true}]'::jsonb)
       AND (${since ? since.toISOString() : null}::timestamptz IS NULL OR updated_at >= ${since ? since.toISOString() : null}::timestamptz)
       AND id > ${afterId}
@@ -1258,14 +1270,14 @@ export async function readArenaX402RecentOff(since: Date | null, afterId: string
 }
 
 /**
- * The x402 background sweep's page: every USER agent with a ClawPump agent in
+ * The x402 background sweep's page: every USER or HOUSE agent with a ClawPump agent in
  * provision state ready or failed, ids after `afterId` in id order (the
  * caller keeps the cursor and wraps to '' at the end).
  */
 export async function readArenaX402SweepAgents(afterId: string, limit: number): Promise<string[]> {
   const list = await rows(sql`
     SELECT id FROM floor_arena_agents
-    WHERE kind = 'user' AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
+    WHERE kind IN ('user', 'house') AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
       AND id > ${afterId}
     ORDER BY id ASC
     LIMIT ${limit}
@@ -1327,14 +1339,14 @@ export async function readDbNow(): Promise<Date> {
 }
 
 /**
- * Codex r20 (1): the fair removal cursor's page. USER agents with a ClawPump
+ * Codex r20 (1): the fair removal cursor's page. USER and HOUSE agents with a ClawPump
  * agent, provision state ready or failed, and NO enabled add-on, ids after
  * `afterId` in id order (paged, so it never stops at a row limit).
  */
 export async function readArenaX402OffAgents(afterId: string, limit: number): Promise<string[]> {
   const list = await rows(sql`
     SELECT id FROM floor_arena_agents
-    WHERE kind = 'user' AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
+    WHERE kind IN ('user', 'house') AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
       AND NOT (addons @> '[{"enabled": true}]'::jsonb)
       AND id > ${afterId}
     ORDER BY id ASC
@@ -1379,7 +1391,7 @@ export async function resetArenaProvision(agentId: string): Promise<boolean> {
 export async function readArenaProvisionDue(now: Date, maxAttempts: number, limit: number): Promise<string[]> {
   const list = await rows(sql`
     SELECT id FROM floor_arena_agents
-    WHERE kind = 'user' AND provision_state IN ('pending', 'failed', 'creating')
+    WHERE kind IN ('user', 'house') AND provision_state IN ('pending', 'failed', 'creating')
       AND provision_attempts < ${maxAttempts}
       AND (provision_next_at IS NULL OR provision_next_at <= ${now.toISOString()}::timestamptz)
     ORDER BY created_at ASC
@@ -1400,7 +1412,7 @@ export async function claimArenaProvision(agentId: string, now: Date, maxAttempt
     SET provision_state = 'creating',
         provision_next_at = ${new Date(now.getTime() + leaseMs).toISOString()}::timestamptz,
         updated_at = now()
-    WHERE id = ${agentId} AND kind = 'user'
+    WHERE id = ${agentId} AND kind IN ('user', 'house')
       AND provision_state IN ('pending', 'failed', 'creating')
       AND provision_attempts < ${maxAttempts}
       AND (provision_next_at IS NULL OR provision_next_at <= ${now.toISOString()}::timestamptz)
@@ -1430,8 +1442,8 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 /**
- * Stores the ClawPump id ONLY if the row has none yet (first writer wins; a
- * house row can never be re-pointed), then returns what the row holds. A
+ * Stores the ClawPump id ONLY if the row has none yet (first writer wins; no
+ * user or house row is ever re-pointed), then returns what the row holds. A
  * caller that lost a cross-process race gets the WINNER's id and wallet back
  * and must continue with those, so the payment address and the paying agent
  * can never come from two different ClawPump agents.
@@ -1445,7 +1457,7 @@ export async function saveArenaClawPumpAgent(
     await db.execute(sql`
       UPDATE floor_arena_agents
       SET clawpump_agent_id = ${clawpumpAgentId}, clawpump_wallet = ${wallet}, updated_at = now()
-      WHERE id = ${agentId} AND kind = 'user' AND clawpump_agent_id IS NULL
+      WHERE id = ${agentId} AND kind IN ('user', 'house') AND clawpump_agent_id IS NULL
     `);
   } catch (error) {
     // floor_arena_agents_clawpump_agent_uq: that ClawPump agent is another row's.
@@ -1453,7 +1465,7 @@ export async function saveArenaClawPumpAgent(
     throw error;
   }
   const list = await rows(sql`
-    SELECT clawpump_agent_id, clawpump_wallet FROM floor_arena_agents WHERE id = ${agentId} AND kind = 'user'
+    SELECT clawpump_agent_id, clawpump_wallet FROM floor_arena_agents WHERE id = ${agentId} AND kind IN ('user', 'house')
   `);
   return { clawpumpAgentId: str(list[0]?.clawpump_agent_id), clawpumpWallet: str(list[0]?.clawpump_wallet) };
 }
@@ -1479,7 +1491,7 @@ export async function countArenaCreateAttempt(agentId: string, lease: Date, maxA
   const updated = await rows(sql`
     UPDATE floor_arena_agents
     SET provision_attempts = provision_attempts + 1, updated_at = now()
-    WHERE id = ${agentId} AND kind = 'user' AND ${claimFence(lease)} AND provision_attempts < ${maxAttempts}
+    WHERE id = ${agentId} AND kind IN ('user', 'house') AND ${claimFence(lease)} AND provision_attempts < ${maxAttempts}
     RETURNING provision_attempts
   `);
   return updated[0] ? num(updated[0].provision_attempts) : null;
@@ -1496,7 +1508,7 @@ export async function markArenaProvisionReady(
     UPDATE floor_arena_agents
     SET provision_state = 'ready', provision_error = NULL, clawpump_wallet = ${wallet},
         provision_next_at = NULL, updated_at = now()
-    WHERE id = ${agentId} AND kind = 'user' AND clawpump_agent_id = ${clawpumpAgentId} AND ${claimFence(lease)}
+    WHERE id = ${agentId} AND kind IN ('user', 'house') AND clawpump_agent_id = ${clawpumpAgentId} AND ${claimFence(lease)}
     RETURNING id
   `);
   return updated.length > 0;
@@ -1514,7 +1526,7 @@ export async function markArenaProvisionFailed(
     UPDATE floor_arena_agents
     SET provision_state = 'failed', provision_error = ${error.slice(0, 200)}, provision_attempts = ${attempts},
         provision_next_at = ${nextAt ? nextAt.toISOString() : null}::timestamptz, updated_at = now()
-    WHERE id = ${agentId} AND kind = 'user' AND ${claimFence(lease)}
+    WHERE id = ${agentId} AND kind IN ('user', 'house') AND ${claimFence(lease)}
     RETURNING id
   `);
   return updated.length > 0;

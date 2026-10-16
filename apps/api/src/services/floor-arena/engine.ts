@@ -591,7 +591,10 @@ export async function ensureHouseAgents(): Promise<number> {
       mode: 'paper',
       status: 'active',
       seated: true,
-      clawpumpAgentId: house.clawpumpAgentId,
+      // SPEC house-clawpump-x402 T3 (TRAP A/B): a new house row never carries a ClawPump id (never a live
+      // trader's); provisioning creates its own private, no-trading agent from 'pending'.
+      clawpumpAgentId: null,
+      provisionState: 'pending',
       templateVersion: FLOOR_ARENA_TEMPLATE_VERSION,
     }).onConflictDoNothing({ target: floorArenaAgents.id }).returning({ id: floorArenaAgents.id });
     inserted += rows.length;

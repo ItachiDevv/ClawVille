@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
-import { FLOOR_ARENA_HOUSE_AGENTS, TRADE_MINTS } from '@clawville/shared';
+import { FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS, TRADE_MINTS } from '@clawville/shared';
 import { ClawPumpClientError, resolveClawPumpConfig, type ClawPumpClientOptions } from './clawpump-client';
-import { isArenaClawPumpOwnedBy } from './floor-arena/queries';
+import { isArenaClawPumpOwnedBy, isArenaUserClawPumpOwnedBy } from './floor-arena/queries';
 
 /**
  * ClawPump WRITE client for the Trading Floor Arena (docs/trading-floor-arena.md D8, D9).
@@ -26,13 +26,16 @@ import { isArenaClawPumpOwnedBy } from './floor-arena/queries';
  * retries a failed create later with a NEW create; it never adopts an
  * existing agent (Codex r18 #4).
  *
- * House-agent guard (`assertArenaAgent`, checked fresh on every call): an
- * update or payment names the USER arena row it acts for, and the ClawPump id
- * must be that row's `clawpump_agent_id` (DB proof); FLOOR_ARENA_HOUSE_AGENTS
- * ids are refused outright; and ClawPump's current name must carry this
- * environment's arena prefix plus that row's id suffix. A house trader
- * (Genesis, Runner, Clawville_World on the founder's staging account) can
- * therefore never be re-configured or spend through here, even after a rename.
+ * Live-trader guard (`assertArenaAgent`, checked fresh on every call): an
+ * update or payment names the arena row it acts for, and the ClawPump id
+ * must be that row's `clawpump_agent_id` (DB proof: a USER or HOUSE row for a
+ * config PATCH, a USER row only for a payment, a live wallet read or a
+ * transfer); FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS are refused outright, even
+ * when a row names one; and ClawPump's current name must carry this
+ * environment's arena prefix plus that row's id suffix. A live trader
+ * (Genesis, Runner, Dip Hunter, Clawville_World on the founder's staging
+ * account) can therefore never be re-configured or spend through here, even
+ * after a rename.
  * The guard's GET is the last read before the write (Codex r19 #3, r22): only
  * a 'stopped' agent gets a payment or a PATCH that can add capability or
  * change visibility; any other status (running, null, missing, unknown) gets
@@ -52,10 +55,21 @@ export function arenaAgentNamePrefix(env: Record<string, string | undefined> = p
   return env.CLAWVILLE_ENV === 'production' ? 'CV Arena · ' : 'CV Arena (staging) · ';
 }
 
-/** ClawPump agents the arena writer must never update or pay from, whatever their name. */
-export const CLAWPUMP_HOUSE_AGENT_IDS: ReadonlySet<string> = new Set(
-  FLOOR_ARENA_HOUSE_AGENTS.map((house) => house.clawpumpAgentId).filter((id): id is string => typeof id === 'string'),
-);
+/**
+ * The LIVE trading ClawPump agents (Genesis, Runner, Dip Hunter): the arena
+ * writer must never update, read the wallet of, pay from or transfer from one
+ * of them, whatever their name and whatever an arena row says (the check runs
+ * BEFORE the DB ownership proof). PERMANENT: built only from
+ * FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS, never from the house seed (SPEC
+ * house-clawpump-x402 TRAP A: the house seed now holds no ClawPump id).
+ */
+export const CLAWPUMP_LIVE_TRADER_AGENT_IDS: ReadonlySet<string> = new Set(FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS);
+/** Old name of CLAWPUMP_LIVE_TRADER_AGENT_IDS (same set), kept for existing callers. */
+export const CLAWPUMP_HOUSE_AGENT_IDS: ReadonlySet<string> = CLAWPUMP_LIVE_TRADER_AGENT_IDS;
+/** True for a live trading ClawPump agent id (the permanent deny set). */
+export function isLiveTraderClawPumpId(agentId: string | null | undefined): boolean {
+  return typeof agentId === 'string' && CLAWPUMP_LIVE_TRADER_AGENT_IDS.has(agentId.trim().toLowerCase());
+}
 /** Skills an arena execution wallet may carry. No trading skill, ever (D8). */
 export const CLAWPUMP_ARENA_ALLOWED_SKILLS: ReadonlySet<string> = new Set(['x402']);
 /**
@@ -367,8 +381,14 @@ function vendorError(payload: unknown): string | null {
   return error.trim().slice(0, 200);
 }
 
+/**
+ * Every writer call that names a ClawPump agent (read, x402 check, update, pay,
+ * live wallet read, transfer) starts here, so a LIVE trader id is refused
+ * before any request (Codex review of 3548d4f5, P1).
+ */
 function assertAgentId(agentId: string): void {
   if (!agentIdSchema.safeParse(agentId).success) throw new ClawPumpWriterError('invalid_agent_id');
+  if (isLiveTraderClawPumpId(agentId)) throw new ClawPumpWriterError('not_arena_agent');
 }
 
 /** True only for an arena agent name of THIS environment (`arenaAgentNamePrefix`). */
@@ -385,17 +405,26 @@ export function arenaAgentNameSuffix(arenaAgentId: string): string {
 }
 
 export interface ClawPumpWriterOwnership {
-  /** Arena row this ClawPump agent must belong to (`floor_arena_agents.id`, kind 'user'). */
+  /** Arena row this ClawPump agent must belong to (`floor_arena_agents.id`; kind 'user', or 'house' for a config PATCH). */
   arenaAgentId: string;
   /** Ownership proof; default: the `floor_arena_agents` row read fresh (no cache). */
   isOwnedBy?: (clawpumpAgentId: string, arenaAgentId: string) => Promise<boolean>;
 }
 
 /**
+ * Which arena rows may own the agent for this call. 'arena' (user or house):
+ * the config PATCH only. 'user': every call that can move money (x402 pay,
+ * live wallet read for a withdraw, transfer); house rows have no owner and
+ * no withdraw (SPEC house-clawpump-x402 T3).
+ */
+type ArenaOwnerScope = 'arena' | 'user';
+
+/**
  * Codex r17 #4: every update and every payment is bound to ONE arena row,
  * checked fresh on each call (no cache that could survive a rename):
- *   1. never a house trader id (static deny set);
- *   2. the ClawPump id IS the clawpump_agent_id of that USER arena row (DB proof);
+ *   1. never a live trader id (static, permanent deny set);
+ *   2. the ClawPump id IS the clawpump_agent_id of that arena row (DB proof,
+ *      USER rows only for money calls);
  *   3. ClawPump's current name is this environment's arena prefix AND ends with
  *      that row's id suffix (an extra layer against a renamed foreign agent).
  * Returns that fresh read: it is the LAST read before the write (Codex r19 #3).
@@ -404,8 +433,9 @@ async function assertArenaAgent(
   agentId: string,
   ownership: ClawPumpWriterOwnership,
   options: ClawPumpWriterOptions,
+  scope: ArenaOwnerScope,
 ): Promise<ClawPumpCreatedAgent> {
-  await assertOwnedArenaAgent(agentId, ownership);
+  await assertOwnedArenaAgent(agentId, ownership, scope);
   const current = await readClawPumpArenaAgent(agentId, options);
   const name = current.name;
   if (!isArenaAgentName(name, options.env ?? process.env) || !name!.trim().endsWith(arenaAgentNameSuffix(ownership.arenaAgentId))) {
@@ -414,10 +444,11 @@ async function assertArenaAgent(
   return current;
 }
 
-/** Steps 1 and 2 of assertArenaAgent: the static house deny set, then the DB proof. No network call. */
-async function assertOwnedArenaAgent(agentId: string, ownership: ClawPumpWriterOwnership): Promise<void> {
-  if (CLAWPUMP_HOUSE_AGENT_IDS.has(agentId)) throw new ClawPumpWriterError('not_arena_agent');
-  const owned = await (ownership.isOwnedBy ?? isArenaClawPumpOwnedBy)(agentId, ownership.arenaAgentId);
+/** Steps 1 and 2 of assertArenaAgent: the static live-trader deny set, then the DB proof. No network call. */
+async function assertOwnedArenaAgent(agentId: string, ownership: ClawPumpWriterOwnership, scope: ArenaOwnerScope): Promise<void> {
+  if (isLiveTraderClawPumpId(agentId)) throw new ClawPumpWriterError('not_arena_agent');
+  const proof = ownership.isOwnedBy ?? (scope === 'arena' ? isArenaClawPumpOwnedBy : isArenaUserClawPumpOwnedBy);
+  const owned = await proof(agentId, ownership.arenaAgentId);
   if (!owned) throw new ClawPumpWriterError('not_arena_agent');
 }
 
@@ -472,6 +503,8 @@ export async function createClawPumpAgent(
     is_public: parsed.data.is_public,
   }, options));
   if (!agentIdSchema.safeParse(created.id).success) throw new ClawPumpWriterError('schema_invalid');
+  // A create can never hand back a live trader for an arena row to save.
+  if (isLiveTraderClawPumpId(created.id)) throw new ClawPumpWriterError('not_arena_agent');
   return created;
 }
 
@@ -485,7 +518,7 @@ export async function updateClawPumpAgent(
   assertAgentId(agentId);
   const parsed = updateAgentPatchSchema.safeParse(patch);
   if (!parsed.success) throw new ClawPumpWriterError('invalid_input');
-  const current = await assertArenaAgent(agentId, ownership, options);
+  const current = await assertArenaAgent(agentId, ownership, options, 'arena');
   // Codex r19 #3 / r22: the guarantee holds at the LAST read before the PATCH.
   // An agent that is not 'stopped' gets only a removal-only PATCH (a later
   // status change is a separate vendor race the caller's read-back catches).
@@ -495,13 +528,17 @@ export async function updateClawPumpAgent(
   return updated;
 }
 
-/** GET /wallets/summary: SOL + USDC (UI units) for every agent of the account. */
+/**
+ * GET /wallets/summary: SOL + USDC (UI units) for every agent of the account,
+ * EXCEPT the live traders: their rows are dropped here, so no caller can ever
+ * read a live trader's wallet or balance through the arena writer.
+ */
 export async function getClawPumpWalletBalances(options: ClawPumpWriterOptions = {}): Promise<ClawPumpWalletBalance[]> {
   const parsed = walletSummaryWire.safeParse(
     await sendJson('GET', '/wallets/summary', undefined, options, undefined, MAX_LIST_RESPONSE_CHARS),
   );
   if (!parsed.success) throw new ClawPumpWriterError('schema_invalid');
-  return parsed.data.wallets.map((wire) => ({
+  return parsed.data.wallets.filter((wire) => !isLiveTraderClawPumpId(wire.agent_id)).map((wire) => ({
     agentId: wire.agent_id,
     walletAddress: wire.wallet_address?.trim() || null,
     sol: toAmount(wire.sol_balance),
@@ -542,7 +579,7 @@ export async function x402PayViaClawPump(
   const parsed = x402PayInputSchema.safeParse(input);
   if (!parsed.success) throw new ClawPumpWriterError('invalid_input');
   if (!isAllowedX402Url(parsed.data.url)) throw new ClawPumpWriterError('host_not_allowed');
-  const current = await assertArenaAgent(agentId, ownership, options);
+  const current = await assertArenaAgent(agentId, ownership, options, 'user');
   // Pay only through an agent reported 'stopped' that holds x402 now (every
   // refusal happens before the POST, so nothing can have been charged).
   assertStopped(current.status);
@@ -563,7 +600,7 @@ export interface ClawPumpArenaWriter {
   /** GET /agents/{id} with its enabled skills (the post-provisioning check). */
   readAgent(agentId: string, priority?: ClawPumpCallPriority): Promise<ClawPumpCreatedAgent>;
   createAgent(input: CreateClawPumpAgentInput): Promise<ClawPumpCreatedAgent>;
-  /** `arenaAgentId` = the user arena row that must own this ClawPump agent (Codex r17 #4). */
+  /** `arenaAgentId` = the user or house arena row that must own this ClawPump agent (Codex r17 #4). */
   updateAgent(agentId: string, patch: UpdateClawPumpAgentPatch, arenaAgentId: string, priority?: ClawPumpCallPriority): Promise<ClawPumpCreatedAgent>;
   getWalletBalances(): Promise<ClawPumpWalletBalance[]>;
   x402Pay(agentId: string, input: X402PayInput, arenaAgentId: string): Promise<ClawPumpX402Result>;
@@ -729,7 +766,7 @@ export async function readArenaWalletLive(
   assertAgentId(agentId);
   const { limit = DEFAULT_HISTORY_LIMIT, ...rest } = options;
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_HISTORY_ROWS) throw new ClawPumpWriterError('invalid_input');
-  await assertOwnedArenaAgent(agentId, ownership);
+  await assertOwnedArenaAgent(agentId, ownership, 'user');
   const readAt = new Date();
   const parsed = walletHistoryWire.safeParse(
     await sendJson('GET', `/wallets/${agentId}/history?limit=${limit}`, undefined, { ...rest, priority: 'normal' }),
@@ -908,7 +945,7 @@ export async function transferFromArenaWallet(
   assertAgentId(agentId);
   const transfer = checkTransferInput(input);
   const callOptions: ClawPumpWriterOptions = { ...options, priority: 'normal' };
-  const current = await assertArenaAgent(agentId, ownership, callOptions);
+  const current = await assertArenaAgent(agentId, ownership, callOptions, 'user');
   assertStopped(current.status);
   if (current.walletAddress !== transfer.expectedSource) throw new ClawPumpWriterError('wallet_mismatch');
   const reply = await sendTransferPost(`/wallets/${agentId}/transfer`, {

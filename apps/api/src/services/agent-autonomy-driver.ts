@@ -88,6 +88,12 @@ import {
 import { queryDurableAgentEventsNewest, type AgentHistoryScope } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { fireJevDecideShadow } from './jev-decide-shadow';
+import {
+  isJevWorldDecideConfigured,
+  isJevWorldDecideEnabled,
+  jevWorldDecide,
+  type JevWorldTargets,
+} from './jev-world-decide';
 import { resolveBuildingId } from './building-center';
 import { armAutonomy, isAutonomyActive } from './autonomy-standby';
 import {
@@ -275,6 +281,8 @@ export function walkBudgetMsForRouteLength(lengthWu: number): number {
   return Math.min(WALK_BUDGET_CEIL_MS, Math.max(WALK_BUDGET_FLOOR_MS, Math.round(raw)));
 }
 const TALK_COOLDOWN_MS = 60_000; // linger after a conversation before re-deciding
+// FEATURE_GATE jev_world_decide_demo: phase-edge poll for listed staging avatars.
+const JEV_DEMO_POLL_MS = 5_000;
 const MAX_HOUSE_AGENTS = 64; // bound the registry
 // §B.1 — SEPARATE bound for user-owned autonomous agents (never shares the house
 // cap: a wave of user activations can never crowd out the fleet, and the fleet
@@ -385,7 +393,7 @@ export interface ParsedDriverAction {
   params: Record<string, string>;
 }
 
-function parseDriverAction(reply: string): ParsedDriverAction | null {
+export function parseDriverAction(reply: string): ParsedDriverAction | null {
   const match = DRIVER_ACTION_RE.exec(reply);
   if (!match || !HATCHER_ACTION_MENU.some((action) => action.verb === match[1])) return null;
   const params: Record<string, string> = {};
@@ -519,6 +527,8 @@ class AgentAutonomyDriver {
   private pendingTargetReads = new Map<string, Set<TargetReaderName>>();
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
+  /** FEATURE_GATE jev_world_decide_demo: fast poll for listed staging avatars only. */
+  private demoPollInterval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
   private lastTickAt: number | null = null;
   /** Edge-trigger the standby skip log instead of emitting it every 30s. */
@@ -1002,6 +1012,10 @@ class AgentAutonomyDriver {
     this.lastTickAt = Date.now();
     this.interval = setInterval(() => this.tick(), TICK_MS);
     console.log(`[AutonomyDriver] started — driving every ${TICK_MS}ms`);
+    if (isJevWorldDecideConfigured()) {
+      this.demoPollInterval = setInterval(() => this.demoPoll(), JEV_DEMO_POLL_MS);
+      console.log(`[AutonomyDriver] jev_world_decide_demo poll every ${JEV_DEMO_POLL_MS}ms (staging, listed avatars)`);
+    }
   }
 
   stop(): void {
@@ -1009,6 +1023,44 @@ class AgentAutonomyDriver {
       clearInterval(this.interval);
       this.interval = null;
     }
+    if (this.demoPollInterval) {
+      clearInterval(this.demoPollInterval);
+      this.demoPollInterval = null;
+    }
+  }
+
+  /**
+   * FEATURE_GATE jev_world_decide_demo: between the 30 s ticks, wake a listed
+   * staging avatar at a phase edge only: a walk that has ARRIVED (arrival is
+   * otherwise noticed up to 30 s late) or a finished linger. Each edge leads to
+   * one drive, the same drive the next steady tick would run, so the decision
+   * count per cycle does not grow. A walk still in progress is not polled (the
+   * wedge check is tuned to the 30 s tick), nor is a deciding agent.
+   */
+  demoPoll(nowMs: number = Date.now()): string[] {
+    if (!isAutonomyActive()) return [];
+    const woken: string[] = [];
+    for (const entry of [...this.houseAgents.values(), ...this.userAgents.values()]) {
+      if (this.inFlight.has(entry.agentId) || !isJevWorldDecideEnabled(entry.avatarId)) continue;
+      let edge = false;
+      if (entry.phase === 'talking') {
+        // Only with a warm runtime: a cold warm keeps the steady 30 s retry.
+        edge = nowMs - entry.phaseSince >= TALK_COOLDOWN_MS
+          && !!agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
+      } else if (entry.phase === 'walking' && !entry.directivePending) {
+        const perception = npcSimulation.buildPerception(entry.bodyId);
+        edge = !!perception && this.hasArrived(perception, entry);
+      }
+      if (!edge) continue;
+      woken.push(entry.agentId);
+      void this.driveAgentNow(entry.agentId).catch((err) =>
+        console.error(
+          `[AutonomyDriver] demo poll drive failed for ${sessionDigest(entry.agentId)}:`,
+          err instanceof Error ? err.message : err,
+        ),
+      );
+    }
+    return woken;
   }
 
   /**
@@ -1325,17 +1377,37 @@ class AgentAutonomyDriver {
       tradingDesk,
     );
     const decideStartedAt = Date.now();
-    const reply = await decide(prompt);
-    // Jev SHADOW (FEATURE_GATE jev_decide_shadow): fire-and-forget measurement
-    // only. Never awaited, never throws, and its answer changes nothing here.
-    fireJevDecideShadow({
-      prompt,
-      avatarId: entry.avatarId,
-      isHouse: entry.isHouse,
-      localVerb: parseDriverAction(reply)?.verb ?? null,
-      localEmpty: reply.trim() === '',
-      localMs: Date.now() - decideStartedAt,
-    });
+    let reply: string;
+    if (isJevWorldDecideEnabled(entry.avatarId)) {
+      // FEATURE_GATE jev_world_decide_demo (STAGING ONLY, listed avatars): Jev
+      // picks the action from the SAME prompt; local decide is the fallback.
+      // The reply is an [ACTION:] line that goes through the same parser and
+      // executor whitelist below. No shadow call: the demo row records both.
+      const outcome = await jevWorldDecide({
+        prompt,
+        avatarId: entry.avatarId,
+        isHouse: entry.isHouse,
+        targets: this.jevWorldTargets(perception, entry, questTargets, salvageTargets, now),
+        localDecide: () => decide(prompt),
+        localVerbOf: (text) => parseDriverAction(text)?.verb ?? null,
+      });
+      reply = outcome.reply;
+      if (outcome.source === 'jev') {
+        this.pushThought(entry, 'observation', `Fast decision (${Date.now() - decideStartedAt} ms)`, now);
+      }
+    } else {
+      reply = await decide(prompt);
+      // Jev SHADOW (FEATURE_GATE jev_decide_shadow): fire-and-forget measurement
+      // only. Never awaited, never throws, and its answer changes nothing here.
+      fireJevDecideShadow({
+        prompt,
+        avatarId: entry.avatarId,
+        isHouse: entry.isHouse,
+        localVerb: parseDriverAction(reply)?.verb ?? null,
+        localEmpty: reply.trim() === '',
+        localMs: Date.now() - decideStartedAt,
+      });
+    }
     // This also fences decisions based on known-null state, which have no
     // directive SHA claim to detect a new instruction received during inference.
     if (entry.directiveRevision !== directiveRevision) return;
@@ -1449,6 +1521,32 @@ class AgentAutonomyDriver {
       entry.walkEpisodeDeadline = now + MAX_WALK_EPISODE_MS;
       entry.lastRemainingWu = null; // first walking tick records the baseline
     }
+  }
+
+  /**
+   * FEATURE_GATE jev_world_decide_demo: the fixed param lists Jev may choose
+   * from. The same ids the decide prompt lists; teachers on talk cooldown and
+   * salvage nodes that cannot be claimed now are left out.
+   */
+  private jevWorldTargets(
+    perception: NonNullable<ReturnType<typeof npcSimulation.buildPerception>>,
+    entry: HouseAgentEntry,
+    questTargets: AutonomousQuestTarget[],
+    salvageTargets: AutonomousSalvageTargets,
+    now: number,
+  ): JevWorldTargets {
+    const canSalvage = salvageTargets.claimsRemainingToday > 0 && salvageTargets.ownerClaimsRemainingToday > 0;
+    return {
+      buildings: perception.nearbyBuildings
+        .filter((b) => !this.isTalkCooldownActive(entry.agentId, b.buildingId, now))
+        .map((b) => ({ id: b.buildingId, label: `${b.label}${b.cryptoFocus ? `: teaches ${b.cryptoFocus}` : ''}` })),
+      quests: questTargets.map((quest) => ({ id: quest.questId, label: `${quest.title}: requires ${quest.requirement}` })),
+      salvageNodes: canSalvage
+        ? salvageTargets.nodes
+          .filter((node) => node.ready)
+          .map((node) => ({ id: node.nodeId, label: `${node.band} node ${node.distanceWu}wu away` }))
+        : [],
+    };
   }
 
   /** Bound only read waits, never the action lifecycle. Late data is discarded. */

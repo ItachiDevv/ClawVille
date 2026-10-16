@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS } from '@clawville/shared';
 import {
   CLAWPUMP_HOUSE_AGENT_IDS,
+  CLAWPUMP_LIVE_TRADER_AGENT_IDS,
+  isLiveTraderClawPumpId,
+  readArenaWalletLive,
   arenaAgentNamePrefix,
   arenaAgentNameSuffix,
   isArenaAgentName,
@@ -180,6 +184,114 @@ describe('money audit N1: the env-correct prefix and the house-agent ids', () =>
     await expect(x402PayViaClawPump(HOUSE_ID, { url: 'https://api.nansen.ai/x', method: 'GET', maxAmountUsd: 0.1 }, OWNED, { env, fetchImpl }))
       .rejects.toMatchObject({ code: 'not_arena_agent' });
     expect(calls).toHaveLength(0);
+  });
+
+  test('SPEC T3: the deny set IS the 3 live trader ids, never empty, never derived from the (now null) house seed', () => {
+    const LIVE = [
+      '0f600d73-05a0-4c2e-8215-ab2a770ba192',
+      '1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1',
+      'a7d7c928-1725-4c1d-8d4c-b6eed7af559b',
+    ];
+    expect(CLAWPUMP_LIVE_TRADER_AGENT_IDS.size).toBe(3);
+    expect([...CLAWPUMP_LIVE_TRADER_AGENT_IDS].sort()).toEqual([...LIVE].sort());
+    expect([...FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS as readonly string[]].sort()).toEqual([...LIVE].sort());
+    for (const id of LIVE) {
+      expect(isLiveTraderClawPumpId(id)).toBe(true);
+      expect(isLiveTraderClawPumpId(id.toUpperCase())).toBe(true);
+    }
+    // The old name is the same set (no second, drifting list).
+    expect(CLAWPUMP_HOUSE_AGENT_IDS).toBe(CLAWPUMP_LIVE_TRADER_AGENT_IDS);
+    expect(isLiveTraderClawPumpId(ARENA_ID)).toBe(false);
+    expect(isLiveTraderClawPumpId(null)).toBe(false);
+    expect(FLOOR_ARENA_HOUSE_AGENTS.every((house) => house.clawpumpAgentId === null)).toBe(true);
+  });
+
+  test('SPEC T3: each live id is refused for update, pay and live wallet read EVEN when a (house or user) row names it', async () => {
+    for (const liveId of FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS) {
+      const name = 'CV Arena · Genesis #housegenesis';
+      const { fetchImpl, calls } = fakeFetch({
+        [`GET /agents/${liveId}`]: () => json(agentBody(liveId, name)),
+        [`PATCH /agents/${liveId}`]: () => json(agentBody(liveId, name)),
+        [`POST /agents/${liveId}/x402/x402_service_pay`]: () => json({ data: {} }),
+        [`GET /wallets/${liveId}/history`]: () => json({}),
+      });
+      for (const arenaAgentId of ['house:genesis', ROW_ID]) {
+        const asked: string[] = [];
+        // The DB proof says the row owns it: the deny set must refuse first anyway.
+        const rowNamesIt = { arenaAgentId, isOwnedBy: async (id: string) => { asked.push(id); return true; } };
+        await expect(updateClawPumpAgent(liveId, { enabled_skills: [] }, rowNamesIt, { env, fetchImpl }))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(x402PayViaClawPump(liveId, { url: 'https://api.nansen.ai/x', method: 'GET', maxAmountUsd: 0.1 }, rowNamesIt, { env, fetchImpl }))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(readArenaWalletLive(liveId, rowNamesIt, { env, fetchImpl }))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(clawPumpArenaWriter.updateAgent(liveId, { enabled_skills: [] }, arenaAgentId))
+          .rejects.toMatchObject({ code: 'not_arena_agent' });
+        expect(asked).toEqual([]);
+      }
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  test('Codex P1: every read path refuses each live id with ZERO HTTP calls (read agent, x402 check, writer surface)', async () => {
+    for (const liveId of FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS) {
+      for (const id of [liveId, liveId.toUpperCase()]) {
+        const { fetchImpl, calls } = fakeFetch({
+          [`GET /agents/${id}`]: () => json(agentBody(id, 'CV Arena · Genesis #housegenesis')),
+          [`POST /agents/${id}/x402/x402_service_details`]: () => json({ data: {} }),
+        });
+        await expect(readClawPumpArenaAgent(id, { env, fetchImpl })).rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(readClawPumpArenaAgent(id, { env, fetchImpl, priority: 'removal' })).rejects.toMatchObject({ code: 'not_arena_agent' });
+        await expect(x402PayCheck(id, 'https://api.nansen.ai/x', 'GET', { env, fetchImpl })).rejects.toMatchObject({ code: 'not_arena_agent' });
+        expect(calls).toHaveLength(0);
+      }
+      // The default writer surface (no fetch injected) refuses before any request too.
+      await expect(clawPumpArenaWriter.readAgent(liveId)).rejects.toMatchObject({ code: 'not_arena_agent' });
+      await expect(clawPumpArenaWriter.readAgent(liveId, 'removal')).rejects.toMatchObject({ code: 'not_arena_agent' });
+      await expect(clawPumpArenaWriter.x402Pay(liveId, { url: 'https://api.nansen.ai/x', method: 'GET', maxAmountUsd: 0.1 }, ROW_ID))
+        .rejects.toMatchObject({ code: 'not_arena_agent' });
+    }
+  });
+
+  test('Codex P1: the wallet summary never returns a live trader row (any case); other rows pass through', async () => {
+    const live = FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS as readonly string[];
+    const { fetchImpl, calls } = fakeFetch({
+      'GET /wallets/summary': () => json({
+        wallets: [
+          ...live.map((id) => ({ agent_id: id, wallet_address: `Live${id.slice(0, 4)}`, sol_balance: 5, usdc_balance: 100 })),
+          { agent_id: live[0]!.toUpperCase(), wallet_address: 'LiveUpper', sol_balance: 1, usdc_balance: 1 },
+          { agent_id: ARENA_ID, wallet_address: 'ArenaWallet', sol_balance: 0.01, usdc_balance: 2 },
+        ],
+      }),
+    });
+    const balances = await getClawPumpWalletBalances({ env, fetchImpl });
+    expect(calls).toHaveLength(1);
+    expect(balances.map((row) => row.agentId)).toEqual([ARENA_ID]);
+    expect(balances.some((row) => (row.walletAddress ?? '').startsWith('Live'))).toBe(false);
+  });
+
+  test('Codex P1: a create that hands back a live trader id is refused (never saved by a caller)', async () => {
+    const { fetchImpl } = fakeFetch({
+      'POST /agents': () => json(agentBody(FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS[0], 'CV Arena · Genesis #housegenesis', { enabled_skills: [], is_public: false })),
+    });
+    await expect(createClawPumpAgent({
+      name: 'CV Arena · Genesis #housegenesis', persona: 'p', system_prompt: 's', enabled_skills: [], is_public: false,
+    }, { env, fetchImpl })).rejects.toMatchObject({ code: 'not_arena_agent' });
+  });
+
+  test('SPEC T3: a NEW house agent (house row suffix) passes the config PATCH guard; the name must still match the row', async () => {
+    const houseName = 'CV Arena · Genesis #housegenesis';
+    const { fetchImpl, calls } = fakeFetch({
+      [`GET /agents/${ARENA_ID}`]: () => json(agentBody(ARENA_ID, houseName, { enabled_skills: [] })),
+      [`PATCH /agents/${ARENA_ID}`]: () => json(agentBody(ARENA_ID, houseName, { accepting_bids: false, is_public: false })),
+    });
+    const houseRow = { arenaAgentId: 'house:genesis', isOwnedBy: async () => true };
+    const updated = await updateClawPumpAgent(ARENA_ID, { accepting_bids: false, is_public: false, enabled_skills: [] }, houseRow, { env, fetchImpl });
+    expect(updated.id).toBe(ARENA_ID);
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'PATCH']);
+    // Another house row's suffix does not match this agent's name.
+    await expect(updateClawPumpAgent(ARENA_ID, { accepting_bids: false }, { arenaAgentId: 'house:runner', isOwnedBy: async () => true }, { env, fetchImpl }))
+      .rejects.toMatchObject({ code: 'not_arena_agent' });
   });
 });
 
@@ -469,15 +581,17 @@ describe('reads', () => {
   });
 
   test('wallet summaries map UI-unit numbers and numeric strings', async () => {
+    // A non-live second agent: live trader rows are dropped (covered in the Codex P1 test).
+    const OTHER_CP_ID = '22222222-3333-4444-8555-666666666666';
     const { fetchImpl } = fakeFetch({
       'GET /wallets/summary': () => json({ wallets: [
         { agent_id: ARENA_ID, wallet_address: 'W1', sol_balance: 0.08, usdc_balance: '61.33', updated_at: '2026-09-30T10:21:41.483Z' },
-        { agent_id: HOUSE_ID, wallet_address: null, sol_balance: 0, usdc_balance: null },
+        { agent_id: OTHER_CP_ID, wallet_address: null, sol_balance: 0, usdc_balance: null },
       ] }),
     });
     expect(await getClawPumpWalletBalances({ env, fetchImpl })).toEqual([
       { agentId: ARENA_ID, walletAddress: 'W1', sol: 0.08, usdc: 61.33, updatedAt: '2026-09-30T10:21:41.483Z' },
-      { agentId: HOUSE_ID, walletAddress: null, sol: 0, usdc: null, updatedAt: null },
+      { agentId: OTHER_CP_ID, walletAddress: null, sol: 0, usdc: null, updatedAt: null },
     ]);
   });
 });

@@ -9,6 +9,7 @@ import {
   ClawPumpWriterError,
   clawPumpArenaWriter,
   clawPumpWriterBudget,
+  isLiveTraderClawPumpId,
   readClawPumpArenaAgent,
   type ClawPumpArenaWriter,
   type ClawPumpCreatedAgent,
@@ -136,7 +137,14 @@ import {
  * the first payment, not while paused or while the agent runs. No payment
  * depends on x402 alone (see D32 above).
  *
- * House agents are never touched: every entry point returns early on kind 'house'.
+ * HOUSE agents (founder 2026-10-16, ops/house-traders/SPEC_house-clawpump-x402_2026-10-16.md
+ * T3): each house paper bot gets its OWN new ClawPump agent through this same
+ * path (pending -> ready; name = arena prefix + `<name> #house<id>`, private, no
+ * trading skill). House rows have no owner, so they get no 'addon' event (the
+ * owner-only stream; a house row's events are public) and no add-on: x402 is
+ * never wanted on a house row until a later task adds a house x402 flow. A row
+ * that names a LIVE trader ClawPump id (FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS) is
+ * never provisioned or reconciled here, and the writer refuses it too.
  */
 
 export const ARENA_PROVISION_MAX_ATTEMPTS = 5;
@@ -171,13 +179,13 @@ export interface ArenaProvisionStore {
   readLocked(agentId: string): Promise<ArenaAgentRecord | null>;
   /** Runs `fn` holding the per-agent x402 advisory lock, or returns { acquired: false } at once when it is held. */
   tryX402Lock<T>(agentId: string, fn: () => Promise<T>): Promise<{ acquired: true; value: T } | { acquired: false }>;
-  /** Ready/failed user agents with a ClawPump agent, NO enabled add-on, updated_at >= `since` (null = all), keyset by id. */
+  /** Ready/failed user and house agents with a ClawPump agent, NO enabled add-on, updated_at >= `since` (null = all), keyset by id. */
   listX402RecentOff(since: Date | null, afterId: string, limit: number): Promise<string[]>;
   /** The database clock (the R1 watermark). */
   dbNow(): Promise<Date>;
-  /** Ready/failed user agents with a ClawPump agent and NO enabled add-on, ids after `afterId` (removal cursor). */
+  /** Ready/failed user and house agents with a ClawPump agent and NO enabled add-on, ids after `afterId` (removal cursor). */
   listX402OffAgents(afterId: string, limit: number): Promise<string[]>;
-  /** Ready/failed user agents with a ClawPump agent, ids after `afterId` in id order (re-check cursor). */
+  /** Ready/failed user and house agents with a ClawPump agent, ids after `afterId` in id order (re-check cursor). */
   listX402SweepAgents(afterId: string, limit: number): Promise<string[]>;
   /** First writer wins; returns what the row holds afterwards (maybe another process's id). */
   saveClawPumpAgent(
@@ -254,6 +262,14 @@ export function arenaClawPumpAgentName(
   const room = CLAWPUMP_NAME_MAX - prefix.length - suffix.length;
   const clean = displayName.replace(/[^A-Za-z0-9 _.-]/g, '').replace(/\s+/g, ' ').trim().slice(0, room).trim();
   return `${prefix}${clean || 'Agent'}${suffix}`;
+}
+
+/**
+ * A row this module may provision and reconcile: a user or house row that does
+ * not name a live trader ClawPump agent (SPEC house-clawpump-x402 T3, TRAP B).
+ */
+function provisionableRow(row: ArenaAgentRecord | null): row is ArenaAgentRecord {
+  return !!row && (row.kind === 'user' || row.kind === 'house') && !isLiveTraderClawPumpId(row.clawpumpAgentId);
 }
 
 function wantsX402(agent: ArenaAgentRecord): boolean {
@@ -397,7 +413,7 @@ async function configPatch(
   build: (row: ArenaAgentRecord, fresh: ClawPumpCreatedAgent) => UpdateClawPumpAgentPatch,
 ): Promise<{ updated: ClawPumpCreatedAgent; row: ArenaAgentRecord }> {
   const row = await deps.store.readLocked(arenaAgentId);
-  if (!row || row.kind !== 'user' || row.clawpumpAgentId !== clawpumpAgentId) {
+  if (!provisionableRow(row) || row.clawpumpAgentId !== clawpumpAgentId) {
     throw new ArenaProvisionError('arena_agent_changed');
   }
   const fresh = await readStopped(deps, arenaAgentId, clawpumpAgentId);
@@ -502,7 +518,7 @@ async function syncAgentConfig(
 
 async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promise<ArenaProvisionOutcome> {
   const current = await deps.store.read(agentId);
-  if (!current || current.kind !== 'user') return 'skipped';
+  if (!provisionableRow(current)) return 'skipped';
   if (current.provisionState === 'ready') return 'ready';
   if (current.provisionState === 'none') return 'skipped';
   if (current.provisionAttempts >= ARENA_PROVISION_MAX_ATTEMPTS) return 'exhausted';
@@ -565,6 +581,11 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
     }
     // 'addon' events are owner-only for a user agent (Codex r2 #1/#2): the
     // payment address and provisioning state never reach the public stream.
+    // A house row has no owner and a PUBLIC event stream, so it gets no event.
+    if (agent.kind !== 'user') {
+      console.info(`[floor-arena] house agent ${agent.id}: ClawPump execution wallet ready`);
+      return 'ready';
+    }
     await deps.store.insertEvent(agent.id, {
       type: 'addon',
       summary: 'Execution wallet ready. Fund it with USDC to use paid add-ons.',
@@ -615,6 +636,11 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
       console.warn('[floor-arena] provisioning failure dropped: the claim was lost');
       return 'skipped';
     }
+    if (agent.kind !== 'user') {
+      // No owner and a public event stream (see the ready branch): a log line only.
+      console.warn(`[floor-arena] house agent ${agent.id}: ClawPump setup failed (${code}), attempt ${attempts} of ${ARENA_PROVISION_MAX_ATTEMPTS}`);
+      return createRateLimited ? 'rate_limited' : 'failed';
+    }
     await deps.store.insertEvent(agent.id, {
       type: 'addon',
       summary: exhausted
@@ -649,7 +675,7 @@ export function provisionArenaAgent(
 export type ArenaX402Outcome = 'removed' | 'added' | 'on' | 'off' | 'skipped' | 'busy';
 
 function reconcilable(row: ArenaAgentRecord | null): row is ArenaAgentRecord & { clawpumpAgentId: string } {
-  return !!row && row.kind === 'user' && !!row.clawpumpAgentId
+  return provisionableRow(row) && !!row.clawpumpAgentId
     && (row.provisionState === 'ready' || row.provisionState === 'failed');
 }
 

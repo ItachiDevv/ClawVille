@@ -14,6 +14,8 @@ import {
   FLOOR_ARENA_FILTER_KEYS,
   FLOOR_ARENA_HARD_RULES,
   FLOOR_ARENA_HOUSE_AGENTS,
+  FLOOR_ARENA_HOUSE_X402_DAILY_CAP_USD,
+  FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS,
   FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_MODES,
   FLOOR_ARENA_PAPER_COSTS,
@@ -121,15 +123,32 @@ describe('floor arena templates and house agents', () => {
     expect(new Set(FLOOR_ARENA_HOUSE_AGENTS.map((agent) => agent.id)).size).toBe(5);
   });
 
-  test('only Genesis and Runner carry a live ClawPump agent id', () => {
+  test('no house agent seed carries a ClawPump agent id (each gets a NEW private agent)', () => {
     const ids = Object.fromEntries(FLOOR_ARENA_HOUSE_AGENTS.map((agent) => [agent.templateId, agent.clawpumpAgentId]));
     expect(ids).toEqual({
-      genesis: '0f600d73-05a0-4c2e-8215-ab2a770ba192',
-      runner: '1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1',
+      genesis: null,
+      runner: null,
       'dip-hunter': null,
       'midcap-climber': null,
       'late-bloomer': null,
     });
+  });
+
+  test('the live trader deny set holds exactly Genesis, Runner and Dip Hunter, and is frozen', () => {
+    expect([...FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS].sort()).toEqual([
+      '0f600d73-05a0-4c2e-8215-ab2a770ba192',
+      '1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1',
+      'a7d7c928-1725-4c1d-8d4c-b6eed7af559b',
+    ]);
+    expect(Object.isFrozen(FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS)).toBe(true);
+    const live = new Set<string>(FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS);
+    for (const house of FLOOR_ARENA_HOUSE_AGENTS) {
+      expect(house.clawpumpAgentId === null || !live.has(house.clawpumpAgentId)).toBe(true);
+    }
+  });
+
+  test('the house x402 data cap is $5 per UTC day', () => {
+    expect(FLOOR_ARENA_HOUSE_X402_DAILY_CAP_USD).toBe(5);
   });
 
   test('Genesis is the locked paper wide-4 set', () => {
