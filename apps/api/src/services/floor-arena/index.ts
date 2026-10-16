@@ -2,12 +2,14 @@ import { shouldAlertTradingLoop } from '../trading-rpc';
 import { runArenaAddonsTick } from './addons';
 import { runArenaAnalysisTick } from './analysis';
 import { runChainCheckTick } from './chain-checks';
+import { coinLabelsEnabled, LABEL_TICK_MS, runCoinLabelTick } from './coin-labels';
 import { DISCOVERY_SOURCES, runDiscoveryExpiryTick, runDiscoveryPoll, runEnrichmentTick } from './discovery-hub';
 import { ensureHouseAgents, entriesPaused, refreshHouseTemplates, runEntryTick, runExitTick, setEntriesPaused } from './engine';
 import { pruneArenaEvents } from './events';
 import { createPgLeaderLock, LeaderElector } from './leader';
 import { clawpumpQuoteBreakerState, currentSolPriceUsd, dexscreenerCallsLastMinute } from './pricing';
 import { runArenaProvisioningTick, startArenaX402LeaderTerm } from './provisioning';
+import { PUMPPORTAL_TICK_MS, runPumpPortalTick } from './pumpportal-feed';
 import { ARENA_WITHDRAW_TICK_MS, runArenaWithdrawTick } from './withdraw';
 
 /**
@@ -136,6 +138,8 @@ function buildLoops(): ArenaLoop[] {
   return [
     ...pollers,
     new ArenaLoop('enrichment', 20_000, runEnrichmentTick, { initialDelayMs: 10_000, jitter: 0.05 }),
+    // T4: the ONE PumpPortal websocket (leader-held; no backoff: a missed tick for 45 s closes the socket).
+    new ArenaLoop('pumpportal', PUMPPORTAL_TICK_MS, runPumpPortalTick, { initialDelayMs: 3_000, jitter: 0.05 }),
     new ArenaLoop('chain-checks', 20_000, (now) => runChainCheckTick(now), { initialDelayMs: 15_000, jitter: 0.05 }),
     new ArenaLoop('entries', 15_000, (now) => runEntryTick(now), { initialDelayMs: 20_000, jitter: 0.05 }),
     new ArenaLoop('exits', 10_000, (now) => runExitTick(now), { initialDelayMs: 5_000, jitter: 0.05 }),
@@ -149,6 +153,11 @@ function buildLoops(): ArenaLoop[] {
     new ArenaLoop('event-prune', 60 * 60_000, pruneArenaEvents, { initialDelayMs: 120_000 }),
     // D27: house params follow template changes (also run once right after election, below).
     new ArenaLoop('house-templates', 60 * 60_000, refreshHouseTemplates, { initialDelayMs: 60 * 60_000 }),
+    // Research: label every tradeable coin, skips included (coin-labels.ts, migration 0083).
+    // Kill switch: FLOOR_ARENA_COIN_LABELS_ENABLED='false'.
+    ...(coinLabelsEnabled()
+      ? [new ArenaLoop('coin-labels', LABEL_TICK_MS, (now) => runCoinLabelTick(now), { initialDelayMs: 45_000, jitter: 0.05 })]
+      : []),
   ];
 }
 

@@ -14,11 +14,13 @@ import {
   type FloorArenaFeatures, type FloorArenaSnapshot,
 } from './filters';
 import {
-  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, ARENA_POST_EXIT_TAIL_MS, latestSnapshotMarks, markFallbackProceeds, quoteBuy,
-  quoteSell, type BuyQuoteResult, type SellQuoteResult, type SnapshotMark,
+  ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, ARENA_POST_EXIT_TAIL_MS, DEFAULT_PAPER_COSTS, latestSnapshotMarks,
+  markFallbackProceeds, quoteBuy, quoteSell, type BuyQuoteResult, type PaperCosts, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
 import { entryVerdictStatus, type EntryVerdict } from './chain-checks';
 import { fireJevArenaEntry } from './jev-entry';
+import { fireCodexArenaEntry } from './codex-entry';
+import { pumpFlowForMint } from './pumpportal-feed';
 import {
   formatAge, formatPrice, formatSignedUsd, formatUsdCompact, tokenLabel, writeArenaEvent, writeArenaEvents,
   type ArenaEventInput,
@@ -67,7 +69,31 @@ export interface ExitState {
 
 export type ExitReason = 'tp' | 'stop' | 'trail' | 'time';
 export type ExitFillSource = 'quote' | 'mark_fallback' | 'quote_confirmed';
-export interface ExitTrigger { reason: ExitReason; fraction: number; leg: number | null }
+/**
+ * Phase 3b: which stop fired. exit_reason stays 'stop' in the DB (its CHECK constraint and every reader are
+ * unchanged); the exit event's data.stopKind carries 'breakeven' or 'liq_drop'. Absent = the plain stop_mult.
+ */
+export type ExitStopKind = 'breakeven' | 'liq_drop';
+export interface ExitTrigger { reason: ExitReason; fraction: number; leg: number | null; stopKind?: ExitStopKind }
+/** Phase 3b: entry liquidity (entry_features.liqUsd) and the FRESH snapshot liquidity, USD. null = unknown. */
+export interface ExitLiquidity { entryUsd: number | null; nowUsd: number | null }
+
+/**
+ * Phase 3b: the mark multiple at which a sell nets ~$0. entry_price already holds the buy haircut (tokens are
+ * cut 1 %), so a full sell at mark M returns size x M x (1 - sell costs). The mark is a DexScreener mid price
+ * (no pool fee), so the conservative cost is the mark-fallback one: sell haircut + pool fee (0.5 % + 1.25 % =
+ * 1.75 %), giving 1 / (1 - 0.0175) = ~1.0178x. A quote fill pays only the 0.5 % haircut, so it nets slightly above $0.
+ */
+export function breakevenMarkMult(costs: PaperCosts = DEFAULT_PAPER_COSTS): number {
+  return 1 / (1 - (costs.sell_haircut_pct + costs.mark_fallback_pool_fee_pct) / 100);
+}
+
+/** True when the fresh liquidity is below entry x (1 - pct). Unknown or non-positive entry liquidity = false. */
+export function liquidityBelow(liq: ExitLiquidity | null | undefined, pct: number): boolean {
+  if (!liq || liq.entryUsd === null || liq.nowUsd === null) return false;
+  if (!Number.isFinite(liq.entryUsd) || liq.entryUsd <= 0 || !Number.isFinite(liq.nowUsd) || liq.nowUsd < 0) return false;
+  return liq.nowUsd < liq.entryUsd * (1 - pct);
+}
 
 /** TP legs already filled. Only TP legs are partial, so they follow from what is gone (legs ascend, sum <= 1). */
 export function tpHitsFromRemaining(remainingFraction: number, legs: FloorArenaExits['tp']): number {
@@ -84,10 +110,19 @@ export function tpHitsFromRemaining(remainingFraction: number, legs: FloorArenaE
 
 /**
  * One exit decision. markMult = DexScreener mark / entry price (null = no fresh mark: only the time cap can fire).
- * Order: next TP leg, stop, trail (armed once the peak reached trail_arm_mult; null arm = armed from entry),
- * time cap. One trigger per tick; the next TP leg fires on the next tick if the mark still clears it.
+ * Order: next TP leg, stop, breakeven stop (Phase 3b: once the peak reached breakeven_arm_mult, the stop is
+ * max(stop_mult ?? 0, breakevenMarkMult())), liquidity drop (Phase 3b: fresh snapshot liquidity below entry x
+ * (1 - liq_drop_exit_pct); `liq` is only passed with a fresh snapshot), trail (armed once the peak reached
+ * trail_arm_mult; null arm = armed from entry), time cap. One trigger per tick; the next TP leg fires on the next
+ * tick if the mark still clears it. Both Phase 3b fields null or missing = the exact pre-3b behaviour.
  */
-export function decideExitTrigger(state: ExitState, exits: FloorArenaExits, markMult: number | null, nowMs: number): ExitTrigger | null {
+export function decideExitTrigger(
+  state: ExitState,
+  exits: FloorArenaExits,
+  markMult: number | null,
+  nowMs: number,
+  liq: ExitLiquidity | null = null,
+): ExitTrigger | null {
   if (state.remainingFraction <= EPS) return null;
   if (markMult !== null && Number.isFinite(markMult) && markMult > 0) {
     const peak = Math.max(state.peakMult, markMult);
@@ -98,6 +133,14 @@ export function decideExitTrigger(state: ExitState, exits: FloorArenaExits, mark
     }
     if (exits.stop_mult !== null && markMult <= exits.stop_mult) {
       return { reason: 'stop', fraction: state.remainingFraction, leg: null };
+    }
+    const breakevenArm = exits.breakeven_arm_mult ?? null;
+    if (breakevenArm !== null && peak >= breakevenArm && markMult <= Math.max(exits.stop_mult ?? 0, breakevenMarkMult())) {
+      return { reason: 'stop', fraction: state.remainingFraction, leg: null, stopKind: 'breakeven' };
+    }
+    const liqDrop = exits.liq_drop_exit_pct ?? null;
+    if (liqDrop !== null && liquidityBelow(liq, liqDrop)) {
+      return { reason: 'stop', fraction: state.remainingFraction, leg: null, stopKind: 'liq_drop' };
     }
     if (exits.trail_from_peak !== null) {
       const armAt = exits.trail_arm_mult ?? 1;
@@ -442,6 +485,12 @@ export function topFailCodes(failCounts: Record<string, number>, n = 5): Array<[
 // ---------------------------------------------------------------- summaries
 
 const REASON_WORDS: Record<ExitReason, string> = { tp: 'take profit', stop: 'stop', trail: 'trailing stop', time: 'time cap' };
+const STOP_KIND_WORDS: Record<ExitStopKind, string> = { breakeven: 'breakeven stop', liq_drop: 'liquidity drop' };
+
+/** The words for a non-TP trigger; a Phase 3b stop names its kind. */
+function triggerWords(trigger: ExitTrigger): string {
+  return trigger.reason === 'stop' && trigger.stopKind ? STOP_KIND_WORDS[trigger.stopKind] : REASON_WORDS[trigger.reason];
+}
 
 /**
  * The "via" of an entry line. `source` is the hub's first source (the window clock and the analysis use it); when
@@ -465,7 +514,7 @@ export function exitSummary(input: {
   const { label, trigger, legs, mult, proceedsUsd, fillSource, fill, sizeUsd } = input;
   const pct = Math.round(trigger.fraction * 100);
   const at = mult !== null && Number.isFinite(mult) ? ` at ${mult.toFixed(2)}x` : '';
-  const why = trigger.reason === 'tp' ? `TP ${trigger.leg} of ${legs}` : REASON_WORDS[trigger.reason];
+  const why = trigger.reason === 'tp' ? `TP ${trigger.leg} of ${legs}` : triggerWords(trigger);
   const via = fillSource === 'quote' ? 'quote'
     : fillSource === 'quote_confirmed' ? 'confirmed low quote (2+ low quotes over 45 s)' : 'mark fallback (no usable sell quote)';
   const head = `Sold ${pct}% of ${label}${at} (${why}) for $${proceedsUsd.toFixed(2)} via ${via}.`;
@@ -520,6 +569,7 @@ export function resetEngineMemoryForTest(): void {
   lastScanAt.clear();
   entryRefusalUntil.clear();
   invalidParamsLogged.clear();
+  liqShadowSeen.clear();
 }
 
 // ---------------------------------------------------------------- house agents
@@ -832,6 +882,11 @@ async function runAgentEntries(
       bot: { agentId: agent.id, strategy: agent.templateId || agent.name, positionUsd: ARENA_POSITION_USD, exits: params.exits },
       coin: { mint: c.mint, source: c.source, features: c.features, verdict: c.verdict },
     });
+    // FEATURE_GATE codex_arena_entry_shadow: same contract (fire-and-forget, never read by the trade path).
+    fireCodexArenaEntry({
+      bot: { agentId: agent.id, strategy: agent.templateId || agent.name, positionUsd: ARENA_POSITION_USD, exits: params.exits },
+      coin: { mint: c.mint, source: c.source, features: c.features, verdict: c.verdict, firstSeenAtMs: c.firstSeenAtMs },
+    });
     const quote: BuyQuoteResult = await (deps.quoteBuy ?? quoteBuy)(c.mint, ARENA_POSITION_USD, c.features.priceUsd);
     if (!quote.ok) {
       const transient = quote.reason === 'quote_failed' || quote.reason === 'quote_breaker' || quote.reason === 'not_configured';
@@ -953,6 +1008,9 @@ export async function openPosition(
       // AR-1 research: the row's first snapshot (null for a row priced before migration 0080). No decision reads it,
       // and the API position mapper strips it (queries.ts), so no payload changes.
       firstSight: firstSightRecord(gateRow?.first_snapshot, gateRow?.first_snapshot_at, c),
+      // T4 research: PumpPortal flow facts of a watched mint at the insert time (pumpportal-feed.ts, in memory on the
+      // leader; null when unwatched). DATA ONLY: no decision reads it.
+      pumpFlow: pumpFlowForMint(c.mint, insertMs),
     };
     const inserted = await tx.insert(floorArenaPositions).values({
       agentId: agent.id,
@@ -1332,6 +1390,81 @@ interface ExitDeps {
   clock?: () => number;
   /** AR-1: the deferred research write (default writeArenaRecording; tests inject a failing one). */
   recordingWriter?: (job: ArenaRecordingJob) => Promise<void>;
+  /** Phase 3b: the liquidity shadow recorder (tests inject one). */
+  liqShadow?: LiqShadowDeps;
+}
+
+// ---------------------------------------------------------------- Phase 3b liquidity shadow (research only)
+
+/**
+ * Phase 3b research: there is no stored liquidity history, so the exit tick records a 'skip' event (data.reason
+ * 'exit_shadow_liq_drop'; pass/skip rows are archived, never deleted) the first time a position's FRESH snapshot
+ * liquidity is below entry x (1 - t) for each t here, whether or not liq_drop_exit_pct is set. It never trades.
+ */
+export const LIQ_SHADOW_THRESHOLDS = [0.3, 0.5, 0.7] as const;
+export const LIQ_SHADOW_REASON = 'exit_shadow_liq_drop';
+
+/** Thresholds the liquidity is past now and that were not recorded yet, ascending. */
+export function liquidityShadowCrossings(liq: ExitLiquidity | null, recorded: ReadonlySet<number>): number[] {
+  return LIQ_SHADOW_THRESHOLDS.filter((t) => !recorded.has(t) && liquidityBelow(liq, t));
+}
+
+export interface LiqShadowDeps {
+  /** Thresholds already stored for a position (read once per position per process, only when one is crossed). */
+  readRecorded?: (position: Pick<FloorArenaPositionRow, 'id' | 'agentId' | 'mint'>) => Promise<number[]>;
+  write?: (events: readonly ArenaEventInput[]) => Promise<void>;
+  /** Per-process memory: positionId -> thresholds recorded (tests pass their own). */
+  seen?: Map<string, Set<number>>;
+}
+
+const liqShadowSeen = new Map<string, Set<number>>();
+
+async function readRecordedLiqShadow(position: Pick<FloorArenaPositionRow, 'id' | 'agentId' | 'mint'>): Promise<number[]> {
+  const rows = rowsOf(await db.execute(sql`
+    SELECT data->>'threshold' AS threshold FROM floor_arena_events
+    WHERE agent_id = ${position.agentId} AND type = 'skip' AND mint = ${position.mint}
+      AND data->>'reason' = ${LIQ_SHADOW_REASON} AND data->>'positionId' = ${position.id}
+  `));
+  return rows.map((r) => Number(r.threshold)).filter((t) => Number.isFinite(t));
+}
+
+/** Records the new shadow crossings of one position; returns the thresholds written. Never throws past the caller's catch. */
+export async function recordLiquidityShadow(
+  position: Pick<FloorArenaPositionRow, 'id' | 'agentId' | 'mint' | 'symbol'>,
+  liq: ExitLiquidity,
+  markMult: number | null,
+  liqDropExitPct: number | null,
+  deps: LiqShadowDeps = {},
+): Promise<number[]> {
+  const seen = deps.seen ?? liqShadowSeen;
+  let recorded = seen.get(position.id);
+  if (!recorded) {
+    // No DB read until something is crossed: a healthy pool costs nothing.
+    if (liquidityShadowCrossings(liq, new Set()).length === 0) return [];
+    recorded = new Set(await (deps.readRecorded ?? readRecordedLiqShadow)(position));
+    seen.set(position.id, recorded);
+  }
+  const crossed = liquidityShadowCrossings(liq, recorded);
+  if (crossed.length === 0) return [];
+  const label = tokenLabel(position.symbol, position.mint);
+  const dropPct = liq.entryUsd && liq.nowUsd !== null ? 1 - liq.nowUsd / liq.entryUsd : null;
+  const events: ArenaEventInput[] = crossed.map((threshold) => ({
+    agentId: position.agentId, type: 'skip', mint: position.mint,
+    summary: `Shadow only (no trade): ${label} liquidity is down ${dropPct !== null ? Math.round(100 * dropPct) : '?'}% `
+      + `from entry (${formatUsdCompact(liq.entryUsd)} -> ${formatUsdCompact(liq.nowUsd)}), past the ${Math.round(100 * threshold)}% line.`,
+    data: {
+      reason: LIQ_SHADOW_REASON, positionId: position.id, threshold, entryLiqUsd: liq.entryUsd, liqUsd: liq.nowUsd,
+      dropPct, markMult, liqDropExitPct,
+    },
+  }));
+  await (deps.write ?? writeArenaEvents)(events);
+  for (const t of crossed) recorded.add(t);
+  return crossed;
+}
+
+/** Drops shadow memory of positions that are no longer open. */
+function pruneLiqShadowSeen(openIds: ReadonlySet<string>, seen: Map<string, Set<number>>): void {
+  for (const id of seen.keys()) if (!openIds.has(id)) seen.delete(id);
 }
 
 export interface ExitTickResult {
@@ -1343,6 +1476,11 @@ function exitsOf(position: FloorArenaPositionRow, agentParams: FloorArenaParams 
   const stored = (position.entryFeatures as { exits?: FloorArenaExits } | null)?.exits;
   if (stored && Array.isArray(stored.tp) && typeof stored.max_hold_s === 'number') return stored;
   return agentParams?.exits ?? null;
+}
+
+/** Phase 3b: entry liquidity (entry_features.liqUsd, DexScreener USD at entry); null when missing or not positive. */
+function entryLiquidityUsd(position: FloorArenaPositionRow): number | null {
+  return positiveNumber((position.entryFeatures as { liqUsd?: unknown } | null)?.liqUsd);
 }
 
 function positiveNumber(value: unknown): number | null {
@@ -1420,7 +1558,19 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
           positionId: position.id, phase: 'hold', anchorMs: state.openedAtMs, atMs: markAtMs, markMult: round9(markMult!),
         });
       }
-      const trigger = decideExitTrigger(state, exits, markMult, nowMs);
+      // Phase 3b: liquidity from the SAME snapshot row as the mark (no extra call), only when that snapshot is fresh.
+      const snap = snapshotMarks.get(position.mint) ?? null;
+      const liq: ExitLiquidity | null = snap && nowMs - snap.atMs <= ARENA_MARK_MAX_AGE_MS
+        ? { entryUsd: entryLiquidityUsd(position), nowUsd: snap.liqUsd ?? null } : null;
+      if (liq) {
+        try {
+          await recordLiquidityShadow(position, liq, markMult, exits.liq_drop_exit_pct ?? null, deps.liqShadow);
+        } catch (error) {
+          // Research only: a failed shadow write never blocks or changes an exit.
+          console.warn('[floor-arena] liquidity shadow failed for position', position.id, error instanceof Error ? error.message.slice(0, 200) : 'error');
+        }
+      }
+      const trigger = decideExitTrigger(state, exits, markMult, nowMs, liq);
       if (!trigger) continue;
       seen.quote = null;
       let outcome = await executeExit(position, state, exits, trigger, known, fresh, now, exitDeps);
@@ -1428,7 +1578,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
         // The mark says TP but the quote does not: hold the TP, but a stop / trail / time exit that is due still
         // runs now (with TP first in the order, a mark above TP would otherwise hide the time cap forever).
         result.tpUnconfirmed += 1;
-        const other = decideExitTrigger(state, { ...exits, tp: [] }, markMult, nowMs);
+        const other = decideExitTrigger(state, { ...exits, tp: [] }, markMult, nowMs, liq);
         if (other) {
           // Re-read the row: the TP skip may have stored a low quote in exit_run (the CAS needs the current run).
           const current = (await db.select().from(floorArenaPositions).where(eq(floorArenaPositions.id, position.id)))[0];
@@ -1459,6 +1609,7 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
       console.warn('[floor-arena] exit failed for position', position.id, error instanceof Error ? error.message.slice(0, 200) : 'error');
     }
   }
+  pruneLiqShadowSeen(new Set(positions.map((p) => p.id)), deps.liqShadow?.seen ?? liqShadowSeen);
   if (markUpdates.length > 0) {
     await db.execute(sql`
       UPDATE floor_arena_positions AS p
@@ -1499,13 +1650,14 @@ async function emitExitRefusal(
   if (!shouldEmit(`${position.agentId}|skip|${position.id}|exit_quote_refused`, nowMs, EXIT_REFUSAL_EVENT_MS)) return;
   const quoteMult = quote.quotedPriceUsd !== undefined ? quote.quotedPriceUsd / state.entryPriceUsd : null;
   const label = tokenLabel(position.symbol, position.mint);
-  const why = trigger.reason === 'tp' ? `TP ${trigger.leg}` : REASON_WORDS[trigger.reason];
+  const why = trigger.reason === 'tp' ? `TP ${trigger.leg}` : triggerWords(trigger);
   const mults = `mark ${markMult !== null ? `${markMult.toFixed(2)}x` : 'not fresh'}, quote ${quoteMult !== null ? `${quoteMult.toFixed(2)}x` : 'none'}`;
   await writeArenaEvent({
     agentId: position.agentId, type: 'skip', mint: position.mint,
     summary: `Exit of ${label} (${why}) not booked yet: ${EXIT_REFUSAL_WORDS[quote.reason] ?? quote.reason} (${mults}). Retrying.`,
     data: {
       reason: 'exit_quote_refused', refusal: quote.reason, detail: quote.detail ?? null, trigger: trigger.reason,
+      ...(trigger.stopKind ? { stopKind: trigger.stopKind } : {}),
       positionId: position.id, markMult, quoteMult,
     },
   });
@@ -1670,6 +1822,11 @@ async function executeExit(
         exitReason: trigger.reason,
         pnlUsd: String(fill.pnlUsd),
         pnlMult: String(fill.pnlMult),
+        // Phase 3b: exit_reason stays 'stop' (DB CHECK); the stop kind rides on the row so position views can name
+        // it without reading events. Only a closing breakeven / liq_drop stop writes it; nothing else changes.
+        ...(trigger.stopKind ? {
+          entryFeatures: sql`COALESCE(${floorArenaPositions.entryFeatures}, '{}'::jsonb) || ${JSON.stringify({ exitStopKind: trigger.stopKind })}::jsonb`,
+        } : {}),
       } : {}),
     }).where(and(
       eq(floorArenaPositions.id, position.id),
@@ -1687,7 +1844,8 @@ async function executeExit(
       agentId: position.agentId, type: 'exit', mint: position.mint,
       summary: exitSummary({ label, trigger, legs: exits.tp.length, mult: fillMult, proceedsUsd, fillSource, fill, sizeUsd: state.sizeUsd }),
       data: {
-        positionId: position.id, reason: trigger.reason, leg: trigger.leg, fraction: trigger.fraction, proceedsUsd,
+        positionId: position.id, reason: trigger.reason, ...(trigger.stopKind ? { stopKind: trigger.stopKind } : {}),
+        leg: trigger.leg, fraction: trigger.fraction, proceedsUsd,
         fillSource, fillPriceUsd: fillPrice, markMult, closed: fill.closed, pnlUsd: fill.pnlUsd, pnlMult: fill.pnlMult,
         remainingFraction: fill.remainingFraction, holdS: Math.round((nowMs - state.openedAtMs) / 1000),
       },
@@ -1740,7 +1898,8 @@ async function closeUnresolved(
       agentId: position.agentId, type: 'exit', mint: position.mint,
       summary: `Closed ${label} as unresolved: no usable sell price for 30 min. Not counted in P&L.`,
       data: {
-        positionId: position.id, reason: 'unresolved', trigger: trigger.reason, fillSource: 'unresolved', closed: true,
+        positionId: position.id, reason: 'unresolved', trigger: trigger.reason,
+        ...(trigger.stopKind ? { stopKind: trigger.stopKind } : {}), fillSource: 'unresolved', closed: true,
         pnlUsd: null, pnlMult: null, remainingFraction: state.remainingFraction, failures: run.failures, sawLow: run.sawLow,
         holdS: Math.round((nowMs - state.openedAtMs) / 1000),
       },

@@ -233,6 +233,16 @@ const EXIT_REASON_LABEL: Record<string, string> = {
   manual: 'closed by hand',
   unresolved: 'no usable price for 30 min',
 };
+/** Phase 3b: a 'stop' close names its kind when the row carries one. */
+const STOP_KIND_LABEL: Record<string, string> = { breakeven: 'breakeven stop', liq_drop: 'liquidity drop' };
+
+function exitLabel(position: Pick<FloorArenaPositionView, 'exitReason' | 'exitStopKind'>): string {
+  if (!position.exitReason) return 'closed';
+  if (position.exitReason === 'stop' && position.exitStopKind && STOP_KIND_LABEL[position.exitStopKind]) {
+    return STOP_KIND_LABEL[position.exitStopKind];
+  }
+  return EXIT_REASON_LABEL[position.exitReason] ?? position.exitReason;
+}
 
 /**
  * D31: an 'unresolved' close has no P&L of its own (pnl_usd NULL), but the
@@ -285,7 +295,7 @@ export function ArenaClosedTrades({
           <div style={{ minWidth: 0 }}>
             <div style={{ color: FLOOR_TEXT.value, fontSize: 12, fontWeight: 700 }}>{coinLabel(position)}</div>
             <div style={{ color: FLOOR_TEXT.faint, fontSize: 10 }}>
-              {position.exitReason ? EXIT_REASON_LABEL[position.exitReason] ?? position.exitReason : 'closed'} ·{' '}
+              {exitLabel(position)} ·{' '}
               {isoAgo(position.closedAt, nowMs)}
             </div>
           </div>
@@ -508,6 +518,12 @@ export function ArenaParamsSummary({ params }: { params: FloorArenaParams | null
       ? [`${B.exits.trail_arm_mult.label}: ${params.exits.trail_arm_mult === null ? 'at once' : formatMultiple(params.exits.trail_arm_mult)}`]
       : []),
     `${B.exits.max_hold_s.label}: ${formatDuration(params.exits.max_hold_s)}`,
+    ...(params.exits.breakeven_arm_mult != null
+      ? [`${B.exits.breakeven_arm_mult.label}: ${formatMultiple(params.exits.breakeven_arm_mult)}`]
+      : []),
+    ...(params.exits.liq_drop_exit_pct != null
+      ? [`${B.exits.liq_drop_exit_pct.label}: ${formatBoundValue(B.exits.liq_drop_exit_pct, params.exits.liq_drop_exit_pct)}`]
+      : []),
     `${B.limits.position_usd.label}: $${params.limits.position_usd}`,
     `${B.limits.max_open.label}: ${params.limits.max_open}`,
     `${B.limits.reentry_cooldown_s.label}: ${formatDuration(params.limits.reentry_cooldown_s)}`,

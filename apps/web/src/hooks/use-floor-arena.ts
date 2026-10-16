@@ -136,6 +136,9 @@ export interface FloorArenaPositionView {
   pnlUsd: number | null;
   pnlMult: number | null;
   exitReason: string | null;
+  /** Phase 3b: 'breakeven' | 'liq_drop' on a 'stop' close (`entry_features.exitStopKind`); null otherwise or when
+   *  the route left `entryFeatures` out. */
+  exitStopKind?: string | null;
   paramsVersion: number | null;
   /**
    * The exits frozen when the position opened (`entry_features.exits`), which
@@ -435,6 +438,7 @@ export function readPosition(value: unknown): FloorArenaPositionView | null {
     pnlUsd: num(row.pnlUsd),
     pnlMult: num(row.pnlMult),
     exitReason: str(row.exitReason),
+    exitStopKind: str(record(row.entryFeatures)?.exitStopKind),
     paramsVersion: num(row.paramsVersion),
     entryExits: readExits(record(row.entryFeatures)?.exits),
   };
@@ -455,8 +459,14 @@ function readExits(value: unknown): FloorArenaExits | null {
   const stop = optional(row.stop_mult);
   const trail = optional(row.trail_from_peak);
   const arm = optional(row.trail_arm_mult);
-  if (stop === undefined || trail === undefined || arm === undefined) return null;
-  return { tp, stop_mult: stop, trail_from_peak: trail, trail_arm_mult: arm, max_hold_s: row.max_hold_s };
+  // Phase 3b: optional keys; a missing key reads as null (off), and they are kept so a form save never drops them.
+  const breakeven = optional(row.breakeven_arm_mult);
+  const liqDrop = optional(row.liq_drop_exit_pct);
+  if (stop === undefined || trail === undefined || arm === undefined || breakeven === undefined || liqDrop === undefined) return null;
+  return {
+    tp, stop_mult: stop, trail_from_peak: trail, trail_arm_mult: arm, max_hold_s: row.max_hold_s,
+    breakeven_arm_mult: breakeven, liq_drop_exit_pct: liqDrop,
+  };
 }
 
 export function readReport(value: unknown): FloorArenaReportView | null {

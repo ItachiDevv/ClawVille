@@ -659,7 +659,8 @@ import {
 // NOTE (2026-09-30, arena D25-D27 + template v2): bumped 74 -> 75. 74 is on
 // staging, so the changed 17c bytes need a new version for already-provisioned
 // hosted runtimes. 17c now states: a shared-feed coin is tradeable only after a
-// DexScreener or ClawPump sighting (GeckoTerminal-only coins shown, not traded;
+// DexScreener or ClawPump sighting (since 88 also a PumpPortal graduation,
+// `pumpportal:migration`; GeckoTerminal-only and `pumpportal:new` coins shown, not traded;
 // add-on coins exempt); `entry.first_sight_sources` (`any` | `tradeable`) starts
 // the first-sight clock; the $5,000 liquidity floor is no longer a hard rule
 // (liquidity is a template setting; curve coins allowed where a template allows
@@ -877,7 +878,9 @@ import {
 // set of calls that slide grew.
 // 86 (2026-10-13): manual split into 8 topic pages (GET /api/skills/protocol/<topic>.md, manifest protocolTopics), entry manual rewritten short with MCP first, corrections (wait for arrival, ledger-capable rule, claim errors).
 // 87 (2026-10-13): the full manual's topic index is `###` so hosted runtimes keep Connect as pinned section 1 (86 made the index section 1); a bump because hosted protocol-knowledge rows dedupe by version.
-export const PROTOCOL_VERSION = 87;
+// 88 (2026-10-15, arena phase 3b): two optional exits fields, exits.breakeven_arm_mult and exits.liq_drop_exit_pct (null = off in every template; a body without them reads as null), stopKind on stop exits, and the research-only 'exit_shadow_liq_drop' skip event; the tradeable-source text gains PumpPortal graduations (`pumpportal:migration`, D25 amended); documented in the trading topic.
+// 2026-10-15 follow-up (Hatcher stats cache invalidation, web test isolation): manual reviewed, unchanged at 88.
+export const PROTOCOL_VERSION = 88;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

@@ -581,7 +581,8 @@ export function flattenArenaParams(params: FloorArenaParams): Map<string, unknow
       });
       out.set('exits.tp.legs', value.length);
     } else {
-      out.set(path, value);
+      // Phase 3b: an optional exits key missing from an older row reads as null (off), like the template.
+      out.set(path, value === undefined ? null : value);
     }
   }
   return out;

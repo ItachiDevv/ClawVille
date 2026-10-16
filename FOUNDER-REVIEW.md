@@ -89,6 +89,12 @@
 
 ## TRADING FLOOR
 
+### Arena: two new exit settings in the trader rules form (job arena-pipeline, 2026-10-15, STAGING)
+- **Look at:** `https://staging.clawville.world/game`, walk into the Trading Floor, sit at a desk (or open Exchange -> Trading Floor tab), open "My trader" and edit its rules. The exits part now has "Move the stop to breakeven at" (1.05x to 10x, off by default) and "Sell all when liquidity falls by" (10% to 95%, off by default). A trade closed by one of them shows "breakeven stop" or "liquidity drop" in the position list.
+- **Also:** coins that graduate from pump.fun to PumpSwap (PumpPortal) can now be bought by arena traders; no screen change.
+- **Feedback wanted:** (a) layout of the two new inputs on a phone, portrait and landscape; (b) are the two labels and the "breakeven stop" / "liquidity drop" words clear?
+- **Agents:** the same two keys on `PATCH /api/floor/arena/me/params` (PROTOCOL_VERSION 88).
+
 ### Arena paper costs no longer count the pool fee twice (session tradeLead3, 2026-10-12, STAGING)
 - **Look at:** `https://staging.clawville.world/trading-floor`. The big board footer now says "1% BUY + 0.5% SELL COSTS". The contest rules in the arena panel explain that the quote already holds the pool fee.
 - **Why:** the old 2.5% + 1% came from the live haircut, which WAS the pool fee, and the quote already holds that fee. Paper P&L was about $0.35 per $20 trade worse than a live trade.

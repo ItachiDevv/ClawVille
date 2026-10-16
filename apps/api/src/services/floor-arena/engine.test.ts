@@ -10,7 +10,11 @@ import {
   tryOpenPosition, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
   quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
+  breakevenMarkMult, liquidityBelow, liquidityShadowCrossings, LIQ_SHADOW_THRESHOLDS, recordLiquidityShadow,
+  type ExitLiquidity, type ExitTrigger, type LiqShadowDeps,
 } from './engine';
+import { markFallbackProceeds } from './pricing';
+import type { ArenaEventInput } from './events';
 import { ARENA_CONTEST_FINAL_GRACE_MS } from './contest';
 import type { FloorArenaFeatures } from './filters';
 
@@ -88,6 +92,148 @@ describe('exit trigger state machine', () => {
     const ex = exits({ tp: [[1.1, 1]], max_hold_s: 60 });
     expect(decideExitTrigger(state(), ex, 1.2, T0 + 120_000)).toEqual({ reason: 'tp', fraction: 1, leg: 1 });
   });
+});
+
+describe('phase 3b exits: breakeven stop and liquidity drop', () => {
+  const BE = 1 / (1 - 0.0175);
+  const liq = (entryUsd: number | null, nowUsd: number | null): ExitLiquidity => ({ entryUsd, nowUsd });
+
+  test('breakeven level = 1 / (1 - (sell haircut + pool fee)), and a full sell there nets ~$0', () => {
+    expect(breakevenMarkMult()).toBeCloseTo(BE, 12);
+    expect(breakevenMarkMult({ buy_haircut_pct: 1, sell_haircut_pct: 0.5, mark_fallback_pool_fee_pct: 0 })).toBeCloseTo(1 / 0.995, 12);
+    // entry price already holds the buy haircut: tokens x entry = size; a mark-fallback sell at the level returns size.
+    const s = state();
+    const proceeds = markFallbackProceeds(s.tokens, s.entryPriceUsd * breakevenMarkMult());
+    expect(proceeds).toBeCloseTo(s.sizeUsd, 9);
+  });
+
+  test('breakeven is not armed below the arm; armed by the peak, it exits at or below the level', () => {
+    const ex = exits({ tp: [[2, 1]], breakeven_arm_mult: 1.2 });
+    // Peak 1.19 < 1.2: a drop to 1.0 does nothing.
+    expect(decideExitTrigger(state({ peakMult: 1.19 }), ex, 1.0, T0 + 1_000)).toBeNull();
+    // Armed (peak 1.3): above the level holds, at the level exits.
+    expect(decideExitTrigger(state({ peakMult: 1.3 }), ex, BE + 0.001, T0 + 1_000)).toBeNull();
+    expect(decideExitTrigger(state({ peakMult: 1.3 }), ex, BE, T0 + 1_000))
+      .toEqual({ reason: 'stop', fraction: 1, leg: null, stopKind: 'breakeven' });
+    // The current mark arms it too (peak = max(peak, mark)), but a mark at the arm is far above the level.
+    expect(decideExitTrigger(state({ peakMult: 1 }), ex, 1.2, T0 + 1_000)).toBeNull();
+  });
+
+  test('breakeven level is max(stop_mult, breakeven); a hit stop_mult stays a plain stop', () => {
+    const ex = exits({ stop_mult: 0.9, breakeven_arm_mult: 1.1 });
+    expect(decideExitTrigger(state({ peakMult: 1.5 }), ex, 0.85, T0 + 1_000)).toEqual({ reason: 'stop', fraction: 1, leg: null });
+    expect(decideExitTrigger(state({ peakMult: 1.5 }), ex, 1.0, T0 + 1_000))
+      .toEqual({ reason: 'stop', fraction: 1, leg: null, stopKind: 'breakeven' });
+  });
+
+  test('order: TP before breakeven; breakeven before liquidity drop; liquidity drop before trail and time', () => {
+    const all = exits({ tp: [[1.5, 1]], breakeven_arm_mult: 1.1, liq_drop_exit_pct: 0.5, trail_from_peak: 0.1, max_hold_s: 60 });
+    const late = T0 + 120_000;
+    const crashed = liq(10_000, 1_000);
+    expect(decideExitTrigger(state({ peakMult: 2 }), all, 1.6, late, crashed)).toEqual({ reason: 'tp', fraction: 1, leg: 1 });
+    expect(decideExitTrigger(state({ peakMult: 2 }), all, 1.0, late, crashed))
+      .toEqual({ reason: 'stop', fraction: 1, leg: null, stopKind: 'breakeven' });
+    expect(decideExitTrigger(state({ peakMult: 1.05 }), all, 1.0, late, crashed))
+      .toEqual({ reason: 'stop', fraction: 1, leg: null, stopKind: 'liq_drop' });
+    // No liquidity drop: the trail (armed from entry, peak 1.05 -> level 0.945) then fires.
+    expect(decideExitTrigger(state({ peakMult: 1.05 }), all, 0.9, late, liq(10_000, 9_000))).toEqual({ reason: 'trail', fraction: 1, leg: null });
+  });
+
+  test('liquidity drop fires strictly below entry x (1 - pct), only with both liquidities known', () => {
+    const ex = exits({ tp: [[2, 1]], liq_drop_exit_pct: 0.5 });
+    const hit: ExitTrigger = { reason: 'stop', fraction: 1, leg: null, stopKind: 'liq_drop' };
+    expect(decideExitTrigger(state(), ex, 1.0, T0 + 1_000, liq(10_000, 5_000))).toBeNull();
+    expect(decideExitTrigger(state(), ex, 1.0, T0 + 1_000, liq(10_000, 4_999))).toEqual(hit);
+    expect(decideExitTrigger(state(), ex, 1.0, T0 + 1_000, liq(null, 0))).toBeNull();
+    expect(decideExitTrigger(state(), ex, 1.0, T0 + 1_000, liq(0, 0))).toBeNull();
+    expect(decideExitTrigger(state(), ex, 1.0, T0 + 1_000, liq(10_000, null))).toBeNull();
+    expect(decideExitTrigger(state(), ex, 1.0, T0 + 1_000, null)).toBeNull();
+    // No fresh mark: only the time cap can fire, as before.
+    expect(decideExitTrigger(state(), ex, null, T0 + 1_000, liq(10_000, 0))).toBeNull();
+    expect(liquidityBelow(liq(10_000, 2_999), 0.7)).toBe(true);
+  });
+
+  test('null or missing fields = the pre-3b decisions exactly', () => {
+    const legacy = exits({ tp: [[1.2, 0.5], [1.5, 0.5]], stop_mult: 0.9, trail_from_peak: 0.12, trail_arm_mult: 1.1 });
+    const nulls = { ...legacy, breakeven_arm_mult: null, liq_drop_exit_pct: null };
+    const crashed = liq(10_000, 1);
+    for (const peak of [1, 1.05, 1.3, 2]) {
+      for (const mark of [null, 0.5, 0.9, 0.95, 1, BE, 1.15, 1.2, 1.6]) {
+        for (const at of [T0 + 1_000, T0 + 900_000]) {
+          const s = state({ peakMult: peak });
+          const before = decideExitTrigger(s, legacy, mark, at);
+          expect(decideExitTrigger(s, legacy, mark, at, crashed)).toEqual(before);
+          expect(decideExitTrigger(s, nulls, mark, at, crashed)).toEqual(before);
+        }
+      }
+    }
+  });
+
+  test('exit summary names the stop kind', () => {
+    const fill = { remainingFraction: 0, realisedUsd: 19, closed: true, pnlUsd: -1, pnlMult: 0.95 };
+    const base = { label: 'X', legs: 0, mult: 1.0, proceedsUsd: 19, fillSource: 'quote' as const, fill, sizeUsd: 20 };
+    expect(exitSummary({ ...base, trigger: { reason: 'stop', fraction: 1, leg: null, stopKind: 'breakeven' } })).toContain('(breakeven stop)');
+    expect(exitSummary({ ...base, trigger: { reason: 'stop', fraction: 1, leg: null, stopKind: 'liq_drop' } })).toContain('(liquidity drop)');
+    expect(exitSummary({ ...base, trigger: { reason: 'stop', fraction: 1, leg: null } })).toContain('(stop)');
+  });
+});
+
+describe('phase 3b liquidity shadow events', () => {
+  const position = { id: 'pos-1', agentId: 'agent-1', mint: 'MINT', symbol: 'TKN' };
+
+  function harness(stored: number[] = []) {
+    const written: ArenaEventInput[] = [];
+    let reads = 0;
+    const deps: LiqShadowDeps = {
+      seen: new Map(),
+      readRecorded: async () => { reads += 1; return stored; },
+      write: async (events) => { written.push(...events); },
+    };
+    return { deps, written, reads: () => reads };
+  }
+
+  test('crossings are the thresholds past now and not yet recorded', () => {
+    expect(LIQ_SHADOW_THRESHOLDS).toEqual([0.3, 0.5, 0.7]);
+    expect(liquidityShadowCrossings({ entryUsd: 10_000, nowUsd: 7_000 }, new Set())).toEqual([]);
+    expect(liquidityShadowCrossings({ entryUsd: 10_000, nowUsd: 6_999 }, new Set())).toEqual([0.3]);
+    expect(liquidityShadowCrossings({ entryUsd: 10_000, nowUsd: 1_000 }, new Set([0.3]))).toEqual([0.5, 0.7]);
+    expect(liquidityShadowCrossings({ entryUsd: null, nowUsd: 0 }, new Set())).toEqual([]);
+  });
+
+  test('records each threshold once per position, even with the exit field off', async () => {
+    const h = harness();
+    // Healthy pool: no DB read, no event.
+    expect(await recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 9_000 }, 1, null, h.deps)).toEqual([]);
+    expect(h.reads()).toBe(0);
+    expect(await recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 6_000 }, 0.9, null, h.deps)).toEqual([0.3]);
+    expect(await recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 6_000 }, 0.9, null, h.deps)).toEqual([]);
+    expect(await recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 2_000 }, 0.5, null, h.deps)).toEqual([0.5, 0.7]);
+    expect(await recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 100 }, 0.1, null, h.deps)).toEqual([]);
+    expect(h.reads()).toBe(1);
+    expect(h.written.map((e) => [e.type, e.data?.reason, e.data?.threshold])).toEqual([
+      ['skip', 'exit_shadow_liq_drop', 0.3], ['skip', 'exit_shadow_liq_drop', 0.5], ['skip', 'exit_shadow_liq_drop', 0.7],
+    ]);
+    expect(h.written[0]!.data).toMatchObject({ positionId: 'pos-1', entryLiqUsd: 10_000, liqUsd: 6_000, liqDropExitPct: null });
+    expect(h.written[0]!.summary).toContain('Shadow only (no trade)');
+  });
+
+  test('after a restart the stored thresholds are not written again', async () => {
+    const h = harness([0.3, 0.5]);
+    expect(await recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 2_000 }, 0.5, 0.5, h.deps)).toEqual([0.7]);
+    expect(h.written).toHaveLength(1);
+  });
+
+  test('a failed write is retried on the next tick (memory updates only after the write)', async () => {
+    const h = harness();
+    let fail = true;
+    const deps: LiqShadowDeps = { ...h.deps, write: async (events) => { if (fail) throw new Error('db down'); h.written.push(...events); } };
+    await expect(recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 6_000 }, 1, null, deps)).rejects.toThrow('db down');
+    fail = false;
+    expect(await recordLiquidityShadow(position, { entryUsd: 10_000, nowUsd: 6_000 }, 1, null, deps)).toEqual([0.3]);
+  });
+});
+
+describe('exit trigger state machine (continued)', () => {
 
   test('a closed position never triggers', () => {
     expect(decideExitTrigger(state({ remainingFraction: 0 }), exits(), 0.1, T0 + 10_000_000)).toBeNull();

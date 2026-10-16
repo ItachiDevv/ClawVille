@@ -249,8 +249,24 @@ interface StatsCacheEntry {
   // never reaches the next owner's dashboard.
   ownerUserId: string | null;
   ownerSinceMs: number;
+  // The per-agent write generation the body was built under (see below).
+  generation: number;
 }
 const statsCache = new Map<string, StatsCacheEntry>();
+
+// Per-agent write generation (2026-10-15 harness finding): register, PATCH and
+// DELETE call `invalidateHatcherStatsCache` after each committed row write. It
+// drops the cached body AND bumps the generation, so a stats build that started
+// (captured the generation) before the write cannot store its stale body after
+// it. One small integer per agentId that was ever written in this process.
+const statsCacheGeneration = new Map<string, number>();
+function currentStatsGeneration(namespacedAgentId: string): number {
+  return statsCacheGeneration.get(namespacedAgentId) ?? 0;
+}
+function invalidateHatcherStatsCache(namespacedAgentId: string): void {
+  statsCacheGeneration.set(namespacedAgentId, currentStatsGeneration(namespacedAgentId) + 1);
+  statsCache.delete(namespacedAgentId);
+}
 
 /**
  * Pre-compute (buildingId → KnowledgeBook[]) from the shared registry once at
@@ -1020,6 +1036,7 @@ partnerHatcherRoutes.post('/agents', async (c) => {
       if (txResult.status === 'conflict') return { kind: 'conflict' };
       if (txResult.status === 'cap') return { kind: 'cap', cap: capValue };
       row = txResult.row;
+      invalidateHatcherStatsCache(namespacedAgentId);
     } catch (err) {
       // The upsert + atomic hash write are one transaction — a throw rolled BOTH
       // back, so there is no committed row whose hash diverges from the bearer.
@@ -1453,6 +1470,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
       if (txResult.status === 'not_found') return { kind: 'not_found' };
       if (txResult.status === 'bad_target') return { kind: 'bad_target' };
       row = txResult.row;
+      invalidateHatcherStatsCache(namespacedAgentId);
       nextMode = txResult.mode;
       nextTargetNpcId = txResult.target;
       priorSnapshot = txResult.priorSnapshot;
@@ -1607,6 +1625,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
                   updatedAt: new Date(),
                 })
                 .where(eq(agentBots.id, row.id));
+              invalidateHatcherStatsCache(namespacedAgentId);
               rotatedSessionId = sessionId;
               rotatedSessionExpiresAt = expiresAt;
             } catch (err) {
@@ -1683,6 +1702,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
                       updatedAt: new Date(),
                     })
                     .where(eq(agentBots.id, row.id));
+                  invalidateHatcherStatsCache(namespacedAgentId);
                 } catch (compensateErr) {
                   console.error(
                     '[Hatcher/patch] P6-2 row compensation after override spawn failure FAILED; persisted row may describe the failed target until the next successful PATCH/restore:',
@@ -1827,6 +1847,7 @@ partnerHatcherRoutes.delete('/agents/:agentId', async (c) => {
           updatedAt: tombstonedAt,
         })
         .where(eq(agentBots.id, existing.id));
+      invalidateHatcherStatsCache(namespacedAgentId);
     } catch (err) {
       console.error('[Hatcher/delete] tombstone failed:', err);
       return { status: 'delete_failed' };
@@ -1913,6 +1934,10 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
 
   // 60s cache keyed by the namespaced id (plan §14). Served only after auth so
   // an unauthenticated caller can never read a cached body.
+  // Capture the write generation BEFORE the row read: if a register/PATCH/
+  // DELETE commits while this build runs, the generation moves and the stale
+  // body below is not stored.
+  const statsGeneration = currentStatsGeneration(namespacedAgentId);
   // Registration row — column-pinned, NEVER selects the proxy token columns.
   const row = await db.query.agentBots.findFirst({
     where: eq(agentBots.agentId, namespacedAgentId),
@@ -1955,7 +1980,8 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
     cached &&
     cached.expiresAt > Date.now() &&
     cached.ownerUserId === ownerUserId &&
-    cached.ownerSinceMs === ownerSinceMs
+    cached.ownerSinceMs === ownerSinceMs &&
+    cached.generation === currentStatsGeneration(namespacedAgentId)
   ) {
     return c.json(mergeHatcherStatsSettlement(cached.body, settlement));
   }
@@ -2128,12 +2154,17 @@ partnerHatcherRoutes.get('/agents/:agentId/stats', async (c) => {
     recentInteractions,
   };
 
-  statsCache.set(namespacedAgentId, {
-    expiresAt: now + STATS_CACHE_TTL_MS,
-    body,
-    ownerUserId,
-    ownerSinceMs,
-  });
+  // Store only when no row write committed since this build captured the
+  // generation; otherwise the body may describe the pre-write row.
+  if (currentStatsGeneration(namespacedAgentId) === statsGeneration) {
+    statsCache.set(namespacedAgentId, {
+      expiresAt: now + STATS_CACHE_TTL_MS,
+      body,
+      ownerUserId,
+      ownerSinceMs,
+      generation: statsGeneration,
+    });
+  }
 
   return c.json(mergeHatcherStatsSettlement(body, settlement));
 });

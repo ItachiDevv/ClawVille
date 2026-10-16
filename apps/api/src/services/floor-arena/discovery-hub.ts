@@ -31,7 +31,9 @@ const SOL_PRICE_EVERY_MS = 60_000;
 
 export type DiscoverySourceId =
   | 'ds:token-profiles' | 'ds:token-boosts-latest' | 'ds:token-boosts-top'
-  | 'clawpump:signals' | 'clawpump:anomalies' | 'gecko:new-pools' | 'gecko:trending_5m';
+  | 'clawpump:signals' | 'clawpump:anomalies' | 'gecko:new-pools' | 'gecko:trending_5m'
+  // Pushed by the PumpPortal websocket (pumpportal-feed.ts), not polled: never in DISCOVERY_SOURCES.
+  | 'pumpportal:new' | 'pumpportal:migration';
 
 export interface Sighting { mint: string; source: DiscoverySourceId; symbol: string | null; name: string | null }
 

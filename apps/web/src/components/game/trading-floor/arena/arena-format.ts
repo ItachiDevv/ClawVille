@@ -211,6 +211,10 @@ export function exitTargets(exits: FloorArenaExits): string[] {
     const arm = exits.trail_arm_mult;
     out.push(`Trail ${formatFraction(exits.trail_from_peak)} from peak${arm !== null ? ` after ${formatMultiple(arm)}` : ''}`);
   }
+  const breakeven = exits.breakeven_arm_mult ?? null;
+  if (breakeven !== null) out.push(`Breakeven stop after ${formatMultiple(breakeven)}`);
+  const liqDrop = exits.liq_drop_exit_pct ?? null;
+  if (liqDrop !== null) out.push(`Sell if liquidity falls ${formatFraction(liqDrop)}`);
   out.push(`Max hold ${formatDuration(exits.max_hold_s)}`);
   return out;
 }

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision", "confidence", "exit_room", "rug_risk", "reasons"],
+  "properties": {
+    "decision": { "type": "string", "enum": ["enter", "skip"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "exit_room": { "type": "string", "enum": ["yes", "no"] },
+    "rug_risk": { "type": "string", "enum": ["low", "med", "high"] },
+    "reasons": { "type": "array", "items": { "type": "string" } }
+  }
+}

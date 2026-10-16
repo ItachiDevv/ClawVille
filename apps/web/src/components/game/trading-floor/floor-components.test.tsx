@@ -14,6 +14,7 @@ import { Window } from 'happy-dom';
 import type { Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
+import { FINGERPRINT_STORAGE_KEY } from '@/lib/fingerprint';
 import { PENDING_UNCONFIRMED_AFTER_MS } from './format';
 import { floorStatusCopy } from './floor-tape';
 import type { FloorDecision, FloorTrade, TapeEntry } from '@/stores/trade-ticker';
@@ -49,6 +50,7 @@ const installedNames = [
   'window',
   'document',
   'navigator',
+  'fetch',
   'IS_REACT_ACT_ENVIRONMENT',
   ...globalNames,
 ] as const;
@@ -86,6 +88,18 @@ function installDom(): void {
     });
   }
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, writable: true, value: true });
+  // These tests seed every query they read, but TradingFloorTab still asks
+  // GET /api/auth/me (useAuthMe). Without a stub that call went to the real
+  // network: the refused connection made lib/api.ts wait 750 ms and retry
+  // through whatever global fetch existed THEN, i.e. the fetch mock of a later
+  // test file (arena-panels.test.tsx saw /api/auth/me inside its guest test).
+  // A request that never settles keeps auth-me loading, as these tests
+  // expect, and leaves no retry behind.
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    writable: true,
+    value: () => new Promise<Response>(() => undefined),
+  });
 }
 
 function trade(scored: boolean): FloorTrade {
@@ -193,6 +207,13 @@ function expectGated(control: HTMLButtonElement | HTMLInputElement): void {
 beforeAll(async () => {
   rememberDom();
   installDom();
+  // lib/fingerprint.ts keeps its visitorId and its in-flight FingerprintJS
+  // load in MODULE state, shared by every test file in one bun run. With no
+  // cached visitorId, the first API call here starts a slow live compute, and
+  // a later file in the same run then awaits that same pending load, so its
+  // requests can land in a later test. A cached visitorId, as a returning
+  // browser has, makes the header ready at once.
+  testWindow.localStorage.setItem(FINGERPRINT_STORAGE_KEY, '0123456789abcdef0123456789abcdef');
   ({ createRoot } = await import('react-dom/client'));
   ({ TapeRow } = await import('./trade-row'));
   ({ TradingFloorTab } = await import('./trading-floor-tab'));
