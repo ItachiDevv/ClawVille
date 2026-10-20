@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-16 11:27 UTC (session tradeLead3, arena lead). **PROD API + WEB = `b00d0b88` (PROMOTION #10, PR #320: house paper bots on their own private ClawPump agents, migration 0086; staging-only Jev demo inert on prod), VERIFIED 11:16-11:27Z.** Founder go 2026-10-16. Run 38892271409: 4 gates, migrate, deploy success; both containers `b00d0b88` healthy; `/health` commit b00d0b88. All 5 prod house rows `ready` with new ClawPump agents (e.g. `CV Arena · Genesis #housegenesis` 9819917d, private, 6 sticky default skills, no trading/x402). **Staging = `369668c5`.** SCHEMA: synced.
+Last Audited: 2026-10-20 01:30 UTC (session jev, arena lead). **Staging is receiving the Jev world-demo change** (one `choice` question `next_action` over the full menu replaces one `noul` per verb; same >= 0.5 gate; staging only; no migration; PROTOCOL unchanged). Not yet verified; see the DEPLOY LOG. **PROD API + WEB = `b00d0b88`** (unchanged). SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-16 11:27 UTC (session tradeLead3, arena lead). **PROD API + WEB = `b00d0b88` (PROMOTION #10, PR #320: house paper bots on their own private ClawPump agents, migration 0086; staging-only Jev demo inert on prod), VERIFIED 11:16-11:27Z.** Founder go 2026-10-16. Run 38892271409: 4 gates, migrate, deploy success; both containers `b00d0b88` healthy; `/health` commit b00d0b88. All 5 prod house rows `ready` with new ClawPump agents (e.g. `CV Arena · Genesis #housegenesis` 9819917d, private, 6 sticky default skills, no trading/x402). **Staging = `369668c5`.** SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-16 10:51 UTC (session tradeLead3, arena lead). **Staging = `adeee117`** (API 10:47Z and web 10:51Z verified by SOURCE_COMMIT): house paper bots provisioned their own private ClawPump agents (migration 0086, Codex APPROVE after 2 fixes), and `f59b1337` Jev world-decide demo (staging only, 1 listed agent). **PROD API + WEB = `6832a5cc`** (promotion #9, unchanged). SCHEMA: `prod-migration-pending: 0086_floor_arena_house_clawpump.sql`.
 
@@ -616,6 +618,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-20 01:30Z (session jev, arena lead) - staging: Jev world demo asks one choice question
+- **What changed:** `jev-world-decide.ts` (FEATURE_GATE `jev_world_decide_demo`, staging only) sends Jev ONE `choice` question `next_action` whose options are every `HATCHER_ACTION_MENU` verb (probabilities sum to 1), plus the unchanged param choices. The picked verb is the argmax of `probabilities` (the `choice` string is not trusted); the gate stays >= 0.5. The prod decide shadow (`jev-decide-shadow.ts`, per-verb `noul`) is unchanged. Tests: 33 pass (jev-world-decide + jev-decide-shadow); api tsc exit 0; doc-path check pass.
+- **Why:** the 10-16 run (33 rows) had 11 fallbacks, all `below_threshold` (independent per-verb `noul` tops 0.36-0.49), and all 22 Jev picks were `claim_tutorial_quest` (0.50-0.56).
+- **What broke:** nothing yet. Verification (API SOURCE_COMMIT, re-arm, >= 50 demo rows) follows in the next entry.
+- **Who it is for:** the founder (Jev "instant reactions" demo). SCHEMA: synced.
 
 ### 2026-10-16 11:27Z (session tradeLead3, arena lead) - promotion #10 (PR #320, b00d0b88)
 - **What changed:** prod gets migration 0086 + house ClawPump provisioning + the writer's permanent live-trader deny set; the Jev world demo code ships but is refused on production in code.

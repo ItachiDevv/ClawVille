@@ -1,7 +1,7 @@
 // FEATURE_GATE: jev_world_decide_demo
 // Status: staging-only demo (Jev decides the next world action for listed avatars; local LLM is the fallback)
 // Metric to graduate: on staging, >=50 demo decisions with Jev p50 < 500 ms, >=60% decided by Jev (not fallback), no executor refusals above the local baseline, founder go
-// Current reading: none (new)
+// Current reading: 2026-10-16 run (per-verb noul): 33 rows, 22 demo_jev / 11 demo_fallback (all below_threshold), Jev p50 ~100 ms, spend ~$0.007; 2026-10-20 switched to one choice question
 // Review deadline: 2026-10-23
 // On deadline: delete this module and its driver branch, or write a production plan with a new cap (founder decision)
 // Reference: GameFeatures.md (Jev decide shadow + world-decide demo bullets), ARCHITECTURE.md section 4
@@ -18,9 +18,11 @@
  *
  * Safety: Jev never emits free text. It picks one verb from the FULL
  * HATCHER_ACTION_MENU (the same menu and the same prompt the local model
- * sees, as Jev `state`). Only verbs whose params come from a fixed list are
- * accepted here: four no-param place verbs, `emote` (names from the menu
- * syntax), `enter_building` / `claim_tutorial_quest` / `salvage_node` (ids
+ * sees, as Jev `state`) with ONE `choice` question (`next_action`, one option
+ * per menu verb; its probabilities sum to 1, so the top verb is not diluted
+ * the way independent per-verb `noul` answers were). Only verbs whose params
+ * come from a fixed list are accepted here: four no-param place verbs,
+ * `emote` (names from the menu syntax), `enter_building` / `claim_tutorial_quest` / `salvage_node` (ids
  * the prompt already lists, picked with Jev `choice` questions). Any other
  * verb (money, land, free-text chat, move) falls back to local. The result is
  * an `[ACTION: verb(param=value)]` string that the driver parses and
@@ -42,9 +44,7 @@ import {
   JEV_MODEL,
   JEV_USD_PER_MTOK,
   boundedWrite,
-  buildJevQuestions,
   estimateJevUsd,
-  pickJevVerb,
   redact,
   utcDay,
   type JevReserveResult,
@@ -55,8 +55,12 @@ export const JEV_WORLD_TIMEOUT_MS = 3_000;
 /** Jev's top verb probability must reach this, or the decision falls back to local. */
 export const JEV_WORLD_MIN_TOP_PROB = 0.5;
 export const JEV_WORLD_MAX_GLOBAL_IN_FLIGHT = 2;
-/** Upper bound on options per `choice` question (keeps the request small). */
+/** Upper bound on options per param `choice` question (keeps the request small). */
 export const JEV_WORLD_MAX_CHOICES = 24;
+/** Name of the one `choice` question whose options are every menu verb. */
+export const JEV_WORLD_ACTION_QUESTION = 'next_action';
+/** Max chars of a verb's `whenToUse` sent as its option text (longest today is ~210). */
+const ACTION_CRITERIA_MAX_CHARS = 240;
 /** Demo caps (staging only). Separate from the shadow caps. */
 export const JEV_WORLD_CAPS: JevSpendCaps = { totalUsd: 0.25, dailyUsd: 0.1 };
 
@@ -130,9 +134,16 @@ export interface JevWorldTargets {
   salvageNodes: JevWorldTarget[];
 }
 
-type JevWorldQuestion =
-  | { type: 'noul'; instructions: string }
-  | { type: 'choice'; instructions: string; criteria: Record<string, string> };
+type JevWorldQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> };
+
+/** One option per verb of the FULL menu (consumption mandate: never only the verbs this demo accepts). */
+export function actionChoiceCriteria(): Record<string, string> {
+  const criteria: Record<string, string> = {};
+  for (const item of HATCHER_ACTION_MENU) {
+    criteria[item.verb] = item.whenToUse.replace(/\s+/g, ' ').trim().slice(0, ACTION_CRITERIA_MAX_CHARS) || item.verb;
+  }
+  return criteria;
+}
 
 function choiceCriteria(targets: readonly JevWorldTarget[]): Record<string, string> | null {
   const criteria: Record<string, string> = {};
@@ -146,9 +157,15 @@ function choiceCriteria(targets: readonly JevWorldTarget[]): Record<string, stri
   return n > 0 ? criteria : null;
 }
 
-/** One `noul` per menu verb (same as the shadow) plus one `choice` per fixed param list that has options. */
+/** One `choice` over every menu verb plus one `choice` per fixed param list that has options. */
 export function buildJevWorldQuestions(targets: JevWorldTargets): Record<string, JevWorldQuestion> {
-  const questions: Record<string, JevWorldQuestion> = { ...buildJevQuestions() };
+  const questions: Record<string, JevWorldQuestion> = {
+    [JEV_WORLD_ACTION_QUESTION]: {
+      type: 'choice',
+      instructions: 'Which single action from the menu is the best next action for this agent right now?',
+      criteria: actionChoiceCriteria(),
+    },
+  };
   const add = (name: ParamQuestion, instructions: string, list: readonly JevWorldTarget[]) => {
     const criteria = choiceCriteria(list);
     if (criteria) questions[name] = { type: 'choice', instructions, criteria };
@@ -176,6 +193,44 @@ export function pickChoice(answers: unknown, name: string, question: JevWorldQue
   return SAFE_ID_RE.test(choice) ? choice : null;
 }
 
+export interface JevWorldVerbPick {
+  verb: string;
+  prob: number;
+  /** Valid menu-verb probabilities from the answer (unknown keys dropped). */
+  probs: Record<string, number>;
+  /** Jev's own peakedness score; recorded nowhere yet, no gate uses it. */
+  confidence: number | null;
+}
+
+/**
+ * The menu verb with the highest probability in the `next_action` answer; ties
+ * keep menu order. The answer's `choice` string is not trusted: the argmax of
+ * `probabilities` wins. null when there is no valid probability for any menu
+ * verb (a bare `choice` gives no probability for the gate).
+ */
+export function pickJevWorldVerb(answers: unknown): JevWorldVerbPick | null {
+  if (!answers || typeof answers !== 'object') return null;
+  const raw = (answers as Record<string, unknown>)[JEV_WORLD_ACTION_QUESTION];
+  if (!raw || typeof raw !== 'object') return null;
+  const a = raw as Record<string, unknown>;
+  if (a.type !== undefined && a.type !== 'choice') return null;
+  const dist = a.probabilities;
+  if (!dist || typeof dist !== 'object' || Array.isArray(dist)) return null;
+  const probs: Record<string, number> = {};
+  let best: { verb: string; prob: number } | null = null;
+  for (const item of HATCHER_ACTION_MENU) {
+    if (!Object.prototype.hasOwnProperty.call(dist, item.verb)) continue;
+    const p = (dist as Record<string, unknown>)[item.verb];
+    if (typeof p !== 'number' || !Number.isFinite(p) || p < 0 || p > 1) continue;
+    probs[item.verb] = p;
+    if (!best || p > best.prob) best = { verb: item.verb, prob: p };
+  }
+  if (!best) return null;
+  const c = a.confidence;
+  const confidence = typeof c === 'number' && Number.isFinite(c) && c >= 0 && c <= 1 ? c : null;
+  return { ...best, probs, confidence };
+}
+
 export type JevWorldResolve =
   | { ok: true; verb: string; prob: number; probs: Record<string, number>; reply: string }
   | { ok: false; reason: string; verb: string | null; prob: number | null; probs: Record<string, number> | null };
@@ -185,7 +240,7 @@ export function resolveJevWorldAction(
   answers: unknown,
   questions: Record<string, JevWorldQuestion>,
 ): JevWorldResolve {
-  const pick = pickJevVerb(answers);
+  const pick = pickJevWorldVerb(answers);
   if (!pick) return { ok: false, reason: 'no_valid_answers', verb: null, prob: null, probs: null };
   const miss = (reason: string): JevWorldResolve => ({
     ok: false, reason, verb: pick.verb, prob: pick.prob, probs: pick.probs,

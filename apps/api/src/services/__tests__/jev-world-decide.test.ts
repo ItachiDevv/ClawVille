@@ -3,6 +3,7 @@ import { HATCHER_ACTION_MENU } from '@clawville/shared';
 import { parseDriverAction } from '../agent-autonomy-driver';
 import { JEV_DEMO_STATUS_PREFIX, JEV_ENDPOINT } from '../jev-decide-shadow';
 import {
+  JEV_WORLD_ACTION_QUESTION,
   JEV_WORLD_CAPS,
   JEV_WORLD_MIN_TOP_PROB,
   buildJevWorldQuestions,
@@ -10,6 +11,7 @@ import {
   emoteNamesFromMenu,
   isJevWorldDecideConfigured,
   isJevWorldDecideEnabled,
+  pickJevWorldVerb,
   resolveJevWorldAction,
   type JevWorldDecideInput,
   type JevWorldEnv,
@@ -65,9 +67,13 @@ function fakeLedger(seedUsd = 0) {
   return { ledger, rows };
 }
 
-function body(verbProbs: Record<string, number>, extra: Record<string, unknown> = {}) {
-  const answers: Record<string, unknown> = { ...extra };
-  for (const [k, v] of Object.entries(verbProbs)) answers[k] = { noul: v };
+/** A `next_action` choice answer; `choice` defaults to the argmax, like Jev. */
+function body(verbProbs: Record<string, unknown>, extra: Record<string, unknown> = {}, choice?: string) {
+  const top = Object.entries(verbProbs).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0];
+  const answers: Record<string, unknown> = {
+    ...extra,
+    next_action: { type: 'choice', choice: choice ?? top, confidence: 0.7, probabilities: verbProbs },
+  };
   return { answers, usage: { input_tokens: 2_000 } };
 }
 
@@ -136,12 +142,40 @@ describe('jev-world-decide decisions', () => {
     expect(out).toEqual({ reply: '[ACTION: enter_cove()]', source: 'jev' });
     expect(t.localCalls()).toBe(0);
     expect(t.fetchCalls[0]?.url).toBe(JEV_ENDPOINT);
-    const sent = JSON.parse(t.fetchCalls[0]!.body) as { state: string; questions: Record<string, unknown> };
-    // Consumption mandate: same prompt as state, every menu verb asked.
+    const sent = JSON.parse(t.fetchCalls[0]!.body) as {
+      state: string;
+      questions: Record<string, { type: string; criteria?: Record<string, string> }>;
+    };
+    // Consumption mandate: same prompt as state, every menu verb offered in ONE choice question.
     expect(sent.state).toBe('FULL decide prompt with the action menu');
-    for (const item of HATCHER_ACTION_MENU) expect(sent.questions[item.verb]).toBeDefined();
+    const qs = Object.entries(sent.questions);
+    expect(qs.filter(([, q]) => q.type === 'noul')).toEqual([]);
+    for (const [, q] of qs) expect(q.type).toBe('choice');
+    const actionQs = qs.filter(([, q]) => Object.keys(q.criteria ?? {}).includes('enter_cove'));
+    expect(actionQs.map(([name]) => name)).toEqual([JEV_WORLD_ACTION_QUESTION]);
+    const criteria = sent.questions[JEV_WORLD_ACTION_QUESTION]!.criteria!;
+    expect(Object.keys(criteria)).toEqual(HATCHER_ACTION_MENU.map((item) => item.verb));
+    for (const text of Object.values(criteria)) expect(text.length).toBeGreaterThan(0);
     expect(t.fl.rows[0]?.status).toBe('demo_jev');
     expect(t.fl.rows[0]?.patch?.jevVerb).toBe('enter_cove');
+    expect(t.fl.rows[0]?.patch?.jevTopProb).toBe(0.8);
+    expect(t.fl.rows[0]?.patch?.jevProbs).toEqual({ enter_cove: 0.8, emote: 0.3 });
+  });
+
+  it('argmax of probabilities wins over a disagreeing choice string', async () => {
+    const t = setup({ response: body({ enter_cove: 0.6, enter_kelp_forest: 0.4 }, {}, 'enter_kelp_forest') });
+    const out = await t.runner.decide(t.input());
+    expect(out).toEqual({ reply: '[ACTION: enter_cove()]', source: 'jev' });
+  });
+
+  it('a bare choice without probabilities is no_valid_answers', async () => {
+    const t = setup({
+      response: { answers: { next_action: { type: 'choice', choice: 'enter_cove', confidence: 0.9 } } },
+    });
+    const out = await t.runner.decide(t.input());
+    await flush();
+    expect(out.source).toBe('local_fallback');
+    expect(t.fl.rows[0]?.patch?.error).toBe('no_valid_answers');
   });
 
   it('falls back to local below the threshold and records the local verb', async () => {
@@ -194,8 +228,44 @@ describe('jev-world-decide decisions', () => {
     for (const verb of ['trade_token', 'play_cove_game', 'claim_parcel', 'talk_to_npc', 'chat_nori', 'move']) {
       const t = setup({ response: body({ [verb]: 0.99 }) });
       const out = await t.runner.decide(t.input());
+      await flush();
       expect(out.source).toBe('local_fallback');
+      expect(t.fl.rows[0]?.patch?.error).toBe('verb_not_supported');
+      expect(t.fl.rows[0]?.patch?.jevVerb).toBe(verb);
     }
+  });
+});
+
+describe('jev-world-decide next_action picker', () => {
+  it('ignores unknown keys and out-of-range or non-finite values', () => {
+    const pick = pickJevWorldVerb(body({
+      not_a_verb: 0.99, enter_cove: 1.5, emote: -0.1, enter_poker_room: Number.NaN, enter_kelp_forest: 0.55,
+    }).answers);
+    expect(pick).toEqual({
+      verb: 'enter_kelp_forest', prob: 0.55, probs: { enter_kelp_forest: 0.55 }, confidence: 0.7,
+    });
+  });
+  it('returns null when no menu verb has a valid probability', () => {
+    expect(pickJevWorldVerb(body({ not_a_verb: 0.9, enter_cove: 'high' }).answers)).toBeNull();
+    expect(pickJevWorldVerb({ next_action: { type: 'noul', probabilities: { enter_cove: 0.9 } } })).toBeNull();
+    expect(pickJevWorldVerb({ next_action: { probabilities: [0.9] } })).toBeNull();
+    expect(pickJevWorldVerb(null)).toBeNull();
+  });
+  it('ties keep menu order and a bad confidence reads as null', () => {
+    const verbs = HATCHER_ACTION_MENU.map((item) => item.verb);
+    const [first, second] = [verbs.indexOf('enter_cove'), verbs.indexOf('enter_trading_floor')].sort((a, b) => a - b);
+    const pick = pickJevWorldVerb({
+      next_action: { probabilities: { [verbs[second]!]: 0.5, [verbs[first]!]: 0.5 }, confidence: 2 },
+    });
+    expect(pick?.verb).toBe(verbs[first]);
+    expect(pick?.confidence).toBeNull();
+  });
+  it('gate applies to the chosen verb probability', () => {
+    const questions = buildJevWorldQuestions(TARGETS);
+    const at = resolveJevWorldAction(body({ enter_cove: JEV_WORLD_MIN_TOP_PROB, emote: 0.5 - 1e-9 }).answers, questions);
+    expect(at.ok).toBe(true);
+    const below = resolveJevWorldAction(body({ enter_cove: 0.49, emote: 0.3, move: 0.21 }).answers, questions);
+    expect(below).toMatchObject({ ok: false, reason: 'below_threshold', verb: 'enter_cove', prob: 0.49 });
   });
 });
 
