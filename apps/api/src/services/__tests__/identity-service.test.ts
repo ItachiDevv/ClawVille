@@ -186,3 +186,59 @@ describe('identity fingerprint heal-on-reconnect', () => {
     expect(store.legacyProbes).toEqual([]);
   });
 });
+
+// 2026-10-20: /connect to an owned agentId resolves the identity look-up only,
+// so a key with no account never leaves an empty account behind.
+describe('public onboarding look-up only (createIfMissing: false)', () => {
+  test('an identity with no account returns null and inserts nothing', async () => {
+    const store = new MemoryIdentityStore();
+    const result = await resolvePublicOnboardingIdentityWithStore(
+      'openclaw',
+      'no-account-yet',
+      store,
+      { createIfMissing: false },
+    );
+
+    expect(result).toBeNull();
+    expect(store.rows.size).toBe(0);
+  });
+
+  test('an existing account is found with the canonical identity type', async () => {
+    const store = new MemoryIdentityStore();
+    const key = 'existing-secret';
+    const owner = store.seed(identityFingerprint('openclaw', key), 'owner');
+
+    const result = await resolvePublicOnboardingIdentityWithStore('openclaw', key, store, {
+      createIfMissing: false,
+    });
+
+    expect(result?.identityType).toBe('openclaw');
+    expect(result?.user.id).toBe(owner.id);
+    expect(result?.user.isNewUser).toBe(false);
+    expect(store.rows.size).toBe(1);
+  });
+
+  test('a legacy fingerprint still heals to the same account', async () => {
+    const store = new MemoryIdentityStore();
+    const key = 'legacy-secret';
+    const victim = store.seed(identityFingerprint('nanoclaw', key), 'victim');
+
+    const result = await resolvePublicOnboardingIdentityWithStore('custom', key, store, {
+      createIfMissing: false,
+    });
+
+    expect(result?.user.id).toBe(victim.id);
+    expect(result?.user.identityFingerprint).toBe(identityFingerprint('custom', key));
+    expect(store.rows.size).toBe(1);
+  });
+
+  test('createIfMissing: true keeps resolve-or-create', async () => {
+    const store = new MemoryIdentityStore();
+    const result = await resolvePublicOnboardingIdentityWithStore('openclaw', 'new-secret', store, {
+      createIfMissing: true,
+    });
+
+    expect(result?.user.isNewUser).toBe(true);
+    expect(store.rows.size).toBe(1);
+  });
+});

@@ -20,6 +20,10 @@ let updateReturns: (call: number) => unknown[] = () => [];
 let updateCalls: Array<{ table: unknown; values: Record<string, unknown>; where: unknown }> = [];
 let insertCalls = 0;
 let identityResolutions = 0;
+// Options the route passed to resolvePublicOnboardingIdentity, and whether the
+// presented identity already has an account (false = a look-up returns null).
+let identityOptions: Array<{ createIfMissing?: boolean } | undefined> = [];
+let identityAccountExists = true;
 let ticketMints = 0;
 let loggedEvents = 0;
 
@@ -88,8 +92,14 @@ const realIdentity = await import('../../services/identity-service');
 restoreModules.push(['../../services/identity-service', { ...realIdentity }]);
 mock.module('../../services/identity-service', () => ({
   ...realIdentity,
-  resolvePublicOnboardingIdentity: async (identityType: string) => {
+  resolvePublicOnboardingIdentity: async (
+    identityType: string,
+    _identityKey: string,
+    options?: { createIfMissing?: boolean },
+  ) => {
     identityResolutions++;
+    identityOptions.push(options);
+    if (options?.createIfMissing === false && !identityAccountExists) return null;
     return { user: { id: OWNER_ID }, identityType };
   },
   resolveOrCreateUserByIdentity: async () => {
@@ -250,6 +260,8 @@ beforeEach(() => {
   updateCalls = [];
   insertCalls = 0;
   identityResolutions = 0;
+  identityOptions = [];
+  identityAccountExists = true;
   ticketMints = 0;
   loggedEvents = 0;
   registerCalls = 0;
@@ -397,6 +409,98 @@ describe('POST /api/agent/connect owner credential rule', () => {
     // Identity claim UPDATE, then the main refresh with the identity-owner CAS.
     expect(updateCalls).toHaveLength(2);
     expect(whereSql(1)).toBe('("openclaw_bots"."id" = $1 and "openclaw_bots"."user_id" = $2)');
+    // An owned row resolves the identity look-up only: no account is created.
+    expect(identityOptions).toEqual([{ createIfMissing: false }]);
+  });
+
+  // 2026-10-20: a key-only reconnect to a row that a logged-in human's link
+  // bound used to create an empty account for the key, then 409. The identity
+  // now resolves look-up only on an owned row, and a missing account refuses
+  // before any write.
+  test('owned row + identityKey with no account: 409 OWNER_BIND_CONFLICT and no account is created', async () => {
+    botRow = boundRow('human-owned-agent', OWNER_ID);
+    identityAccountExists = false;
+    const result = await connect({
+      agentId: 'human-owned-agent',
+      identityType: 'openclaw',
+      identityKey: 'agent-own-identity-secret',
+    });
+    expect(result.status).toBe(409);
+    expect(result.json).toEqual({
+      error: 'Owner binding changed during connect',
+      code: 'OWNER_BIND_CONFLICT',
+      detail: expect.stringContaining('ask your human for a new connect link'),
+    });
+    expect(identityOptions).toEqual([{ createIfMissing: false }]);
+    expect(JSON.stringify(result.json)).not.toContain(OWNER_ID);
+    expect(updateCalls).toHaveLength(0);
+    expect(insertCalls).toBe(0);
+    expect(registerCalls).toBe(0);
+    expect(ticketMints).toBe(0);
+    expect(loggedEvents).toBe(0);
+  });
+
+  test('a public token claim on an owned row with no identity account: 409, token released, no account', async () => {
+    const token = `ct-owner-missing-account-${'b'.repeat(24)}`;
+    pendingConnections.set(token, {
+      token,
+      avatarId: null,
+      avatarName: null,
+      userId: null,
+      expiresAt: Date.now() + 60_000,
+      connected: false,
+      publicHandoff: {
+        pollSecretHash: 'poll-secret-digest',
+        fpHash: 'fp-owner-missing-account',
+        ipPrefixHash: 'ip-owner-missing-account',
+      },
+    });
+    try {
+      botRow = boundRow('human-owned-token-agent', OWNER_ID);
+      identityAccountExists = false;
+      const result = await connect({
+        connectionToken: token,
+        agentId: 'human-owned-token-agent',
+        identityType: 'openclaw',
+        identityKey: 'agent-own-identity-secret',
+      });
+      expect(result.status).toBe(409);
+      expect(result.json).toEqual({ error: 'Connection token claim conflicted' });
+      expect(identityOptions).toEqual([{ createIfMissing: false }]);
+      expect(updateCalls).toHaveLength(0);
+      expect(registerCalls).toBe(0);
+      const pending = pendingConnections.get(token);
+      expect(pending?.connected).toBe(false);
+      expect(pending?.sessionId).toBeUndefined();
+      expect(pending?.publicHandoff?.claimDeadline).toBeUndefined();
+    } finally {
+      pendingConnections.delete(token);
+    }
+  });
+
+  test('unowned row + identityKey still resolves-or-creates the account and binds', async () => {
+    botRow = boundRow('unowned-identity-agent', null);
+    updateReturns = () => [{ userId: OWNER_ID }];
+    const result = await connect({
+      agentId: 'unowned-identity-agent',
+      identityType: 'openclaw',
+      identityKey: 'self-connect-secret',
+    });
+    expect(result.status).toBe(200);
+    expect(identityOptions).toEqual([{ createIfMissing: true }]);
+    expect(registerCalls).toBe(1);
+  });
+
+  test('new agentId + identityKey still resolves-or-creates the account', async () => {
+    botRow = null;
+    const result = await connect({
+      agentId: 'brand-new-identity-agent',
+      identityType: 'openclaw',
+      identityKey: 'first-connect-secret',
+    });
+    expect(result.status).toBe(200);
+    expect(identityOptions).toEqual([{ createIfMissing: true }]);
+    expect(insertCalls).toBe(1);
   });
 
   test('the reserved partner identity-type 400 releases an authenticated token', async () => {
