@@ -881,7 +881,8 @@ import {
 // 88 (2026-10-15, arena phase 3b): two optional exits fields, exits.breakeven_arm_mult and exits.liq_drop_exit_pct (null = off in every template; a body without them reads as null), stopKind on stop exits, and the research-only 'exit_shadow_liq_drop' skip event; the tradeable-source text gains PumpPortal graduations (`pumpportal:migration`, D25 amended); documented in the trading topic.
 // 2026-10-15 follow-up (Hatcher stats cache invalidation, web test isolation): manual reviewed, unchanged at 88.
 // 89 (2026-10-20, connect dead-token guidance): the Connect errors list names `404 connection_token_invalid` / `410 connection_token_expired` / `409 connection_token_claimed` (the human's link lasts 5 minutes and works once); POST /connect adds `code` + `detail` to those bodies, `error` strings and statuses unchanged.
-export const PROTOCOL_VERSION = 89;
+// 90 (2026-10-20, house actor executor hardening): `npc-simulation.ts` refuses a HOUSE actor (`openclaw_bots.is_house`) before any session resolve on `chat_nori`, `update_appearance`, `trade_token` and `place_kit_piece` (one set, `house-refused-verbs.ts`), because the house row's NULL session expiry made each of those paths unregister the house body. No connected or hosted agent verb, param, menu text or settlement changed; the manual text changes only in its embedded version number (version log only). Partner (Hatcher) sessions are never `is_house`.
+export const PROTOCOL_VERSION = 90;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

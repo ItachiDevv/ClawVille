@@ -95,6 +95,7 @@ import {
   type JevWorldTargets,
 } from './jev-world-decide';
 import { resolveBuildingId } from './building-center';
+import { HOUSE_REFUSED_AUTONOMY_VERBS } from './house-refused-verbs';
 import { armAutonomy, isAutonomyActive } from './autonomy-standby';
 import {
   readAutonomousLandTargets,
@@ -1892,9 +1893,19 @@ class AgentAutonomyDriver {
           `- ${place.placeId}: "${place.label}" — ${place.description} — ${place.actionSyntax} — ${place.distance}wu away${place.distance <= BUILDING_INTERACTION_RADIUS ? ' (you are HERE — no need to enter again)' : ''}`,
       )
       .join('\n');
+    // Consumption mandate: the menu equals what the executor runs for THIS
+    // actor. The executor refuses HOUSE_REFUSED_AUTONOMY_VERBS for a house
+    // actor, so a house menu omits them; every other entry gets the full menu.
     const actionMenu = HATCHER_ACTION_MENU
+      .filter((action) => !entry.isHouse || !HOUSE_REFUSED_AUTONOMY_VERBS.has(action.verb))
       .map((action) => `- ${action.syntax} — ${action.whenToUse}`)
       .join('\n');
+    // The scope preamble also teaches two of those verbs by example syntax.
+    const decisionScope = entry.isHouse
+      ? DECISION_SCOPE.filter(
+          (line) => ![...HOUSE_REFUSED_AUTONOMY_VERBS].some((verb) => line.includes(`[ACTION: ${verb}(`)),
+        )
+      : DECISION_SCOPE;
     const avoid = entry.lastBuildingId
       ? `\nYou just visited destination "${entry.lastBuildingId}" — avoid repeating it unless the directive requires it.`
       : '';
@@ -1984,7 +1995,7 @@ class AgentAutonomyDriver {
     const tradingDeskBlock = formatAutonomousTradingDesk(tradingDesk);
     return [
       ...(directiveBlock ? [directiveBlock, ''] : []),
-      ...DECISION_SCOPE,
+      ...decisionScope,
       '',
       directiveBlock
         ? "Directive rule: if the directive names an activity or destination satisfy it before learning. Fall back to a teacher only when the directive is about learning."

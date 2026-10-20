@@ -19,6 +19,7 @@ import {
   type JevWorldPatch,
   type JevWorldTargets,
 } from '../jev-world-decide';
+import { HOUSE_REFUSED_AUTONOMY_VERBS } from '../house-refused-verbs';
 
 const KEY = 'jev-test-key-SECRET-4a5b6c';
 const AVATAR = '00000000-0000-4000-8000-0000000000a1';
@@ -266,6 +267,36 @@ describe('jev-world-decide next_action picker', () => {
     expect(at.ok).toBe(true);
     const below = resolveJevWorldAction(body({ enter_cove: 0.49, emote: 0.3, move: 0.21 }).answers, questions);
     expect(below).toMatchObject({ ok: false, reason: 'below_threshold', verb: 'enter_cove', prob: 0.49 });
+  });
+});
+
+describe('jev-world-decide house actors', () => {
+  const allowedForHouse = HATCHER_ACTION_MENU.map((item) => item.verb).filter((verb) => !HOUSE_REFUSED_AUTONOMY_VERBS.has(verb));
+
+  it('a house actor is offered the menu minus the refused verbs; a non-house actor the full menu', async () => {
+    for (const isHouse of [true, false]) {
+      const t = setup();
+      await t.runner.decide(t.input({ isHouse }));
+      await flush();
+      const sent = JSON.parse(t.fetchCalls[0]!.body) as {
+        questions: Record<string, { criteria?: Record<string, string> }>;
+      };
+      const offered = Object.keys(sent.questions[JEV_WORLD_ACTION_QUESTION]!.criteria!);
+      expect(offered).toEqual(isHouse ? allowedForHouse : HATCHER_ACTION_MENU.map((item) => item.verb));
+      for (const verb of HOUSE_REFUSED_AUTONOMY_VERBS) expect(offered.includes(verb)).toBe(!isHouse);
+    }
+  });
+
+  it('a refused verb never wins for a house actor even with the top probability', () => {
+    const answers = body(
+      { chat_nori: 0.9, claim_tutorial_quest: 0.85, enter_cove: 0.6 },
+      { param_quest: { choice: 'land-1' } },
+    ).answers;
+    const house = resolveJevWorldAction(answers, buildJevWorldQuestions(TARGETS, true));
+    expect(house).toMatchObject({ ok: true, verb: 'enter_cove', reply: '[ACTION: enter_cove()]' });
+    // Non-house: unchanged argmax over the full menu (chat_nori is not a demo verb).
+    const user = resolveJevWorldAction(answers, buildJevWorldQuestions(TARGETS));
+    expect(user).toMatchObject({ ok: false, reason: 'verb_not_supported', verb: 'chat_nori' });
   });
 });
 

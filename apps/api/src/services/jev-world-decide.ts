@@ -1,7 +1,7 @@
 // FEATURE_GATE: jev_world_decide_demo
 // Status: staging-only demo (Jev decides the next world action for listed avatars; local LLM is the fallback)
 // Metric to graduate: on staging, >=50 demo decisions with Jev p50 < 500 ms, >=60% decided by Jev (not fallback), no executor refusals above the local baseline, founder go
-// Current reading: 2026-10-16 run (per-verb noul): 33 rows, 22 demo_jev / 11 demo_fallback (all below_threshold), Jev p50 ~100 ms, spend ~$0.007; 2026-10-20 switched to one choice question
+// Current reading: 2026-10-20 03:13-04:12Z run (one choice question, house avatar): 50 rows, 13 demo_jev (26%) / 37 demo_fallback, Jev p50 ~80 ms, spend $0.009; at gate 0.4 Jev would decide 50%, at 0.3 78%; Jev picks caused 1 refused action, local fallback picks 21 (8 out-of-bounds move, 13 session kills); top pick enter_kelp_forest on 31/50 rows. Metric NOT met (60% by Jev)
 // Review deadline: 2026-10-23
 // On deadline: delete this module and its driver branch, or write a production plan with a new cap (founder decision)
 // Reference: GameFeatures.md (Jev decide shadow + world-decide demo bullets), ARCHITECTURE.md section 4
@@ -20,7 +20,9 @@
  * HATCHER_ACTION_MENU (the same menu and the same prompt the local model
  * sees, as Jev `state`) with ONE `choice` question (`next_action`, one option
  * per menu verb; its probabilities sum to 1, so the top verb is not diluted
- * the way independent per-verb `noul` answers were). Only verbs whose params
+ * the way independent per-verb `noul` answers were). A house actor's options
+ * omit HOUSE_REFUSED_AUTONOMY_VERBS, the verbs the executor refuses for it,
+ * the same as its local decide menu. Only verbs whose params
  * come from a fixed list are accepted here: four no-param place verbs,
  * `emote` (names from the menu syntax), `enter_building` / `claim_tutorial_quest` / `salvage_node` (ids
  * the prompt already lists, picked with Jev `choice` questions). Any other
@@ -37,6 +39,7 @@
 import { z } from 'zod';
 import { HATCHER_ACTION_MENU } from '@clawville/shared';
 import { db, sql } from '@clawville/database';
+import { HOUSE_REFUSED_AUTONOMY_VERBS } from './house-refused-verbs';
 import {
   JEV_CAP_LOCK_KEY,
   JEV_DEMO_STATUS_PREFIX,
@@ -136,10 +139,15 @@ export interface JevWorldTargets {
 
 type JevWorldQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> };
 
-/** One option per verb of the FULL menu (consumption mandate: never only the verbs this demo accepts). */
-export function actionChoiceCriteria(): Record<string, string> {
+/**
+ * One option per verb of the FULL menu (consumption mandate: never only the
+ * verbs this demo accepts). A house actor gets the menu minus
+ * HOUSE_REFUSED_AUTONOMY_VERBS, which is exactly what the executor runs for it.
+ */
+export function actionChoiceCriteria(isHouse = false): Record<string, string> {
   const criteria: Record<string, string> = {};
   for (const item of HATCHER_ACTION_MENU) {
+    if (isHouse && HOUSE_REFUSED_AUTONOMY_VERBS.has(item.verb)) continue;
     criteria[item.verb] = item.whenToUse.replace(/\s+/g, ' ').trim().slice(0, ACTION_CRITERIA_MAX_CHARS) || item.verb;
   }
   return criteria;
@@ -158,12 +166,12 @@ function choiceCriteria(targets: readonly JevWorldTarget[]): Record<string, stri
 }
 
 /** One `choice` over every menu verb plus one `choice` per fixed param list that has options. */
-export function buildJevWorldQuestions(targets: JevWorldTargets): Record<string, JevWorldQuestion> {
+export function buildJevWorldQuestions(targets: JevWorldTargets, isHouse = false): Record<string, JevWorldQuestion> {
   const questions: Record<string, JevWorldQuestion> = {
     [JEV_WORLD_ACTION_QUESTION]: {
       type: 'choice',
       instructions: 'Which single action from the menu is the best next action for this agent right now?',
-      criteria: actionChoiceCriteria(),
+      criteria: actionChoiceCriteria(isHouse),
     },
   };
   const add = (name: ParamQuestion, instructions: string, list: readonly JevWorldTarget[]) => {
@@ -206,9 +214,13 @@ export interface JevWorldVerbPick {
  * The menu verb with the highest probability in the `next_action` answer; ties
  * keep menu order. The answer's `choice` string is not trusted: the argmax of
  * `probabilities` wins. null when there is no valid probability for any menu
- * verb (a bare `choice` gives no probability for the gate).
+ * verb (a bare `choice` gives no probability for the gate). When `offered` is
+ * given, only those verbs count, so a verb that was not an option never wins.
  */
-export function pickJevWorldVerb(answers: unknown): JevWorldVerbPick | null {
+export function pickJevWorldVerb(
+  answers: unknown,
+  offered?: Readonly<Record<string, string>>,
+): JevWorldVerbPick | null {
   if (!answers || typeof answers !== 'object') return null;
   const raw = (answers as Record<string, unknown>)[JEV_WORLD_ACTION_QUESTION];
   if (!raw || typeof raw !== 'object') return null;
@@ -219,6 +231,7 @@ export function pickJevWorldVerb(answers: unknown): JevWorldVerbPick | null {
   const probs: Record<string, number> = {};
   let best: { verb: string; prob: number } | null = null;
   for (const item of HATCHER_ACTION_MENU) {
+    if (offered && !Object.prototype.hasOwnProperty.call(offered, item.verb)) continue;
     if (!Object.prototype.hasOwnProperty.call(dist, item.verb)) continue;
     const p = (dist as Record<string, unknown>)[item.verb];
     if (typeof p !== 'number' || !Number.isFinite(p) || p < 0 || p > 1) continue;
@@ -240,7 +253,7 @@ export function resolveJevWorldAction(
   answers: unknown,
   questions: Record<string, JevWorldQuestion>,
 ): JevWorldResolve {
-  const pick = pickJevWorldVerb(answers);
+  const pick = pickJevWorldVerb(answers, questions[JEV_WORLD_ACTION_QUESTION]?.criteria);
   if (!pick) return { ok: false, reason: 'no_valid_answers', verb: null, prob: null, probs: null };
   const miss = (reason: string): JevWorldResolve => ({
     ok: false, reason, verb: pick.verb, prob: pick.prob, probs: pick.probs,
@@ -418,7 +431,7 @@ export function createJevWorldDecide(deps: JevWorldDeps) {
     let jevPart: Omit<JevWorldPatch, 'status' | 'localVerb' | 'localEmpty' | 'localMs' | 'error'> | null = null;
     let reason = 'jev_unavailable';
     try {
-      const questions = buildJevWorldQuestions(input.targets);
+      const questions = buildJevWorldQuestions(input.targets, input.isHouse);
       const questionBytes = Buffer.byteLength(JSON.stringify(questions), 'utf8');
       const estimateUsd = estimateJevUsd(Buffer.byteLength(input.prompt, 'utf8'), questionBytes);
       const reserved = await deps.ledger.reserve(

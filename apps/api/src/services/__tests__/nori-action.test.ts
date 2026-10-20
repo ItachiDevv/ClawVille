@@ -8,6 +8,7 @@ const driver = agentAutonomyDriver as any;
 const originalChat = npcSimulation.autonomousNoriChat;
 const originalReply = npcSimulation.autonomousNoriReply;
 const originalResolve = npcSimulation.autonomousNoriAgentResolve;
+const originalHouseCheck = npcSimulation.autonomousHouseActorCheck;
 const requests: any[] = [];
 let release: (() => void) | null;
 let body: any;
@@ -21,15 +22,19 @@ beforeEach(() => {
   driver.userAgents.set('nori-test-agent', { agentId: 'nori-test-agent', avatarId: 'nori-test-avatar', bodyId: body.id, lastLesson: null, lastBuildingId: null });
   npcSimulation.autonomousNoriChat = async (input) => { requests.push(input); return { message: { content: 'The Bounty Board is at the pavilion.' } }; };
   npcSimulation.autonomousNoriAgentResolve = async () => ({ userId: 'owner', avatarId: 'nori-test-avatar', agentId: 'nori-test-agent', ledgerCapable: true });
+  npcSimulation.autonomousHouseActorCheck = async () => false;
 });
 afterEach(() => {
   npcSimulation.autonomousNoriChat = originalChat;
   npcSimulation.autonomousNoriReply = originalReply;
   npcSimulation.autonomousNoriAgentResolve = originalResolve;
+  npcSimulation.autonomousHouseActorCheck = originalHouseCheck;
   sim.npcs.delete(body.id); sim.npcOverrides.delete(body.id); sim.agentBotSessions.delete('nori-test-session');
   driver.userAgents.delete('nori-test-agent');
 });
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 10)); }
+// The executor awaits the house-actor check before the shared turn starts.
+async function tick() { await new Promise((resolve) => setTimeout(resolve, 0)); }
 const dispatch = (message: string) => npcSimulation.dispatchHatcherActions(body.id, `[ACTION: chat_nori(message=${message})]`);
 describe('real hosted Nori action dispatch and consumption', () => {
   test('the action calls the shared service and the next decision prompt consumes its reply', async () => {
@@ -53,15 +58,15 @@ describe('real hosted Nori action dispatch and consumption', () => {
   });
   test('only one question per avatar can remain in flight', async () => {
     npcSimulation.autonomousNoriChat = async (input) => { requests.push(input); await new Promise<void>((resolve) => { release = resolve; }); return { message: { content: 'answer' } }; };
-    dispatch('first'); dispatch('second');
+    dispatch('first'); dispatch('second'); await tick();
     expect(requests).toHaveLength(1);
     release!(); await settle();
-    dispatch('third'); expect(requests).toHaveLength(2);
+    dispatch('third'); await tick(); expect(requests).toHaveLength(2);
     release!(); await settle();
   });
   test('a replaced session cannot consume the old reply', async () => {
     npcSimulation.autonomousNoriChat = async (input) => { requests.push(input); await new Promise<void>((resolve) => { release = resolve; }); return { message: { content: 'old private answer' } }; };
-    dispatch('question');
+    dispatch('question'); await tick();
     sim.npcOverrides.set(body.id, 'replacement-session');
     expect(requests[0].isCurrent()).toBe(false);
     release!(); await settle();
@@ -77,6 +82,33 @@ describe('real hosted Nori action dispatch and consumption', () => {
     dispatch('question'); await settle();
     expect(requests).toHaveLength(1);
     expect(driver.userAgents.get('nori-test-agent').lastLesson).toBeNull();
+  });
+  test('a house actor never reaches the shared Nori turn or the session resolve; a non-house actor does', async () => {
+    for (const house of [true, false]) {
+      requests.length = 0;
+      const checked: string[] = [];
+      let resolves = 0;
+      npcSimulation.autonomousHouseActorCheck = async (agentId) => { checked.push(agentId); return house; };
+      npcSimulation.autonomousNoriAgentResolve = async () => { resolves++; return { userId: 'owner', avatarId: 'nori-test-avatar', agentId: 'nori-test-agent', ledgerCapable: true }; };
+      dispatch('where is the cove?'); await settle();
+      expect(checked).toEqual(['nori-test-agent']);
+      expect(requests).toHaveLength(house ? 0 : 1);
+      expect(resolves).toBe(house ? 0 : 1);
+      // The in-flight slot is released on the refusal path too.
+      expect(sim.noriChatsInFlight.has('nori-test-avatar')).toBe(false);
+    }
+  });
+  test('a failed house-actor check drops the turn, releases the slot, and the next dispatch runs', async () => {
+    let resolves = 0;
+    npcSimulation.autonomousNoriAgentResolve = async () => { resolves++; return { userId: 'owner', avatarId: 'nori-test-avatar', agentId: 'nori-test-agent', ledgerCapable: true }; };
+    npcSimulation.autonomousHouseActorCheck = async () => { throw new Error('db down'); };
+    dispatch('first'); await settle();
+    expect(requests).toHaveLength(0);
+    expect(resolves).toBe(0);
+    expect(sim.noriChatsInFlight.has('nori-test-avatar')).toBe(false);
+    npcSimulation.autonomousHouseActorCheck = async () => false;
+    dispatch('second'); await settle();
+    expect(requests).toHaveLength(1);
   });
   test('wrong-avatar feedback cannot alter another driver entry', () => {
     agentAutonomyDriver.rememberSystemChatReply('nori-test-agent', 'other-avatar', 'foreign answer');
