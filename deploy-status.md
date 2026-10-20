@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-20 02:00 UTC (session mcp, connect-flow job). **Staging is receiving `feat/connect-polish` (PROTOCOL 89):** `POST /api/agent/connect` dead-link replies get `code` + `detail` (404 `connection_token_invalid`, 410 `connection_token_expired`, 409 `connection_token_claimed`), entry manual Connect-errors line, Nori + orientation link-lifetime line, MCP connect hint, connect modal footer copy, mobile quest tracker auto-expand fix (z 46 when expanded on touch), plus the Trading Floor research doc. Not yet verified on staging; see the DEPLOY LOG. **PROD API + WEB = `b00d0b88`** (promotion #10, unchanged). SCHEMA: synced (no migration).
+Last Audited: 2026-10-20 02:22 UTC (session mcp, connect-flow job). **Staging = `8176ae62` VERIFIED 02:09-02:20Z (connect polish, PROTOCOL 89)**: API container 02:09:43Z and web container (Coolify job 4072) both `8176ae62` healthy; served manual protocol 89; live `POST /connect` fake token = 404 `connection_token_invalid` + detail; onboarding smoke 14/14; hosted-skill probe ALL PASS 16 (inside the API container, fixtures cleaned); connect flow re-run at 390x844 and 844x390 with touch emulation: connect 200, quest list stays collapsed after the reload, expanded touch list z 46 with its lowest row topmost; connect modal fits at 744x1133, 820x1180, 1024x1366 both orientations; desktop /game in Chrome: no console errors, 60 FPS. **Staging is now receiving `38ecf1e8`** (44 px touch tap targets: guest top-bar pills, connect modal close). Mock-Hatcher harness at 89 is owed before promotion. **PROD API + WEB = `b00d0b88`** (unchanged). SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-20 02:00 UTC (session mcp, connect-flow job). **Staging is receiving `feat/connect-polish` (PROTOCOL 89):** `POST /api/agent/connect` dead-link replies get `code` + `detail` (404 `connection_token_invalid`, 410 `connection_token_expired`, 409 `connection_token_claimed`), entry manual Connect-errors line, Nori + orientation link-lifetime line, MCP connect hint, connect modal footer copy, mobile quest tracker auto-expand fix (z 46 when expanded on touch), plus the Trading Floor research doc. Not yet verified on staging; see the DEPLOY LOG. **PROD API + WEB = `b00d0b88`** (promotion #10, unchanged). SCHEMA: synced (no migration).
 
 Prior - Last Audited: 2026-10-20 01:30 UTC (session jev, arena lead). **Staging is receiving the Jev world-demo change** (one `choice` question `next_action` over the full menu replaces one `noul` per verb; same >= 0.5 gate; staging only; no migration; PROTOCOL unchanged). Not yet verified; see the DEPLOY LOG. **PROD API + WEB = `b00d0b88`** (unchanged). SCHEMA: synced.
 
@@ -620,6 +622,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-20 02:22Z (session mcp, connect-flow job) - `8176ae62` verified; tap-target fix to staging
+- **Verified:** see CURRENT STATE (API + web `8176ae62`, manual 89, dead-token body live, onboarding smoke 14/14, hosted-skill probe 16/16, mobile connect re-run, tablet modal fit, desktop console clean at 60 FPS).
+- **What changed now:** `38ecf1e8`: the touch sweep measured the logged-out top-bar pills at 38 px tall (tablets, landscape phones) and the connect modal close at 10x28 px; both are now 44 px (pills on touch only). Local web build pass; coupling gate exit 0 over `origin/master..HEAD` (a page.tsx-only range trips the Nori + skill.md rules, which the promotion range satisfies).
+- **What broke:** nothing. Staging test agents left: `flowtest-mvfzslxs`, `flowtest-mvfzuxzs`, `flowtest-mvfzx1wd`, `flowtest-mvfzxzh6`, `flowtest-mvg1vw8z`, `flowtest-mvg1wp9v` (sessions expire; accounts stay unless the owner wants them deleted).
+- **Who it is for:** human players on touch devices.
 
 ### 2026-10-20 02:00Z (session mcp, connect-flow job) - connect polish to staging (PROTOCOL 89)
 - **What changed:** see CURRENT STATE. Found by a staging walk-through of the human connect flow (desktop in Chrome; 390x844 and 844x390 with touch emulation in a separate Chrome): the connect itself worked at every size; the gaps were (1) a dead or used link gave the agent no next step on `POST /connect`, (2) on phones the quest list auto-expanded under the "Talk to Nori" pill after the connect reload (stale `useIsMobile()` value in the first effect).
