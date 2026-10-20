@@ -16,6 +16,9 @@ const AVATAR_ID = '52222222-2222-4222-8222-222222222222';
 const BOT_ID = '53333333-3333-4333-8333-333333333333';
 
 let botRow: Record<string, unknown> | null = null;
+// When set, each agentBots.findFirst takes the next entry (null = no row),
+// so a test can change the row between the identity look-up and the main read.
+let botRowReads: Array<Record<string, unknown> | null> | null = null;
 let updateReturns: (call: number) => unknown[] = () => [];
 let updateCalls: Array<{ table: unknown; values: Record<string, unknown>; where: unknown }> = [];
 let insertCalls = 0;
@@ -53,7 +56,10 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
           },
         },
         agentBots: {
-          findFirst: async () => (botRow ? { ...botRow } : undefined),
+          findFirst: async () => {
+            const row = botRowReads?.length ? botRowReads.shift() : botRow;
+            return row ? { ...row } : undefined;
+          },
         },
       };
     }
@@ -256,6 +262,7 @@ function expectOwnerCredentialRefusal(result: { status: number; json: Record<str
 
 beforeEach(() => {
   botRow = null;
+  botRowReads = null;
   updateReturns = () => [];
   updateCalls = [];
   insertCalls = 0;
@@ -476,6 +483,35 @@ describe('POST /api/agent/connect owner credential rule', () => {
     } finally {
       pendingConnections.delete(token);
     }
+  });
+
+  test('owned at the identity look-up, gone at the main read: 409 and no row is inserted', async () => {
+    botRowReads = [boundRow('vanishing-owned-agent', OWNER_ID), null];
+    identityAccountExists = false;
+    const result = await connect({
+      agentId: 'vanishing-owned-agent',
+      identityType: 'openclaw',
+      identityKey: 'agent-own-identity-secret',
+    });
+    expect(result.status).toBe(409);
+    expect(result.json.code).toBe('OWNER_BIND_CONFLICT');
+    expect(insertCalls).toBe(0);
+    expect(updateCalls).toHaveLength(0);
+    expect(registerCalls).toBe(0);
+  });
+
+  test('owned at the identity look-up, unowned at the main read: 409 before any write', async () => {
+    botRowReads = [boundRow('unbound-race-agent', OWNER_ID), boundRow('unbound-race-agent', null)];
+    identityAccountExists = false;
+    const result = await connect({
+      agentId: 'unbound-race-agent',
+      identityType: 'openclaw',
+      identityKey: 'agent-own-identity-secret',
+    });
+    expect(result.status).toBe(409);
+    expect(result.json.code).toBe('OWNER_BIND_CONFLICT');
+    expect(updateCalls).toHaveLength(0);
+    expect(registerCalls).toBe(0);
   });
 
   test('unowned row + identityKey still resolves-or-creates the account and binds', async () => {

@@ -173,13 +173,6 @@ export interface PublicOnboardingIdentityResolution {
   user: IdentityUser;
 }
 
-/**
- * The identity coordinator shared verbatim by public `/connect` and `/join`.
- * Callers must reject reserved partner labels before entering this function.
- * Every accepted presented label is canonicalized exactly once, and that same
- * canonical type feeds the fingerprint resolver, so route response, ticket,
- * account lookup/heal, and persisted identity can never disagree.
- */
 export interface PublicOnboardingIdentityOptions {
   /**
    * `false` = look up only: never insert a `users` row, and return null when
@@ -190,6 +183,13 @@ export interface PublicOnboardingIdentityOptions {
   createIfMissing?: boolean;
 }
 
+/**
+ * The identity coordinator shared verbatim by public `/connect` and `/join`.
+ * Callers must reject reserved partner labels before entering this function.
+ * Every accepted presented label is canonicalized exactly once, and that same
+ * canonical type feeds the fingerprint resolver, so route response, ticket,
+ * account lookup/heal, and persisted identity can never disagree.
+ */
 export function resolvePublicOnboardingIdentityWithStore(
   presentedIdentityType: string,
   identityKey: string,

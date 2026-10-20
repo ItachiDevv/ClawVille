@@ -127,7 +127,7 @@ describe('wallet unification source gates', () => {
     const connectAt = source.indexOf("agentGatewayRoutes.post('/connect'");
     const persistedBindAt = source.indexOf('.returning({ userId: agentBots.userId })', connectAt);
     // The OWNER_BIND_CONFLICT refusal; its body lives in ownerBindConflictBody().
-    const conflictAt = source.indexOf('return c.json(ownerBindConflictBody(pendingConn), 409);', persistedBindAt);
+    const conflictAt = source.indexOf('if (ownerBindConflict) {', persistedBindAt);
     const provisionAt = source.indexOf('provisionAvatarWallet(avatar.id', connectAt);
     const advertiseAt = source.indexOf('avatarSettlementAddressFields(walletResolution)', connectAt);
     expect(persistedBindAt).toBeGreaterThan(connectAt);
