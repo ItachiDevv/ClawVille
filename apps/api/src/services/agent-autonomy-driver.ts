@@ -313,6 +313,20 @@ const WARM_GUARD_EVICT_MS = 10 * 60 * 1000;
 // empty (OpenAI 429 / quota exhausted / bad key) otherwise spins the deciding phase
 // silently, since withTimeout maps a timeout/error to '' by contract.
 const EMPTY_DECIDE_WARN_THRESHOLD = 3;
+// Missing-body watchdog (2026-10-20 staging wedge): an unregistered session
+// deletes the agent's `ocb-` body, and the driver used to return silently on a
+// null perception every tick, forever (a house body is only re-registered by
+// `ensureHouseAgent` at boot). Fails-safe must also be fails-visible: a missing
+// body WARNs at most once per agent per BODY_MISSING_WARN_INTERVAL_MS. A HOUSE
+// agent whose body stays missing for HOUSE_BODY_HEAL_AFTER_MISSES consecutive
+// drives re-runs the existing boot activation path, with an exponential
+// per-agent backoff (floor 1 min, cap 15 min) so a persistent failure can never
+// hot-loop DB writes + runtime restarts. USER agents are never re-registered
+// here: their session belongs to the owner (activation / reconcile own it).
+const BODY_MISSING_WARN_INTERVAL_MS = 5 * 60 * 1000;
+const HOUSE_BODY_HEAL_AFTER_MISSES = 2;
+const HOUSE_BODY_HEAL_BACKOFF_MS = 60_000;
+const HOUSE_BODY_HEAL_BACKOFF_MAX_MS = 15 * 60 * 1000;
 // Slice 4 LLM-spend bound: a conducted teacher turn is a model call with bounded
 // top-5 retrieval from the teacher's embedded skill corpus, and the once-per-day
 // CT probe does NOT bound LLM cost by itself — so each (agentId, buildingId) pair
@@ -538,6 +552,28 @@ class AgentAutonomyDriver {
   // Slice 4: `${agentId}:${buildingId}` -> epoch-ms until which conducted
   // teacher turns at that building are suppressed (LLM-spend bound).
   private talkCooldownUntil = new Map<string, number>();
+  // Missing-body watchdog state, keyed by agentId. Kept OFF the entry on purpose:
+  // the house self-heal re-registers (replaces) the entry, and the backoff +
+  // warn rate-limit must survive that. Cleared on unregister (bounded by the two
+  // registry caps). `misses`/`healAttempts` reset when the body is seen again;
+  // the warn timestamp does not, so a flapping body still warns at most once
+  // per interval.
+  private bodyMissing = new Map<
+    string,
+    { misses: number; healAttempts: number; lastHealAt: number; healDisabled: boolean }
+  >();
+  private bodyMissingWarnedAt = new Map<string, number>();
+  /**
+   * House self-heal seam: the EXISTING boot activation path (re-mints the house
+   * session + body and re-registers the driver entry). LAZY-imported because
+   * house-agent-seeder statically imports this driver (a static edge would form
+   * a cycle; same pattern as `loadReconcileModule`). Swappable so tests never
+   * reach the DB.
+   */
+  houseReactivate: () => Promise<{ agentId: string; bodyId: string } | null> = async () => {
+    const { ensureHouseAgent } = await import('./house-agent-seeder');
+    return ensureHouseAgent();
+  };
 
   // Slice 4 seams — instance properties (not bare imports) so the unit tests can
   // swap in mocks (settle-only-on-reply + cooldown are tested without a DB/LLM).
@@ -613,6 +649,8 @@ class AgentAutonomyDriver {
     // remove that user entry. Async overlap guards are deliberately preserved
     // below until their owning non-cancellable work settles.
     if (!this.houseAgents.delete(agentId)) return;
+    this.bodyMissing.delete(agentId);
+    this.bodyMissingWarnedAt.delete(agentId);
     // Do NOT clear inFlight/warming here: their underlying promises are not
     // cancellable. A same-id re-register must remain blocked until the owning
     // promise/token cleanup releases its guard, otherwise old + new drives can
@@ -754,6 +792,8 @@ class AgentAutonomyDriver {
    */
   unregisterUserAgent(agentId: string): void {
     if (!this.userAgents.delete(agentId)) return;
+    this.bodyMissing.delete(agentId);
+    this.bodyMissingWarnedAt.delete(agentId);
     // The owning async drive/warm releases these guards. Clearing them during a
     // quick Controlled→Autonomous re-register would permit same-id overlap.
     for (const [ownerUserId, enrolledAgentId] of this.enrolledOwners) {
@@ -873,7 +913,9 @@ class AgentAutonomyDriver {
         if (!perception) {
           entry.phase = 'deciding';
           entry.targetBuildingId = null;
+          await this.handleMissingBody(entry, Date.now());
         } else {
+          this.bodyMissing.delete(entry.agentId);
           await this.stepWalkingPhase(entry, perception, Date.now());
         }
       } else {
@@ -1149,6 +1191,68 @@ class AgentAutonomyDriver {
   }
 
   /**
+   * Missing-body watchdog for one drive (see BODY_MISSING_WARN_INTERVAL_MS).
+   * WARNs at most once per agent per interval (digest only, never a session id
+   * or body id). For a HOUSE agent missing for HOUSE_BODY_HEAL_AFTER_MISSES
+   * consecutive drives, re-runs the existing boot activation (`houseReactivate`)
+   * under an exponential per-agent backoff. The attempt is stamped BEFORE the
+   * await so an overlapping caller backs off too. Never throws.
+   */
+  private async handleMissingBody(entry: HouseAgentEntry, now: number): Promise<void> {
+    const digest = sessionDigest(entry.agentId);
+    let state = this.bodyMissing.get(entry.agentId);
+    if (!state) {
+      state = { misses: 0, healAttempts: 0, lastHealAt: 0, healDisabled: false };
+      this.bodyMissing.set(entry.agentId, state);
+    }
+    state.misses++;
+
+    const lastWarnAt = this.bodyMissingWarnedAt.get(entry.agentId);
+    if (lastWarnAt === undefined || now - lastWarnAt >= BODY_MISSING_WARN_INTERVAL_MS) {
+      this.bodyMissingWarnedAt.set(entry.agentId, now);
+      console.warn(
+        `[AutonomyDriver] body missing for ${digest} (${entry.isHouse ? 'house' : 'user'}, ` +
+          `${state.misses} consecutive drive(s)) - ` +
+          (entry.isHouse
+            ? 'house self-heal re-runs activation'
+            : 'user agent is not re-registered by the driver'),
+      );
+    }
+
+    if (!entry.isHouse || state.healDisabled || state.misses < HOUSE_BODY_HEAL_AFTER_MISSES) return;
+    if (state.healAttempts > 0) {
+      const backoffMs = Math.min(
+        HOUSE_BODY_HEAL_BACKOFF_MAX_MS,
+        HOUSE_BODY_HEAL_BACKOFF_MS * 2 ** (state.healAttempts - 1),
+      );
+      if (now - state.lastHealAt < backoffMs) return;
+    }
+    state.healAttempts++;
+    state.lastHealAt = now;
+    try {
+      const result = await this.houseReactivate();
+      if (!result) {
+        console.warn(`[AutonomyDriver] house self-heal for ${digest} returned no agent - retry after backoff`);
+      } else if (result.agentId !== entry.agentId) {
+        // The activation path is single-agent. Re-running it for a different
+        // agent would re-mint THAT agent's session each attempt, so stop here.
+        state.healDisabled = true;
+        console.error(
+          `[AutonomyDriver] house self-heal for ${digest} re-activated a different agent ` +
+            `(${sessionDigest(result.agentId)}) - self-heal disabled for ${digest}`,
+        );
+      } else {
+        console.log(`[AutonomyDriver] house self-heal re-activated ${digest} (attempt ${state.healAttempts})`);
+      }
+    } catch (err) {
+      console.warn(
+        `[AutonomyDriver] house self-heal failed for ${digest} - retry after backoff:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
    * Drive ONE house agent through one step of the phase machine. Exposed
    * (agentId + injectable `decide`) so tests can drive it with a canned reply
    * instead of a live model. Production passes the timeout-wrapped runtime
@@ -1165,12 +1269,16 @@ class AgentAutonomyDriver {
 
     const perception = npcSimulation.buildPerception(entry.bodyId);
     if (!perception) {
-      // Body not in world (e.g. transient despawn). A boot re-register re-spawns
-      // it; nothing to drive this tick. Reset to deciding so we replan on return.
+      // Body not in world (e.g. its session was unregistered). Nothing to drive
+      // this tick. Reset to deciding so we replan on return, WARN (rate-limited),
+      // and for a HOUSE agent re-run activation after consecutive misses (see
+      // handleMissingBody): nothing else re-spawns a house body until boot.
       entry.phase = 'deciding';
       entry.targetBuildingId = null;
+      await this.handleMissingBody(entry, Date.now());
       return;
     }
+    this.bodyMissing.delete(entry.agentId);
 
     const now = Date.now();
 
