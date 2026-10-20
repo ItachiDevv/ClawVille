@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
 import { useAuthMe } from '@/hooks/use-auth-me';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
@@ -162,6 +163,10 @@ function NanoClawBanner({
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
   const showPaired = agentPaired || agentConnected;
+  // Touch tap targets >= 44px (2026-10-20): the guest pills measured 38px tall
+  // on touch. Desktop keeps its exact classes.
+  const isMobile = useIsMobile();
+  const guestPillTouch = isMobile ? ' min-h-11' : '';
 
   // Banner has five states keyed on (isAuthenticated, showPaired,
   // provisioningPending, hasAvatar):
@@ -207,20 +212,20 @@ function NanoClawBanner({
         <button
           type="button"
           onClick={() => setAgentConnectModalOpen(true, 'connect')}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:from-cyan-400 hover:to-blue-400 hover:border-cyan-300/60 transition-all"
+          className={`flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:from-cyan-400 hover:to-blue-400 hover:border-cyan-300/60 transition-all${guestPillTouch}`}
         >
           <span className="text-white font-bold text-sm">Connect Agent</span>
         </button>
         <button
           type="button"
           onClick={() => setAgentConnectModalOpen(true, 'login')}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all"
+          className={`flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all${guestPillTouch}`}
         >
           <span className="text-cyan-200 font-bold text-sm">Log In</span>
         </button>
         <Link
           href="/login?mode=signup"
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-pink-600 to-pink-500 shadow-[0_0_18px_rgba(236,72,153,0.3)] hover:shadow-[0_0_24px_rgba(236,72,153,0.45)] transition-all"
+          className={`flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-pink-600 to-pink-500 shadow-[0_0_18px_rgba(236,72,153,0.3)] hover:shadow-[0_0_24px_rgba(236,72,153,0.45)] transition-all${guestPillTouch}`}
         >
           <span className="text-white font-bold text-sm">Sign Up</span>
         </Link>
