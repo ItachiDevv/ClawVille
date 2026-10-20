@@ -217,6 +217,7 @@ async function admitAutonomousSpend(
   // Current reading: routes/__tests__/land-autonomous-spend-concurrency-db.test.ts green on local
   //   Postgres 18 (3 pass, 0 fail): 6 concurrent agent spends queued on the avatar advisory lock
   //   admit exactly floor(cap/amount), ledger debits = admitted. Removing the avatar locks makes it fail.
+  // Review deadline: none (graduated 2026-10-20).
   // On deadline: Disable autonomous land spend unless the concurrency DB test is green.
   // Reference: GameFeatures.md §18b (Land P2 round 2)
   if (!input.autonomous) return;
