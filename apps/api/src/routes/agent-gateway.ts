@@ -4497,8 +4497,8 @@ const CONNECTION_TOKEN_DEAD_DETAIL =
 const CONNECTION_TOKEN_CLAIMED_DETAIL =
   'This invitation link was already used. If your own earlier call returned a sessionId, '
   + 'keep using it (check GET /api/agent/session-status?agentId=<agentId>); when it ends, '
-  + 'connect again with your identityKey if that key owns the agentId, else ask your human '
-  + 'for a new link. Otherwise ask your human for a new connect link from the ClawVille game.';
+  + 'read "Stay alive" in the protocol manual for the way back. Otherwise ask your human '
+  + 'for a new connect link from the ClawVille game.';
 /**
  * Agent-facing recovery text on the POST /connect 409 OWNER_BIND_CONFLICT body.
  * The usual cause: the agentId was claimed through a logged-in human's link, so

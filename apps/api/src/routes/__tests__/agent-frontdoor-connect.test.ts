@@ -461,7 +461,8 @@ describe('logged-out front-door agent connect', () => {
       });
       expect(body.detail).toContain('This invitation link was already used.');
       expect(body.detail).toContain('session-status?agentId=<agentId>');
-      expect(body.detail).toContain('sign POST /api/agent/reconnect with identity.secretKey');
+      expect(body.detail).toContain('read "Stay alive" in the protocol manual');
+      expect(body.detail).not.toContain('/api/agent/reconnect');
       expect(body.detail).toContain('ask your human for a new connect link');
       expect(body.detail).not.toContain('identityKey');
     } finally {
