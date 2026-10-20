@@ -89,6 +89,7 @@ import { queryDurableAgentEventsNewest, type AgentHistoryScope } from './agent-e
 import { recordCovenantAction } from './covenant-action-recorder';
 import { resolveBuildingId } from './building-center';
 import { HOUSE_REFUSED_AUTONOMY_VERBS } from './house-refused-verbs';
+import { directiveFastPathAction } from './autonomy-directive-fastpath';
 import { armAutonomy, isAutonomyActive } from './autonomy-standby';
 import {
   readAutonomousLandTargets,
@@ -234,6 +235,19 @@ interface HouseAgentEntry {
    * at least DECIDE_MIN_SPACING_MS apart (see phaseEdgePoll).
    */
   edgeDecideAt: number;
+  /**
+   * Teacher-talk prefetch started by phaseEdgePoll during the final approach
+   * (see TALK_PREFETCH_LEAD_MS). The arrived branch uses `promise` only when
+   * buildingId, the byte-identical prompt and directiveRevision all still match
+   * and it is at most TALK_PREFETCH_MAX_AGE_MS old. null = none.
+   */
+  talkPrefetch: {
+    buildingId: string;
+    prompt: string;
+    directiveRevision: number;
+    startedAt: number;
+    promise: Promise<string>;
+  } | null;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
@@ -251,6 +265,13 @@ const PHASE_EDGE_POLL_MS = 5_000;
 // that entry until this much time has passed, so decide-to-decide spacing stays
 // at one tick. 25 s < TICK_MS, so a tick-driven retry (30 s apart) never skips.
 const DECIDE_MIN_SPACING_MS = TICK_MS - PHASE_EDGE_POLL_MS;
+// Teacher-talk prefetch (founder 2026-10-20: "faster path, same decision").
+// phaseEdgePoll starts the arrival talk call once the walk ETA to a teaching
+// building is at most this long, so the 1-7 s talk call overlaps the last
+// seconds of walking. See maybeStartTalkPrefetch for why it is the same call.
+const TALK_PREFETCH_LEAD_MS = 10_000;
+// A prefetch older than this at arrival is not used (a fresh talk call runs).
+const TALK_PREFETCH_MAX_AGE_MS = 60_000;
 // Upper bound on how long the teacher talk waits for a running arrival settle.
 // The settle is a DB transaction with FOR UPDATE and no statement timeout; a
 // hung pool must not hold the agent in 'arrived' forever. Past this age the
@@ -368,6 +389,8 @@ const DEFAULT_LESSON_QUERY =
 // P3 slice 2: bound the directive + wake-up-seed reads (same fail-soft rationale
 // as the lesson fetch — a slow/absent DB must never stall a decide tick).
 const DIRECTIVE_FETCH_TIMEOUT_MS = 1_500;
+/** Bound on the directive fast-path used-issuance map (oldest key evicted first). */
+export const FAST_PATH_USED_MAX = 1024;
 export const DEFAULT_DIRECTIVE_TTL_MS = 6 * 60 * 60 * 1_000;
 export const MIN_DIRECTIVE_TTL_MS = 15 * 60 * 1_000;
 
@@ -557,6 +580,12 @@ class AgentAutonomyDriver {
   // Token-guarded like `warming`: an older settle that finishes late never
   // clears a newer one's entry. `warned` makes the expiry WARN fire once.
   private arrivalSettling = new Map<string, { startedAt: number; warned: boolean }>();
+  // platformAgentId -> directive issuance sha that already used the directive
+  // fast path in this process. Driver-level and keyed by platformAgentId (stable
+  // across re-enrollment), and NEVER cleared on unregister, so autonomy off/on
+  // cannot replay the fast path for the same issuance. Bounded by
+  // FAST_PATH_USED_MAX with oldest-first eviction (see markFastPathUsed).
+  private fastPathUsedSha = new Map<string, string>();
   private interval: ReturnType<typeof setInterval> | null = null;
   private phaseEdgeInterval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
@@ -654,6 +683,7 @@ class AgentAutonomyDriver {
       directivePending: false,
       directiveRevision: 0,
       edgeDecideAt: 0,
+      talkPrefetch: null,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -665,7 +695,11 @@ class AgentAutonomyDriver {
     // §B.1 registry isolation: a caller passing a user agentId here must not
     // remove that user entry. Async overlap guards are deliberately preserved
     // below until their owning non-cancellable work settles.
-    if (!this.houseAgents.delete(agentId)) return;
+    const removed = this.houseAgents.get(agentId);
+    if (!removed) return;
+    this.houseAgents.delete(agentId);
+    // Drop any talk prefetch; its promise already has a no-op catch.
+    removed.talkPrefetch = null;
     this.bodyMissing.delete(agentId);
     this.bodyMissingWarnedAt.delete(agentId);
     // Ordering guard only (not an overlap guard): safe to drop; a late finally
@@ -796,6 +830,7 @@ class AgentAutonomyDriver {
       directivePending: false,
       directiveRevision: 0,
       edgeDecideAt: 0,
+      talkPrefetch: null,
     });
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
     console.log(
@@ -812,7 +847,10 @@ class AgentAutonomyDriver {
    * the id was present in `userAgents`.
    */
   unregisterUserAgent(agentId: string): void {
-    if (!this.userAgents.delete(agentId)) return;
+    const removed = this.userAgents.get(agentId);
+    if (!removed) return;
+    this.userAgents.delete(agentId);
+    removed.talkPrefetch = null; // see unregisterHouseAgent
     this.bodyMissing.delete(agentId);
     this.bodyMissingWarnedAt.delete(agentId);
     this.arrivalSettling.delete(agentId); // ordering guard only; see unregisterHouseAgent
@@ -935,6 +973,7 @@ class AgentAutonomyDriver {
         if (!perception) {
           entry.phase = 'deciding';
           entry.targetBuildingId = null;
+          entry.talkPrefetch = null;
           await this.handleMissingBody(entry, Date.now());
         } else {
           this.bodyMissing.delete(entry.agentId);
@@ -947,13 +986,7 @@ class AgentAutonomyDriver {
         console.log(
           `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=${entry.phase} runtime=yes`,
         );
-        await this.driveOnce(
-          entry.agentId,
-          (prompt) => this.withTimeout(runtime.decide(prompt, {
-            maxTokens: DECIDE_MAX_TOKENS,
-            localAttemptTimeoutMs: 6_000,
-          })),
-        );
+        await this.driveOnce(entry.agentId, this.runtimeDecideFn(runtime));
       }
     } finally {
       this.inFlight.delete(agentId);
@@ -1007,6 +1040,8 @@ class AgentAutonomyDriver {
     if (!agentId || !entry || entry.platformAgentId !== expectedPlatformAgentId) return false;
     entry.directiveRevision++;
     entry.directivePending = true;
+    // The directive replans this agent; a talk prefetch from the old plan is void.
+    entry.talkPrefetch = null;
     return this.kickAgentNow(agentId);
   }
 
@@ -1107,6 +1142,9 @@ class AgentAutonomyDriver {
    *   no runtime) and sets 'arrived' or 'talking'. A walk that has NOT arrived
    *   is never woken: the wedge check compares remaining path length drive to
    *   drive and is tuned to the 30 s tick, so a 5 s drive would false-trigger it.
+   *   For a not-arrived walk to a TEACHING building the poll may instead start
+   *   the arrival talk call early (maybeStartTalkPrefetch). That starts no drive
+   *   and changes no phase; the arrived branch later uses the reply.
    * - arrived (with a target) + warm runtime + no arrival settle still
    *   pending: driveOnce runs the teacher talk (or the talk-cooldown skip) and
    *   sets 'talking'. The arrival settle is fire-and-forget, so driveOnce's
@@ -1125,7 +1163,8 @@ class AgentAutonomyDriver {
    * Never woken: 'deciding' (the tick owns decide and retry pacing), an agent
    * in flight or warming, and any entry with a pending directive (directives
    * already kick at once via kickEnrolledOwnerNow; their retries stay on the
-   * tick). Returns the woken agentIds (test seam).
+   * tick). Returns the woken agentIds (test seam). A talk prefetch is not a
+   * wake and is not in the returned list.
    */
   phaseEdgePoll(nowMs: number = Date.now()): string[] {
     if (!isAutonomyActive()) return [];
@@ -1148,6 +1187,7 @@ class AgentAutonomyDriver {
         // hasArrived reads, so the arrival test stays identical to the drive's.
         const perception = npcSimulation.buildPerception(entry.bodyId);
         edge = !!perception && this.hasArrived(perception, entry);
+        if (perception && !edge) this.maybeStartTalkPrefetch(entry, perception, nowMs);
       }
       if (!edge) continue;
       if (entry.phase === 'talking') entry.edgeDecideAt = nowMs;
@@ -1160,6 +1200,80 @@ class AgentAutonomyDriver {
       );
     }
     return woken;
+  }
+
+  /**
+   * The ONE runtime decide call shape (timeout, token cap, local attempt
+   * timeout). driveAgentNow and the talk prefetch both use it, so a prefetched
+   * talk reply comes from exactly the call the arrived branch would make.
+   */
+  private runtimeDecideFn(
+    runtime: NonNullable<ReturnType<typeof agentOrchestrator.getRunningAgentRuntime>>,
+  ): DecideFn {
+    return (prompt) => this.withTimeout(runtime.decide(prompt, {
+      maxTokens: DECIDE_MAX_TOKENS,
+      localAttemptTimeoutMs: 6_000,
+    }));
+  }
+
+  /**
+   * Teacher-talk prefetch (founder 2026-10-20: "faster path, same decision").
+   * Called by phaseEdgePoll for a walk that has NOT arrived. When the target is
+   * a teaching building and the walk ETA is at most TALK_PREFETCH_LEAD_MS, it
+   * starts the arrival talk call now and stores the promise on the entry.
+   *
+   * Why it is the same decision:
+   * - buildTalkPrompt reads only buildingId + the building's static label and
+   *   cryptoFocus, never position, so the prompt built now equals the one the
+   *   arrived branch builds. The arrived branch still rebuilds it and uses the
+   *   prefetch only on byte equality.
+   * - Same model call: runtimeDecideFn, the shape driveAgentNow passes in.
+   * - Directive fence: the prefetch records directiveRevision; any directive
+   *   kick bumps it (and clears the prefetch), so a reply from the old plan
+   *   is never used. Same parser, executor, teacher turn and cooldown after.
+   * Same gates as the arrived talk: a talk cooldown means no prefetch (the
+   * arrived branch would skip the talk). Same rule for house and user agents.
+   * The caller already skipped in-flight, warming and directive-pending
+   * entries. It never starts a drive, so the walk wedge check stays tick-paced.
+   * Cost bound: at most ONE extra talk call per walk (one prefetch per target;
+   * a discarded or stale prefetch is not replaced for the same building).
+   */
+  private maybeStartTalkPrefetch(
+    entry: HouseAgentEntry,
+    perception: NonNullable<ReturnType<typeof npcSimulation.buildPerception>>,
+    nowMs: number,
+  ): void {
+    const buildingId = entry.targetBuildingId;
+    if (!buildingId) return;
+    if (entry.talkPrefetch && entry.talkPrefetch.buildingId === buildingId) return;
+    // Same teaching test as stepWalkingPhase's teachingTarget: shared places
+    // (cove, poker, kelp, trading floor) are never in nearbyBuildings.
+    const building = perception.nearbyBuildings.find((b) => b.buildingId === buildingId);
+    if (!building) return;
+    if (this.isTalkCooldownActive(entry.agentId, buildingId, nowMs)) return;
+    const remainingWu = npcSimulation.getRemainingPathLengthWu(entry.bodyId);
+    // An empty path on a walk that has not arrived is a stuck body, not an ETA of 0.
+    if (remainingWu === null || remainingWu <= 0) return;
+    const etaMs = (remainingWu / NPC_WORLD_WALK_SPEED_WU_PER_S) * 1000;
+    if (etaMs > TALK_PREFETCH_LEAD_MS) return;
+    const runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
+    if (!runtime) return;
+    // Built exactly as the arrived branch builds it.
+    const prompt = this.buildTalkPrompt(buildingId, building.label, building.cryptoFocus);
+    const promise = this.runtimeDecideFn(runtime)(prompt);
+    // withTimeout never rejects; this keeps a discarded prefetch from ever
+    // surfacing as an unhandled rejection.
+    promise.catch(() => {});
+    entry.talkPrefetch = {
+      buildingId,
+      prompt,
+      directiveRevision: entry.directiveRevision,
+      startedAt: nowMs,
+      promise,
+    };
+    console.log(
+      `[AutonomyDriver][debug] talk prefetch ${sessionDigest(entry.agentId)} building=${buildingId}`,
+    );
   }
 
   /**
@@ -1364,6 +1478,7 @@ class AgentAutonomyDriver {
       // handleMissingBody): nothing else re-spawns a house body until boot.
       entry.phase = 'deciding';
       entry.targetBuildingId = null;
+      entry.talkPrefetch = null;
       await this.handleMissingBody(entry, Date.now());
       return;
     }
@@ -1378,6 +1493,7 @@ class AgentAutonomyDriver {
       this.pushThought(entry, 'directive', 'New directive — replanning now', now);
       entry.phase = 'deciding';
       entry.targetBuildingId = null;
+      entry.talkPrefetch = null;
       entry.phaseSince = now;
     }
 
@@ -1393,6 +1509,7 @@ class AgentAutonomyDriver {
       if (now - entry.phaseSince < TALK_COOLDOWN_MS) return;
       entry.phase = 'deciding';
       entry.targetBuildingId = null;
+      entry.talkPrefetch = null;
       entry.phaseSince = now;
     }
 
@@ -1412,6 +1529,7 @@ class AgentAutonomyDriver {
         console.log(
           `[AutonomyDriver][debug] talk skipped (cooldown) ${sessionDigest(entry.agentId)} building=${buildingId}`,
         );
+        entry.talkPrefetch = null;
         entry.phase = 'talking';
         entry.phaseSince = now;
         return;
@@ -1421,7 +1539,27 @@ class AgentAutonomyDriver {
       );
       const prompt = this.buildTalkPrompt(buildingId, building?.label, building?.cryptoFocus);
       const talkDirectiveRevision = entry.directiveRevision;
-      const reply = await decide(prompt);
+      // Talk prefetch (see maybeStartTalkPrefetch): use it only for the same
+      // building, the byte-identical prompt and the same directive revision,
+      // and only while fresh. Cleared either way before any await.
+      const prefetch = entry.talkPrefetch;
+      entry.talkPrefetch = null;
+      let reply: string;
+      if (
+        prefetch
+        && prefetch.buildingId === buildingId
+        && prefetch.prompt === prompt
+        && prefetch.directiveRevision === entry.directiveRevision
+        && now - prefetch.startedAt <= TALK_PREFETCH_MAX_AGE_MS
+      ) {
+        const waitStartedAt = Date.now();
+        reply = await prefetch.promise;
+        console.log(
+          `[AutonomyDriver][debug] talk prefetch used ${sessionDigest(entry.agentId)} waitedMs=${Date.now() - waitStartedAt}`,
+        );
+      } else {
+        reply = await decide(prompt);
+      }
       if (entry.directiveRevision !== talkDirectiveRevision
         || (this.houseAgents.get(agentId) ?? this.userAgents.get(agentId)) !== entry) return;
       // TEMP DEBUG (see above): the RAW talk reply — reveals whether gpt-4o-mini
@@ -1582,7 +1720,30 @@ class AgentAutonomyDriver {
       buildTargets,
       tradingDesk,
     );
-    const reply = await decide(prompt);
+    // Directive fast path (founder 2026-10-20: "faster path, same decision").
+    // Skips one ~5 s model call ONLY when the decision is already fixed: the
+    // directive is nothing but "go to <one destination>" (any other wording
+    // returns null), it is used AT MOST ONCE PER DIRECTIVE ISSUANCE PER PROCESS
+    // (fastPathUsedSha, keyed by platformAgentId, is stamped before any await
+    // and survives unregister + re-register, so neither an unknown, failed or
+    // timed-out acted claim that leaves directiveWasNew true nor an autonomy
+    // off/on can reuse it; later decisions on a standing directive go to the
+    // model, so the agent never loops back to the same place), and the agent is
+    // not already there (the prompt's "you are HERE, do not enter again" case
+    // stays with the model). The line is the exact call the prompt shows for
+    // that destination and runs through the same claim, events, and executor
+    // below.
+    const fastReply = directiveWasNew && directiveSha && directive?.text
+      && this.fastPathUsedSha.get(entry.platformAgentId) !== directiveSha
+      ? this.directiveFastPathReply(perception, entry, directive.text)
+      : null;
+    if (fastReply && directiveSha) {
+      this.markFastPathUsed(entry.platformAgentId, directiveSha);
+      console.log(
+        `[AutonomyDriver][debug] directive fast path ${sessionDigest(entry.agentId)} action=${parseDriverAction(fastReply)?.verb ?? 'unknown'}`,
+      );
+    }
+    const reply = fastReply ?? await decide(prompt);
     // This also fences decisions based on known-null state, which have no
     // directive SHA claim to detect a new instruction received during inference.
     if (entry.directiveRevision !== directiveRevision) return;
@@ -1686,6 +1847,7 @@ class AgentAutonomyDriver {
       entry.phase = 'walking';
       entry.phaseSince = now;
       entry.targetBuildingId = chosen;
+      entry.talkPrefetch = null; // new walk: no prefetch from a prior target
       entry.lastBuildingId = chosen;
       // Size the give-up budget to the route the executor just stamped, and open
       // ONE episode window that re-routes may not extend.
@@ -1747,22 +1909,73 @@ class AgentAutonomyDriver {
     entry: HouseAgentEntry,
   ): boolean {
     if (!entry.targetBuildingId) return false;
+    const distance = this.destinationDistance(perception, entry.targetBuildingId);
+    return distance !== null && distance <= BUILDING_INTERACTION_RADIUS;
+  }
+
+  /**
+   * Arrival distance to a destination id, or null when perception does not list
+   * it. The ONE metric for hasArrived and the directive fast path.
+   */
+  private destinationDistance(
+    perception: NonNullable<ReturnType<typeof npcSimulation.buildPerception>>,
+    destinationId: string,
+  ): number | null {
     const building = perception.nearbyBuildings.find(
-      (b) => b.buildingId === entry.targetBuildingId,
+      (b) => b.buildingId === destinationId,
     );
     if (building) {
       // Edge-distance (footprint), NOT center-distance — the same metric the
       // interaction gates use. Center-distance is unsatisfiable for the larger
       // buildings, so a center-based hasArrived would leave the driver walking
       // forever (then WALK_TIMEOUT replans) and never reach 'arrived'/'talking'.
-      return building.edgeDistance <= BUILDING_INTERACTION_RADIUS;
+      return building.edgeDistance;
     }
     // Shared places (Cove, poker, Kelp portal) resolve through the same
     // destinationId + center-derived distance contract.
     const place = perception.places.find(
-      (candidate) => candidate.destinationId === entry.targetBuildingId,
+      (candidate) => candidate.destinationId === destinationId,
     );
-    return place ? place.distance <= BUILDING_INTERACTION_RADIUS : false;
+    return place ? place.distance : null;
+  }
+
+  /**
+   * Record that this platform agent's directive issuance used the fast path.
+   * Delete-then-set moves the key to the newest position; past
+   * FAST_PATH_USED_MAX the oldest keys (insertion order) are evicted.
+   */
+  private markFastPathUsed(platformAgentId: string, directiveSha: string): void {
+    this.fastPathUsedSha.delete(platformAgentId);
+    this.fastPathUsedSha.set(platformAgentId, directiveSha);
+    while (this.fastPathUsedSha.size > FAST_PATH_USED_MAX) {
+      const oldest = this.fastPathUsedSha.keys().next().value;
+      if (oldest === undefined) break;
+      this.fastPathUsedSha.delete(oldest);
+    }
+  }
+
+  /**
+   * The directive fast-path reply, or null to let the model decide. Null when
+   * the directive is not a plain single-destination go-to, when the destination
+   * is missing from perception (unknown distance), or when the agent is already
+   * within BUILDING_INTERACTION_RADIUS of it (hasArrived's metric).
+   */
+  private directiveFastPathReply(
+    perception: NonNullable<ReturnType<typeof npcSimulation.buildPerception>>,
+    entry: HouseAgentEntry,
+    directiveText: string,
+  ): string | null {
+    const line = directiveFastPathAction({ text: directiveText, isHouse: entry.isHouse });
+    if (!line) return null;
+    const action = parseDriverAction(line);
+    if (!action) return null;
+    const destinationId = action.verb === 'enter_building'
+      ? action.params.buildingId
+      : perception.places.find((place) => place.actionVerb === action.verb)?.destinationId;
+    if (!destinationId) return null;
+    const distance = this.destinationDistance(perception, destinationId);
+    if (distance === null || !Number.isFinite(distance)) return null;
+    return distance > BUILDING_INTERACTION_RADIUS ? line : null;
   }
 
   /** A zero `walkDeadline` (legacy/hand-set entry) keeps the pre-2026-07-26 flat 120 s. */
@@ -1828,6 +2041,7 @@ class AgentAutonomyDriver {
         // A non-teaching destination (cove / poker room) has been reached.
         // Linger without another LLM call, then return to deciding; never emit
         // an invalid talk_to_npc(buildingId=cove) or teacher reward.
+        entry.talkPrefetch = null; // never set for a place; cleared defensively
         entry.phase = 'talking';
         entry.phaseSince = now;
         // Retain the reached place through the talking/linger phase so the
@@ -1877,6 +2091,7 @@ class AgentAutonomyDriver {
           this.pushThought(entry, 'observation', 'Walk timed out — re-deciding', now);
           entry.phase = 'deciding';
           entry.targetBuildingId = null;
+          entry.talkPrefetch = null;
           entry.phaseSince = now;
           entry.walkDeadline = 0;
           entry.walkEpisodeDeadline = 0;
