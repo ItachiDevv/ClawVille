@@ -911,7 +911,7 @@ async function runConnect(args: unknown, rt: ToolRuntime): Promise<ToolAnswer> {
         ok: false,
         status: result.status,
         data: result.data,
-        next: 'Read data.error, fix the input, then call clawville_connect again.',
+        next: 'Read data.error and data.detail, fix the input, then call clawville_connect again.',
       },
     };
   }

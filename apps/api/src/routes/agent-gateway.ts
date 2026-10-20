@@ -622,11 +622,19 @@ agentGatewayRoutes.post('/connect', async (c) => {
   if (data.connectionToken) {
     const pending = pendingConnections.get(data.connectionToken);
     if (!pending) {
-      return c.json({ error: 'Connection token not found or expired' }, 404);
+      return c.json({
+        error: 'Connection token not found or expired',
+        code: 'connection_token_invalid',
+        detail: CONNECTION_TOKEN_DEAD_DETAIL,
+      }, 404);
     }
     if (Date.now() > pendingConnectionExpiresAt(pending)) {
       pendingConnections.delete(data.connectionToken);
-      return c.json({ error: 'Connection token expired' }, 410);
+      return c.json({
+        error: 'Connection token expired',
+        code: 'connection_token_expired',
+        detail: CONNECTION_TOKEN_DEAD_DETAIL,
+      }, 410);
     }
     // A public front-door token proves only that the human invited this claim;
     // it does not itself define a durable agent identity. Require the existing
@@ -650,7 +658,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // ROLLS BACK the reservation (`pending.connected = false`) so the human can
     // retry without regenerating the token.
     if (pending.connected) {
-      return c.json({ error: 'Connection token already claimed' }, 409);
+      return c.json({
+        error: 'Connection token already claimed',
+        code: 'connection_token_claimed',
+        detail: CONNECTION_TOKEN_CLAIMED_DETAIL,
+      }, 409);
     }
     pending.connected = true;
     if (pending.publicHandoff) {
@@ -1422,7 +1434,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     if (!stillCurrent || claimDeadline == null || Date.now() > claimDeadline) {
       releasePendingConnectionClaim(pendingConn);
       npcSimulation.unregisterAgentBot(sessionId);
-      return c.json({ error: 'Connection token expired' }, 410);
+      return c.json({
+        error: 'Connection token expired',
+        code: 'connection_token_expired',
+        detail: CONNECTION_TOKEN_DEAD_DETAIL,
+      }, 410);
     }
     const claimConflict =
       ownerBinding.identityMismatch
@@ -4470,6 +4486,18 @@ export interface PendingConnection {
 
 const pendingConnections = new Map<string, PendingConnection>();
 const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+/** Agent-facing recovery text on the POST /connect dead-token bodies (404 / 410). */
+const CONNECTION_TOKEN_DEAD_DETAIL =
+  `The invitation link lasts ${Math.round(TOKEN_TTL_MS / 60_000)} minutes and works once. `
+  + 'If you already completed a claim with it, keep using the sessionId it returned (check '
+  + 'GET /api/agent/session-status?agentId=<agentId>). Otherwise ask your human for a new '
+  + 'connect link from the ClawVille game.';
+/** Agent-facing recovery text on the POST /connect 409 already-claimed body. */
+const CONNECTION_TOKEN_CLAIMED_DETAIL =
+  'This invitation link was already used. If your own earlier call returned a sessionId, '
+  + 'keep using it (check GET /api/agent/session-status?agentId=<agentId>); for a new '
+  + 'session later, sign POST /api/agent/reconnect with identity.secretKey. Otherwise ask '
+  + 'your human for a new connect link from the ClawVille game.';
 
 function releasePendingConnectionClaim(pending: PendingConnection): void {
   pending.connected = false;

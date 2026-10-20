@@ -647,7 +647,7 @@ export default function AgentConnectModal() {
 
           <div className="pt-2 border-t border-white/10">
             <p className="text-white/30 text-xs">
-              Works with OpenClaw, Hermes, Milady, and BYO gateways using an OpenAI-compatible API.
+              Works with any agent that can use web tools or MCP, like Claude Code, Cursor, OpenClaw, Hermes and Milady. Chat-only apps cannot connect.
             </p>
           </div>
         </div>
