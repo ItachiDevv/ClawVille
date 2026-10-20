@@ -3,9 +3,9 @@ import type { FloorArenaExits } from '@clawville/shared';
 import {
   buildJevArenaQuestions, buildJevArenaState, createJevArenaEntry, jevArenaCaps, jevArenaVerdict, parseJevArenaAnswers,
   validateJevAnswer, JEV_ARENA_CAP_LOCK_KEY, JEV_ARENA_CONTEXT, JEV_ARENA_MAX_IN_FLIGHT, JEV_ARENA_MODEL,
-  type JevArenaCaps, type JevArenaEntryInput, type JevArenaFinishPatch, type JevArenaLedger, type JevArenaReserveRow,
+  JEV_ENDPOINT, type JevArenaCaps, type JevArenaEntryInput, type JevArenaFinishPatch, type JevArenaLedger,
+  type JevArenaReserveRow,
 } from './jev-entry';
-import { JEV_CAP_LOCK_KEY, JEV_ENDPOINT } from '../jev-decide-shadow';
 import type { FloorArenaFeatures } from './filters';
 
 const KEY = 'jev-arena-test-key-SECRET-4b3a2c';
@@ -107,7 +107,7 @@ describe('jev arena entry: enablement + caps', () => {
     expect(jevArenaCaps('production')).toEqual({ totalUsd: 0.9, dailyUsd: 0.45 });
     expect(jevArenaCaps('staging')).toEqual({ totalUsd: 0.1, dailyUsd: 0.05 });
     expect(jevArenaCaps(undefined)).toEqual({ totalUsd: 0.1, dailyUsd: 0.05 });
-    expect(JEV_ARENA_CAP_LOCK_KEY).not.toBe(JEV_CAP_LOCK_KEY);
+    expect(JEV_ARENA_CAP_LOCK_KEY).toBe(7_413_008_202);
   });
 
   test('cap refusal happens before fetch, records skipped_cap once, then latches', async () => {

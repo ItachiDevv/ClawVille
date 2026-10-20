@@ -4,9 +4,8 @@ import type { HatcherActionVerb } from '@clawville/shared';
  * The [ACTION:] verbs a HOUSE actor (`openclaw_bots.is_house = true`) can
  * never complete. Single source for both sides of the consumption mandate:
  * the executor (`npc-simulation.ts`) refuses these for a house actor, and the
- * decide prompt (`agent-autonomy-driver.ts`) plus the Jev world demo
- * (`jev-world-decide.ts`) leave them off a house actor's menu, so the deciding
- * model never sees a verb the executor will drop.
+ * decide prompt (`agent-autonomy-driver.ts`) leaves them off a house actor's
+ * menu, so the deciding model never sees a verb the executor will drop.
  *
  * Why each one fails for the house:
  * - chat_nori, update_appearance, trade_token, place_kit_piece: each path

@@ -24,12 +24,16 @@
 import { createHash } from 'node:crypto';
 import { db, sql } from '@clawville/database';
 import type { FloorArenaExits } from '@clawville/shared';
-import { JEV_ENDPOINT, JEV_ENVELOPE_TOKENS, JEV_USD_PER_MTOK } from '../jev-decide-shadow';
 import { pairAgeSeconds, type FloorArenaFeatures } from './filters';
 
+export const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+/** USD per 1,000,000 billed input tokens. */
+export const JEV_USD_PER_MTOK = 0.042;
+/** Token allowance for the request envelope (model name, JSON keys). */
+export const JEV_ENVELOPE_TOKENS = 256;
 export const JEV_ARENA_MODEL = 'jev-1.13.0'; // pinned: a new jev-latest can shift every probability (resolved 2026-10-14)
 export const JEV_ARENA_TIMEOUT_MS = 2_000;
-/** Fixed advisory-lock key for THIS ledger (the decide shadow uses 7_413_008_101). */
+/** Fixed advisory-lock key that this ledger owns (serializes the cap check + reserve insert). */
 export const JEV_ARENA_CAP_LOCK_KEY = 7_413_008_202;
 export const JEV_ARENA_MAX_IN_FLIGHT = 4;
 export const JEV_ARENA_DEDUPE_MS = 10 * 60_000;
