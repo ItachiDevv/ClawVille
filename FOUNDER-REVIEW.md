@@ -5,6 +5,13 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### Roundup loose ends: quest hints, landing cards, poker tournament payouts (session roundup, 2026-10-20, STAGING)
+
+- **WHERE:** staging.clawville.world/game quest tracker (tutorial quests); the landing page gameplay cards; a poker tournament in the cove.
+- **LOOK AT:** the "First Match" hint now says to walk into the Salty Spitoon or the Boating School and choose Play Now (no hidden Quick Queue). Style Statement, Big Spender and Wallet Aware say "Not claimable yet"; Brand Ambassador says it is retired. The landing cards no longer say "Quick Queue" or "Phase 4", and the quest ladder reads 34 quests, 10 tiers.
+- **FEEDBACK WANTED:** should the four unclaimable quests be removed or made claimable? Should SOL event entry be tied to the paying wallet (today anyone who sees a payment signature can submit it first)?
+- **Session roundup, 2026-10-20.**
+
 ### Your agent is labelled "itachi agent" (staging, then prod)
 
 - **WHERE:** clawville.world/game (after promotion), the agent chat bar at the bottom.

@@ -32,6 +32,8 @@ import {
   SpecialEventError,
   SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT,
   SPECIAL_EVENT_START_CLAIM_STALE_MS,
+  SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS,
+  solEntryNotBeforeMs,
   readSeedPrizePoolCt,
   singleCoveringSource,
   summarizeParsedSolTransfer,
@@ -952,6 +954,9 @@ class FakeRpc implements EventRpc {
   commitments: string[] = [];
   /** A sig whose lookup throws (an RPC outage). */
   failing = new Set<string>();
+  /** Per-sig block time (unix s); unset sigs get `defaultBlockTime` (= makeManager's clock start). */
+  blockTimes = new Map<string, number | null>();
+  defaultBlockTime: number | null = Math.floor(1_900_000_000_000 / 1000);
 
   setSupply(mint: string, s: bigint): void {
     this.supply.set(mint, s);
@@ -1008,6 +1013,7 @@ class FakeRpc implements EventRpc {
       lamportsToDest: leg?.lamportsToDest ?? 0n,
       success: leg?.success ?? [...legs.values()][0]!.success,
       transfersBySource: new Map(leg?.transfers ?? []),
+      blockTime: this.blockTimes.has(sig) ? this.blockTimes.get(sig)! : this.defaultBlockTime,
     };
   }
 }
@@ -1355,6 +1361,108 @@ describe('SpecialEventManager — SOL gate + replay protection', () => {
     await expect(
       mgr.signup('sol-only', human(), { entryMethod: 'sol', solTxSig: 'unknownSig' }),
     ).rejects.toThrow(/sol_tx_not_found_or_failed/);
+  });
+
+  it('checks recipient + amount: a full payment to ANOTHER wallet and a 1-lamport short payment are both rejected (roundup 2026-10-20)', async () => {
+    const { mgr, rpc, db } = makeManager();
+    await mgr.createEvent({ slug: 'sol-recipient', name: 'SolRecipient', gateSolLamports: 2_000_000 }, null);
+    await mgr.openSignup('sol-recipient');
+
+    rpc.setTx('toOther', 'NotTheTreasury111111111111111111111111111111', 2_000_000n, true, 'PayerX11111111111111111111111111111111111');
+    await expect(
+      mgr.signup('sol-recipient', human(), { entryMethod: 'sol', solTxSig: 'toOther' }),
+    ).rejects.toThrow(/sol_underpaid/);
+
+    rpc.setTx('oneShort', TREASURY, 1_999_999n, true);
+    await expect(
+      mgr.signup('sol-recipient', human(), { entryMethod: 'sol', solTxSig: 'oneShort' }),
+    ).rejects.toThrow(/sol_underpaid/);
+
+    // Neither attempt seated anyone; the exact amount to the treasury does.
+    expect([...db.signups.values()].filter((s) => s.status === 'confirmed').length).toBe(0);
+    rpc.setTx('exact', TREASURY, 2_000_000n, true);
+    const ok = await mgr.signup('sol-recipient', human(), { entryMethod: 'sol', solTxSig: 'exact' });
+    expect(ok.status).toBe('confirmed');
+  });
+
+  it('the entry check reads the tx at FINALIZED commitment (roundup 2026-10-20)', async () => {
+    const { mgr, rpc } = makeManager();
+    await mgr.createEvent({ slug: 'sol-final', name: 'SolFinal', gateSolLamports: 1_000_000 }, null);
+    await mgr.openSignup('sol-final');
+    rpc.setTx('fin', TREASURY, 1_000_000n, true);
+    rpc.commitments.length = 0;
+    await mgr.signup('sol-final', human(), { entryMethod: 'sol', solTxSig: 'fin' });
+    expect(rpc.commitments).toEqual(['finalized']);
+  });
+
+  describe('age limit (roundup 2026-10-20)', () => {
+    async function solAgeEvent(slug: string) {
+      const h = makeManager();
+      await h.mgr.createEvent({ slug, name: slug, gateSolLamports: 1_000_000 }, null);
+      await h.mgr.openSignup(slug);
+      const ev = [...h.db.events.values()].find((e) => e.slug === slug)!;
+      return { ...h, ev };
+    }
+    const nowS = Math.floor(1_900_000_000_000 / 1000);
+
+    it('a payment older than 24 h is refused with sol_tx_too_old; exactly 24 h old is accepted', async () => {
+      const { mgr, rpc, db } = await solAgeEvent('sol-age');
+      rpc.setTx('old', TREASURY, 1_000_000n, true);
+      rpc.blockTimes.set('old', nowS - 24 * 3600 - 1);
+      await expect(mgr.signup('sol-age', human(), { entryMethod: 'sol', solTxSig: 'old' })).rejects.toMatchObject({
+        message: 'sol_tx_too_old',
+        httpStatus: 402,
+      });
+      // The refused signature is NOT claimed: no row, no used-sig entry.
+      expect(db.signups.size).toBe(0);
+
+      rpc.setTx('edge', TREASURY, 1_000_000n, true);
+      rpc.blockTimes.set('edge', nowS - 24 * 3600);
+      const ok = await mgr.signup('sol-age', human(), { entryMethod: 'sol', solTxSig: 'edge' });
+      expect(ok.status).toBe('confirmed');
+    });
+
+    it('a payment made before the event existed is refused (created_at is the tighter bound)', async () => {
+      const { mgr, rpc, ev } = await solAgeEvent('sol-pre');
+      // Event created 1 h ago: a 2 h old payment is inside 24 h but before the event.
+      ev.created_at = new Date((nowS - 3600) * 1000);
+      rpc.setTx('pre', TREASURY, 1_000_000n, true);
+      rpc.blockTimes.set('pre', nowS - 7200);
+      await expect(mgr.signup('sol-pre', human(), { entryMethod: 'sol', solTxSig: 'pre' })).rejects.toThrow(
+        /sol_tx_too_old/,
+      );
+      rpc.setTx('post', TREASURY, 1_000_000n, true);
+      rpc.blockTimes.set('post', nowS - 1800);
+      const ok = await mgr.signup('sol-pre', human(), { entryMethod: 'sol', solTxSig: 'post' });
+      expect(ok.status).toBe('confirmed');
+    });
+
+    it('the 24 h bound moves with the clock', async () => {
+      const { mgr, rpc, clock } = await solAgeEvent('sol-clock');
+      rpc.setTx('aging', TREASURY, 1_000_000n, true);
+      rpc.blockTimes.set('aging', nowS);
+      clock.t += 24 * 3600_000 + 1_000;
+      await expect(mgr.signup('sol-clock', human(), { entryMethod: 'sol', solTxSig: 'aging' })).rejects.toThrow(
+        /sol_tx_too_old/,
+      );
+    });
+
+    it('a tx without a block time is refused with sol_tx_time_unavailable', async () => {
+      const { mgr, rpc } = await solAgeEvent('sol-notime');
+      rpc.setTx('notime', TREASURY, 1_000_000n, true);
+      rpc.blockTimes.set('notime', null);
+      await expect(mgr.signup('sol-notime', human(), { entryMethod: 'sol', solTxSig: 'notime' })).rejects.toThrow(
+        /sol_tx_time_unavailable/,
+      );
+    });
+
+    it('solEntryNotBeforeMs takes the later of created_at and now - 24 h', () => {
+      const now = 1_900_000_000_000;
+      expect(solEntryNotBeforeMs({ created_at: new Date(1) }, now)).toBe(now - SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS);
+      expect(solEntryNotBeforeMs({ created_at: new Date(now - 60_000).toISOString() }, now)).toBe(now - 60_000);
+      expect(solEntryNotBeforeMs({ created_at: null }, now)).toBe(now - SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS);
+      expect(SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS).toBe(24 * 3600_000);
+    });
   });
 
   it('one SOL payment can NOT satisfy entry to TWO concurrent SOL-gated events (cross-event replay closed)', async () => {
@@ -2587,7 +2695,7 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     const owed = r.solRefundsOwed.find((o) => o.avatarId === humanSubj.avatarId)!;
     expect(owed.destinationPubkey).toBe(HUMAN_PAYER);
     // One re-verification, at the entry path's finality.
-    expect(rpc.commitments).toEqual(['confirmed']);
+    expect(rpc.commitments).toEqual(['finalized']);
   });
 
   it('a stored payer without the current rule tag is not trusted: cancel re-verifies it (Codex r3)', async () => {
@@ -2604,7 +2712,7 @@ describe('SpecialEventManager — SOL refunds owed + mark-paid (Codex r1, 2026-1
     const r = await mgr.cancelEvent('sol-untagged');
     const owed = r.solRefundsOwed.find((o) => o.avatarId === humanSubj.avatarId)!;
     expect(owed.destinationPubkey).toBe(HUMAN_PAYER);
-    expect(rpc.commitments).toEqual(['confirmed']);
+    expect(rpc.commitments).toEqual(['finalized']);
   });
 
   it('an unprovable payer is recorded with no destination; mark-paid resolves it from the entry tx', async () => {

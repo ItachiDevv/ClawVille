@@ -50,6 +50,7 @@ import bs58 from 'bs58';
 import { db as realDb } from '@clawville/database';
 import { sql } from 'drizzle-orm';
 import { readSplTokenBalance } from './solana-token-balance';
+import { MAINNET_GENESIS_HASH } from './solana-mainnet-rpc';
 import * as ledgerModule from './claw-token-ledger';
 import type {
   creditClawTokens as CreditFn,
@@ -98,8 +99,9 @@ export interface EventRpc {
    * proven payer from it (`singleCoveringSource`): a source counts only when its
    * OWN transfers cover the full credited amount (Codex r2, 2026-10-03).
    *
-   * `opts.commitment` defaults to 'confirmed' (the entry path); the refund
-   * mark-paid path asks for 'finalized'.
+   * `opts.commitment` defaults to 'confirmed'; every manager caller (entry,
+   * entry re-verify at cancel, refund mark-paid) asks for 'finalized'
+   * (roundup 2026-10-20).
    */
   getSolTransfer(
     txSig: string,
@@ -118,6 +120,11 @@ export interface SolTransferProof {
    * (self-transfers excluded). Absent or empty = no source is provable.
    */
   transfersBySource?: ReadonlyMap<string, bigint>;
+  /**
+   * The tx block time (unix SECONDS) from the RPC, or null/absent when the RPC
+   * gives none. The entry gate refuses a tx without one (roundup 2026-10-20).
+   */
+  blockTime?: number | null;
 }
 
 /**
@@ -279,7 +286,7 @@ export class SpecialEventManager {
       creditClawTokens: (...args) => ledgerModule.creditClawTokens(...args),
       restoreEarnedSpendForRefund: (...args) => ledgerModule.restoreEarnedSpendForRefund(...args),
     };
-    this.rpc = deps.rpc ?? defaultEventRpc();
+    this.rpc = deps.rpc ?? createDefaultEventRpc();
     this.clock = deps.clock ?? REAL_CLOCK;
     this.tm = deps.tournamentManager ?? realTournamentManager;
     this.treasuryPubkey =
@@ -462,9 +469,34 @@ export class SpecialEventManager {
         return { granted: false, method: 'sol', proof: {}, reason: 'sol_requires_tx_sig' };
       }
       const required = BigInt(event.gate_sol_lamports!);
-      const transfer = await this.rpc.getSolTransfer(choice.solTxSig, this.treasuryPubkey);
+      // FINALIZED only (roundup 2026-10-20): a 'confirmed' tx can still roll
+      // back, and the refund mark-paid path already requires finalized.
+      const transfer = await this.rpc.getSolTransfer(choice.solTxSig, this.treasuryPubkey, {
+        commitment: 'finalized',
+      });
       if (!transfer || !transfer.success) {
         return { granted: false, method: 'sol', proof: {}, reason: 'sol_tx_not_found_or_failed' };
+      }
+      // Age limit (roundup 2026-10-20): the payment must be newer than
+      // max(event created_at, now - SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS). Without
+      // it any old unclaimed SOL transfer into the shared merchant wallet could
+      // buy a seat. No block time = not provable = refused.
+      const blockTime = transfer.blockTime;
+      if (typeof blockTime !== 'number' || !Number.isFinite(blockTime)) {
+        return { granted: false, method: 'sol', proof: { txSig: choice.solTxSig }, reason: 'sol_tx_time_unavailable' };
+      }
+      const notBeforeMs = solEntryNotBeforeMs(event, this.clock.now());
+      if (blockTime * 1000 < notBeforeMs) {
+        return {
+          granted: false,
+          method: 'sol',
+          proof: {
+            txSig: choice.solTxSig,
+            blockTime,
+            notBefore: new Date(notBeforeMs).toISOString(),
+          },
+          reason: 'sol_tx_too_old',
+        };
       }
       if (transfer.lamportsToDest < required) {
         return {
@@ -1796,7 +1828,7 @@ export class SpecialEventManager {
     const dest = toPubkey ?? this.treasuryPubkey;
     if (!dest) return null;
     try {
-      const t = await this.rpc.getSolTransfer(txSig, dest);
+      const t = await this.rpc.getSolTransfer(txSig, dest, { commitment: 'finalized' });
       if (!t || !t.success || t.lamportsToDest <= 0n) return null;
       return {
         payerPubkey: singleCoveringSource(t.transfersBySource, t.lamportsToDest, dest),
@@ -2199,6 +2231,30 @@ export const SPECIAL_EVENT_SEED_PRIZE_POOL_MAX_CT = 100_000;
  */
 export const SPECIAL_EVENT_START_CLAIM_STALE_MS = 10 * 60_000;
 
+/**
+ * Max age of a SOL entry payment at signup (roundup 2026-10-20): 24 h. A
+ * payer submits the signature right after paying; a day covers a retry after
+ * an RPC outage. A payment older than this cannot buy a seat (it stays
+ * unclaimed; a named admin handles it by hand).
+ */
+export const SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS = 24 * 60 * 60_000;
+
+/**
+ * The earliest allowed block time (ms) of a SOL entry payment: the TIGHTER of
+ * the event's `created_at` (no tx before the event existed can pay for it) and
+ * `nowMs - SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS`. `registration_opens_at` is NOT
+ * used: signup never enforces it and no signup-open time is recorded, so an
+ * early open would refuse real payments made while signup was open.
+ */
+export function solEntryNotBeforeMs(
+  event: { created_at: Date | string | null },
+  nowMs: number,
+): number {
+  const bound = nowMs - SPECIAL_EVENT_SOL_ENTRY_MAX_AGE_MS;
+  const created = event.created_at != null ? new Date(event.created_at).getTime() : NaN;
+  return Number.isFinite(created) ? Math.max(created, bound) : bound;
+}
+
 /** Linked-tournament statuses a start reconcile cancels (before the field plays). */
 const PRE_RUNNING_STATUSES: readonly string[] = ['registering', 'seating'];
 
@@ -2264,6 +2320,8 @@ export interface ParsedSolTxLike {
     innerInstructions?: ReadonlyArray<{ instructions: readonly unknown[] }> | null;
   } | null;
   transaction: { message: { accountKeys: readonly unknown[]; instructions: readonly unknown[] } };
+  /** Unix seconds; null/absent when the RPC has none. */
+  blockTime?: number | null;
 }
 
 /** A base58 key from a parsed account key / PublicKey / string, or null. */
@@ -2332,23 +2390,90 @@ export function summarizeParsedSolTransfer(
   for (const inner of meta.innerInstructions ?? []) {
     for (const ix of inner.instructions) visit(ix);
   }
-  return { lamportsToDest, success, transfersBySource };
+  return { lamportsToDest, success, transfersBySource, blockTime: tx.blockTime ?? null };
 }
 
 /**
- * Default production RPC seam — a lazily-constructed `@solana/web3.js` Connection
- * reading SOLANA_RPC_URL (devnet default, mirroring wager-program-client). Only
- * instantiated when a hold/sol gate is actually exercised on prod; tests inject
- * a scripted EventRpc and never reach this.
+ * Which Solana cluster the special-event checks (SOL entry, SOL refund
+ * mark-paid, token-hold gate) read (2026-10-20 roundup).
+ *
+ * Root cause fixed here: the checks used `SOLANA_RPC_URL`, which is the DEVNET
+ * wager RPC on BOTH boxes (verified on the prod api container 2026-10-20). Prod
+ * is mainnet for real money, so a free devnet transfer to the merchant pubkey
+ * bought a real event seat.
+ *
+ * - `CLAWVILLE_ENV === 'staging'` -> `'cluster-env'`: `SOLANA_RPC_URL`, devnet
+ *   default. This is what staging events used before the fix (unchanged).
+ * - every other value, UNSET included -> `'mainnet'`: the pinned
+ *   `getClvMainnetConnection()` (Helius + public failover), which never reads
+ *   `SOLANA_RPC_URL`. Only an explicit staging box may verify on devnet (the
+ *   same "anything but staging is prod" rule as the x402 mock guard). A devnet
+ *   signature is not found on mainnet, so this direction fails closed.
  */
-function defaultEventRpc(): EventRpc {
-  let conn: import('@solana/web3.js').Connection | null = null;
-  const getConn = () => {
-    if (!conn) {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const web3 = require('@solana/web3.js') as typeof import('@solana/web3.js');
-      const url = process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com';
-      conn = new web3.Connection(url, 'confirmed');
+export type EventRpcCluster = 'mainnet' | 'cluster-env';
+
+export function resolveEventRpcCluster(env: string | undefined = process.env.CLAWVILLE_ENV): EventRpcCluster {
+  return env === 'staging' ? 'cluster-env' : 'mainnet';
+}
+
+/** The read-only Connection surface the event RPC seam uses. */
+type EventConnection = Pick<
+  import('@solana/web3.js').Connection,
+  'getTokenSupply' | 'getParsedTransaction' | 'getGenesisHash' | 'rpcEndpoint'
+>;
+
+/**
+ * The Connection for `cluster`. Mainnet = `getClvMainnetConnection()`, loaded
+ * lazily (`require`) so this module does not pull the custody module graph in
+ * at import time. Exported for the network tests.
+ */
+export function createEventConnection(cluster: EventRpcCluster): import('@solana/web3.js').Connection {
+  if (cluster === 'mainnet') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const custody = require('./clv-swap-custody') as typeof import('./clv-swap-custody');
+    return custody.getClvMainnetConnection();
+  }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const web3 = require('@solana/web3.js') as typeof import('@solana/web3.js');
+  const url = process.env.SOLANA_RPC_URL?.trim() || 'https://api.devnet.solana.com';
+  return new web3.Connection(url, 'confirmed');
+}
+
+/**
+ * Default production RPC seam. The cluster is resolved and the Connection built
+ * on FIRST USE (never at module load: the singleton below is built at import).
+ * On the mainnet cluster the first use also proves the endpoint is mainnet-beta
+ * (`getGenesisHash() === MAINNET_GENESIS_HASH`); a mismatch or an unreachable
+ * RPC throws `sol_network_unverified` (503) so no gate is granted, and the
+ * proof is retried on the next call (only a success is cached). Tests inject a
+ * scripted EventRpc; `opts` exists for the network tests only.
+ */
+export function createDefaultEventRpc(opts?: {
+  env?: string;
+  connect?: (cluster: EventRpcCluster) => EventConnection;
+}): EventRpc {
+  let conn: EventConnection | null = null;
+  let mainnetProof: Promise<void> | null = null;
+  const getConn = async (): Promise<EventConnection> => {
+    const cluster = resolveEventRpcCluster(opts && 'env' in opts ? opts.env : process.env.CLAWVILLE_ENV);
+    if (!conn) conn = (opts?.connect ?? createEventConnection)(cluster);
+    if (cluster === 'mainnet') {
+      const c = conn;
+      mainnetProof ??= (async () => {
+        let genesis: string;
+        try {
+          genesis = await c.getGenesisHash();
+        } catch {
+          throw new SpecialEventError('sol_network_unverified', 503);
+        }
+        if (genesis !== MAINNET_GENESIS_HASH) {
+          throw new SpecialEventError('sol_network_unverified', 503);
+        }
+      })().catch((err: unknown) => {
+        mainnetProof = null;
+        throw err;
+      });
+      await mainnetProof;
     }
     return conn;
   };
@@ -2357,21 +2482,22 @@ function defaultEventRpc(): EventRpc {
 
   return {
     async getTokenSupply(mint: string): Promise<bigint> {
-      const res = await getConn().getTokenSupply(new (PublicKey())(mint));
+      const res = await (await getConn()).getTokenSupply(new (PublicKey())(mint));
       return BigInt(res.value.amount);
     },
     async getTokenBalance(mint: string, ownerPubkey: string): Promise<bigint> {
       // Extracted to the shared reader (Tokenomics Phase A) — the CLV
       // linked-wallet balance service reads through the SAME helper. The
       // hold-gate only needs the atomic total, so we drop decimals/uiAmount.
-      return (await readSplTokenBalance(getConn(), mint, ownerPubkey)).amountAtomic;
+      const c = (await getConn()) as import('@solana/web3.js').Connection;
+      return (await readSplTokenBalance(c, mint, ownerPubkey)).amountAtomic;
     },
     async getSolTransfer(
       txSig: string,
       expectedDestPubkey: string,
       opts?: { commitment?: 'confirmed' | 'finalized' },
     ): Promise<SolTransferProof | null> {
-      const tx = await getConn().getParsedTransaction(txSig, {
+      const tx = await (await getConn()).getParsedTransaction(txSig, {
         commitment: opts?.commitment ?? 'confirmed',
         maxSupportedTransactionVersion: 0,
       });

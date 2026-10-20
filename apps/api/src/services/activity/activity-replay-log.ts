@@ -19,8 +19,8 @@
  * at LIVE→RESULTS via the `replayFlushFn` callback (registered at API
  * boot to avoid a cycle, same pattern as the WS hub).
  *
- * 14-day retention pruning lives in a separate cron — `// TODO chunk #12
- * prune-activity-replays.ts script`.
+ * 14-day retention: `activity-replay-prune.ts` deletes older rows in
+ * bounded batches, started from `apps/api/src/index.ts`.
  */
 
 import {

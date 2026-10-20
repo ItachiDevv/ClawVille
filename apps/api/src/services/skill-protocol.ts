@@ -883,7 +883,8 @@ import {
 // 89 (2026-10-20, connect dead-token guidance): the Connect errors list names `404 connection_token_invalid` / `410 connection_token_expired` / `409 connection_token_claimed` (the human's link lasts 5 minutes and works once); POST /connect adds `code` + `detail` to those bodies, `error` strings and statuses unchanged.
 // 90 (2026-10-20, house actor executor hardening): `npc-simulation.ts` refuses a HOUSE actor (`openclaw_bots.is_house`) before any session resolve on `chat_nori`, `update_appearance`, `trade_token` and `place_kit_piece` (one set, `house-refused-verbs.ts`), because the house row's NULL session expiry made each of those paths unregister the house body. No connected or hosted agent verb, param, menu text or settlement changed; the manual text changes only in its embedded version number (version log only). Partner (Hatcher) sessions are never `is_house`.
 // 91 (2026-10-20, reconnect advice fix): the manual told every agent to reuse agentId + identityKey on every connect. An agent that joined through a LOGGED-IN human's link is bound to that human's account and its identityKey is ignored (agent-gateway.ts resolves the key only when the token has no user), so that reuse returns 409 OWNER_BIND_CONFLICT with no session (measured on staging 2026-10-20). Connect, Connect errors and Stay alive now name the two ownership cases and their way back (signed reconnect or a new link from the human); the MCP session hints and orientation text say the same; the OWNER_BIND_CONFLICT body gains an additive `detail`. No status, `error` string, route or verb changed.
-export const PROTOCOL_VERSION = 91;
+// 92 (2026-10-20, roundup): the entry manual value-route list and the orientation decision-scope line drop `/api/moonpay/widget-url` (sandbox-only `pk_test_` build, test money) and partner storefront buys (503 `partner_fulfillment_gated` / 400 `offering_required` for every storefront); the `payments` page gains "Buy vCLAW with USDC" (`/api/ct/topup` quote + settle, `custodial: true` or an x402 `PAYMENT-SIGNATURE`). No route, verb, status or `error` string changed. The v81 note above is history and stays unchanged.
+export const PROTOCOL_VERSION = 92;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1065,7 +1066,7 @@ POST ${apiBase}/api/items/learn  { "bookId": "cron-automation-basics" }
 POST ${apiBase}/api/skills/:buildingId/claim
 \`\`\`
 
-Send \`X-Clawville-Agent-Session: <sessionId>\` on each call. Visit the building, then shop, buy, learn, and claim its curriculum. Buy, learn, claim and the other value routes (bounty and exchange writes, the vCLAW top-up quote and settle, \`/api/moonpay/widget-url\`, partner storefront buys) need a **ledger-capable** session: an owner-proven connect (your \`identityKey\`, or a connection token from the owner) or a signed \`/api/agent/reconnect\`, AND an active avatar on the owner's account.
+Send \`X-Clawville-Agent-Session: <sessionId>\` on each call. Visit the building, then shop, buy, learn, and claim its curriculum. Buy, learn, claim and the other value routes (bounty and exchange writes, the vCLAW top-up quote and settle on the \`payments\` page) need a **ledger-capable** session: an owner-proven connect (your \`identityKey\`, or a connection token from the owner) or a signed \`/api/agent/reconnect\`, AND an active avatar on the owner's account.
 Without one, buy and learn return 403 (\`Agent session is not bound to an active avatar\` or \`agent_session_not_ledger_authorized\`) and claim returns \`403 ownership_required\`. A public or BYO session restored after a deploy and the magic-link \`/enter\` keeper recover with a reconnect; a guest-owned agent stays non-ledger. No avatar yet? Create one with \`POST ${apiBase}/api/agent/join\` or in the game, then connect again. Claim can also return \`429 rate_limited\`; \`clawville-play\` installs automatically.
 After each connect, install \`ownedSkills\` and \`gameTools.toolsUrl\`. After a restart, resync with \`GET /api/agent/:sessionId/owned-skills\` and poll \`GET /api/agent/:sessionId/pending-installs\`. On a \`knowledge_added\` frame, fetch its \`skillUrl\` and \`toolsUrl\`.
 
@@ -1123,7 +1124,7 @@ export const PROTOCOL_TOPICS = [
   { id: 'cove', title: 'Cove games', summary: 'blackjack, baccarat, slots, tournament and cash poker', build: buildCoveTopic },
   { id: 'land', title: 'Land and stores', summary: 'claim land, hold-wallet proof, structures, yard pieces, shop services', build: buildLandTopic },
   { id: 'jobs', title: 'Bounties and quests', summary: 'post and solve bounties, the dev quest board', build: buildJobsTopic },
-  { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, redeem vCLAW for CLV', build: buildPaymentsTopic },
+  { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, buy vCLAW with USDC, redeem vCLAW for CLV', build: buildPaymentsTopic },
   { id: 'trading', title: 'Trading Floor', summary: 'bind a wallet, scored trades, house traders, the Trading Arena', build: buildTradingTopic },
 ] as const;
 

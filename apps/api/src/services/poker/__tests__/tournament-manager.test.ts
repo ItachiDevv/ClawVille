@@ -61,6 +61,7 @@ afterEach(() => {
 
 class FakeClock implements SimClock {
   private t = 1_000_000;
+  setTimerCalls = 0; // observability for the disposition-scheduler tests
   now(): number {
     return this.t;
   }
@@ -68,7 +69,8 @@ class FakeClock implements SimClock {
     this.t += ms;
   }
   setTimer(): unknown {
-    return null; // turns are driven explicitly; no auto-fire
+    this.setTimerCalls += 1;
+    return null; // turns/retries are driven explicitly; no auto-fire
   }
   clearTimer(): void {
     /* no-op */
@@ -112,10 +114,25 @@ class FakeLedger {
     this.debits.push({ ...input });
     return { balanceAfter: bal - input.amount, ledgerId: randomUUID() };
   };
+  // Test-only fault injection: fail the next N credit calls (throw BEFORE mutating,
+  // so a failed credit leaves NO half-state; proves settle idempotency has no
+  // double-credit across a failed+retried settle). Large N = persistent outage.
+  failCreditsRemaining = 0;
+  // Let this many credits SUCCEED before the injected failures start (a failure
+  // AFTER the first prize credit: proves the settle tx rolls the partial back).
+  failAfterSuccesses = 0;
   creditClawTokens = async (
     input: { avatarId: string; amount: number; reason: string },
     _tx?: unknown,
   ) => {
+    if (this.failCreditsRemaining > 0) {
+      if (this.failAfterSuccesses > 0) {
+        this.failAfterSuccesses -= 1;
+      } else {
+        this.failCreditsRemaining -= 1;
+        throw new Error('injected ledger credit failure');
+      }
+    }
     const bal = this.get(input.avatarId);
     this.balances.set(input.avatarId, bal + input.amount);
     this.credits.push({ ...input });
@@ -195,14 +212,57 @@ class FakeDb {
   // Drizzle-style query API the route uses (not the TM) — minimal stub.
   query = {};
 
+  /**
+   * Opt-in ROLLBACK (Codex 2026-10-20 test gap): when set, a transaction that
+   * throws restores every store AND the attached ledger to the snapshot taken at
+   * its start, like a real Postgres rollback. Off by default: the e2e suites run
+   * transactions concurrently across awaits, and a snapshot restore there would
+   * clobber another in-flight transaction's writes. Tests that enable it drive
+   * one transaction at a time.
+   */
+  rollbackLedger: FakeLedger | null = null;
+  private txDepth = 0;
+
   async transaction<T>(fn: (tx: FakeDb) => Promise<T>): Promise<T> {
-    // Single-threaded test: the "transaction" is just the same store. We DON'T
-    // roll back on throw (the TM relies on the DB doing that), but every TM
+    // Default: the "transaction" is just the same store, no rollback. Every TM
     // transaction body either completes or throws before any partial money move
-    // that matters for these assertions — and the ledger fake is append-only, so
-    // a thrown register (e.g. insufficient funds) leaves no half-state because the
-    // debit is the FIRST money op and it throws before the pool update.
-    return fn(this);
+    // that matters for the default-mode assertions.
+    if (!this.rollbackLedger || this.txDepth > 0) return fn(this);
+    const snap = this.snapshot(this.rollbackLedger);
+    this.txDepth += 1;
+    try {
+      return await fn(this);
+    } catch (err) {
+      this.restore(this.rollbackLedger, snap);
+      throw err;
+    } finally {
+      this.txDepth -= 1;
+    }
+  }
+
+  private snapshot(ledger: FakeLedger) {
+    const cloneMap = (m: Map<string, Row>) => new Map([...m].map(([k, v]) => [k, { ...v }]));
+    return {
+      tournaments: cloneMap(this.tournaments),
+      entrants: cloneMap(this.entrants),
+      tables: cloneMap(this.tables),
+      hands: cloneMap(this.hands),
+      results: cloneMap(this.results),
+      balances: new Map(ledger.balances),
+      credits: [...ledger.credits],
+      debits: [...ledger.debits],
+    };
+  }
+
+  private restore(ledger: FakeLedger, s: ReturnType<FakeDb['snapshot']>): void {
+    this.tournaments = s.tournaments;
+    this.entrants = s.entrants;
+    this.tables = s.tables;
+    this.hands = s.hands;
+    this.results = s.results;
+    ledger.balances = s.balances;
+    ledger.credits = s.credits;
+    ledger.debits = s.debits;
   }
 
   async execute<T = Row>(q: SQL): Promise<T[]> {
@@ -368,6 +428,21 @@ class FakeDb {
           buy_in_paid_ct: e.buy_in_paid_ct,
           status: e.status,
         }));
+    }
+    // ── orphan recovery: settle-if-finished-else-refund ──────────────────────
+    if (text.startsWith("SELECT id FROM poker_tournaments WHERE status IN ('running','seating') AND settled_at IS NULL AND cancelled_at IS NULL")) {
+      return [...this.tournaments.values()]
+        .filter(
+          (t) => (t.status === 'running' || t.status === 'seating') && !t.settled_at && !t.cancelled_at,
+        )
+        .map((t) => ({ id: t.id }));
+    }
+    // isTournamentFullyPlaced + the cancelAndRefundOrphan under-lock re-check.
+    if (text.startsWith("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE placement IS NULL)::int AS unplaced FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> 'refunded'")) {
+      const es = [...this.entrants.values()].filter(
+        (e) => e.tournament_id === p[0] && e.status !== 'refunded',
+      );
+      return [{ total: es.length, unplaced: es.filter((e) => e.placement == null).length }];
     }
     if (text.startsWith("SELECT id, avatar_id, buy_in_paid_ct FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> 'refunded'")) {
       return [...this.entrants.values()]
@@ -607,7 +682,16 @@ async function drivePokerToCompletion(
   // we advance the clock past a blind level's duration so blinds rise.
   let lastHandSeen = 0;
   while (guard++ < 100_000) {
-    if (!tm.isRunning(tournamentId)) return; // champion crowned + settled
+    if (!tm.isRunning(tournamentId)) {
+      // r.done is claimed BEFORE the final-hand write (Codex 2026-10-20), so
+      // isRunning flips false while completion is still committing. Wait until
+      // the completion removes the in-memory record (settled + cleaned up).
+      const running = (tm as unknown as { running: Map<string, unknown> }).running;
+      for (let i = 0; i < 1000 && running.has(tournamentId); i++) {
+        await new Promise((res) => setTimeout(res, 0));
+      }
+      return; // champion crowned + settled
+    }
     const snap = sim.getPublicSnapshot(tableId);
     if (!snap || snap.toActSeatIndex === null) {
       await new Promise((res) => setTimeout(res, 0));
@@ -1034,6 +1118,808 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     expect(aEmit.fpHash).toBe('fp-agent'); // agent-driven event tagged with a real fp
     expect(aEmit.ipPrefixHash).toBe('ip-agent');
     expect(aEmit.subjectType).toBe('agent');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MTT money-safety port (feat/poker-tournament-consolidated 90125439, 1326638c,
+// eb5abede, 73bcda3d, 3d0a0d91, fb3424d0; ported to staging 2026-10-20):
+//   - settle conservation when the payout CURVE is DEEPER than the entrant count;
+//   - crash-loud placement-permutation guard (no mint on malformed placements);
+//   - orphan recovery + room-abort SETTLE a decided tournament (never void it);
+//   - completion-vs-abort ownership gate + under-lock refund guard;
+//   - completion self-heal + ONE shared disposition scheduler (the invariant).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('TournamentManager — settle conservation + orphan/abort disposition money safety', () => {
+  let db: FakeDb;
+  let ledger: FakeLedger;
+  let clock: FakeClock;
+
+  beforeEach(() => {
+    db = new FakeDb();
+    ledger = new FakeLedger();
+    clock = new FakeClock();
+    db.seedBlindSchedule('sched-1', DEFAULT_BLIND_SCHEDULE);
+  });
+
+  // Seed a running tournament with entrants at given placements, bypassing the sim.
+  function seedFinished(
+    tid: string,
+    entrants: Array<{ avatarId: string; placement: number | null }>,
+    opts: { pool: string; rakeBps?: number; curve?: PayoutCurveEntry[] } = { pool: '0' },
+  ): void {
+    db.seedTournament({
+      id: tid,
+      status: 'running',
+      buy_in_ct: '100',
+      rake_bps: opts.rakeBps ?? 0,
+      prize_pool_ct: opts.pool,
+      payout_curve_json: opts.curve ?? PAYOUT_3,
+    });
+    entrants.forEach((e, i) => {
+      db.entrants.set(`e-${i}`, {
+        id: `e-${i}`,
+        tournament_id: tid,
+        avatar_id: e.avatarId,
+        agent_id: null,
+        subject_type: 'user',
+        placement: e.placement,
+        status: 'registered',
+        buy_in_paid_ct: '100',
+        fp_hash: null,
+        ip_prefix_hash: null,
+        refunded_ct: '0',
+        chip_stack: 0,
+        current_table_id: null,
+        seat_index: null,
+        registered_at: i,
+      });
+    });
+  }
+
+  function wireRoom(tm: TournamentManager, roomId: string, tableId: string, tid: string): void {
+    const internals = tm as unknown as {
+      roomToTable: Map<string, string>;
+      tableToTournament: Map<string, string>;
+    };
+    internals.roomToTable.set(roomId, tableId);
+    internals.tableToTournament.set(tableId, tid);
+  }
+
+  const TWO_PLACED = [
+    { avatarId: 'av-1', placement: 1 },
+    { avatarId: 'av-2', placement: 2 },
+  ];
+
+  it('curve deeper than entrant count: unclaimed deep-place share folds into 1st (no CT vaporized)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // pool 200, top-3 curve (50/30/20), rake 0, only TWO finishers.
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+
+    const res = await tm.settleTournament(tid);
+    const prizeSum = res.results.reduce((a, r) => a + BigInt(r.prizeCt), 0n);
+    expect(prizeSum + BigInt(res.rakeTakenCt)).toBe(200n); // pre-fix: 160 (40 lost)
+    const byPlace = new Map(res.results.map((r) => [r.placement, BigInt(r.prizeCt)]));
+    expect(byPlace.get(1)).toBe(140n); // 100 + 40 unclaimed 3rd folded in
+    expect(byPlace.get(2)).toBe(60n);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+  });
+
+  it('curve deeper than entrant count WITH rake: prizes + treasury rake == pool exactly', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // pool 200, rake 10% = 20 → net 180; 2 finishers: 90 + 54 = 144, remainder 36 → 1st.
+    seedFinished(tid, TWO_PLACED, { pool: '200', rakeBps: 1000 });
+
+    const res = await tm.settleTournament(tid);
+    const byPlace = new Map(res.results.map((r) => [r.placement, BigInt(r.prizeCt)]));
+    expect(byPlace.get(1)).toBe(126n);
+    expect(byPlace.get(2)).toBe(54n);
+    expect(res.rakeTakenCt).toBe('20');
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(180);
+    expect(ledger.totalCredited('house_fee_mtt_rake')).toBe(20);
+    expect(ledger.totalCredited()).toBe(200);
+  });
+
+  it('still exact when entrants MEET the curve depth (no over-fold)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [...TWO_PLACED, { avatarId: 'av-3', placement: 3 }],
+      { pool: '300' },
+    );
+    const res = await tm.settleTournament(tid);
+    const byPlace = new Map(res.results.map((r) => [r.placement, BigInt(r.prizeCt)]));
+    expect(byPlace.get(1)).toBe(150n);
+    expect(byPlace.get(2)).toBe(90n);
+    expect(byPlace.get(3)).toBe(60n);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(300);
+  });
+
+  it('orphaned but FINISHED tournament SETTLES on boot recovery (pays the real curve), never void-refunds', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+
+    const out = await tm.recoverOrphanedTournaments();
+    expect(out.recovered).toBe(1);
+    expect(out.refundedCount).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('orphaned and UNFINISHED tournament still cancels + refunds escrow on boot recovery', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: null },
+      ],
+      { pool: '200' },
+    );
+
+    const out = await tm.recoverOrphanedTournaments();
+    expect(out.refundedCount).toBe(2);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('cancelled');
+  });
+
+  it('MALFORMED placements [1,1,2] → settleTournament throws, ZERO ledger writes (no mint)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 1 },
+        { avatarId: 'av-3', placement: 2 },
+      ],
+      { pool: '300' },
+    );
+
+    await expect(tm.settleTournament(tid)).rejects.toThrow('tournament_placements_malformed');
+    expect(ledger.totalCredited()).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+  });
+
+  it('MALFORMED placements with a gap [1,3] → settle refuses (no mispay)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 3 },
+      ],
+      { pool: '200' },
+    );
+    await expect(tm.settleTournament(tid)).rejects.toThrow('tournament_placements_malformed');
+    expect(ledger.totalCredited()).toBe(0);
+  });
+
+  it('boot recovery on a MALFORMED fully-placed tournament FREEZES it (no settle, no refund)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 1 },
+      ],
+      { pool: '200' },
+    );
+
+    const out = await tm.recoverOrphanedTournaments();
+    expect(out.recovered).toBe(0);
+    expect(out.refundedCount).toBe(0);
+    expect(ledger.totalCredited()).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+    expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
+  });
+
+  it('room-abort on a VALID fully-placed tournament SETTLES (pays curve), not refund', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    wireRoom(tm, 'room-1', 'table-1', tid);
+
+    await tm.onRoomAborted('room-1');
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('room-abort on a MALFORMED fully-placed tournament FREEZES it (no settle, no refund)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: 1 },
+      ],
+      { pool: '200' },
+    );
+    wireRoom(tm, 'room-2', 'table-2', tid);
+
+    await tm.onRoomAborted('room-2');
+    expect(ledger.totalCredited()).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
+  });
+
+  it('room-abort on a genuinely UNFINISHED tournament refunds the escrow', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: 1 },
+        { avatarId: 'av-2', placement: null },
+      ],
+      { pool: '200' },
+    );
+    wireRoom(tm, 'room-3', 'table-3', tid);
+
+    await tm.onRoomAborted('room-3');
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('cancelled');
+  });
+
+  it('room-abort DURING completion (r.done set, champion placement not committed) does NOT dispose; the winner then SETTLES', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    // completeTournament's synchronous prologue ran (r.done=true) but the champion
+    // placement tx has NOT committed: isTournamentFullyPlaced would say FALSE here.
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: null },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    const internals = tm as unknown as {
+      running: Map<string, { done: boolean; tables: Map<string, unknown> }>;
+    };
+    internals.running.set(tid, { done: true, tables: new Map() });
+    wireRoom(tm, 'room-race', 'table-race', tid);
+
+    await tm.onRoomAborted('room-race');
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+
+    // Completion resumes past the placement window: champion crowned, then settle.
+    db.entrants.get('e-0')!.placement = 1;
+    const res = await tm.settleTournament(tid);
+    const prizeSum = res.results.reduce((a, r) => a + BigInt(r.prizeCt), 0n);
+    expect(prizeSum + BigInt(res.rakeTakenCt)).toBe(200n);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('cancelAndRefundOrphan refuses (finished_not_refundable) when the tournament is fully placed under the lock', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+
+    await expect(tm.cancelAndRefundOrphan(tid)).rejects.toThrow('tournament_finished_not_refundable');
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+  });
+
+  it('cancelAndRefundOrphan with onlyIfStatusIn on a running+placed row still returns 0 (stale-read guard first)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    expect(
+      await tm.cancelAndRefundOrphan(tid, { onlyIfStatusIn: ['registering', 'seating'] }),
+    ).toBe(0);
+    expect(ledger.totalCredited()).toBe(0);
+  });
+
+  // ── ONE shared disposition scheduler + the invariant (Codex rounds 5-6) ──────
+  // For any non-terminal tournament with an in-memory record, at every instant an
+  // owner is progressing (r.done), OR a retry timer is pending
+  // (dispositionRetryPending), OR it is frozen-final (removed from running). The
+  // wall-clock timer is a no-op under FakeClock, so the scheduled retry
+  // (runDisposition) is driven directly; clock.setTimerCalls observes arming.
+  type DispositionRecord = {
+    done: boolean;
+    tournamentId: string;
+    tables: Map<string, unknown>;
+    dispositionFailures?: number;
+    dispositionRetryPending?: boolean;
+  };
+  type CompletionInternals = {
+    running: Map<string, DispositionRecord>;
+    completeTournament(r: unknown, champ?: unknown): Promise<void>;
+    runDisposition(r: unknown): Promise<void>;
+    onDispositionFailure(r: unknown, err: unknown): void;
+  };
+  const mkRecord = (tid: string): DispositionRecord => ({
+    done: false,
+    tournamentId: tid,
+    tables: new Map<string, unknown>(),
+  });
+
+  it('transient completion failure → releases ownership + the scheduled retry settles the winner ONCE', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+
+    ledger.failCreditsRemaining = 1; // first prize credit fails
+    await internals.completeTournament(r);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(r.done).toBe(false);
+    expect(r.dispositionRetryPending).toBe(true);
+    expect(clock.setTimerCalls).toBe(1);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(internals.running.has(tid)).toBe(true);
+
+    await internals.runDisposition(r);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    const results = [...db.results.values()].filter((x) => x.tournament_id === tid);
+    expect(results.reduce((a, x) => a + BigInt(String(x.prize_ct)), 0n)).toBe(200n);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(internals.running.has(tid)).toBe(false);
+  });
+
+  it('persistent completion failure → FROZEN after bounded retries, zero credits, cleaned up, later abort is safe', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+    ledger.failCreditsRemaining = 999;
+
+    await internals.completeTournament(r); // failure 1 → schedule
+    await internals.runDisposition(r); // failure 2 → schedule
+    await internals.runDisposition(r); // failure 3 → schedule
+    await internals.runDisposition(r); // failure 4 → exhausted → FREEZE
+    expect(clock.setTimerCalls).toBe(3);
+    expect(ledger.totalCredited()).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.settled_at).toBeFalsy();
+    expect(internals.running.has(tid)).toBe(false);
+    expect(r.dispositionRetryPending).toBe(false);
+
+    wireRoom(tm, 'room-frozen', 'table-frozen', tid);
+    await tm.onRoomAborted('room-frozen'); // r gone → settle fails → swallowed
+    expect(ledger.totalCredited()).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(clock.setTimerCalls).toBe(3); // no record → no new timer
+  });
+
+  it('two-actor: retry pending + abort claims + retry no-ops + abort FAILS → NOT stranded (timer re-armed)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+
+    ledger.failCreditsRemaining = 999;
+    await internals.completeTournament(r);
+    expect(r.dispositionRetryPending).toBe(true);
+    expect(clock.setTimerCalls).toBe(1);
+
+    r.done = true; // an abort claims ownership before the timer fires
+    await internals.runDisposition(r);
+    expect(r.done).toBe(true);
+    expect(r.dispositionRetryPending).toBe(false);
+
+    internals.onDispositionFailure(r, new Error('abort disposition failed'));
+    expect(r.done).toBe(false);
+    expect(r.dispositionRetryPending).toBe(true);
+    expect(clock.setTimerCalls).toBe(2);
+
+    ledger.failCreditsRemaining = 0;
+    await internals.runDisposition(r);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(internals.running.has(tid)).toBe(false);
+  });
+
+  it('real onRoomAborted claim that FAILS routes through the shared scheduler (retry armed, then settles once)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+    wireRoom(tm, 'room-fail', 'table-fail', tid);
+
+    ledger.failCreditsRemaining = 1;
+    await tm.onRoomAborted('room-fail');
+    expect(r.done).toBe(false);
+    expect(r.dispositionRetryPending).toBe(true);
+    expect(r.dispositionFailures).toBe(1);
+    expect(ledger.totalCredited()).toBe(0);
+
+    await internals.runDisposition(r);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(internals.running.has(tid)).toBe(false);
+  });
+
+  it('zero-survivor invariant halt → frozen-final (removed from memory); a later room-abort still refunds the escrow', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: null },
+        { avatarId: 'av-2', placement: 2 },
+      ],
+      { pool: '200' },
+    );
+    const tableId = `mtt:${tid}`;
+    const seat = { seatIndex: 0, avatarId: 'av-1', agentId: null, name: 'a', subjectType: 'human', chipStack: 100 };
+    const table = {
+      tableId,
+      serverDbTableId: 'pt-1',
+      tableNumber: 1,
+      roomBinding: null,
+      buttonSeatIndex: 0,
+      handNumber: 1,
+      liveSeats: new Map([[0, seat]]),
+      chipAtHandStart: new Map([[0, 100]]),
+      handInFlight: true,
+      broken: false,
+    };
+    const r = { ...mkRecord(tid), tables: new Map<number, unknown>([[1, table]]) };
+    const internals = tm as unknown as CompletionInternals & {
+      processHandComplete(r: unknown, tableId: string, result: unknown): Promise<void>;
+    };
+    internals.running.set(tid, r as unknown as DispositionRecord);
+
+    // The last live seat loses its whole stack: 0 survivors tournament-wide.
+    await internals.processHandComplete(r, tableId, {
+      handNumber: 1,
+      perSeat: [{ seatIndex: 0, totalCommitted: 100, won: 0 }],
+    });
+    expect(r.done).toBe(true);
+    expect(internals.running.has(tid)).toBe(false); // not stuck behind the owner gate
+    expect(ledger.totalCredited()).toBe(0); // never settled
+
+    wireRoom(tm, 'room-halt', tableId, tid);
+    await tm.onRoomAborted('room-halt');
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('cancelled');
+  });
+
+  it('credit failure AFTER the first prize credit → settle tx rolls back → retry credits each finisher exactly once', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    db.rollbackLedger = ledger; // real-DB-like rollback for this test
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+
+    ledger.failAfterSuccesses = 1; // 1st prize credit succeeds,
+    ledger.failCreditsRemaining = 1; // the 2nd one throws mid-settle
+    await internals.completeTournament(r);
+    // Rolled back: the partial 1st-place credit and its results row are gone.
+    expect(ledger.credits).toHaveLength(0);
+    expect([...db.results.values()].filter((x) => x.tournament_id === tid)).toHaveLength(0);
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(r.dispositionRetryPending).toBe(true);
+
+    await internals.runDisposition(r);
+    const prizes = ledger.credits.filter((c) => c.reason === 'poker_mtt_prize');
+    expect(prizes.filter((c) => c.avatarId === 'av-1')).toHaveLength(1);
+    expect(prizes.filter((c) => c.avatarId === 'av-2')).toHaveLength(1);
+    expect(ledger.get('av-1')).toBe(140);
+    expect(ledger.get('av-2')).toBe(60);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('final hand: ownership is claimed BEFORE the final placement write, so a racing abort cannot refund', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: null },
+        { avatarId: 'av-2', placement: null },
+      ],
+      { pool: '200' },
+    );
+    const tableId = `mtt:${tid}`;
+    const mkSeat = (seatIndex: number, avatarId: string) => ({
+      seatIndex,
+      avatarId,
+      agentId: null,
+      name: avatarId,
+      subjectType: 'human',
+      chipStack: 100,
+    });
+    const table = {
+      tableId,
+      serverDbTableId: 'pt-final',
+      tableNumber: 1,
+      roomBinding: null,
+      buttonSeatIndex: 0,
+      handNumber: 1,
+      liveSeats: new Map([
+        [0, mkSeat(0, 'av-1')],
+        [1, mkSeat(1, 'av-2')],
+      ]),
+      chipAtHandStart: new Map([
+        [0, 100],
+        [1, 100],
+      ]),
+      handInFlight: true,
+      broken: false,
+    };
+    const r = { ...mkRecord(tid), tables: new Map<number, unknown>([[1, table]]) };
+    const internals = tm as unknown as CompletionInternals & {
+      processHandComplete(r: unknown, tableId: string, result: unknown): Promise<void>;
+    };
+    internals.running.set(tid, r as unknown as DispositionRecord);
+    db.tables.set('pt-final', { id: 'pt-final', hand_count: 0, button_seat_index: 0 });
+    wireRoom(tm, 'room-final', tableId, tid);
+
+    // Fire the abort at the instant the final-hand write starts (its row lock).
+    // `as` keeps TS from narrowing these to `null` (they are set inside a callback).
+    let doneAtWrite = null as boolean | null;
+    let abortPromise = null as Promise<void> | null;
+    const origExecute = db.execute.bind(db);
+    db.execute = (async (q: SQL) => {
+      const { text } = renderSql(q);
+      if (doneAtWrite === null && text.startsWith('SELECT id, status, settled_at, cancelled_at FROM poker_tournaments WHERE id = ? FOR UPDATE')) {
+        doneAtWrite = r.done;
+        abortPromise = tm.onRoomAborted('room-final');
+      }
+      return origExecute(q);
+    }) as typeof db.execute;
+
+    // Seat 1 loses everything to seat 0: one survivor → champion this hand.
+    await internals.processHandComplete(r, tableId, {
+      handNumber: 1,
+      serverSeedRevealed: 'ab'.repeat(32),
+      board: [],
+      perSeat: [
+        { seatIndex: 0, totalCommitted: 100, won: 200 },
+        { seatIndex: 1, totalCommitted: 100, won: 0 },
+      ],
+    });
+    await abortPromise;
+
+    expect(doneAtWrite).toBe(true); // claimed before the final write began
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0); // abort deferred
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(ledger.get('av-1')).toBe(140);
+    expect(ledger.get('av-2')).toBe(60);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(internals.running.has(tid)).toBe(false);
+  });
+
+  // ── Failed FINAL-HAND write keeps the decided result (Codex 2026-10-20) ──────
+  // Seat 1 busts to seat 0 on the final hand; the final-hand transaction fails
+  // once (or always) on its champion write and the fake DB rolls it back.
+  async function finalHandWithFailingWrite(failures: number) {
+    const { tm } = buildManager(db, ledger, clock);
+    db.rollbackLedger = ledger;
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: null },
+        { avatarId: 'av-2', placement: null },
+      ],
+      { pool: '200' },
+    );
+    db.tables.set('pt-fh', { id: 'pt-fh', hand_count: 0, button_seat_index: 0 });
+    const tableId = `mtt:${tid}`;
+    const mkSeat = (seatIndex: number, avatarId: string) => ({
+      seatIndex,
+      avatarId,
+      agentId: null,
+      name: avatarId,
+      subjectType: 'human',
+      chipStack: 100,
+    });
+    const table = {
+      tableId,
+      serverDbTableId: 'pt-fh',
+      tableNumber: 1,
+      roomBinding: null,
+      buttonSeatIndex: 0,
+      handNumber: 1,
+      liveSeats: new Map([
+        [0, mkSeat(0, 'av-1')],
+        [1, mkSeat(1, 'av-2')],
+      ]),
+      chipAtHandStart: new Map([
+        [0, 100],
+        [1, 100],
+      ]),
+      handInFlight: true,
+      broken: false,
+    };
+    const r = { ...mkRecord(tid), tables: new Map<number, unknown>([[1, table]]) } as unknown as DispositionRecord & {
+      pendingFinalHand?: unknown;
+    };
+    const internals = tm as unknown as CompletionInternals & {
+      processHandComplete(r: unknown, tableId: string, result: unknown): Promise<void>;
+    };
+    internals.running.set(tid, r);
+    wireRoom(tm, `room-${tid}`, tableId, tid);
+
+    let left = failures;
+    const origExecute = db.execute.bind(db);
+    db.execute = (async (q: SQL) => {
+      const { text } = renderSql(q);
+      if (left > 0 && text.startsWith('UPDATE poker_tournament_entrants SET placement = 1, chip_stack = ?')) {
+        left -= 1;
+        throw new Error('injected final-hand write failure');
+      }
+      return origExecute(q);
+    }) as typeof db.execute;
+
+    await internals.processHandComplete(r, tableId, {
+      handNumber: 1,
+      serverSeedRevealed: 'ab'.repeat(32),
+      board: [],
+      perSeat: [
+        { seatIndex: 0, totalCommitted: 100, won: 200 },
+        { seatIndex: 1, totalCommitted: 100, won: 0 },
+      ],
+    });
+    return { tm, tid, r, internals, roomId: `room-${tid}` };
+  }
+
+  const placementOf = (tid: string, avatarId: string) =>
+    [...db.entrants.values()].find((e) => e.tournament_id === tid && e.avatar_id === avatarId)!.placement;
+
+  it('failed final-hand write → result kept in memory → retry re-writes placements, pays the curve, refunds nothing', async () => {
+    const { tm, tid, r, internals } = await finalHandWithFailingWrite(1);
+    // Rolled back: nothing persisted, but the decided hand is retained + a retry armed.
+    expect(placementOf(tid, 'av-1')).toBeNull();
+    expect(placementOf(tid, 'av-2')).toBeNull();
+    expect(r.pendingFinalHand).toBeDefined();
+    expect(r.dispositionRetryPending).toBe(true);
+    expect(tm.isRunning(tid)).toBe(false); // the hand loop stays stopped
+    expect(ledger.credits).toHaveLength(0);
+
+    await internals.runDisposition(r);
+    expect(placementOf(tid, 'av-1')).toBe(1);
+    expect(placementOf(tid, 'av-2')).toBe(2);
+    expect(ledger.get('av-1')).toBe(140);
+    expect(ledger.get('av-2')).toBe(60);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(internals.running.has(tid)).toBe(false);
+  });
+
+  it('failed final-hand write → a room abort while the retry is pending re-writes + SETTLES, never refunds', async () => {
+    const { tm, tid, r, roomId } = await finalHandWithFailingWrite(1);
+    expect(r.dispositionRetryPending).toBe(true);
+
+    await tm.onRoomAborted(roomId);
+    expect(placementOf(tid, 'av-1')).toBe(1);
+    expect(placementOf(tid, 'av-2')).toBe(2);
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(200);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('completed');
+  });
+
+  it('final-hand write that never succeeds → FROZEN after bounded retries; a later room abort does NOT refund', async () => {
+    const { tm, tid, r, internals, roomId } = await finalHandWithFailingWrite(999);
+    await internals.runDisposition(r); // failure 2
+    await internals.runDisposition(r); // failure 3
+    await internals.runDisposition(r); // failure 4 → FROZEN
+    expect(internals.running.has(tid)).toBe(false);
+
+    await tm.onRoomAborted(roomId);
+    expect(ledger.credits).toHaveLength(0); // no refund, no prize
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+    expect(db.tournaments.get(tid)!.cancelled_at).toBeFalsy();
+  });
+
+  it('final-hand placement write after a committed refund writes nothing (row lock sees the terminal tournament)', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(
+      tid,
+      [
+        { avatarId: 'av-1', placement: null },
+        { avatarId: 'av-2', placement: null },
+      ],
+      { pool: '200' },
+    );
+    expect(await tm.cancelAndRefundOrphan(tid)).toBe(2); // a refund committed first
+    const internals = tm as unknown as {
+      persistHandAndBusts(
+        r: unknown,
+        table: unknown,
+        result: unknown,
+        placements: unknown,
+        champ: unknown,
+      ): Promise<void>;
+    };
+    const champ = { seatIndex: 0, avatarId: 'av-1', agentId: null, name: 'a', subjectType: 'human', chipStack: 200 };
+    const loser = { seatIndex: 1, avatarId: 'av-2', agentId: null, name: 'b', subjectType: 'human', chipStack: 0 };
+    await internals.persistHandAndBusts(
+      { tournamentId: tid, clientSeed: 'c' },
+      { serverDbTableId: 'pt-x', buttonSeatIndex: 0, liveSeats: new Map([[0, champ]]) },
+      { handNumber: 1, serverSeedRevealed: 'ab'.repeat(32), board: [], perSeat: [] },
+      [{ seat: loser, placement: 2 }],
+      champ,
+    );
+    expect([...db.entrants.values()].every((e) => e.placement == null)).toBe(true);
+    expect(db.hands.size).toBe(0);
+    expect(db.tournaments.get(tid)!.status).toBe('cancelled');
+  });
+
+  it('nonzero rake with NO house treasury → settle throws house_treasury_unavailable, nothing paid; retry pays once the treasury is back', async () => {
+    let treasury: string | null = null;
+    const tm = new TournamentManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim: new PokerTableSim(clock),
+      clock,
+      emitPlacementFn: () => {},
+      resolveTreasuryAvatarId: async () => treasury,
+    });
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200', rakeBps: 1000 });
+
+    await expect(tm.settleTournament(tid)).rejects.toMatchObject({
+      message: 'house_treasury_unavailable',
+      httpStatus: 503,
+    });
+    expect(ledger.credits).toHaveLength(0); // refused before any prize credit
+    expect(db.tournaments.get(tid)!.status).toBe('running');
+
+    // Boot recovery leaves it for a retry (not counted, not refunded).
+    const out = await tm.recoverOrphanedTournaments();
+    expect(out.recovered).toBe(0);
+    expect(ledger.totalCredited('poker_mtt_refund')).toBe(0);
+
+    treasury = TREASURY_AVATAR;
+    const res = await tm.settleTournament(tid);
+    expect(res.rakeTakenCt).toBe('20');
+    expect(ledger.totalCredited('poker_mtt_prize')).toBe(180);
+    expect(ledger.totalCredited('house_fee_mtt_rake')).toBe(20);
+    expect(ledger.totalCredited()).toBe(200);
+  });
+
+  it('stacked failures while a retry is pending → exactly ONE pending timer', async () => {
+    const { tm } = buildManager(db, ledger, clock);
+    const tid = randomUUID();
+    seedFinished(tid, TWO_PLACED, { pool: '200' });
+    const r = mkRecord(tid);
+    const internals = tm as unknown as CompletionInternals;
+    internals.running.set(tid, r);
+
+    ledger.failCreditsRemaining = 999;
+    await internals.completeTournament(r);
+    expect(clock.setTimerCalls).toBe(1);
+    internals.onDispositionFailure(r, new Error('second concurrent failure'));
+    internals.onDispositionFailure(r, new Error('third concurrent failure'));
+    expect(clock.setTimerCalls).toBe(1);
+    expect(r.dispositionRetryPending).toBe(true);
   });
 });
 

@@ -27,10 +27,10 @@ interface GameplayCard {
 const CARDS: GameplayCard[] = [
   {
     icon: '🪜',
-    title: '30-Quest Tutorial Ladder',
+    title: '34-Quest Tutorial Ladder',
     description:
-      '9 tiers from "say hi to Nori" to "Brand Ambassador". Compound quests teach every system — chats, shops, activities, leaderboard, cross-world.',
-    meta: '~1,650 vCLAW earnable today',
+      '10 tiers from "say hi to Nori" to your first home on land. Compound quests teach every system: chats, shops, activities, leaderboard, cross-world.',
+    meta: '1,585 vCLAW across live quests',
     href: '/game',
     status: 'live',
     accent: 'cyan',
@@ -60,7 +60,7 @@ const CARDS: GameplayCard[] = [
     title: 'Activity Portals',
     description:
       'Reef Race + Bumper Shells. Real-time matches, podium rewards, PB ghosts, "Lobster of the Day" daily-best lap board.',
-    meta: 'Quick Queue from sidebar',
+    meta: 'Enter the building, then Play Now',
     href: '/game',
     status: 'live',
     accent: 'teal',
@@ -69,9 +69,10 @@ const CARDS: GameplayCard[] = [
     icon: '🪩',
     title: 'Cosmetic Engine',
     description:
-      'Skins, hats, auras, surfboards. Scope-aware (avatar / world / activity). First 4 surfboards seeded; full shop coming with Phase 4.',
-    meta: 'Surfboards seeded · shop UI soon',
-    status: 'soon',
+      'Skins, hats, auras, surfboards. Scope-aware (avatar / world / activity). Buy them with vCLAW in the Wardrobe and equip them on your avatar.',
+    meta: 'Wardrobe · sidebar Cosmetics',
+    href: '/game',
+    status: 'live',
     accent: 'pink',
   },
   {

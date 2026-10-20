@@ -63,6 +63,7 @@ import {
 import * as ledgerModule from '../claw-token-ledger';
 import { logEvent, ACTIVITY_EVENT_TYPES } from '../event-logger';
 import type { ActivityMatchPlacedPayload } from '../event-logger';
+import { alertError } from '../alert-error';
 import type {
   creditClawTokens as CreditFn,
   debitClawTokens as DebitFn,
@@ -485,6 +486,30 @@ interface RunningTournament {
   tables: Map<number, RunningTable>;
   done: boolean;
   /**
+   * SHARED disposition-progress state (Codex round 6), owned by the tournament
+   * record, NOT per actor. `dispositionFailures` is the bounded attempt counter
+   * across EVERY disposition actor (completion, abort, scheduled retry);
+   * `dispositionRetryPending` is true while a self-heal retry timer is armed
+   * (collapses stacked failures to ONE pending timer). Both drive
+   * `ensureDispositionProgress`; see THE DISPOSITION INVARIANT there.
+   */
+  dispositionFailures?: number;
+  dispositionRetryPending?: boolean;
+  /**
+   * The DECIDED final hand (champion + last busts) whose placement write has not
+   * committed yet (Codex 2026-10-20). Set before the final-hand write, cleared once
+   * it commits. While set, every disposition actor RE-RUNS that write first
+   * (flushPendingFinalHand) so a transient DB failure can never turn a decided
+   * result into a refund. In memory only: a process crash before the write
+   * commits loses it, and boot recovery then refunds (the DB never saw the result).
+   */
+  pendingFinalHand?: {
+    table: RunningTable;
+    result: HandResult;
+    placements: Array<{ seat: LiveSeat; placement: number }>;
+    champion: LiveSeat;
+  };
+  /**
    * SERIALIZATION: hand-completions are processed ONE AT A TIME per tournament so
    * the per-table loops, the between-hands rebalance/break/consolidation, and the
    * next-hand starts never interleave (a multi-table double-start race). The sim
@@ -515,6 +540,12 @@ export class TournamentManager {
 
   /** tournamentId → running tournament driver. */
   private readonly running = new Map<string, RunningTournament>();
+  /**
+   * Tournaments FROZEN with a decided final hand that never committed (retries
+   * exhausted). A later room abort must not refund them (the result is decided);
+   * operator action or the next boot recovery handles them. Process-local.
+   */
+  private readonly frozenDecided = new Set<string>();
   /** sim tableId → tournamentId (so a hand-complete dispatch is O(1)). */
   private readonly tableToTournament = new Map<string, string>();
   /** WS room id → sim tableId (hub addresses by roomId; sim keyed by tableId). */
@@ -1328,7 +1359,7 @@ export class TournamentManager {
 
   /** Start the next hand for a running table with its current live seats. */
   private startNextHand(r: RunningTournament, table: RunningTable): void {
-    if (r.done || table.broken) return;
+    if (this.handLoopStopped(r) || table.broken) return;
     const live = [...table.liveSeats.values()].filter((s) => s.chipStack > 0);
     if (live.length <= 1) {
       // ≤1 live seat at this table. If the tournament is down to one survivor
@@ -1447,7 +1478,7 @@ export class TournamentManager {
     const tournamentId = this.tableToTournament.get(tableId);
     if (!tournamentId) return;
     const r = this.running.get(tournamentId);
-    if (!r || r.done) return;
+    if (!r || this.handLoopStopped(r)) return;
     r.queue.push({ tableId, result });
     await this.drainHandQueue(r);
   }
@@ -1465,18 +1496,18 @@ export class TournamentManager {
     r.processing = true;
     try {
       // Process every queued completion (chip-apply/bust/placement/persist) first.
-      while (r.queue.length > 0 && !r.done) {
+      while (r.queue.length > 0 && !this.handLoopStopped(r)) {
         const job = r.queue.shift()!;
         await this.processHandComplete(r, job.tableId, job.result);
       }
-      if (r.done) return;
+      if (this.handLoopStopped(r)) return;
       // Queue drained. If any table is STILL mid-hand (its completion hasn't fired
       // yet), defer the between-hands maintenance + restart to that table's
       // upcoming completion — never rebalance/restart while a hand is live.
       const anyInFlight = [...r.tables.values()].some((tb) => !tb.broken && tb.handInFlight);
       if (!anyInFlight) {
         await this.runBetweenHandsMaintenance(r);
-        if (!r.done) this.startIdleTables(r);
+        if (!this.handLoopStopped(r)) this.startIdleTables(r);
       }
     } finally {
       r.processing = false;
@@ -1484,7 +1515,7 @@ export class TournamentManager {
     // A completion that arrived during the drain (re-entrant push while we held
     // `processing`) is handled by its own onHandComplete drain kick — which short-
     // circuits on `processing` then this finally re-checks the queue is empty.
-    if (!r.done && r.queue.length > 0) {
+    if (!this.handLoopStopped(r) && r.queue.length > 0) {
       void this.drainHandQueue(r);
     }
   }
@@ -1525,6 +1556,19 @@ export class TournamentManager {
       console.error(
         `[poker-mtt] INVARIANT VIOLATION: hand ${result.handNumber} left 0 tournament-wide survivors (table ${tableId}). Halting WITHOUT crowning a champion — NOT settling. Manual intervention required.`,
       );
+      // FROZEN-FINAL (the disposition invariant's third leg): alert + drop the
+      // in-memory record. Keeping it with r.done=true would make onRoomAborted
+      // ignore the tournament (owner gate) and boot recovery skip it (in-memory
+      // id), so its escrow could never be disposed while this process lives.
+      // Without the record, a room abort or boot recovery disposes it through
+      // resolveOrphanedTournament (the last busts were never placed → refund).
+      void alertError({
+        severity: 'critical',
+        source: 'poker-mtt/processHandComplete',
+        message: `tournament ${r.tournamentId} halted: hand ${result.handNumber} left 0 survivors (table ${tableId}); FROZEN, not settled`,
+        context: { tournamentId: r.tournamentId, tableId, handNumber: result.handNumber },
+      });
+      this.running.delete(r.tournamentId);
       return;
     }
 
@@ -1543,8 +1587,33 @@ export class TournamentManager {
     const championThisHand =
       remainingAfter === 1 ? this.allLiveSeats(r)[0]?.seat ?? null : null;
 
+    // FINAL HAND: claim disposition ownership BEFORE the final-hand write (Codex
+    // 2026-10-20). That write commits the last placements; while it is in flight
+    // an abort that saw r.done=false would read the field as unplaced and refund a
+    // tournament whose result is about to commit. Claiming synchronously here (no
+    // await since the r.done checks upstream) makes a racing onRoomAborted defer.
+    // The write itself also takes the tournament row lock (persistHandAndBusts),
+    // so it serializes with cancelAndRefundOrphan's under-lock placement re-read.
+    if (championThisHand) {
+      r.done = true;
+      // Keep the DECIDED result in memory until its write commits, so a failed
+      // write is RETRIED (flushPendingFinalHand) instead of read as unfinished.
+      r.pendingFinalHand = { table, result, placements, champion: championThisHand };
+    }
+
     // ── Persist the hand checkpoint + bust placements (idempotent on handNumber) ─
-    await this.persistHandAndBusts(r, table, result, placements, championThisHand);
+    try {
+      await this.persistHandAndBusts(r, table, result, placements, championThisHand);
+    } catch (err) {
+      // We own disposition (claimed above): a failed final-hand write goes through
+      // the shared scheduler, whose retry re-runs this write before it settles.
+      if (championThisHand) {
+        this.onDispositionFailure(r, err);
+        return;
+      }
+      throw err;
+    }
+    if (championThisHand) r.pendingFinalHand = undefined;
 
     for (const { seat } of placements) {
       table.liveSeats.delete(seat.seatIndex);
@@ -1552,7 +1621,7 @@ export class TournamentManager {
 
     if (championThisHand) {
       for (const tb of r.tables.values()) tb.liveSeats.delete(championThisHand.seatIndex);
-      await this.completeTournament(r, championThisHand);
+      await this.runCompletion(r, championThisHand);
       return;
     }
 
@@ -1561,9 +1630,20 @@ export class TournamentManager {
     this.rotateButton(table);
   }
 
+  /**
+   * True once the hand loop must not advance: disposition is owned (`r.done`), a
+   * disposition attempt has failed (the release leaves `r.done` false while a
+   * retry is pending, but the tournament is over), or a decided final hand still
+   * awaits its write. Keeps a released record from running maintenance, starting
+   * hands, or processing a late completion.
+   */
+  private handLoopStopped(r: RunningTournament): boolean {
+    return r.done || (r.dispositionFailures ?? 0) > 0 || !!r.pendingFinalHand;
+  }
+
   /** Start the next hand for every idle, ≥2-funded, non-broken table. */
   private startIdleTables(r: RunningTournament): void {
-    if (r.done) return;
+    if (this.handLoopStopped(r)) return;
     for (const tb of r.tables.values()) {
       if (tb.broken || tb.handInFlight) continue;
       const liveCount = [...tb.liveSeats.values()].filter((s) => s.chipStack > 0).length;
@@ -1819,6 +1899,13 @@ export class TournamentManager {
     championThisHand: LiveSeat | null,
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
+      // A hand that writes placements takes the tournament row lock FIRST (same
+      // lock order as settle + cancelAndRefundOrphan: tournament row → entrants),
+      // so placement writes and refunds serialize. If a refund committed first,
+      // the tournament is terminal and nothing is written.
+      if (placements.length > 0 || championThisHand) {
+        if (await this.lockTournamentTerminal(tx, r.tournamentId)) return;
+      }
       const inserted = await tx.execute<{ id: string }>(
         sql`INSERT INTO poker_hands
               (table_id, hand_number, server_seed_commit, server_seed_reveal,
@@ -1871,30 +1958,94 @@ export class TournamentManager {
    * bust fired through onHandComplete (defensive path).
    */
   private maybeCompleteTournament(r: RunningTournament): void {
-    if (r.done) return;
+    if (this.handLoopStopped(r)) return;
     if (this.liveRemaining(r) === 1) {
       const champ = this.allLiveSeats(r)[0]?.seat;
       if (champ) void this.completeTournament(r, champ);
     }
   }
 
-  /** Crown the champion (if not already placed) and settle prizes idempotently. */
+  /**
+   * Crown the champion (if not already placed) and settle prizes idempotently.
+   *
+   * OWNERSHIP LIFECYCLE (Codex rounds 4+5): `r.done` is the single-owner token, set
+   * SYNCHRONOUSLY here (before any await) so a racing onRoomAborted defers to us:
+   *   claim(r.done=true) → { FINISH (placement+settle+cleanup)
+   *                        | FAIL (non-fatal async error, process alive) → release
+   *                          (r.done=false) → bounded self-heal retry → FREEZE-if-exhausted
+   *                        | PROCESS-CRASH → boot recovery reclaims next boot }
+   * completeTournament is fire-and-forget (maybeCompleteTournament / the hand-complete
+   * callback), so a naked rejection would only be logged and the tournament would
+   * STRAND (r.done claimed forever, row 'running'/unsettled, buy-ins locked). The
+   * try/catch converts that into the release+retry leg.
+   */
   private async completeTournament(r: RunningTournament, champion?: LiveSeat): Promise<void> {
     if (r.done) return;
     r.done = true;
-    if (champion) {
-      await this.db.transaction(async (tx) => {
-        await tx.execute(
-          sql`UPDATE poker_tournament_entrants
-              SET placement = 1
-              WHERE tournament_id = ${r.tournamentId} AND avatar_id = ${champion.avatarId}
-                AND placement IS NULL`,
-        );
-      });
-    }
-    await this.settleTournament(r.tournamentId);
+    await this.runCompletion(r, champion);
+  }
 
-    // Break every remaining table's WS room (→ results) after settlement.
+  /**
+   * The completion body. The caller MUST already own disposition (`r.done` set
+   * synchronously by completeTournament or by processHandComplete's final-hand
+   * claim). Never throws: a failure routes through onDispositionFailure.
+   */
+  private async runCompletion(r: RunningTournament, champion?: LiveSeat): Promise<void> {
+    try {
+      if (champion) {
+        await this.db.transaction(async (tx) => {
+          // Same row lock as the refund path, so this placement cannot commit
+          // under a refund; a terminal (refunded) tournament gets no write.
+          if (await this.lockTournamentTerminal(tx, r.tournamentId)) return;
+          await tx.execute(
+            sql`UPDATE poker_tournament_entrants
+                SET placement = 1
+                WHERE tournament_id = ${r.tournamentId} AND avatar_id = ${champion.avatarId}
+                  AND placement IS NULL`,
+          );
+        });
+      }
+      await this.settleTournament(r.tournamentId);
+      await this.finishCompletion(r);
+    } catch (err) {
+      // Non-fatal async failure mid-completion → route through the ONE shared
+      // disposition scheduler (never schedule/freeze inline). See onDispositionFailure.
+      this.onDispositionFailure(r, err);
+    }
+  }
+
+  /**
+   * Take the poker_tournaments row lock (FOR UPDATE) inside `tx` and report whether
+   * the tournament is already terminal (settled or cancelled, or the row is gone).
+   * Every placement write takes this lock first, the same lock settleTournament and
+   * cancelAndRefundOrphan take, so a placement commit and a refund serialize: the
+   * refund's under-lock placement re-read sees every committed placement.
+   */
+  private async lockTournamentTerminal(tx: TxLike, tournamentId: string): Promise<boolean> {
+    const rows = await tx.execute<{
+      id: string;
+      status: string;
+      settled_at: Date | string | null;
+      cancelled_at: Date | string | null;
+    }>(
+      sql`SELECT id, status, settled_at, cancelled_at
+          FROM poker_tournaments WHERE id = ${tournamentId} FOR UPDATE`,
+    );
+    const t = rows[0];
+    return (
+      !t || !!t.settled_at || !!t.cancelled_at || t.status === 'completed' || t.status === 'cancelled'
+    );
+  }
+
+  /**
+   * Terminal cleanup for a tournament that reached a terminal outcome (settled /
+   * refunded / frozen-final): tear down every remaining table's WS room (→ results
+   * screen) and REMOVE the tournament from `this.running` so in-memory state and
+   * boot recovery can never diverge. A terminal tournament left in the map would
+   * make onRoomAborted no-op on a stale record AND hide it from boot recovery
+   * (which skips in-memory ids). Idempotent.
+   */
+  private async finishCompletion(r: RunningTournament): Promise<void> {
     for (const table of r.tables.values()) {
       if (table.roomBinding) {
         const { roomId } = table.roomBinding;
@@ -1917,6 +2068,108 @@ export class TournamentManager {
       }
       this.tableToTournament.delete(table.tableId);
     }
+    this.running.delete(r.tournamentId);
+  }
+
+  /**
+   * The ONE release-after-failure entry point. EVERY disposition actor whose attempt
+   * FAILS (completeTournament, a scheduled retry, or onRoomAborted) calls THIS, and
+   * never schedules a timer or releases `r.done` on its own. It bumps the SHARED
+   * bounded attempt counter, alerts, RELEASES ownership (`r.done = false`), and hands
+   * off to the shared scheduler. Releasing after a failure is SAFE against the
+   * round-4 race because every re-entry routes through resolveOrphanedTournament,
+   * which reads COMMITTED DB state (not the in-flight guess).
+   */
+  private onDispositionFailure(r: RunningTournament, err: unknown): void {
+    r.dispositionFailures = (r.dispositionFailures ?? 0) + 1;
+    void alertError({
+      severity: 'warning',
+      source: 'poker-mtt/disposition',
+      message: `tournament ${r.tournamentId} disposition attempt ${r.dispositionFailures} failed; releasing ownership + ensuring progress`,
+      context: { tournamentId: r.tournamentId, attempt: r.dispositionFailures, err: String(err) },
+    });
+    r.done = false;
+    this.ensureDispositionProgress(r);
+  }
+
+  /**
+   * THE DISPOSITION INVARIANT (Codex round 6): for any NON-TERMINAL tournament with an
+   * in-memory record, at every instant EXACTLY ONE of the following holds: an owner is
+   * actively progressing (`r.done === true`), OR a retry timer is pending
+   * (`r.dispositionRetryPending === true`), OR it is frozen-final (critical-alerted +
+   * removed from `this.running`).
+   *
+   * This is the SINGLE scheduler every release-after-failure site routes through
+   * (grep-provable: the only `r.done = false` is in onDispositionFailure, which ends
+   * here). It either arms the next bounded retry timer or freezes-final, and
+   * COLLAPSES stacked failures to at most ONE pending timer. Idempotent.
+   */
+  private ensureDispositionProgress(r: RunningTournament): void {
+    if (r.done) return; // an owner is actively progressing; nothing to schedule.
+    if (!this.running.has(r.tournamentId)) return; // already terminal + cleaned up.
+    if (r.dispositionRetryPending) return; // a timer is already pending → collapse.
+
+    const DELAYS_MS = [5_000, 30_000, 120_000]; // 3 bounded self-heal retries (~5s/30s/2m)
+    const failures = r.dispositionFailures ?? 0;
+    if (failures > DELAYS_MS.length) {
+      // FROZEN-FINAL: bounded retries exhausted. One critical alert + drop the
+      // in-memory record (the row stays 'running'/unsettled; a process restart /
+      // boot recovery reclaims). No timer armed: the invariant's third leg.
+      void alertError({
+        severity: 'critical',
+        source: 'poker-mtt/disposition',
+        message: `tournament ${r.tournamentId} FROZEN after ${failures} failed disposition attempts; operator intervention required (a process restart also reclaims it via boot recovery)`,
+        context: { tournamentId: r.tournamentId, failures, finalHandUnpersisted: !!r.pendingFinalHand },
+      });
+      // A decided final hand that never committed must stay FROZEN, never be
+      // refunded by a later room abort in this process (see onRoomAborted).
+      if (r.pendingFinalHand) this.frozenDecided.add(r.tournamentId);
+      this.running.delete(r.tournamentId);
+      return;
+    }
+    r.dispositionRetryPending = true;
+    this.clock.setTimer(() => {
+      void this.runDisposition(r);
+    }, DELAYS_MS[failures - 1] ?? DELAYS_MS[0]);
+  }
+
+  /**
+   * The scheduled disposition retry (the shared scheduler's timer body). Clears the
+   * pending flag (this timer has fired), then re-claims via the synchronous `r.done`
+   * discipline. If a concurrent owner (completion / abort) holds ownership it NO-OPS.
+   * That is SAFE because that owner's own failure routes back through
+   * onDispositionFailure → ensureDispositionProgress, so progress is still guaranteed
+   * (the invariant). Otherwise it routes through resolveOrphanedTournament (reads
+   * COMMITTED state → settle-idempotent / refund / freeze) then finishCompletion. On
+   * its own failure it re-enters onDispositionFailure.
+   */
+  private async runDisposition(r: RunningTournament): Promise<void> {
+    r.dispositionRetryPending = false; // this timer has fired; no longer pending.
+    if (r.done) return; // a concurrent owner has it; its failure will re-ensure progress.
+    r.done = true;
+    try {
+      await this.flushPendingFinalHand(r);
+      await this.resolveOrphanedTournament(r.tournamentId);
+      await this.finishCompletion(r);
+    } catch (err) {
+      this.onDispositionFailure(r, err);
+    }
+  }
+
+  /**
+   * Re-run a DECIDED final hand's placement write that has not committed (Codex
+   * 2026-10-20). Every in-memory disposition actor calls this BEFORE
+   * resolveOrphanedTournament, so committed state shows the decided result
+   * (fully placed → settle) and never reads as unfinished (→ refund). The write
+   * is idempotent (poker_hands ON CONFLICT on handNumber) and takes the
+   * tournament row lock (a terminal tournament gets no write). Throws on failure:
+   * the caller routes that through onDispositionFailure (retry, then freeze).
+   */
+  private async flushPendingFinalHand(r: RunningTournament): Promise<void> {
+    const p = r.pendingFinalHand;
+    if (!p) return;
+    await this.persistHandAndBusts(r, p.table, p.result, p.placements, p.champion);
+    r.pendingFinalHand = undefined;
   }
 
   /**
@@ -1997,16 +2250,63 @@ export class TournamentManager {
         throw new TournamentError('tournament_not_finished', 409);
       }
 
+      // CRASH-LOUD placement-integrity guard (Codex gate 2026-07-04), BEFORE any
+      // credit. The non-refunded entrants MUST form EXACTLY the permutation 1..N
+      // (unique placements, exactly one champion at 1, no gaps). The fold-remainder
+      // math below AMPLIFIES a duplicate placement into a MINT: the payout loop
+      // credits per entrant while `distributed` is Set-keyed over placements, so a
+      // duplicated placement is paid twice but counted once ([1,1,2] / pool 300 /
+      // 50-30-20 → 210+210+90 = 510 paid = 210 CT minted). On violation: alert +
+      // throw (the enclosing tx rolls back → NOTHING credited). The DB-level
+      // `poker_entrants_tournament_placement_unique` partial index is the primary
+      // defense; this is defense in depth if it is ever absent.
+      this.assertPlacementsPermutation(placed, tournamentId);
+
       const pool = BigInt(t.prize_pool_ct);
       const rakeBps = BigInt(t.rake_bps);
       const rake = (pool * rakeBps) / 10000n;
       const netPool = pool - rake;
 
+      // Resolve the rake destination BEFORE any credit: a nonzero rake with no
+      // house treasury throws here, so no prize is ever credited in a settle that
+      // cannot conserve (see the T0 block below).
+      let rakeTreasuryId: string | null = null;
+      if (rake > 0n) {
+        const rakeNumber = Number(rake);
+        if (!Number.isSafeInteger(rakeNumber)) {
+          throw new TournamentError('tournament_rake_out_of_range', 500);
+        }
+        rakeTreasuryId = await this.resolveTreasuryAvatarId();
+        if (!rakeTreasuryId) {
+          // Fire-and-forget: we hold the tournament FOR UPDATE lock, so never
+          // await the network here (same rule as the placement guard).
+          void alertError({
+            severity: 'critical',
+            source: 'poker-mtt/settleTournament',
+            message: `house_treasury_unavailable: tournament ${tournamentId} rake ${rakeNumber} CT has no treasury to credit; settle refused, nothing paid`,
+            context: { tournamentId, rakeCt: rakeNumber },
+          });
+          throw new TournamentError('house_treasury_unavailable', 503);
+        }
+      }
+
       const curve = (t.payout_curve_json as PayoutCurveEntry[] | undefined) ?? [];
       const prizeByPlacement = computePrizes(netPool, curve);
 
+      // CONSERVATION: only prizes for placements an entrant ACTUALLY finished at are
+      // paid out (the payout loop below keys on real placements), so `distributed`
+      // must sum ONLY those. Summing the FULL curve (including placements deeper
+      // than the entrant count) made `remainder` capture just the rounding dust and
+      // silently VAPORIZED the unclaimed deep-placement shares whenever
+      // #entrants < curve depth (a top-3 curve with only 2 finishers lost 3rd
+      // place's share). Sum over the placements that exist, then fold the FULL
+      // unclaimed remainder (rounding + unfilled deeper places) into 1st (always
+      // present: the champion), so sum(paid prizes) + rake == pool exactly.
+      const placedPlacements = new Set(placed.map((e) => e.placement!));
       let distributed = 0n;
-      for (const v of prizeByPlacement.values()) distributed += v;
+      for (const [placement, v] of prizeByPlacement) {
+        if (placedPlacements.has(placement)) distributed += v;
+      }
       const remainder = netPool - distributed;
       if (remainder !== 0n) {
         const first = prizeByPlacement.get(1) ?? 0n;
@@ -2055,31 +2355,23 @@ export class TournamentManager {
       // so a re-settle can never re-credit). Conservation extends to:
       //   sum(prizes) + treasuryCredit == prizePoolCt.
       // PLAYER-SIDE UNCHANGED: every prize amount above is exactly what it was.
-      // Dormant today (rakeBps defaults 0 ⇒ rake 0n ⇒ no-op) but WIRED. A null
-      // resolver result (treasury unavailable) degrades to the pre-T0 burn — it
-      // must never strand the field's prizes.
-      if (rake > 0n) {
-        const rakeNumber = Number(rake);
-        if (Number.isInteger(rakeNumber) && rakeNumber > 0) {
-          const treasuryId = await this.resolveTreasuryAvatarId();
-          if (treasuryId) {
-            await this.ledger.creditClawTokens(
-              {
-                avatarId: treasuryId,
-                amount: rakeNumber,
-                reason: 'house_fee_mtt_rake',
-                source: 'system',
-                metadata: { tournamentId, rakeBps: Number(rakeBps), prizePoolCt: pool.toString() },
-                actorKind: 'system',
-              },
-              tx,
-            );
-          } else {
-            console.error(
-              `[poker-mtt] house treasury unavailable — rake ${rakeNumber} CT burned (pre-T0 behavior) for tournament ${tournamentId}`,
-            );
-          }
-        }
+      // Dormant today (rakeBps defaults 0 ⇒ rake 0n ⇒ no-op) but WIRED. A
+      // nonzero rake with NO house treasury THROWS (Codex 2026-10-20) before the
+      // prize loop (rakeTreasuryId above): burning it would break conservation
+      // (the debited pool would not equal the credits). Nothing is paid; the
+      // disposition retry/freeze path (or the next boot recovery) retries it.
+      if (rake > 0n && rakeTreasuryId) {
+        await this.ledger.creditClawTokens(
+          {
+            avatarId: rakeTreasuryId,
+            amount: Number(rake),
+            reason: 'house_fee_mtt_rake',
+            source: 'system',
+            metadata: { tournamentId, rakeBps: Number(rakeBps), prizePoolCt: pool.toString() },
+            actorKind: 'system',
+          },
+          tx,
+        );
       }
 
       await tx.execute(
@@ -2171,9 +2463,20 @@ export class TournamentManager {
         // Skip tournaments THIS pod is actively running (in-memory state present).
         if (this.running.has(row.id)) continue;
         try {
-          const n = await this.cancelAndRefundOrphan(row.id);
-          recovered += 1;
-          refundedCount += n;
+          // Shared decide logic (settle-if-finished / freeze-if-malformed /
+          // refund-if-unfinished); see resolveOrphanedTournament. A tournament can
+          // orphan AFTER it FINISHED (a crash between the champion-placement tx and
+          // the settle tx), and voiding that would discard a DECIDED outcome. A
+          // 'frozen' result is intentionally NOT counted as recovered: it stays
+          // running+unsettled for operator intervention (never minted, never
+          // void-refunded).
+          const res = await this.resolveOrphanedTournament(row.id);
+          if (res.action === 'refunded') {
+            recovered += 1;
+            refundedCount += res.refundedCount;
+          } else if (res.action === 'settled') {
+            recovered += 1;
+          }
         } catch (err) {
           console.error(
             `[poker-mtt] orphan tournament recovery failed for ${row.id}:`,
@@ -2185,6 +2488,125 @@ export class TournamentManager {
       console.error('[poker-mtt] orphan tournament recovery query failed:', err);
     }
     return { recovered, refundedCount };
+  }
+
+  /**
+   * CRASH-LOUD guard: assert the given placed entrants' placements form EXACTLY the
+   * permutation 1..N (unique, no gaps, exactly one champion at placement 1). This is
+   * the precondition the prize math relies on for conservation: a duplicate or gap
+   * would MINT or mispay CT under the per-entrant payout loop. On violation: fire the
+   * critical alert-error hook and throw `tournament_placements_malformed` (500) so the
+   * enclosing settle transaction rolls back and NOTHING is credited. Never mutates
+   * state.
+   */
+  private assertPlacementsPermutation(
+    placed: Array<{ placement: number | null }>,
+    tournamentId: string,
+  ): void {
+    const placements = placed
+      .map((e) => e.placement)
+      .filter((p): p is number => p != null)
+      .sort((a, b) => a - b);
+    const n = placements.length;
+    let ok = n > 0;
+    for (let i = 0; i < n; i++) {
+      if (placements[i] !== i + 1) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) {
+      // FIRE-AND-FORGET the alert (do NOT await): this runs INSIDE the settle
+      // db.transaction with the tournament row FOR UPDATE locked, and alertError
+      // does a network POST. Awaiting it would hold the lock (and delay the
+      // rollback) if the network stalls. alertError never throws, so `void` is safe;
+      // throw at once so the tx rolls back and NOTHING is credited.
+      void alertError({
+        severity: 'critical',
+        source: 'poker-mtt/settleTournament',
+        message: `tournament_placements_malformed: tournament ${tournamentId} non-refunded placements are not the permutation 1..${n}; settle FROZEN, credited nothing`,
+        context: { tournamentId, placements },
+      });
+      throw new TournamentError('tournament_placements_malformed', 500);
+    }
+  }
+
+  /**
+   * True iff the tournament has ≥1 non-refunded entrant and EVERY non-refunded
+   * entrant has a non-null placement, i.e. it actually finished (a champion at
+   * placement 1 + all busts placed) but did not commit its settle. A still-running
+   * tournament always has ≥1 live seat with placement NULL, so returns false; a
+   * 'seating' (never-started) tournament has all placements NULL, so also false.
+   */
+  private async isTournamentFullyPlaced(tournamentId: string): Promise<boolean> {
+    const rows = await this.db.execute<{ total: number; unplaced: number }>(
+      sql`SELECT COUNT(*)::int AS total,
+                 COUNT(*) FILTER (WHERE placement IS NULL)::int AS unplaced
+          FROM poker_tournament_entrants
+          WHERE tournament_id = ${tournamentId} AND status <> 'refunded'`,
+    );
+    const r = rows[0];
+    return !!r && r.total > 0 && r.unplaced === 0;
+  }
+
+  /**
+   * Decide + apply the terminal disposition of an orphaned/aborted tournament that
+   * is no longer being driven (a boot orphan, a room-abort, or a scheduled
+   * disposition retry). SHARED by recoverOrphanedTournaments, onRoomAborted and
+   * runDisposition so the call sites can NEVER drift (one path void-refunding a
+   * decided tournament while another settles it):
+   *   - fully placed + VALID permutation → SETTLE (pay the real curve; conserves)
+   *   - fully placed + MALFORMED placements → FROZEN (settleTournament's guard throws
+   *     `tournament_placements_malformed`; caught here → NEITHER settle (mint) NOR
+   *     refund (void a possibly-decided result); operator intervention required)
+   *   - not yet finished → CANCEL + REFUND the escrow
+   * settleTournament + cancelAndRefundOrphan are each idempotent + FOR UPDATE locked,
+   * so this is safe from a cold pod AND safe to double-invoke (boot + abort racing).
+   */
+  private async resolveOrphanedTournament(
+    tournamentId: string,
+  ): Promise<
+    { action: 'settled' } | { action: 'refunded'; refundedCount: number } | { action: 'frozen' }
+  > {
+    if (await this.isTournamentFullyPlaced(tournamentId)) {
+      return this.settleOrFreeze(tournamentId);
+    }
+    // Not fully placed as of the un-locked check → refund. cancelAndRefundOrphan
+    // RE-READS placement state UNDER its FOR UPDATE lock and throws
+    // `tournament_finished_not_refundable` if a champion placement committed in the
+    // race window. In that case it actually FINISHED, so settle instead of refund
+    // (never void a decided result).
+    try {
+      const refundedCount = await this.cancelAndRefundOrphan(tournamentId);
+      return { action: 'refunded', refundedCount };
+    } catch (err) {
+      if (err instanceof TournamentError && err.message === 'tournament_finished_not_refundable') {
+        return this.settleOrFreeze(tournamentId);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Settle a fully-placed tournament, or FREEZE it if the placement guard rejects it
+   * as malformed (never settle→mint, never refund→void). Shared by both
+   * resolveOrphanedTournament branches so the frozen handling cannot diverge.
+   */
+  private async settleOrFreeze(
+    tournamentId: string,
+  ): Promise<{ action: 'settled' } | { action: 'frozen' }> {
+    try {
+      await this.settleTournament(tournamentId);
+      return { action: 'settled' };
+    } catch (err) {
+      if (err instanceof TournamentError && err.message === 'tournament_placements_malformed') {
+        console.error(
+          `[poker-mtt] tournament ${tournamentId} left FROZEN (malformed placements, neither settled nor refunded); operator intervention required.`,
+        );
+        return { action: 'frozen' };
+      }
+      throw err;
+    }
   }
 
   /**
@@ -2227,6 +2649,26 @@ export class TournamentManager {
       // The caller's read is stale (e.g. the tournament started since): refuse.
       if (opts.onlyIfStatusIn && !opts.onlyIfStatusIn.includes(t.status)) {
         return 0;
+      }
+
+      // BELT-AND-SUSPENDERS (Codex round 4): re-read placement state UNDER this lock.
+      // If the tournament is now FULLY placed, a champion placement committed in the
+      // window between a caller's un-locked isTournamentFullyPlaced check and this
+      // refund tx: it actually FINISHED and must SETTLE, not refund. Abort the refund
+      // (throw before ANY credit → tx rolls back) so the caller re-routes to settle.
+      // The primary defense for the exact completion-vs-abort window is the r.done
+      // ownership gate in onRoomAborted; this hardens every narrower ordering. A
+      // pre-running (registering/seating) tournament has every placement NULL, so the
+      // special-event cancel callers never reach this throw.
+      const placeRows = await tx.execute<{ total: number; unplaced: number }>(
+        sql`SELECT COUNT(*)::int AS total,
+                   COUNT(*) FILTER (WHERE placement IS NULL)::int AS unplaced
+            FROM poker_tournament_entrants
+            WHERE tournament_id = ${tournamentId} AND status <> 'refunded'`,
+      );
+      const pr = placeRows[0];
+      if (pr && pr.total > 0 && pr.unplaced === 0) {
+        throw new TournamentError('tournament_finished_not_refundable', 409);
       }
 
       const entrantRows = await tx.execute<{
@@ -2304,8 +2746,10 @@ export class TournamentManager {
   /**
    * ABORT-NOTIFICATION HOOK. Called by the activity-room-manager (via the bridge)
    * when an mtt room is aborted by ANY path (sweeper crash-TTL, manual abort, pod
-   * orphan recovery). Resolves the affected table + tournament and, to never
-   * strand CT, CANCELS + refunds the tournament's escrow idempotently. If the
+   * orphan recovery). Resolves the affected table + tournament and disposes the
+   * money through the SAME decide logic as boot recovery (resolveOrphanedTournament:
+   * settle-if-finished / freeze-if-malformed / refund-if-unfinished), so escrow is
+   * never stranded and a DECIDED tournament is never void-refunded. If the
    * tournament already settled/cancelled this is a no-op. Best-effort: a throw is
    * logged, never propagated to the room manager's sweep.
    *
@@ -2314,15 +2758,49 @@ export class TournamentManager {
    * the FIRST line of defense — this hook only fires when a room genuinely aborts.
    */
   async onRoomAborted(roomId: string): Promise<void> {
+    // If THIS call claims ownership (r.done false→true) and its disposition FAILS,
+    // the catch routes the claim through the shared scheduler (onDispositionFailure),
+    // so an abort that grabbed ownership and then failed can never strand the
+    // tournament.
+    let claimed: RunningTournament | undefined;
     try {
       const tableId = this.roomToTable.get(roomId);
       if (!tableId) return; // not an MTT room we own
       const tournamentId = this.tableToTournament.get(tableId);
       if (!tournamentId) return;
+
+      // ── ABORT-TIMING OWNERSHIP (Codex round 4) ────────────────────────────────
+      // `r.done` is the SINGLE-OWNER token for a tournament's terminal disposition,
+      // set SYNCHRONOUSLY (before any await) by whichever of {completeTournament,
+      // this abort, a scheduled retry} reaches it first. The single-threaded event
+      // loop makes that check-and-set atomic, so exactly one owner claims it:
+      //   • abort BEFORE completion starts (r exists, !r.done): THIS abort claims
+      //     r.done and OWNS disposition → resolve (settle/freeze/refund). A later
+      //     completeTournament sees r.done and bails.
+      //   • abort DURING completion's placement window (r.done ALREADY true, the
+      //     champion-placement tx not yet committed): the COMPLETION pipeline owns
+      //     it → we MUST NOT dispose. Disposing here would read the champion as
+      //     unplaced and REFUND a DECIDED tournament, which completion then cannot
+      //     settle (settle treats 'cancelled' as terminal). Log + return. If
+      //     completion later fails, its own failure path re-schedules progress; a
+      //     process crash is reclaimed by boot recovery.
+      //   • abort AFTER settle (r.done true, terminal): also owned → return early.
+      //   • no in-memory record (boot orphan / frozen-final / not this pod's): safe
+      //     to dispose via resolveOrphanedTournament (settles-if-finished;
+      //     cancelAndRefundOrphan's under-lock re-check guards a placement that
+      //     lands mid-refund).
       const r = this.running.get(tournamentId);
-      if (r && !r.done) {
-        // Mark the tournament aborted in-memory so its loop stops scheduling hands.
+      if (r) {
+        if (r.done) {
+          console.warn(
+            `[poker-mtt] mtt room ${roomId} abort IGNORED: tournament ${tournamentId} disposition already OWNED (r.done set by the completion pipeline, a retry, or a prior abort); not disposing.`,
+          );
+          return;
+        }
+        // Claim disposition SYNCHRONOUSLY (no await between the r.done read above
+        // and this set) so a racing completeTournament sees r.done and bails.
         r.done = true;
+        claimed = r;
         for (const tb of r.tables.values()) {
           if (tb.handInFlight) {
             this.sim.stopTable(tb.tableId);
@@ -2330,14 +2808,40 @@ export class TournamentManager {
           }
         }
       }
-      // Settle the money: cancel + refund escrow (idempotent — a completed/settled
-      // tournament is skipped).
-      const refunded = await this.cancelAndRefundOrphan(tournamentId);
-      this.running.delete(tournamentId);
-      console.warn(
-        `[poker-mtt] mtt room ${roomId} aborted → tournament ${tournamentId} cancelled + ${refunded} entrant(s) refunded (escrow not stranded).`,
-      );
+
+      if (!r && this.frozenDecided.has(tournamentId)) {
+        // FROZEN with a decided final hand that never committed: refunding would
+        // void the decided result. Leave it for operator action / boot recovery.
+        console.warn(
+          `[poker-mtt] mtt room ${roomId} abort IGNORED: tournament ${tournamentId} is FROZEN with a decided, unpersisted final hand; not refunding.`,
+        );
+        return;
+      }
+      // A decided final hand still awaiting its write is re-written FIRST, so the
+      // decide step sees it fully placed and settles instead of refunding.
+      if (r) await this.flushPendingFinalHand(r);
+      const res = await this.resolveOrphanedTournament(tournamentId);
+      // Terminal cleanup goes through finishCompletion on EVERY terminal outcome,
+      // regardless of actor (Codex round 6): a terminal tournament must never stay
+      // in this.running. With no in-memory record the delete is a no-op.
+      if (r) {
+        await this.finishCompletion(r);
+      } else {
+        this.running.delete(tournamentId);
+      }
+      const summary =
+        res.action === 'settled'
+          ? 'settled (prizes paid, decided result honored)'
+          : res.action === 'frozen'
+            ? 'left FROZEN (malformed placements, operator intervention required)'
+            : `cancelled + ${res.refundedCount} entrant(s) refunded (escrow not stranded)`;
+      console.warn(`[poker-mtt] mtt room ${roomId} aborted → tournament ${tournamentId} ${summary}.`);
     } catch (err) {
+      // If THIS call claimed ownership and its disposition FAILED, route through the
+      // ONE shared scheduler (onDispositionFailure → ensureDispositionProgress),
+      // never a bare release. That keeps the invariant: after this failure a retry
+      // timer is pending (or it froze-final). If we never claimed, nothing to release.
+      if (claimed) this.onDispositionFailure(claimed, err);
       console.error(`[poker-mtt] onRoomAborted handling failed for room ${roomId}:`, err);
     }
   }
@@ -2347,7 +2851,7 @@ export class TournamentManager {
   /** Whether a tournament is still running an in-memory hand loop. */
   isRunning(tournamentId: string): boolean {
     const r = this.running.get(tournamentId);
-    return !!r && !r.done;
+    return !!r && !this.handLoopStopped(r);
   }
 
   /**

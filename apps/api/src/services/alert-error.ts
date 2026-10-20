@@ -67,6 +67,7 @@ export async function sendTelegramText(text: string): Promise<void> {
         chat_id: chatId,
         text,
       }),
+      signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) {
       console.warn(

@@ -1,10 +1,11 @@
 /**
  * Q2 Activity Portals — REST surface (chunk #2).
  *
- * Owns 10 of the 17 routes from the Q2 plan; the WebSocket upgrade
- * (chunk #3), result/leaderboard fetches (chunk #7), and replay
- * download (chunk #5) are stubbed as 501s with explicit comments
- * pointing at their target chunk.
+ * Owns the Q2 plan routes, the WebSocket upgrade (chunk #3), and the
+ * result/leaderboard fetches (chunk #7). The planned replay download
+ * route was removed 2026-10-20: no web or agent client called it, and
+ * `activity_replays` rows are write-only (pruned after 14 days by
+ * `services/activity/activity-replay-prune.ts`).
  *
  * Mount point: `app.route('/api/activities', activitiesV2Routes)` in
  * `apps/api/src/index.ts`.
@@ -581,12 +582,6 @@ activitiesV2Routes.get(
   },
 );
 
-// ─── Stubs — chunks #3, #5, #7 ─────────────────────────────────────────────
-//
-// All of these compile and return 501 today so the route table reads true
-// when chunk #2 ships. Each call site stubs to its owning chunk for clean
-// PR-time grep + remove.
-
 // ─── WS /api/activities/:id/rooms/:roomId/ws (chunk #3) ────────────────────
 //
 // Bun-native upgrade handler. Per backend §3.2:
@@ -912,14 +907,6 @@ activitiesV2Routes.get(
     });
   },
 );
-
-activitiesV2Routes.get('/:id/replays/:replayId', (c) => {
-  // TODO chunk #5: replay log owns activity_replays.frames flush + read.
-  return c.json(
-    { error: 'not_implemented', detail: 'Replay download ships in chunk #5' },
-    501,
-  );
-});
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
