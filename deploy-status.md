@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-20 01:30 UTC (session jev, arena lead). **Staging is receiving the Jev world-demo change** (one `choice` question `next_action` over the full menu replaces one `noul` per verb; same >= 0.5 gate; staging only; no migration; PROTOCOL unchanged). Not yet verified; see the DEPLOY LOG. **PROD API + WEB = `b00d0b88`** (unchanged). SCHEMA: synced.
+Last Audited: 2026-10-20 02:00 UTC (session mcp, connect-flow job). **Staging is receiving `feat/connect-polish` (PROTOCOL 89):** `POST /api/agent/connect` dead-link replies get `code` + `detail` (404 `connection_token_invalid`, 410 `connection_token_expired`, 409 `connection_token_claimed`), entry manual Connect-errors line, Nori + orientation link-lifetime line, MCP connect hint, connect modal footer copy, mobile quest tracker auto-expand fix (z 46 when expanded on touch), plus the Trading Floor research doc. Not yet verified on staging; see the DEPLOY LOG. **PROD API + WEB = `b00d0b88`** (promotion #10, unchanged). SCHEMA: synced (no migration).
+
+Prior - Last Audited: 2026-10-20 01:30 UTC (session jev, arena lead). **Staging is receiving the Jev world-demo change** (one `choice` question `next_action` over the full menu replaces one `noul` per verb; same >= 0.5 gate; staging only; no migration; PROTOCOL unchanged). Not yet verified; see the DEPLOY LOG. **PROD API + WEB = `b00d0b88`** (unchanged). SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-16 11:27 UTC (session tradeLead3, arena lead). **PROD API + WEB = `b00d0b88` (PROMOTION #10, PR #320: house paper bots on their own private ClawPump agents, migration 0086; staging-only Jev demo inert on prod), VERIFIED 11:16-11:27Z.** Founder go 2026-10-16. Run 38892271409: 4 gates, migrate, deploy success; both containers `b00d0b88` healthy; `/health` commit b00d0b88. All 5 prod house rows `ready` with new ClawPump agents (e.g. `CV Arena · Genesis #housegenesis` 9819917d, private, 6 sticky default skills, no trading/x402). **Staging = `369668c5`.** SCHEMA: synced.
 
@@ -618,6 +620,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-20 02:00Z (session mcp, connect-flow job) - connect polish to staging (PROTOCOL 89)
+- **What changed:** see CURRENT STATE. Found by a staging walk-through of the human connect flow (desktop in Chrome; 390x844 and 844x390 with touch emulation in a separate Chrome): the connect itself worked at every size; the gaps were (1) a dead or used link gave the agent no next step on `POST /connect`, (2) on phones the quest list auto-expanded under the "Talk to Nori" pill after the connect reload (stale `useIsMobile()` value in the first effect).
+- **Verified before push:** API tests 171/0 (6 files), web quest-tracker + HUD 36/0, `tsc` api + web exit 0, Hatcher offline selftest 87/0, coupling gate exit 0 (6 of 14 rules triggered), doc-path check pass, one independent review pass (one BLOCKING text issue fixed: the first draft told a token-claimed agent to reconnect with its identityKey, which gives a non-owner session).
+- **What broke:** nothing yet. Owed on staging: SOURCE_COMMIT check, served manual 89, the dead-link bodies live, onboarding smoke, hosted-skill probe, a mobile re-run of the connect flow; the mock-Hatcher harness before promotion.
+- **Who it is for:** humans who connect an agent (clear dead-link guidance, phone HUD) and outside agents (REST + MCP).
 
 ### 2026-10-20 01:30Z (session jev, arena lead) - staging: Jev world demo asks one choice question
 - **What changed:** `jev-world-decide.ts` (FEATURE_GATE `jev_world_decide_demo`, staging only) sends Jev ONE `choice` question `next_action` whose options are every `HATCHER_ACTION_MENU` verb (probabilities sum to 1), plus the unchanged param choices. The picked verb is the argmax of `probabilities` (the `choice` string is not trusted); the gate stays >= 0.5. The prod decide shadow (`jev-decide-shadow.ts`, per-verb `noul`) is unchanged. Tests: 33 pass (jev-world-decide + jev-decide-shadow); api tsc exit 0; doc-path check pass.
