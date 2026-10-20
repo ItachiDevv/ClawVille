@@ -228,6 +228,12 @@ interface HouseAgentEntry {
   directivePending: boolean;
   /** Monotonic owner-kick revision; async work cannot consume a newer kick. */
   directiveRevision: number;
+  /**
+   * epoch-ms the phase-edge poll last woke this entry's TALKING edge (that drive
+   * leaves the linger and decides). 0 = never. tick() reads it to keep decides
+   * at least DECIDE_MIN_SPACING_MS apart (see phaseEdgePoll).
+   */
+  edgeDecideAt: number;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
@@ -237,6 +243,19 @@ const TARGET_READ_TIMEOUT_MS = 10_000;
 
 // Cadence + safety constants.
 const TICK_MS = 30_000; // driver interval — NOT the 200ms sim tick
+// Phase-edge poll (founder 2026-10-20: "faster path, same decision"). Wakes an
+// agent between ticks ONLY at a phase edge; see phaseEdgePoll for the rules.
+const PHASE_EDGE_POLL_MS = 5_000;
+// After a poll-woken decide that leaves the entry 'deciding' (empty reply or a
+// non-navigation action), the next tick may land only 5 s later. tick() skips
+// that entry until this much time has passed, so decide-to-decide spacing stays
+// at one tick. 25 s < TICK_MS, so a tick-driven retry (30 s apart) never skips.
+const DECIDE_MIN_SPACING_MS = TICK_MS - PHASE_EDGE_POLL_MS;
+// Upper bound on how long the teacher talk waits for a running arrival settle.
+// The settle is a DB transaction with FOR UPDATE and no statement timeout; a
+// hung pool must not hold the agent in 'arrived' forever. Past this age the
+// talk goes ahead (the settle's own finally still clears its guard later).
+const ARRIVAL_SETTLE_WAIT_MS = 15_000;
 // §B.1 durable autonomy — run the server-side re-enrollment reconcile every N
 // driver ticks (10 × 30s = ~5 min), AND on tick 1 (~30s after start/boot) so a
 // deploy re-enrolls browser-closed persisting agents promptly with no client.
@@ -532,7 +551,14 @@ class AgentAutonomyDriver {
   // Keep it across unregister/re-seat so retries cannot accumulate stuck queries.
   private pendingTargetReads = new Map<string, Set<TargetReaderName>>();
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
+  // agentId -> token of the arrival settle still running for it. The settle is
+  // fire-and-forget (outside inFlight), so the ARRIVED branch (talk + teacher
+  // turn) waits for it, up to ARRIVAL_SETTLE_WAIT_MS (isArrivalSettlePending).
+  // Token-guarded like `warming`: an older settle that finishes late never
+  // clears a newer one's entry. `warned` makes the expiry WARN fire once.
+  private arrivalSettling = new Map<string, { startedAt: number; warned: boolean }>();
   private interval: ReturnType<typeof setInterval> | null = null;
+  private phaseEdgeInterval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
   private lastTickAt: number | null = null;
   /** Edge-trigger the standby skip log instead of emitting it every 30s. */
@@ -627,6 +653,7 @@ class AgentAutonomyDriver {
       directiveShaHydrated: false,
       directivePending: false,
       directiveRevision: 0,
+      edgeDecideAt: 0,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -641,6 +668,9 @@ class AgentAutonomyDriver {
     if (!this.houseAgents.delete(agentId)) return;
     this.bodyMissing.delete(agentId);
     this.bodyMissingWarnedAt.delete(agentId);
+    // Ordering guard only (not an overlap guard): safe to drop; a late finally
+    // checks its token identity and never clears a newer settle.
+    this.arrivalSettling.delete(agentId);
     // Do NOT clear inFlight/warming here: their underlying promises are not
     // cancellable. A same-id re-register must remain blocked until the owning
     // promise/token cleanup releases its guard, otherwise old + new drives can
@@ -765,6 +795,7 @@ class AgentAutonomyDriver {
       directiveShaHydrated: false,
       directivePending: false,
       directiveRevision: 0,
+      edgeDecideAt: 0,
     });
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
     console.log(
@@ -784,6 +815,7 @@ class AgentAutonomyDriver {
     if (!this.userAgents.delete(agentId)) return;
     this.bodyMissing.delete(agentId);
     this.bodyMissingWarnedAt.delete(agentId);
+    this.arrivalSettling.delete(agentId); // ordering guard only; see unregisterHouseAgent
     // The owning async drive/warm releases these guards. Clearing them during a
     // quick Controlled→Autonomous re-register would permit same-id overlap.
     for (const [ownerUserId, enrolledAgentId] of this.enrolledOwners) {
@@ -1043,7 +1075,10 @@ class AgentAutonomyDriver {
     // mistaken for a stalled driver during boot.
     this.lastTickAt = Date.now();
     this.interval = setInterval(() => this.tick(), TICK_MS);
-    console.log(`[AutonomyDriver] started — driving every ${TICK_MS}ms`);
+    this.phaseEdgeInterval = setInterval(() => this.phaseEdgePoll(), PHASE_EDGE_POLL_MS);
+    console.log(
+      `[AutonomyDriver] started - driving every ${TICK_MS}ms, phase-edge poll every ${PHASE_EDGE_POLL_MS}ms`,
+    );
   }
 
   stop(): void {
@@ -1051,6 +1086,101 @@ class AgentAutonomyDriver {
       clearInterval(this.interval);
       this.interval = null;
     }
+    if (this.phaseEdgeInterval) {
+      clearInterval(this.phaseEdgeInterval);
+      this.phaseEdgeInterval = null;
+    }
+  }
+
+  /**
+   * Phase-edge poll (every PHASE_EDGE_POLL_MS). The 30 s tick notices a phase
+   * edge up to 30 s late: an arrived walk waits a tick, the teacher talk waits
+   * another, and the 60 s linger becomes 60-90 s. This poll only wakes an agent
+   * that sits AT an edge, via the same `driveAgentNow` the tick calls, so the
+   * drive it starts is exactly the one the next tick would run. One edge = one
+   * drive the next tick would run, so the decision count per cycle does not
+   * grow; cycles get shorter. It never builds a prompt or calls decide() itself.
+   *
+   * Edges (each is safe because the drive moves the entry off the edge, so the
+   * next poll skips it):
+   * - walking + hasArrived: stepWalkingPhase takes its arrival branch (no LLM,
+   *   no runtime) and sets 'arrived' or 'talking'. A walk that has NOT arrived
+   *   is never woken: the wedge check compares remaining path length drive to
+   *   drive and is tuned to the 30 s tick, so a 5 s drive would false-trigger it.
+   * - arrived (with a target) + warm runtime + no arrival settle still
+   *   pending: driveOnce runs the teacher talk (or the talk-cooldown skip) and
+   *   sets 'talking'. The arrival settle is fire-and-forget, so driveOnce's
+   *   arrived branch itself returns (phase unchanged) while it runs, for a poll
+   *   OR a tick drive: the visit settles before the teacher turn starts. The
+   *   wait is bounded by ARRIVAL_SETTLE_WAIT_MS; a hung settle then gets one
+   *   WARN and the talk goes ahead. The poll checks it too only to avoid a
+   *   wake that would do nothing.
+   * - talking past TALK_COOLDOWN_MS + warm runtime: driveOnce leaves the linger
+   *   and runs the deciding step the tick would run. The poll stamps
+   *   `edgeDecideAt`; if that decide leaves the entry 'deciding' (empty reply or
+   *   a non-navigation action), tick() skips the entry until
+   *   DECIDE_MIN_SPACING_MS has passed, so the retry stays one tick away instead
+   *   of landing on a tick only 5 s later.
+   * A cold runtime keeps the steady 30 s path (warming is the tick's job).
+   * Never woken: 'deciding' (the tick owns decide and retry pacing), an agent
+   * in flight or warming, and any entry with a pending directive (directives
+   * already kick at once via kickEnrolledOwnerNow; their retries stay on the
+   * tick). Returns the woken agentIds (test seam).
+   */
+  phaseEdgePoll(nowMs: number = Date.now()): string[] {
+    if (!isAutonomyActive()) return [];
+    const woken: string[] = [];
+    for (const entry of [...this.houseAgents.values(), ...this.userAgents.values()]) {
+      if (this.inFlight.has(entry.agentId) || this.warming.has(entry.agentId)) continue;
+      if (entry.directivePending) continue;
+      let edge = false;
+      if (entry.phase === 'talking') {
+        edge = nowMs - entry.phaseSince >= TALK_COOLDOWN_MS
+          && !!agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
+      } else if (entry.phase === 'arrived') {
+        // Same guard as driveOnce's arrived branch: an arrived entry with no
+        // target would fall through to deciding, which this poll never wakes.
+        edge = !!entry.targetBuildingId
+          && !this.isArrivalSettlePending(entry.agentId, nowMs, false)
+          && !!agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
+      } else if (entry.phase === 'walking') {
+        // buildPerception is the only source of the edge/place distances that
+        // hasArrived reads, so the arrival test stays identical to the drive's.
+        const perception = npcSimulation.buildPerception(entry.bodyId);
+        edge = !!perception && this.hasArrived(perception, entry);
+      }
+      if (!edge) continue;
+      if (entry.phase === 'talking') entry.edgeDecideAt = nowMs;
+      woken.push(entry.agentId);
+      void this.driveAgentNow(entry.agentId).catch((err) =>
+        console.error(
+          `[AutonomyDriver] phase-edge drive failed for ${sessionDigest(entry.agentId)}:`,
+          err instanceof Error ? err.message : err,
+        ),
+      );
+    }
+    return woken;
+  }
+
+  /**
+   * True while this agent's arrival settle is running AND younger than
+   * ARRIVAL_SETTLE_WAIT_MS. An older guard reads as not pending (the talk goes
+   * ahead) but stays in the map: the settle's own finally owns its removal.
+   * With `warnIfExpired`, the first expired read per settle WARNs (digest only).
+   */
+  private isArrivalSettlePending(agentId: string, now: number, warnIfExpired: boolean): boolean {
+    const settle = this.arrivalSettling.get(agentId);
+    if (!settle) return false;
+    if (now - settle.startedAt < ARRIVAL_SETTLE_WAIT_MS) return true;
+    if (warnIfExpired && !settle.warned) {
+      settle.warned = true;
+      console.warn(
+        `[AutonomyDriver] arrival settle still running after ${ARRIVAL_SETTLE_WAIT_MS}ms for ${sessionDigest(agentId)}; talking anyway`,
+      );
+      // A hung settle never reaches its finally: drop the expired token here.
+      this.arrivalSettling.delete(agentId);
+    }
+    return false;
   }
 
   /**
@@ -1117,7 +1247,18 @@ class AgentAutonomyDriver {
     // §B.1: drive BOTH registries — house fleet first (unchanged order), then
     // user-owned enrollments. Same phase machine, same guards; the ONLY
     // house/user divergence inside the loop is the warm flag (`entry.isHouse`).
+    const now = Date.now();
     for (const entry of [...this.houseAgents.values(), ...this.userAgents.values()]) {
+      // Decide spacing after a poll-woken decide (see DECIDE_MIN_SPACING_MS).
+      // A pending directive bypasses it; directive kicks never pass here anyway.
+      if (
+        entry.phase === 'deciding'
+        && !entry.directivePending
+        && entry.edgeDecideAt > 0
+        && now - entry.edgeDecideAt < DECIDE_MIN_SPACING_MS
+      ) {
+        continue;
+      }
       // Every agent gets an independent promise. A cold 90-second warm cannot
       // serialize warm agents later in this loop, and the helper's atomic guard
       // skips any enrollment/directive kick already driving this same agent.
@@ -1259,6 +1400,9 @@ class AgentAutonomyDriver {
     // executeHatcherAction PASSES because we only reach 'arrived' once within
     // BUILDING_INTERACTION_RADIUS of the target.
     if (entry.phase === 'arrived' && entry.targetBuildingId) {
+      // The arrival settle still runs (bounded wait): keep 'arrived' so the visit
+      // settles before the teacher turn; the next poll or tick retries the talk.
+      if (this.isArrivalSettlePending(agentId, now, true)) return;
       const buildingId = entry.targetBuildingId;
       // Slice 4 LLM-spend bound: at most one CONDUCTED turn per (agent, building)
       // per hour. On cooldown → skip the talk LLM entirely (no question, no
@@ -1659,6 +1803,9 @@ class AgentAutonomyDriver {
       if (teachingTarget && entry.targetBuildingId) {
         entry.phase = 'arrived';
         entry.phaseSince = now;
+        const settleAgentId = entry.agentId;
+        const settleToken = { startedAt: now, warned: false };
+        this.arrivalSettling.set(settleAgentId, settleToken);
         // Slice 4: settle only a TEACHING-BUILDING arrival. Places such as the
         // cove are visible navigation outcomes, never teacher settlement.
         void this.arrivalSettle({
@@ -1672,7 +1819,11 @@ class AgentAutonomyDriver {
             `[AutonomyDriver] arrival settle failed for ${sessionDigest(entry.agentId)}:`,
             err instanceof Error ? err.message : err,
           ),
-        );
+        ).finally(() => {
+          if (this.arrivalSettling.get(settleAgentId) === settleToken) {
+            this.arrivalSettling.delete(settleAgentId);
+          }
+        });
       } else {
         // A non-teaching destination (cove / poker room) has been reached.
         // Linger without another LLM call, then return to deciding; never emit
