@@ -1416,7 +1416,13 @@ class AgentAutonomyDriver {
         );
         return { claimable: [], owned: [] } satisfies AutonomousLandTargets;
       })),
-      this.readTargetBounded(agentId, 'quests', () => readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+      // House agents never claim quests (the executor drops claim_tutorial_quest
+      // for house actors: "house fleets never claim faucets"). Advertising ids
+      // to them only teaches a no-op the model then repeats (staging 2026-10-20:
+      // 8 Jev picks in a row). Same skip as salvage and build below.
+      entry.isHouse
+        ? Promise.resolve([] as AutonomousQuestTarget[])
+        : this.readTargetBounded(agentId, 'quests', () => readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} quest targets unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
