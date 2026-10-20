@@ -647,7 +647,10 @@ describe('POST /api/agent/connect connection-token owner rule', () => {
       expect(result.json).toEqual({
         error: 'Owner binding changed during connect',
         code: 'OWNER_BIND_CONFLICT',
+        detail: expect.stringContaining("logged-in human's link"),
       });
+      expect(result.json.detail).toContain('new connect link');
+      expect(result.json.detail).toContain('retry that link once');
       expect(updateCalls).toHaveLength(1);
       expect(whereSql(0)).toBe('("openclaw_bots"."id" = $1 and "openclaw_bots"."user_id" is null)');
       expect(registerCalls).toBe(0);

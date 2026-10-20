@@ -21,7 +21,11 @@ describe('connect owner binding', () => {
       secretIncluded: false,
       secretIssuedPreviously: true,
     });
-    expect(disclosure.recovery).toContain('before this session lapses');
+    // 91: actionable without the secret, and never sends the agent to copy
+    // another agent's secret (the old text did).
+    expect(disclosure.recovery).toContain('ask that human for a new connect link');
+    expect(disclosure.recovery).toContain("Do not copy another agent's secret.");
+    expect(disclosure.recovery).not.toContain('from the agent that first connected');
     expect(disclosure).not.toHaveProperty('secretKey');
   });
 

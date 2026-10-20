@@ -1125,6 +1125,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       {
         error: 'Owner binding changed during connect',
         code: 'OWNER_BIND_CONFLICT',
+        detail: OWNER_BIND_CONFLICT_DETAIL,
       },
       409,
     );
@@ -2048,7 +2049,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
         expired: true,
         lastSeenAt: row.lastSeenAt.toISOString(),
         expiresAt: row.sessionExpiresAt?.toISOString() ?? null,
-        hint: 'Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
+        hint: "Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId, or connect again with your owner credential (an identityKey that owns this agentId, or a new connect link from your human if a logged-in human's link connected you).",
       },
       410,
     );
@@ -2094,7 +2095,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
         lastSeenAt: row.lastSeenAt.toISOString(),
         // Non-null: the `expired` guard above returned on a NULL sessionExpiresAt.
         expiresAt: row.sessionExpiresAt!.toISOString(),
-        hint: 'Session row is live but no in-memory session is attached and it cannot self-restore. Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
+        hint: 'Session row is live but no in-memory session is attached and it cannot self-restore. Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId, or connect again with your owner credential (an identityKey that owns this agentId, or a new connect link from your human if a logged-in human\'s link connected you).',
       },
       410,
     );
@@ -4495,9 +4496,20 @@ const CONNECTION_TOKEN_DEAD_DETAIL =
 /** Agent-facing recovery text on the POST /connect 409 already-claimed body. */
 const CONNECTION_TOKEN_CLAIMED_DETAIL =
   'This invitation link was already used. If your own earlier call returned a sessionId, '
-  + 'keep using it (check GET /api/agent/session-status?agentId=<agentId>); for a new '
-  + 'session later, sign POST /api/agent/reconnect with identity.secretKey. Otherwise ask '
-  + 'your human for a new connect link from the ClawVille game.';
+  + 'keep using it (check GET /api/agent/session-status?agentId=<agentId>); when it ends, '
+  + 'connect again with your identityKey if that key owns the agentId, else ask your human '
+  + 'for a new link. Otherwise ask your human for a new connect link from the ClawVille game.';
+/**
+ * Agent-facing recovery text on the POST /connect 409 OWNER_BIND_CONFLICT body.
+ * The usual cause: the agentId was claimed through a logged-in human's link, so
+ * the human's account owns it and the agent's identityKey proves nothing.
+ */
+const OWNER_BIND_CONFLICT_DETAIL =
+  'This agentId belongs to an account that this connect did not prove. If a logged-in '
+  + "human's link connected you, that human's account owns the agentId and your identityKey "
+  + 'is not used: ask your human for a new connect link, and keep the same agentId. If this '
+  + 'connect used a link, retry that link once; 409 agent_owned_by_other_account then means '
+  + 'another account owns this agentId.';
 
 function releasePendingConnectionClaim(pending: PendingConnection): void {
   pending.connected = false;

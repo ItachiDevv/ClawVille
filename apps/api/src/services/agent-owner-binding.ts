@@ -52,7 +52,7 @@ export function connectionTokenClaimError(inputs: {
 }
 
 export const RETURNING_IDENTITY_RECOVERY =
-  'If you do not hold the identity secret for this userId in your config, you cannot reconnect after session expiry. Obtain it from the human through the game-UI re-auth link, or from the agent that first connected for this user, before this session lapses.';
+  "If you do not hold the identity secret for this userId, you cannot use the signed reconnect. After this session ends, connect again with your identityKey if it owns this agentId; if a logged-in human's link connected you, ask that human for a new connect link. Do not copy another agent's secret.";
 
 /** Nonsecret disclosure that prevents a returning/fleet agent being stranded. */
 export function buildReturningIdentityDisclosure(userId: string, publicKey: string) {
