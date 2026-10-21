@@ -808,6 +808,16 @@
 
 .resultCompact { max-height: none; }
 
+/* Portrait phone, result current and not your turn: the settled HUD (tray +
+   action panel, about 262 px with its bottom gap) is the only thing below
+   the panel, so the panel may grow down to it (top 122 + 8 gap). At 390x844
+   that is 444 px, enough for a 3-seat showdown without a scroll. */
+@media (orientation: portrait) {
+  .surfaceSettled .resultMobile:not(.resultCompact) {
+    max-height: max(34dvh, calc(100dvh - 400px));
+  }
+}
+
 .resultHeader {
   display: flex;
   align-items: center;
@@ -1031,6 +1041,10 @@
      22 to 48, Walk Away 44, legend 12, gaps 12) + bottom 6, with room for one
      toast. The `.hud` (z 50) stays above the panel (z 47) if it grows. */
   .surfaceSettled .result:not(.resultCompact) {
+    /* Right of the table chat button (avatar-chat-bar: fixed z 70, left
+       max(12px, inset), width min(360px, 100vw - 24px), top 70). Its box
+       takes taps across that width, so the panel must not sit under it. */
+    left: calc(max(12px, env(safe-area-inset-left)) + min(360px, calc(100vw - 24px)) + 8px);
     right: max(14px, env(safe-area-inset-right));
     max-width: 560px;
     max-height: max(140px, calc(100dvh - 170px));
