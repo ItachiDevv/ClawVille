@@ -791,7 +791,9 @@
   overscroll-behavior: contain;
   border: 1px solid rgba(226, 193, 90, 0.8);
   border-radius: var(--hm-radius);
-  background: rgba(26, 18, 28, 0.95);
+  /* Opaque (was 0.95 alpha): the 3D DEALER plate is a bright mesh in the
+     WebGL canvas, so no z-index can cover it; a 5% bleed showed it through. */
+  background: var(--hm-panel-solid);
   box-shadow: 0 0 30px rgba(212, 175, 55, 0.2), 0 14px 32px rgba(4, 2, 5, 0.5);
   color: var(--hm-cream);
   pointer-events: auto;
@@ -898,6 +900,24 @@
   white-space: nowrap;
 }
 
+/* The name shrinks with an ellipsis; the Won chip never shrinks or clips. */
+.resultSeatNameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resultSeatName > .winnerChip { flex: none; }
+
+/* Touch devices (useIsMobile): the chip sits under the name. */
+.resultMobile .resultSeatName {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.resultMobile .resultSeatNameText { max-width: 100%; }
+
 .winnerChip {
   padding: 2px 5px;
   border-radius: 4px;
@@ -959,16 +979,62 @@
     max-height: 34vh;
   }
   .resultSeat { gap: 6px; padding-inline: 6px; }
+  /* 390 px portrait: the chip sits under the name, so the hole cards in the
+     next column never cover it. */
+  .resultSeatName {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .resultSeatNameText { max-width: 100%; }
 }
 
+/* Short landscape (phone landscape, iPad landscape, short desktop windows).
+   `.surface .result` (0,2,0) beats `.result:not(.resultMobile)` from the
+   max-width block above. Left inset 158 px clears the back button
+   ("← Cashing out…" is about 140 px wide at left 14 px). The feed gets a
+   known width so the panel can end 8 px left of it. */
 @media (orientation: landscape) and (max-height: 760px) {
-  .result { max-height: max(96px, calc(100dvh - 330px)); }
-  .resultMobile {
+  .surface .result {
     top: max(8px, env(safe-area-inset-top));
-    width: min(520px, calc(100vw - 360px));
-    max-height: max(96px, calc(100dvh - 300px));
+    right: calc(max(14px, env(safe-area-inset-right)) + min(270px, 30vw) + 8px);
+    left: calc(max(14px, env(safe-area-inset-left)) + 158px);
+    width: auto;
+    max-width: 520px;
+    max-height: max(96px, calc(100dvh - 330px));
+    margin-inline: auto;
+    transform: none;
+  }
+  .surface .resultCompact { max-height: none; }
+  .feed,
+  .feedMobile {
+    width: min(270px, 30vw);
+    min-width: 0;
+    max-width: none;
   }
   .feedList,
   .feedMobile .feedList { max-height: max(88px, calc(100dvh - 300px)); }
   .resultSeat { min-height: 40px; padding-block: 2px; }
+  .resultSeatName {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .resultSeatNameText { max-width: 100%; }
+
+  /* `.surfaceSettled` (CashTableRoomHud, `cashResultFreesTray`): the full
+     result is current and the viewer is not acting. While the panel is
+     expanded, hide the private card tray (the panel repeats those cards and
+     the board) and the action feed (it returns on "Hide" or the next hand),
+     and give the panel the freed height. The action panel stays. Reserve
+     170 px: top 8 + gap 8 + action panel about 120 (padding 14, status row
+     22 to 48, Walk Away 44, legend 12, gaps 12) + bottom 6, with room for one
+     toast. The `.hud` (z 50) stays above the panel (z 47) if it grows. */
+  .surfaceSettled .result:not(.resultCompact) {
+    right: max(14px, env(safe-area-inset-right));
+    max-width: 560px;
+    max-height: max(140px, calc(100dvh - 170px));
+  }
+  .surfaceSettled .result:not(.resultCompact) ~ .feed { display: none; }
+  .surfaceSettled .result:not(.resultCompact) ~ .hud .cardTray { display: none; }
 }

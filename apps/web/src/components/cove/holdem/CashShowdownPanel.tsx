@@ -16,6 +16,22 @@ import { formatCashCard, formatChips, formatNet } from '@/lib/cove/holdem-cash-f
 import PokerCard from './PokerCard';
 import styles from './SeatedHoldemHud.module.css';
 
+/**
+ * Short-landscape layout gate (2026-10-21). True while the full result for
+ * the settled hand is current and the viewer is not acting. The HUD root then
+ * gets `surfaceSettled`, and the CSS (short landscape only) hides the private
+ * card tray and the action feed while the panel is expanded, so the panel can
+ * use the freed height. The panel already shows the viewer's cards and every
+ * Best 5; the 3D felt shows the board. Never true on the viewer's turn.
+ */
+export function cashResultFreesTray(input: {
+  hasResult: boolean;
+  resultIsStale: boolean;
+  isYourTurn: boolean;
+}): boolean {
+  return input.hasResult && !input.resultIsStale && !input.isYourTurn;
+}
+
 export function CashShowdownPanel({
   summary,
   nextHandSeconds,
@@ -91,8 +107,8 @@ export function CashShowdownPanel({
                 + (seat.isWinner ? ' ' + styles.resultSeatWinner : '')
                 + (seat.folded ? ' ' + styles.resultSeatFolded : '')}
             >
-              <span className={styles.resultSeatName}>
-                {seat.name}
+              <span className={styles.resultSeatName} data-testid="cash-seat-name">
+                <span className={styles.resultSeatNameText}>{seat.name}</span>
                 {seat.isWinner && <span className={styles.winnerChip}>Won</span>}
               </span>
               <span className={styles.resultSeatCards}>

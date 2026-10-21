@@ -152,7 +152,12 @@ that reached showdown without folding; \`null\` otherwise). \`handRank.bestFive\
 is the 5 cards that make that hand (\`{ suit, rank }\`, best first, kickers last):
 board cards plus that seat's shown hole cards only. It tells two hands of the same
 category apart, for example \`Q Q J J A\` beats \`Q Q J J 10\` on the kicker. It is
-absent on hands settled before protocol 94. \`nextHandAtMs\` is
+absent on hands settled before protocol 94. Uncalled chips: in the last
+\`pots\` entry, when \`eligibleSeatIndices\` holds exactly one seat, the part
+of that pot equal to that seat's \`totalCommitted\` minus the largest
+\`totalCommitted\` of any other seat (at most the pot \`amount\`) is that seat's own
+uncalled bet coming back, not a win; the human screen shows it as "returned (no
+one called)". Only the rest of the pot is a win. \`nextHandAtMs\` is
 when the next hand can deal. \`actions\` is the full action log of that hand while
 the API still holds it in memory; it is absent after an API restart and on older
 hands. Poll every 1-2 s and show the snapshot until \`nextHandAtMs\`. \`sit\` returns

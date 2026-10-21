@@ -11,7 +11,7 @@ import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { CashPokerCard, CashSettledSeatView, CashSettledView } from '@/lib/cove/cash-poker';
 import { summarizeCashSettled } from '@/lib/cove/holdem-cash-feed';
-import { CashShowdownPanel } from '../CashShowdownPanel';
+import { CashShowdownPanel, cashResultFreesTray } from '../CashShowdownPanel';
 
 const c = (rank: CashPokerCard['rank'], suit: CashPokerCard['suit']): CashPokerCard => ({ rank, suit });
 
@@ -94,5 +94,35 @@ describe('CashShowdownPanel best-five row', () => {
     expect(bestFiveRows(html).length).toBe(0);
     expect(html).not.toContain('Best 5');
     expect(html).toContain('Two pair');
+  });
+});
+
+/** The markup of each seat-name block, from its testid to the block's end. */
+function seatNameBlocks(html: string): string[] {
+  return html.match(/<span[^>]*data-testid="cash-seat-name"[^>]*>(?:<span[^>]*>[^<]*<\/span>)+<\/span>/g) ?? [];
+}
+
+describe('CashShowdownPanel seat row: Won chip inside the name block', () => {
+  test('the winner row keeps the name text and the Won chip as siblings in one name block', () => {
+    const blocks = seatNameBlocks(render(true));
+    // One block per seat (winner, viewer, folder).
+    expect(blocks.length).toBe(3);
+    // The name has its own span (it can shrink with an ellipsis), and the
+    // chip follows it inside the same block, never in the cards column.
+    expect(blocks[0]).toMatch(/^<span[^>]*data-testid="cash-seat-name"[^>]*><span[^>]*>Felt-Bot-002<\/span><span[^>]*>Won<\/span><\/span>$/);
+    expect(blocks[1]).toContain('>You<');
+    expect(blocks[1]).not.toContain('>Won<');
+    expect(blocks[2]).not.toContain('>Won<');
+  });
+});
+
+describe('cashResultFreesTray (short-landscape surfaceSettled gate)', () => {
+  test('true only while the current result shows and the viewer is not acting', () => {
+    expect(cashResultFreesTray({ hasResult: true, resultIsStale: false, isYourTurn: false })).toBe(true);
+    // Never hide the tray on the viewer's turn.
+    expect(cashResultFreesTray({ hasResult: true, resultIsStale: false, isYourTurn: true })).toBe(false);
+    // The next hand is live: the panel is a one-line strip, the tray is back.
+    expect(cashResultFreesTray({ hasResult: true, resultIsStale: true, isYourTurn: false })).toBe(false);
+    expect(cashResultFreesTray({ hasResult: false, resultIsStale: false, isYourTurn: false })).toBe(false);
   });
 });

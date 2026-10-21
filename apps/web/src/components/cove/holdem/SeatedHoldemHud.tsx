@@ -18,7 +18,7 @@ import {
 import PokerCard from './PokerCard';
 import CommunityCardRow from './CommunityCardRow';
 import { CashHandFeed } from './CashHandFeed';
-import { CashShowdownPanel } from './CashShowdownPanel';
+import { CashShowdownPanel, cashResultFreesTray } from './CashShowdownPanel';
 import styles from './SeatedHoldemHud.module.css';
 import {
   registerHoldemSeatBadge,
@@ -396,6 +396,12 @@ export function CashTableRoomHud({
     () => (settled ? summarizeCashSettled(settled, settledSeatName, settledYouSeatIndex, settledOwnCards) : null),
     [settled, settledOwnCards, settledSeatName, settledYouSeatIndex],
   );
+  /** Short landscape: hide the tray + feed while the full result shows (CSS). */
+  const resultFreesTray = cashResultFreesTray({
+    hasResult: settledSummary != null,
+    resultIsStale,
+    isYourTurn: Boolean(freshSelf?.isYourTurn),
+  });
   /** Tray source: the settled hand while its result is current, else the live own view. */
   const trayMode: 'live' | 'settled' | null = settled && amSeated && !resultIsStale
     && ((settledOwnCards?.length ?? 0) === 2 || settled.board.length > 0)
@@ -461,7 +467,10 @@ export function CashTableRoomHud({
   ]);
 
   return (
-    <div className={styles.surface} data-testid="cash-table-room-hud">
+    <div
+      className={styles.surface + (resultFreesTray ? ' ' + styles.surfaceSettled : '')}
+      data-testid="cash-table-room-hud"
+    >
       <ParityMirror surface="holdem-tray-3d" instanceId={instanceId} />
       {physicalSeats.map((seat, physicalIndex) => {
         if (!seat) return null;
