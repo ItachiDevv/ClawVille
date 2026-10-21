@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
@@ -15,8 +15,6 @@ import { MODEL_REGISTRY, type ModelKey, type ModelRegistryEntry } from '@/lib/th
 import {
   TableCards3D,
   type ResolvedTableCardSlots,
-  type TableCardLayout,
-  type TableCardSeat,
   type TableCards3DProps,
 } from '@/lib/three/cove-table-cards';
 import { useHoldemController } from '@/lib/cove/holdem-controller';
@@ -25,6 +23,7 @@ import {
   beginTransition,
   buildHoldemFeltParity,
   completeTransition,
+  encodeCardCode,
   publishFeltParity,
   type CardParityPayload,
   type HoldemFeltInput,
@@ -32,13 +31,29 @@ import {
   type Surface,
 } from '@/lib/cove/card-parity-mirror';
 import type { CashSettledHandSnapshot } from '@clawville/shared';
-import type { PublicTableStateResponse } from '@/lib/cove/cash-poker';
+import type { CashPokerCard, PublicTableStateResponse } from '@/lib/cove/cash-poker';
 import {
   getHoldemBadgeRegistryVersion,
   getHoldemSeatBadgeElement,
   getHoldemTableRecenterEpoch,
 } from '@/lib/cove/holdem-table-view';
 import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
+import {
+  BOT_SEATS,
+  buildCashCardState,
+  CARD_LAYOUT,
+  CHAIR_PELVIS_FORWARD_OFFSET,
+  CHAIR_SCALE,
+  FURNITURE_SCALE,
+  S,
+  SEATED_CAMERA_FOV,
+  SEATED_CAM_EYE,
+  SEATED_CAM_LOOK,
+  TABLE_FOOTPRINT_SCALE,
+  TABLE_TOP_Y,
+  TABLE_XZ_SCALE,
+  type RoomSeat,
+} from '@/lib/three/holdem-table-layout';
 
 const ROOM_PATH = '/models/cove-room-only.glb';
 const TABLE_PATH = '/models/cove-table-clean.glb';
@@ -62,95 +77,21 @@ preloadClips([...TABLE_POSE_BY_BOT, 'sit_idle_m']);
 // original scale-2 basis. Round 8 grows only the table's XZ footprint.
 const WORLD_AVATAR_HEIGHT = 160;
 const CHIBI_TARGET_HEIGHT = 120;
-const FURNITURE_SCALE = 2.9;
-const S = FURNITURE_SCALE / 2;
-const TABLE_FOOTPRINT_MULTIPLIER = 1.34;
-const TABLE_FOOTPRINT_SCALE = S * TABLE_FOOTPRINT_MULTIPLIER;
-const TABLE_XZ_SCALE = FURNITURE_SCALE * TABLE_FOOTPRINT_MULTIPLIER;
 // Round 10 restores the table's own chair at the table-matched 2.9× scale.
 // A 0.05wu downward ray/bounds sweep measured source minY=-20.38519 and the
 // flat cushion at y=-3.035, so its grounded world surface is y=50.32. The
 // cushion spans local z=-6.30..+7.85; z=+3.13 is its front-third pelvis point.
-const CHAIR_SCALE = FURNITURE_SCALE;
 const CHAIR_SOURCE_MIN_Y = -20.38519;
 const CHAIR_SOURCE_CUSHION_Y = -3.035;
 const CHAIR_CUSHION_Y = (CHAIR_SOURCE_CUSHION_Y - CHAIR_SOURCE_MIN_Y) * CHAIR_SCALE;
-const CHAIR_PELVIS_FORWARD_OFFSET = 3.13 * CHAIR_SCALE;
 // Room shell scaled with the furniture so wall/ceiling proportions track.
 const ROOM_SCALE = 1.45;
 // Preserve the approved Y scale and translate the visual top from 91.6 to
 // elbow-height 70. Round 8's XZ-only growth cannot change this relationship.
 const TABLE_SOURCE_TOP_Y = 63.2 * S;
-const TABLE_TOP_Y = 70;
 const TABLE_VISUAL_Y = TABLE_TOP_Y - TABLE_SOURCE_TOP_Y;
 const BOT_TARGET_HEIGHT = WORLD_AVATAR_HEIGHT;
 const DEALER_TARGET_HEIGHT = WORLD_AVATAR_HEIGHT;
-
-interface RoomSeat extends TableCardSeat {
-  chairX: number;
-  chairZ: number;
-}
-
-// PLAYER-SEAT STAGING (Round 8): the POV remains at 6 o'clock and all five
-// opponents move onto the enlarged table's far arc at 8/10/~12/2/4 o'clock.
-// The arc apex bulges toward -Z; the flat edge runs along +Z.
-// MEASURED ORIENTATION (2026-07-17, vertex-profile ground truth): the
-// table's FLAT full-width edge is at +Z (251wu straight edge at the zMax
-// extreme) and the players' arc tapers to -Z (72wu at zMin) — every prior
-// round had the player parked on the flat/dealer side. Player (camera) now
-// sits at the ARC APEX at -Z; bots take arc seats toward the flat corners;
-// the DEALER stands at the +Z flat edge. Basis coords use the XZ footprint.
-function roomSeat(engineSeatIndex: number, xBasis: number, zBasis: number): RoomSeat {
-  const x = xBasis * TABLE_FOOTPRINT_SCALE;
-  const z = zBasis * TABLE_FOOTPRINT_SCALE;
-  const faceYaw = Math.atan2(-x, -z);
-  return {
-    engineSeatIndex,
-    x,
-    z,
-    faceYaw,
-    // Keep the approved body/card/badge center at (x,z), while setting the
-    // pelvis on the measured front third and pulling the backrest away.
-    chairX: x - Math.sin(faceYaw) * CHAIR_PELVIS_FORWARD_OFFSET,
-    chairZ: z - Math.cos(faceYaw) * CHAIR_PELVIS_FORWARD_OFFSET,
-  };
-}
-
-// One authoritative body/card/badge center per seat; each chair derives its
-// measured front-third offset from that center. Seat 3 is biased
-// 20 basis-wu left of exact 12 o'clock so the standing dealer stays readable.
-// Adjacent gaps are >=128wu; default-eye bearings are -47.6/-31.7/-6.2/
-// +31.7/+47.6 degrees, for a minimum angular separation of 15.9 degrees.
-const BOT_SEATS: readonly RoomSeat[] = [
-  roomSeat(1, -93.53, -33),
-  roomSeat(2, -93.53, 33),
-  roomSeat(3, -20, 66),
-  roomSeat(4, 93.53, 33),
-  roomSeat(5, 93.53, -33),
-] as const;
-
-// boardYaw π: the board row sits toward the dealer's flat side (+Z) and its
-// faces must read upright to the player camera at -Z.
-const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
-  boardX: 0,
-  // Mid-felt (founder-praised placement) — after the table-mesh rotation
-  // the old +14 offset visually landed the row at the far edge among the
-  // bot backs.
-  boardZ: 0,
-  boardYaw: Math.PI,
-  boardCardWidth: 8 * S,
-  boardCardHeight: 11.2 * S,
-  boardSpacing: 10 * TABLE_FOOTPRINT_SCALE,
-  botCardWidth: 6.5 * S,
-  botCardHeight: 9.1 * S,
-  botPairGap: 1.2 * S,
-  botAnchorScale: 0.72,
-  surfaceLift: 0.7 * S,
-  // W0 parity envelope around the approved room's exact quad extrema
-  // (|x|max=140.49, |z|max=101.63), with a small regression margin.
-  feltHalfX: 145,
-  feltHalfZ: 105,
-});
 
 // Card-player rotations are authored once on the clyt Meshy reference rig
 // and retargeted to every humanoid VRM. Rigless GLBs use the perch path.
@@ -526,9 +467,9 @@ const POSE_AUDIT_VIEW: PoseAuditView | null = (() => {
 // Round 8 raises and pulls back the seated eye. The 66-degree lens contains
 // both extreme shoulders without fisheye looming while the low aim preserves
 // the felt-level first-person read.
-const CAM_EYE: readonly [number, number, number] = POSE_AUDIT_VIEW?.eye ?? [0, TABLE_TOP_Y + 78, -230];
-const CAM_LOOK: readonly [number, number, number] = POSE_AUDIT_VIEW?.look ?? [0, TABLE_TOP_Y + 16, 36 * TABLE_FOOTPRINT_SCALE];
-const CAMERA_FOV = POSE_AUDIT_VIEW ? 48 : 66;
+const CAM_EYE: readonly [number, number, number] = POSE_AUDIT_VIEW?.eye ?? SEATED_CAM_EYE;
+const CAM_LOOK: readonly [number, number, number] = POSE_AUDIT_VIEW?.look ?? SEATED_CAM_LOOK;
+const CAMERA_FOV = POSE_AUDIT_VIEW ? 48 : SEATED_CAMERA_FOV;
 
 const LOOK_YAW_LIMIT = THREE.MathUtils.degToRad(75);
 const LOOK_YAW_SPEED = THREE.MathUtils.degToRad(92);
@@ -582,18 +523,19 @@ function getHandCardBackTexture(): THREE.CanvasTexture {
   canvas.width = 192;
   canvas.height = 256;
   const context = canvas.getContext('2d')!;
+  // Bright, high-contrast back (matches the felt atlas back): the old dark
+  // teal vanished against the green felt at the seated eye's range.
   const gradient = context.createLinearGradient(0, 0, 192, 256);
-  gradient.addColorStop(0, '#0d3a4a');
-  gradient.addColorStop(1, '#0a2d3a');
+  gradient.addColorStop(0, '#f4ead0');
+  gradient.addColorStop(1, '#e2d3ac');
   context.fillStyle = gradient;
   context.fillRect(0, 0, 192, 256);
-  context.strokeStyle = 'rgba(0, 200, 180, 0.32)';
-  context.lineWidth = 7;
-  context.strokeRect(8, 8, 176, 240);
-  context.strokeStyle = 'rgba(0, 200, 180, 0.18)';
-  context.lineWidth = 4;
-  context.strokeRect(22, 22, 148, 212);
-  context.fillStyle = 'rgba(0, 200, 180, 0.22)';
+  context.fillStyle = '#b3202f';
+  context.fillRect(12, 12, 168, 232);
+  context.strokeStyle = '#f4ead0';
+  context.lineWidth = 6;
+  context.strokeRect(24, 24, 144, 208);
+  context.fillStyle = '#f4ead0';
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.font = '800 92px ui-monospace, Consolas, monospace';
@@ -613,8 +555,8 @@ function PeekHandCards({ seat, sample }: { seat: RoomSeat; sample: HandPoseSampl
     (sample.left[1] + sample.right[1]) / 2 + 2.5,
     (sample.left[2] + sample.right[2]) / 2 + Math.cos(seat.faceYaw) * 4,
   ] as const, [sample, seat.faceYaw]);
-  const cardWidth = CARD_LAYOUT.botCardWidth * 0.72;
-  const cardHeight = CARD_LAYOUT.botCardHeight * 0.72;
+  const cardWidth = CARD_LAYOUT.botCardWidth * 0.9;
+  const cardHeight = CARD_LAYOUT.botCardHeight * 0.9;
   return (
     <group position={center} rotation={[0, seat.faceYaw, 0]}>
       {([-1, 1] as const).map((fan, index) => (
@@ -636,11 +578,14 @@ function RiglessPerchFigure({
   modelKey,
   position,
   yaw,
+  lift = 0,
 }: {
   reg: ModelRegistryEntry;
   modelKey: ModelKey;
   position: readonly [number, number, number];
   yaw: number;
+  /** Extra world-Y so a small perch clears the table horn beside its chair. */
+  lift?: number;
 }) {
   const gltf = useGLTFWithKTX2(reg.path);
   const profile = PERCH_PROFILE_BY_MODEL[modelKey] ?? DEFAULT_PERCH_PROFILE;
@@ -656,13 +601,122 @@ function RiglessPerchFigure({
       name={`holdem-avatar-${modelKey}`}
       position={[
         position[0] - outwardX,
-        position[1] + CHAIR_CUSHION_Y + profile.seatOffsetY,
+        position[1] + CHAIR_CUSHION_Y + profile.seatOffsetY + lift,
         position[2] - outwardZ,
       ]}
       rotation={[0, yaw, 0]}
     >
       <primitive object={perch} />
     </group>
+  );
+}
+
+// Back-corner chairs (room index 1 and 3) sit beside the table's far horns:
+// a 42-46 wu rigless perch on the 50 wu cushion is swallowed by the horn from
+// the seated eye (the plush lobster rendered as a 4 px red dot). Lifting the
+// perch clears the horn without changing the chair.
+const BACK_CORNER_PERCH_LIFT = 18;
+
+const PLACEHOLDER_RETRY_MS = 4000;
+const PLACEHOLDER_MAX_RETRIES = 3;
+const PLACEHOLDER_HUES = [0.02, 0.12, 0.33, 0.52, 0.66, 0.84] as const;
+const placeholderMaterials = new Map<number, THREE.MeshStandardMaterial>();
+let placeholderTorsoGeometry: THREE.CapsuleGeometry | null = null;
+let placeholderHeadGeometry: THREE.SphereGeometry | null = null;
+
+function getPlaceholderMaterial(engineSeatIndex: number): THREE.MeshStandardMaterial {
+  const hue = PLACEHOLDER_HUES[engineSeatIndex % PLACEHOLDER_HUES.length]!;
+  let material = placeholderMaterials.get(hue);
+  if (!material) {
+    material = new THREE.MeshStandardMaterial({
+      color: new THREE.Color().setHSL(hue, 0.55, 0.55),
+      roughness: 0.7,
+      metalness: 0.05,
+    });
+    placeholderMaterials.set(hue, material);
+  }
+  return material;
+}
+
+/**
+ * Deterministic stand-in for a seated player whose model is loading or failed
+ * every retry. A live seat must never show an empty chair: two meshes, shared
+ * geometry, module-cached materials (never disposed; six at most).
+ */
+function SeatPlaceholderFigure({
+  engineSeatIndex,
+  position,
+  yaw,
+}: {
+  engineSeatIndex: number;
+  position: readonly [number, number, number];
+  yaw: number;
+}) {
+  placeholderTorsoGeometry ??= new THREE.CapsuleGeometry(10, 22, 4, 10);
+  placeholderHeadGeometry ??= new THREE.SphereGeometry(8.5, 12, 10);
+  const material = getPlaceholderMaterial(engineSeatIndex);
+  return (
+    <group
+      name={`holdem-placeholder-seat-${engineSeatIndex}`}
+      position={[position[0], position[1] + CHAIR_CUSHION_Y, position[2]]}
+      rotation={[0, yaw, 0]}
+    >
+      <mesh geometry={placeholderTorsoGeometry} material={material} position={[0, 24, 0]} />
+      <mesh geometry={placeholderHeadGeometry} material={material} position={[0, 52, 0]} />
+    </group>
+  );
+}
+
+/**
+ * One seated figure with three guarantees the bare ModelLoadBoundary lacked:
+ *  - while the model suspends, the placeholder shows (and the suspend can no
+ *    longer bubble to the room's single Suspense and hide the whole scene);
+ *  - a failed load shows the placeholder instead of an empty chair;
+ *  - a failed load is retried (cache cleared by the boundary) up to
+ *    PLACEHOLDER_MAX_RETRIES times, so one transient 5xx is not permanent.
+ * Key this component by figure identity so a new avatar starts clean.
+ */
+function SeatFigureSlot({
+  assetUrl,
+  label,
+  resetKey,
+  placeholder,
+  onModelFailed,
+  children,
+}: {
+  assetUrl: string;
+  label: string;
+  resetKey: string;
+  placeholder: ReactNode;
+  onModelFailed?: () => void;
+  children: ReactNode;
+}) {
+  const [attempt, setAttempt] = useState(0);
+  const attemptRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+  }, []);
+  const handleFailed = useCallback(() => {
+    onModelFailed?.();
+    if (attemptRef.current >= PLACEHOLDER_MAX_RETRIES) return;
+    attemptRef.current += 1;
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setAttempt(attemptRef.current);
+    }, PLACEHOLDER_RETRY_MS * attemptRef.current);
+  }, [onModelFailed]);
+  return (
+    <ModelLoadBoundary
+      assetUrl={assetUrl}
+      label={label}
+      resetKey={`${resetKey}|${attempt}`}
+      fallback={placeholder}
+      onModelFailed={handleFailed}
+    >
+      <Suspense fallback={placeholder}>{children}</Suspense>
+    </ModelLoadBoundary>
   );
 }
 
@@ -859,6 +913,16 @@ export interface LiveTableRoomState {
   /** The server seat placed at the six-o'clock POV. Spectators use seat 0. */
   povSeatIndex: number;
   settled: CashSettledHandSnapshot | null;
+  /**
+   * The viewer's OWN hole cards, drawn face up on the felt at the POV position.
+   * Source: `state-for-agent` `view.holeCards` (the only card-bearing surface;
+   * the public snapshot never carries them). `handNumber` is the hand those
+   * cards belong to (`view.handNumber`): the room draws them only while it
+   * equals the live (or settled) hand's number, so a stale selfView from the
+   * previous hand can never paint wrong cards on the felt. Keep passing it
+   * through the settle window so the cards stay up for the showdown.
+   */
+  ownHole?: { handNumber: number; cards: readonly [CashPokerCard, CashPokerCard] } | null;
 }
 
 interface ResolvedCashFigureSeat {
@@ -926,31 +990,14 @@ export function HoldemTableRoomScene({
         && (seat?.holeCards?.length ?? 0) > 0;
     });
   }, [cashLive, cashSettled, handSamples, live, liveTable, phase, publicSeats, roomSeats]);
-  const cashCardState = useMemo<NonNullable<TableCards3DProps['externalState']> | undefined>(() => {
-    if (!liveTable) return undefined;
-    if (cashSettled) {
-      return {
-        active: true,
-        board: cashSettled.board,
-        seats: cashSettled.seats.map((seat) => ({
-          seatIndex: seat.seatIndex,
-          status: seat.status,
-          holeCardCount: seat.status !== 'folded' && seat.shown ? 2 : 0,
-          cards: seat.status === 'folded' ? null : seat.shown,
-        })),
-      };
-    }
-    return {
-      active: cashLive !== null,
-      board: cashLive?.board ?? [],
-      seats: cashLive?.seats.map((seat) => ({
-        seatIndex: seat.seatIndex,
-        status: seat.status,
-        holeCardCount: seat.status === 'active' || seat.status === 'allin' ? 2 : 0,
-        cards: null,
-      })) ?? [],
-    };
-  }, [cashLive, cashSettled, liveTable]);
+  const ownHole = liveTable?.ownHole ?? null;
+  const povSeatIndex = liveTable?.povSeatIndex ?? 0;
+  const cashCardState = useMemo<NonNullable<TableCards3DProps['externalState']> | undefined>(
+    () => (liveTable
+      ? buildCashCardState({ cashLive, cashSettled, ownHole, povSeatIndex })
+      : undefined),
+    [cashLive, cashSettled, liveTable, ownHole, povSeatIndex],
+  );
   const lastResolvedSlotsRef = useRef<ResolvedTableCardSlots | null>(null);
   const paritySurface: Surface = liveTable ? 'holdem-felt-3d' : 'holdem-felt-practice';
   const publishResolvedFelt = useCallback((resolved: ResolvedTableCardSlots) => {
@@ -1057,9 +1104,21 @@ export function HoldemTableRoomScene({
       };
     }
     const built = buildHoldemFeltParity(input);
+    // Own cards drawn face up on the felt are mirrored in `meta['own-felt-cards']`
+    // (rendered as `data-own-felt-cards`) so the parity DOM states exactly what
+    // the felt shows. They cannot be slots: the felt surface cap is 16 and a
+    // full 5-opponent table already publishes 15 (SURFACE_SLOT_CAP in
+    // card-parity-mirror.ts). The key is absent when no own card is drawn.
+    const ownFeltCodes = (resolved.ownCards ?? [])
+      .map((card) => encodeCardCode(card))
+      .flatMap((encoded) => (encoded.facing === 'up' ? [encoded.card as string] : []));
     const payload: CardParityPayload = {
       ...built,
-      meta: { ...built.meta, 'on-felt': String(resolved.onFelt) },
+      meta: {
+        ...built.meta,
+        'on-felt': String(resolved.onFelt),
+        ...(ownFeltCodes.length === 2 ? { 'own-felt-cards': ownFeltCodes.join(',') } : {}),
+      },
     };
     publishFeltParity(instanceId, payload);
   }, [
@@ -1161,12 +1220,20 @@ export function HoldemTableRoomScene({
                 cards, badges and seat actions keep running; a failed peek
                 seat drops its hand sample so its cards return to the felt. */}
             {figureVisible && (
-              <ModelLoadBoundary
+              <SeatFigureSlot
+                key={`${figureId}|${reg.path}`}
                 assetUrl={reg.path}
                 label={`holdem-seat:${seat.engineSeatIndex}`}
                 // Id AND path: one avatar id can keep its id after a model
                 // change; a failed first model must not hide the new one.
                 resetKey={`${figureId}|${reg.path}`}
+                placeholder={(
+                  <SeatPlaceholderFigure
+                    engineSeatIndex={seat.engineSeatIndex}
+                    position={[seat.x, 0, seat.z]}
+                    yaw={seat.faceYaw}
+                  />
+                )}
                 onModelFailed={handSampleSeat === undefined
                   ? undefined
                   : () => onHandSample(handSampleSeat, null)}
@@ -1177,6 +1244,7 @@ export function HoldemTableRoomScene({
                     modelKey={modelKey}
                     position={[seat.x, 0, seat.z]}
                     yaw={seat.faceYaw}
+                    lift={index === 1 || index === 3 ? BACK_CORNER_PERCH_LIFT : 0}
                   />
                 ) : (
                   <FrozenFigure
@@ -1196,7 +1264,7 @@ export function HoldemTableRoomScene({
                     onHandSample={onHandSample}
                   />
                 )}
-              </ModelLoadBoundary>
+              </SeatFigureSlot>
             )}
           </group>
         );

@@ -309,6 +309,7 @@ describe('pure parity builders', () => {
       ],
       settledAtMs: 1,
       displayExpiresAtMs: 8_001,
+      nextHandAtMs: 8_001,
     };
     const tray = buildHoldemTrayParity({
       kind: 'cash',

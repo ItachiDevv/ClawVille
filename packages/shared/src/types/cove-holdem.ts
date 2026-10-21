@@ -59,10 +59,40 @@ export interface SettledPotResult {
   winningRank: TypedHandRank | null;
 }
 
+/** Verb of one public cash/live-table action (posted blinds included). */
+export type HoldemTableActionKind =
+  | 'post-sb' | 'post-bb' | 'fold' | 'check' | 'call' | 'bet' | 'raise';
+
+/** One public action in the current (or settled) hand. Public info only. */
+export interface HoldemTableActionLogEntry {
+  /** 0-based order within the hand. */
+  seq: number;
+  seatIndex: number;
+  street: 'preflop' | 'flop' | 'turn' | 'river';
+  kind: HoldemTableActionKind;
+  /** Chips this action moved from the seat's stack into the pot (0 for fold/check). */
+  chips: number;
+  /** The seat's total commitment on this street after the action ("bet to"/"raise to"). */
+  streetBetAfter: number;
+  /** True when this action put the seat all in. */
+  allIn: boolean;
+  /** True when the server turn clock acted for the seat (auto-check / auto-fold). */
+  timeout: boolean;
+  /** Server wall-clock ms. */
+  atMs: number;
+}
+
 /** One historical participant's immutable accounting for a settled cash hand. */
 export interface CashSettledSeat {
   seatIndex: number;
   avatarId: string;
+  /** Display name at settle time. Absent on hands settled before 2026-10-21. */
+  name?: string;
+  /**
+   * Best-five category for a non-folded seat evaluated at showdown; null
+   * otherwise. Absent on hands settled before 2026-10-21.
+   */
+  handRank?: { category: number; categoryName: string } | null;
   startStack: string;
   endStack: string;
   totalCommitted: string;
@@ -89,6 +119,13 @@ export interface CashSettledHandSnapshot {
   seats: CashSettledSeat[];
   settledAtMs: number;
   displayExpiresAtMs: number;
+  /** When the server deals the next hand at this table, no sooner (= settledAtMs + hold). */
+  nextHandAtMs: number;
+  /**
+   * Full public action log of this hand. Kept in API memory for recent hands
+   * only; absent after an API restart.
+   */
+  actions?: HoldemTableActionLogEntry[];
 }
 
 /** 0–5 inclusive. Seat 0 = the human/agent player; 1..5 = house bots. */

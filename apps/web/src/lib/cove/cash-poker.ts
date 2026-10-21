@@ -26,7 +26,12 @@
  */
 
 import { CoveApiError } from './slot-api-client';
-import type { CashSettledHandSnapshot } from '@clawville/shared';
+import type {
+  CashSettledHandSnapshot,
+  CashSettledSeat,
+  HoldemTableActionKind,
+  HoldemTableActionLogEntry,
+} from '@clawville/shared';
 export { CoveApiError } from './slot-api-client';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
@@ -218,6 +223,22 @@ export interface CashPublicSeat {
   isActing: boolean;
 }
 
+/**
+ * Public hand action log (frozen contract 2026-10-21). The shared package
+ * owns the shape; these aliases keep the web call sites on one name.
+ * `seq` restarts at 0 for each hand. Public info only: no cards.
+ */
+export type CashHandActionKind = HoldemTableActionKind;
+export type CashHandActionLogEntry = HoldemTableActionLogEntry;
+
+/**
+ * Settled snapshot as the HUD reads it. `name`, `handRank`, `actions` are
+ * optional on the wire (older rows, API restart), so the HUD reads them
+ * defensively.
+ */
+export type CashSettledSeatView = CashSettledSeat;
+export type CashSettledView = CashSettledHandSnapshot;
+
 /** The live sim snapshot embedded in `GET /tables/:id` (NO hole cards). */
 export interface CashPublicSnapshot {
   tableId: string;
@@ -234,6 +255,9 @@ export interface CashPublicSnapshot {
   seats: CashPublicSeat[];
   street: 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
   serverSeedCommitHash: string;
+  /** Every public action of the current hand, blinds first. Optional on the
+   *  web side so a server that predates the action log still renders. */
+  actions?: CashHandActionLogEntry[];
 }
 
 /** One DB seat row exposed by `GET /tables/:id` (config + active seats). */
@@ -289,7 +313,7 @@ export interface StateForAgentResponse {
 }
 
 export interface LastSettledResponse {
-  snapshot: CashSettledHandSnapshot;
+  snapshot: CashSettledView;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +399,7 @@ export const cashPokerApi = {
   async lastSettled(
     tableId: string,
     afterHandNumber: number,
-  ): Promise<CashSettledHandSnapshot | null> {
+  ): Promise<CashSettledView | null> {
     const res = await cashFetch<LastSettledResponse | undefined>(
       `/api/cove/poker/cash/tables/${encodeURIComponent(tableId)}/last-settled`
         + `?afterHandNumber=${afterHandNumber}`,

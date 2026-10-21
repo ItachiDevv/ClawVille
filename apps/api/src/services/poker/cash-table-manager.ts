@@ -55,13 +55,14 @@ import type {
   CashSettledHandSnapshot,
   CashSettledSeat,
   HoldemCard,
+  HoldemTableActionLogEntry,
   SettledPotResult,
 } from '@clawville/shared';
 import * as ledgerModule from '../claw-token-ledger';
 import { alertError } from '../alert-error';
 import { createServerSeed, sha256Hex } from '../provable-rng';
 import { shuffleDeck } from '../holdem-engine';
-import { PokerTableSim } from './poker-table-sim';
+import { PokerTableSim, handCategoryKey } from './poker-table-sim';
 import { cashTableSim } from './cash-table-sim-singleton';
 import { houseFillTargetSeats } from './cash-house-config';
 import { cashHouseSeeder, CashBotPoolExhaustedError } from './cash-house-seeder';
@@ -165,6 +166,13 @@ export interface CashTableManagerDeps {
   ) => Promise<boolean>;
   /** Existing fixture consumer, injectable only so the headered binding path is unit-testable. */
   consumeFixtureArm?: typeof consumeFixtureArm;
+  /**
+   * BETWEEN-HANDS HOLD: the next cash hand at a table deals no sooner than this
+   * many ms after the previous hand at that table settled, so every client can
+   * show the result. Default `CASH_SETTLED_DISPLAY_WINDOW_MS`. Tests that want
+   * an immediate next hand pass 0.
+   */
+  settledHandHoldMs?: number;
 }
 
 /** Config for a new cash table (the route validates the shape; this re-checks bounds). */
@@ -196,8 +204,21 @@ const DEFAULT_CLIENT_SEED = 'c1a4ca54';
 const SEAT_NONCE_STRIDE = 100;
 /** Pins the engine that produced a cove_game_events poker row (verifier drift guard). */
 const POKER_CASH_ENGINE_VERSION = 'v1';
-/** Settled-result presentation window; the next hand still starts immediately. */
+/**
+ * Settled-result presentation window AND the default between-hands hold: the
+ * server deals the next hand at a table no sooner than this many ms after the
+ * previous hand settled (`CashTableManagerDeps.settledHandHoldMs`).
+ */
 export const CASH_SETTLED_DISPLAY_WINDOW_MS = 8_000;
+/**
+ * Recent settled-hand action logs kept in memory per manager (display only).
+ * Shared across every table: at one settle per table per 8 s hold, 200 entries
+ * keep each hand readable until its result window ends even with many tables.
+ */
+const SETTLED_ACTION_LOG_CAPACITY = 200;
+/** Hold-timer retries after a failed start (transient DB error), and their spacing. */
+const HOLD_TIMER_MAX_RETRIES = 5;
+const HOLD_TIMER_RETRY_MS = 2_000;
 
 type PersistedCashSettledSeat = Omit<CashSettledSeat, 'shown'>;
 
@@ -220,6 +241,12 @@ interface PersistedCashSettledHand {
  */
 export function buildCashSettledHandSnapshot(
   hand: PersistedCashSettledHand,
+  extras: {
+    /** In-memory action log of this hand, when the API still holds it. */
+    actions?: readonly HoldemTableActionLogEntry[];
+    /** The manager's between-hands hold (default CASH_SETTLED_DISPLAY_WINDOW_MS). */
+    holdMs?: number;
+  } = {},
 ): CashSettledHandSnapshot {
   const orderedSeatIndices = hand.seats
     .map((seat) => seat.seatIndex)
@@ -259,6 +286,8 @@ export function buildCashSettledHandSnapshot(
     })),
     settledAtMs,
     displayExpiresAtMs: settledAtMs + CASH_SETTLED_DISPLAY_WINDOW_MS,
+    nextHandAtMs: settledAtMs + (extras.holdMs ?? CASH_SETTLED_DISPLAY_WINDOW_MS),
+    ...(extras.actions ? { actions: extras.actions.map((a) => ({ ...a })) } : {}),
   };
 }
 
@@ -356,6 +385,20 @@ export class CashTableManager {
    */
   private pendingLeaves = new Map<string, Set<string>>();
 
+  /** Between-hands hold length (ms). */
+  private readonly settledHandHoldMs: number;
+  /** tableId -> clock ms the last hand at that table settled (in memory only). */
+  private lastSettledAtMs = new Map<string, number>();
+  /** tableId -> armed one-shot hold timer that deals the next hand after the hold. */
+  private holdTimers = new Map<string, { handle: unknown }>();
+  /** Tables whose hold was already restored from the DB since this process started. */
+  private holdRestoredTables = new Set<string>();
+  /**
+   * `${tableId}:${handNumber}` -> final public action log of a recently settled
+   * hand. Bounded (oldest evicted first). Display data only; lost on restart.
+   */
+  private settledActions = new Map<string, HoldemTableActionLogEntry[]>();
+
   constructor(deps: CashTableManagerDeps = {}) {
     this.db = deps.db ?? realDb;
     this.ledger = deps.ledger ?? {
@@ -373,6 +416,11 @@ export class CashTableManager {
     this.hasPendingHoldemCashFixtureArm =
       deps.hasPendingHoldemCashFixtureArm ?? hasPendingHoldemCashFixtureArm;
     this.consumeFixtureArm = deps.consumeFixtureArm ?? consumeFixtureArm;
+    const holdMs = deps.settledHandHoldMs ?? CASH_SETTLED_DISPLAY_WINDOW_MS;
+    if (!Number.isFinite(holdMs) || holdMs < 0) {
+      throw new Error(`cash-table-manager: invalid settledHandHoldMs ${holdMs}`);
+    }
+    this.settledHandHoldMs = holdMs;
 
     // This manager EXCLUSIVELY owns the hand-complete handler on ITS sim instance.
     // The sim fires it synchronously inside resolveHand; we just capture the result
@@ -895,17 +943,23 @@ export class CashTableManager {
       );
     }
 
-    return buildCashSettledHandSnapshot({
-      tableId,
-      handNumber: row.handNumber,
-      board: row.boardJson as HoldemCard[],
-      endedAt: row.endedAt as CashSettledHandSnapshot['endedAt'],
-      pots: row.potResultJson,
-      seats,
-      serverSeed: row.serverSeedReveal,
-      clientSeed: row.clientSeed,
-      settledAt: row.settledAt,
-    });
+    return buildCashSettledHandSnapshot(
+      {
+        tableId,
+        handNumber: row.handNumber,
+        board: row.boardJson as HoldemCard[],
+        endedAt: row.endedAt as CashSettledHandSnapshot['endedAt'],
+        pots: row.potResultJson,
+        seats,
+        serverSeed: row.serverSeedReveal,
+        clientSeed: row.clientSeed,
+        settledAt: row.settledAt,
+      },
+      {
+        actions: this.settledActions.get(`${tableId}:${row.handNumber}`),
+        holdMs: this.settledHandHoldMs,
+      },
+    );
   }
 
   /** Resolve a private table by its join code (only the open ones). */
@@ -1684,6 +1738,46 @@ export class CashTableManager {
     const currentSeats = await this.activeSeats(tableId);
     if (!this.tableHasRealPlayer(currentSeats)) return false;
 
+    // BETWEEN-HANDS HOLD (founder order 2026-10-21: every result must be seen).
+    // The previous hand settled less than `settledHandHoldMs` ago -> do not deal
+    // yet. Arm a one-shot timer so a table with no tick (player-public/private)
+    // still deals after the hold with no REST poke. Every start path (sit,
+    // action, turn timeout, house tick, the timer) comes through here. Placed
+    // AFTER processPendingLeaves (mid-hand leavers still cash out at settle) and
+    // the real-player gate (an idle bot-only table arms nothing).
+    // After an API restart the in-memory hold is empty: restore it ONCE per
+    // table from the durable settled_at of the latest settled hand, so a
+    // restart can not deal the next hand before the previous result was shown.
+    if (
+      this.settledHandHoldMs > 0 &&
+      !this.lastSettledAtMs.has(tableId) &&
+      !this.holdRestoredTables.has(tableId)
+    ) {
+      const [latest] = await this.db
+        .select()
+        .from(pokerCashHands)
+        .where(and(eq(pokerCashHands.tableId, tableId), isNotNull(pokerCashHands.settledAt)))
+        .orderBy(desc(pokerCashHands.handNumber))
+        .limit(1);
+      // Mark restored only after the query succeeded: a failed read throws out
+      // of maybeStartHand (no deal) and the next attempt reads again.
+      this.holdRestoredTables.add(tableId);
+      const settledAtMs = latest?.settledAt ? latest.settledAt.getTime() : null;
+      if (settledAtMs !== null && this.clock.now() < settledAtMs + this.settledHandHoldMs) {
+        this.lastSettledAtMs.set(tableId, settledAtMs);
+      }
+    }
+    const lastSettled = this.lastSettledAtMs.get(tableId);
+    if (lastSettled !== undefined) {
+      const holdEndsAt = lastSettled + this.settledHandHoldMs;
+      const now = this.clock.now();
+      if (now < holdEndsAt) {
+        this.armHoldTimer(tableId, holdEndsAt - now);
+        return false;
+      }
+      this.lastSettledAtMs.delete(tableId);
+    }
+
     // W-F FIX-D2: on staging with the deterministic fixture enabled, the
     // autonomous organic tick yields while any SITTING-IN REAL player's avatar
     // owns an unconsumed, unexpired holdem-cash arm. The fixture-headered request
@@ -1711,10 +1805,21 @@ export class CashTableManager {
     if (sittingIn.length < 2) return false;
 
     const handNumber = await this.nextHandNumber(tableId);
+    // Display names: ONE query for every sitting-in avatar (avatars.name).
+    const nameRows = await this.db
+      .select({ id: avatars.id, name: avatars.name })
+      .from(avatars)
+      .where(inArray(avatars.id, sittingIn.map((s) => s.avatarId)));
+    const nameByAvatar = new Map<string, string>();
+    for (const row of nameRows) {
+      if (typeof row.name === 'string' && row.name.trim().length > 0) {
+        nameByAvatar.set(row.id, row.name);
+      }
+    }
     const seatAssignments: SeatAssignment[] = sittingIn.map((s) => ({
       seatIndex: s.seatIndex,
       avatarId: s.avatarId,
-      name: s.subjectType === 'agent' ? `Agent ${s.seatIndex}` : `Player ${s.seatIndex}`,
+      name: nameByAvatar.get(s.avatarId) ?? `Seat ${s.seatIndex + 1}`,
       subjectType: s.subjectType === 'agent' ? 'agent' : 'human',
       agentId: s.agentId ?? undefined,
       chipStack: Number(s.currentStackCt),
@@ -1794,6 +1899,7 @@ export class CashTableManager {
         turnClockMs: DEFAULT_TURN_CLOCK_MS,
         agentTurnGraceMs: DEFAULT_AGENT_TURN_GRACE_MS,
       });
+      this.clearHoldTimer(tableId);
     } catch (error) {
       if (fixtureRunId) {
         // Compensate the durable reservation if the in-memory sim refused to
@@ -1838,8 +1944,94 @@ export class CashTableManager {
     if (!result) return;
     this.pendingResults.delete(sid);
 
-    await this.settleHand(tableId, result);
+    const settledAtMs = await this.settleHand(tableId, result);
     this.sim.stopTable(sid);
+    // Display bookkeeping only (after the money tx committed): start the
+    // between-hands hold and keep the hand's action log for the settled view.
+    // A replayed (already-settled) hand returns null and starts no new hold.
+    if (settledAtMs !== null) {
+      this.lastSettledAtMs.set(tableId, settledAtMs);
+      this.rememberSettledActions(`${tableId}:${result.handNumber}`, result.actions);
+      // Arm the deal-after-hold timer at settle time, so EVERY settle path
+      // (including the lazy settle-on-read in getTableState, which starts no
+      // hand itself) still deals the next hand when the hold ends.
+      if (this.settledHandHoldMs > 0) {
+        this.armHoldTimer(tableId, settledAtMs + this.settledHandHoldMs - this.clock.now());
+      }
+    }
+  }
+
+  /** Keep a bounded, copied action log for a settled hand (oldest evicted). */
+  private rememberSettledActions(
+    handId: string,
+    actions: readonly HoldemTableActionLogEntry[],
+  ): void {
+    this.settledActions.delete(handId);
+    this.settledActions.set(handId, actions.map((a) => ({ ...a })));
+    while (this.settledActions.size > SETTLED_ACTION_LOG_CAPACITY) {
+      const oldest = this.settledActions.keys().next().value;
+      if (oldest === undefined) break;
+      this.settledActions.delete(oldest);
+    }
+  }
+
+  /**
+   * Arm (once per table) the one-shot timer that deals the next hand when the
+   * between-hands hold ends. The callback takes the table lock and runs the
+   * SAME start path as the house tick (`startAndAdvance`, autonomous: yields to
+   * a pending staging fixture arm). Cancel-safe: a fired or cleared handle is
+   * dropped from `holdTimers`, and a callback whose handle was replaced or
+   * cleared does nothing. Errors are logged, never thrown (a timer has no caller).
+   */
+  private armHoldTimer(tableId: string, delayMs: number, attempt = 0): void {
+    if (this.holdTimers.has(tableId)) return;
+    const token: { handle: unknown } = { handle: undefined };
+    const onFire = (): void => {
+      if (this.holdTimers.get(tableId) !== token) return;
+      this.holdTimers.delete(tableId);
+      void this.withTableLock(tableId, async () => {
+        // Mirror handleTurnTimeout/advanceTable: drain any resolved-unsettled
+        // hand first (no-op when nothing is pending).
+        await this.settleIfComplete(tableId);
+        if (this.sim.getPublicSnapshot(simTableId(tableId))) return;
+        await this.startAndAdvance(tableId, undefined, true);
+      })
+        .catch((err: unknown) => {
+          if (
+            err instanceof CashTableError &&
+            (err.code === 'table_closed' || err.code === 'no_such_table')
+          ) {
+            return;
+          }
+          console.error(`[cash-manager] hold timer start failed for ${tableId}:`, err);
+          // A table with no tick (player-public/private) has no other trigger:
+          // retry a bounded number of times so a transient DB error can not
+          // leave it idle.
+          if (attempt < HOLD_TIMER_MAX_RETRIES) {
+            this.armHoldTimer(tableId, HOLD_TIMER_RETRY_MS, attempt + 1);
+          }
+        })
+        .finally(() => {
+          // The gate deletes the entry only when it is reached; a table that
+          // emptied or closed returns earlier. Drop an elapsed entry here so a
+          // retired table id never stays in the map.
+          const last = this.lastSettledAtMs.get(tableId);
+          if (last !== undefined && this.clock.now() >= last + this.settledHandHoldMs) {
+            this.lastSettledAtMs.delete(tableId);
+          }
+        });
+    };
+    // Register the token BEFORE arming so a clock that fires synchronously still matches.
+    this.holdTimers.set(tableId, token);
+    token.handle = this.clock.setTimer(onFire, Math.max(0, delayMs));
+  }
+
+  /** Cancel a table's pending hold timer (a hand just started). */
+  private clearHoldTimer(tableId: string): void {
+    const token = this.holdTimers.get(tableId);
+    if (token === undefined) return;
+    this.holdTimers.delete(tableId);
+    this.clock.clearTimer(token.handle);
   }
 
   /**
@@ -1848,8 +2040,10 @@ export class CashTableManager {
    * (no second chip application). Conservation: escrow is unchanged (chips only
    * move BETWEEN seats); rake = 0.
    */
-  private async settleHand(tableId: string, result: HandResult): Promise<void> {
+  private async settleHand(tableId: string, result: HandResult): Promise<number | null> {
     let potTotal = 0;
+    // Clock ms of the durable settled_at; stays null on an idempotent replay.
+    let settledAtMs: number | null = null;
     for (const ps of result.perSeat) potTotal += ps.totalCommitted;
 
     // ── ATOMIC SETTLE (db.transaction + FOR UPDATE) ─────────────────────────
@@ -1905,6 +2099,18 @@ export class CashTableManager {
           stackDelta: String(end - start),
           status: ps.status,
           mucked: ps.status === 'folded',
+          // Display-only additions (no money effect): the name shown at the
+          // table, and the best-five category for a seat evaluated at showdown.
+          name: ps.name,
+          handRank:
+            result.endedAt === 'showdown' &&
+            ps.status !== 'folded' &&
+            ps.handRankCategory !== null
+              ? {
+                  category: ps.handRankCategory,
+                  categoryName: handCategoryKey(ps.handRankCategory),
+                }
+              : null,
         };
       });
 
@@ -1937,6 +2143,7 @@ export class CashTableManager {
 
       // Persist the hand checkpoint (idempotency anchor settled_at = now()).
       const settledAt = new Date(this.clock.now());
+      settledAtMs = settledAt.getTime();
       if (existing) {
         await tx
           .update(pokerCashHands)
@@ -2019,6 +2226,7 @@ export class CashTableManager {
         });
       }
     });
+    return settledAtMs;
   }
 
   // ── Seeded agents (TRIVIAL STUB policy) ─────────────────────────────────────

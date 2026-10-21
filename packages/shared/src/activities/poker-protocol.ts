@@ -31,6 +31,8 @@
  * mid-hand. The server seed is revealed ONLY in `poker.hand_ended`.
  */
 
+import type { HoldemTableActionLogEntry } from '../types/cove-holdem';
+
 // ─── Card + seat scalar shapes (wire mirror of poker-table-types.ts) ─────────
 
 /** Card suit — mirror of holdem-engine `Suit`. */
@@ -136,6 +138,8 @@ export interface PokerPublicTableSnapshot {
   street: PokerStreet;
   /** sha256 of the server seed (commit). The seed itself is NOT here. */
   serverSeedCommitHash: string;
+  /** Public action log of the current hand, blinds first (no cards). */
+  actions?: HoldemTableActionLogEntry[];
 }
 
 /**
@@ -164,6 +168,8 @@ export interface PokerPrivateSeatView {
 export interface PokerHandResultSeat {
   seatIndex: number;
   avatarId: string;
+  /** Display name the seat played under. */
+  name?: string;
   /** Revealed at showdown; null if the seat folded (mucked). */
   holeCards: [PokerCard, PokerCard] | null;
   totalCommitted: number;
@@ -193,4 +199,6 @@ export interface PokerHandResult {
   endedAtMs: number;
   /** The revealed server seed — present ONLY here (post-hand). */
   serverSeedRevealed: string;
+  /** Full public action log of the hand. */
+  actions?: HoldemTableActionLogEntry[];
 }

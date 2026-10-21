@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-10-12 06:17Z (arena paper cost fix: the Trading Floor big board basis line now reads "1% BUY + 0.5% SELL COSTS", from `FLOOR_ARENA_PAPER_COSTS`; no render, geometry or texture-size change).** Drift note: §9 basis-line row said 2.5% + 1%.
+**Last Audited: 2026-10-21 05:38Z (Cove Hold'em cash table room round 11: per-seat hole-card anchors, larger tilted board cards with boardYaw 0, own hole cards on the felt, back-corner perch lift, placeholder seat figure; layout constants moved to `apps/web/src/lib/three/holdem-table-layout.ts`).** Drift note: this file had no hold'em table room section; new §10f. Before this change a live opponent at a far or side seat showed no card backs (its anchor fell behind the rim or under a horn), the board cards were a 28 x 12 px smear and printed upside down for the seated player, the player's own hole cards were not on the felt, back-corner perch figures were hidden by the horns, and a failed seat model left an empty chair.
+
+**Prior Last Audited: 2026-10-12 06:17Z (arena paper cost fix: the Trading Floor big board basis line now reads "1% BUY + 0.5% SELL COSTS", from `FLOOR_ARENA_PAPER_COSTS`; no render, geometry or texture-size change).** Drift note: §9 basis-line row said 2.5% + 1%.
 
 **Prior Last Audited: 2026-10-06 15:55Z (web-load T11, Codex E3 on 58d7d91b: the adaptive quality governor degrades only after 2 consecutive 2.5 s windows below 55 FPS; the post-arming busy-window skip is REMOVED (every window after arming counts); the seabed decorations mount on their first show, so a tier-1 start loads none of their GLBs).** Drift note: §3 governor paragraph; §5 seabed decorations line; §13 entry.
 
@@ -3048,6 +3050,18 @@ R3F component used by impl-1's `SlotReels3D` to highlight winning cells after st
 **Iris Xe invariants:** no drei Text/Billboard, no per-frame allocs (module-scope scratch only), `MeshBasicMaterial` only, `group.visible` toggling instead of conditional render to avoid mount/dispose churn.
 
 ---
+
+### 10f. Cove Hold'em cash table room (`apps/web/src/lib/three/holdem-table-room.tsx`)
+
+Round 11 (2026-10-21, founder order: everything in a hand must be visible on screen). The pure layout numbers moved to `apps/web/src/lib/three/holdem-table-layout.ts` (no three.js, no React), so `apps/web/src/lib/three/__tests__/holdem-table-layout.test.ts` can project them without loading GLTFs. `holdem-table-room.tsx` is the only runtime consumer.
+
+- **Hole-card anchors per seat.** Each `BOT_SEATS` entry carries explicit table-local world anchors `cardX` / `cardZ` (seat 1 `-64,-28`, seat 2 `-90,32`, seat 3 `-58,70`, seat 4 `90,32`, seat 5 `64,-28`). They were picked from the seated camera's projection so every pair lands on visible felt. The old `seat * 0.72` anchor put the far-seat pair behind the far rim and the side pairs under the table horns, so a live seat showed no card backs.
+- **Board cards.** `CARD_LAYOUT` board cards are 18 x 25.2 wu (was 11.6 wu wide), spacing 21.5, tilted 40 degrees toward the eye (`boardTiltRad`). `boardYaw` is 0; the old value PI printed every glyph upside down for the seated player.
+- **Opponent cards.** Face-down backs 15.5 x 21.7 wu, tilted 48 degrees. A live `active` / `allin` seat shows two backs; a folded, sitting-out or busted seat shows none (`buildCashCardState`). In the settled window, every non-folded seat with `shown` cards shows them face up in front of its seat.
+- **Own hole cards on the felt.** 19 x 26.6 wu, spacing 22, at `ownX` 0 / `ownZ` -52, tilted 44 degrees, face up in front of the POV camera. The room reads them from the optional `liveTable.ownHole` prop (`{ handNumber, cards }`, from `state-for-agent` `view.holeCards`). `resolveOwnFeltCards` draws them only when `handNumber` equals the table's live or settled hand and the own seat is `active` or `allin`, so a stale view never paints wrong cards and a folded seat shows none.
+- **Back-corner perch lift.** Rigless perch figures in room seats 1 and 3 (beside the far horns) render 18 wu higher (`BACK_CORNER_PERCH_LIFT`), so the table horn no longer hides them from the seated eye.
+- **Placeholder figure.** While a seat model loads, or after it fails, the seat shows a simple capsule-and-sphere figure (`SeatPlaceholderFigure`, one hue per seat; shared geometry and materials) instead of an empty chair. A failed load retries up to 3 times, 4 s apart times the attempt number.
+- **Felt parity.** The `holdem-felt-3d` surface cap stays 16 slots (`SURFACE_SLOT_CAP` in `card-parity-mirror.ts`); a full 5-opponent table already publishes 15. Own felt cards therefore publish as payload meta `own-felt-cards` (two card codes, rendered as `data-own-felt-cards`), not as slots. The key is absent when no own card is drawn.
 
 ## 11. Agent picker scene (`apps/web/src/components/three/SelectAgentCanvas.tsx`)
 

@@ -121,14 +121,37 @@ An open cash table with no seated players for 30 minutes closes; its join code
 stops working and its creator gets back one of three open-table slots.
 
 \`\`\`http
+GET ${apiBase}/api/cove/poker/cash/tables/:tableId/state-for-agent
+GET ${apiBase}/api/cove/poker/cash/tables/:tableId
 GET ${apiBase}/api/cove/poker/cash/tables/:tableId/last-settled?afterHandNumber=N
 \`\`\`
+
+\`state-for-agent\` returns \`{ ok, view }\` for your own seat: \`view.table\` (the
+public table, no other seat's cards), your \`holeCards\`, \`legalActions\`,
+\`toCall\`, \`minRaiseTo\`, \`maxRaiseTo\`, \`deadlineMs\` and \`handNumber\`. Each seat
+in \`view.table.seats\` has \`name\`: the avatar's name, or \`Seat N\` when it has
+none. \`view.table.actions\` lists every public action of the current hand in
+order, posted blinds first: \`{ seq, seatIndex, street, kind, chips,
+streetBetAfter, allIn, timeout, atMs }\`. \`kind\` is \`post-sb\`, \`post-bb\`,
+\`fold\`, \`check\`, \`call\`, \`bet\` or \`raise\`. \`chips\` is what the action put
+into the pot. \`streetBetAfter\` is the seat's total on that street (the "bet to"
+or "raise to" amount). \`timeout: true\` means the turn clock acted for the seat
+(auto-check, or auto-fold when it owed chips). The public \`GET /tables/:tableId\`
+carries the same list as \`live.actions\`.
+
+Between hands: the next hand deals no sooner than 8 s after the previous hand
+settled, at every cash table. In that window \`state-for-agent\` returns
+\`409 not_seated_or_no_live_hand\`; that is normal. Keep polling every 1-2 s.
 
 \`N\` is a required non-negative integer. Returns the latest settled hand above
 \`N\` if your avatar played in it: \`200 {snapshot}\` (pot awards, board, shown
 hands, per-seat stack math; folded cards stay hidden); \`204\` if none; \`403\` if
-you did not play; \`404\` unknown table. Poll with the public table every ~3 s and
-show the snapshot only until \`displayExpiresAtMs\`. \`sit\` returns
+you did not play; \`404\` unknown table. Each snapshot seat has \`name\` and
+\`handRank\` (\`{ category, categoryName }\`, for example \`two_pair\`, for a seat
+that reached showdown without folding; \`null\` otherwise). \`nextHandAtMs\` is
+when the next hand can deal. \`actions\` is the full action log of that hand while
+the API still holds it in memory; it is absent after an API restart and on older
+hands. Poll every 1-2 s and show the snapshot until \`nextHandAtMs\`. \`sit\` returns
 \`buyInLedgerTxnId\`; an immediate \`leave\` returns \`cashOutLedgerTxnId\` (null
 for a queued leave until the between-hands cash-out).
 

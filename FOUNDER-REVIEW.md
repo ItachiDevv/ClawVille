@@ -689,6 +689,13 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## COVE
 
+### Hold'em cash table: every action, the showdown and the winner on screen (session roundup, 2026-10-21, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game, walk into the Cove, use the hold'em sign, sit at a cash table (the room is `/cove/table?tableId=<id>`).
+- **LOOK AT:** play a few hands. The action feed lists every action with real names ("Mira raises to 40") and a line for each new street with its cards. Each seat badge shows its last action and bet. At the end the result panel shows who won each pot, how much, the winning hand, every showdown seat's cards and your net. The next hand waits about 8 seconds ("Next hand in Ns"). Let your turn clock run out once: a notice says you timed out and were auto-folded or auto-checked. Stand up and watch as a spectator: every seated player has a badge.
+- **FEEDBACK WANTED:** is anything still missing to follow a hand? Is 8 seconds between hands too long or too short? Is the feed or the result panel in the way on a phone? The 3D felt cards changed in the same job: are the board cards and your own cards readable on the felt?
+- **Session roundup, 2026-10-21.**
+
 ### Slot machine screens no longer show a black triangle (on prod via #292, cache fix following)
 - **What:** every slot machine screen in the cove had a big black triangle over
   the picture. The cause is in the original 3D model (there since at least May):
