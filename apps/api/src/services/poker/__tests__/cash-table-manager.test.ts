@@ -3149,4 +3149,193 @@ describe('CashTableManager — hold\'em visibility: names, hold, settled log, ha
     expect(store.has('t:6')).toBe(true);
     expect(store.has('t:205')).toBe(true);
   });
+
+  // ── Settle retry (staging 2026-10-21, table 3f5ce6e6 hand 8570): a settle whose
+  // DB write fails must keep the hand pending, then settle it exactly once later.
+  // Before the fix the result was deleted first and the table froze until restart.
+  describe('settle retry after a failed settle write', () => {
+    type Harness = ReturnType<typeof makeHoldHarness>;
+
+    /** Fail the NEXT db.transaction once: before the body runs, or after it commits (lost ack). */
+    function failNextTransaction(h: Harness, mode: 'before' | 'after-commit'): void {
+      const original = h.db.transaction.bind(h.db);
+      let armed = true;
+      h.db.transaction = (async <T>(fn: (tx: FakeDb) => Promise<T>): Promise<T> => {
+        if (!armed) return original(fn);
+        armed = false;
+        if (mode === 'before') throw new Error('connect ECONNREFUSED clawville-db:5432');
+        await original(fn);
+        throw new Error('Connection terminated unexpectedly');
+      }) as FakeDb['transaction'];
+    }
+
+    function stacks(h: Harness, tableId: string): Record<string, number> {
+      const out: Record<string, number> = {};
+      for (const r of h.db.stores.get(pokerCashSeats)!) {
+        if (r.table_id === tableId && r.status !== 'left') {
+          out[String(r.avatar_id)] = Number(r.current_stack_ct);
+        }
+      }
+      return out;
+    }
+
+    function settledHandRows(h: Harness, tableId: string, handNumber: number): Row[] {
+      return h.db.stores.get(pokerCashHands)!.filter(
+        (r) => r.table_id === tableId && r.hand_number === handNumber && !!r.settled_at,
+      );
+    }
+
+    function pending(h: Harness): Map<string, HandResult> {
+      return h.mgr['pendingResults'] as Map<string, HandResult>;
+    }
+
+    /** The to-act seat folds via the REST action path (expected to throw on the failed settle). */
+    function foldToAct(h: Harness, tableId: string, sid: string) {
+      const snap = h.sim.getPublicSnapshot(sid)!;
+      const actor = snap.seats.find((s) => s.seatIndex === snap.toActSeatIndex)!;
+      return h.mgr.submitAction({
+        tableId,
+        subject: humanSubject(actor.avatarId),
+        handNumber: snap.handNumber,
+        actionSeq: 9_000,
+        action: { kind: 'fold' },
+      });
+    }
+
+    it('a DB failure keeps the hand pending (no chips move); the next pass settles it once and the next hand deals', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+      const before = stacks(h, tableId);
+      const creditsBefore = h.ledger.credits.length;
+
+      failNextTransaction(h, 'before');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('ECONNREFUSED');
+
+      // The resolved hand is still pending and still on the sim; nothing moved.
+      expect(pending(h).has(sid)).toBe(true);
+      expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(1);
+      expect(stacks(h, tableId)).toEqual(before);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(0);
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+      expect(h.clock.pendingCount()).toBe(0);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+
+      // Next pass (the no-tick table's lazy settle-on-read) retries and settles.
+      const state = (await h.mgr.getTableState(tableId))!;
+      expect(pending(h).has(sid)).toBe(false);
+      expect(state.live).toBeNull();
+      const after = stacks(h, tableId);
+      expect(Object.values(after).sort((a, b) => a - b)).toEqual([99, 101]); // SB folded to BB
+      expect(after['vis-alice']! + after['vis-bob']!).toBe(200);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+      expect(h.clock.pendingCount()).toBe(1); // the deal-after-hold timer is armed
+
+      // A further pass is a no-op: no second chip application, no second row.
+      await h.mgr.getTableState(tableId);
+      expect(stacks(h, tableId)).toEqual(after);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+
+      // The hold ends and the next hand deals.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.sim.getPublicSnapshot(sid) !== null);
+      expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(2);
+    });
+
+    it('a lost commit ack replays idempotently on retry (deltas applied once) and the hold timer deals the next hand', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+
+      failNextTransaction(h, 'after-commit');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('Connection terminated');
+
+      // The write committed, but the manager never saw the ack: still pending.
+      const committed = stacks(h, tableId);
+      expect(Object.values(committed).sort((a, b) => a - b)).toEqual([99, 101]);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+      expect(pending(h).has(sid)).toBe(true);
+      expect(h.sim.getPublicSnapshot(sid)).not.toBeNull();
+
+      // Retry: the hand row's settled_at makes it a replay; nothing applies twice.
+      await h.mgr.getTableState(tableId);
+      expect(pending(h).has(sid)).toBe(false);
+      expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+      expect(stacks(h, tableId)).toEqual(committed);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+      // The replay still continues the between-hands flow from the durable settled_at.
+      expect(h.clock.pendingCount()).toBe(1);
+
+      // No manual start: only the clock moves, and the hold timer deals hand 2.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.sim.getPublicSnapshot(sid) !== null);
+      expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(2);
+      expect(h.clock.pendingCount()).toBe(0);
+    });
+
+    it('a lost commit ack with a queued leave pays the SETTLED stack once via the hold timer', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+      const creditsBefore = h.ledger.credits.length;
+
+      failNextTransaction(h, 'after-commit');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('Connection terminated');
+      const committed = stacks(h, tableId);
+
+      // The settle is pending in memory: the leave is queued, nothing paid yet.
+      const leave = await h.mgr.leaveTable(tableId, humanSubject('vis-alice'));
+      expect(leave).toEqual({ cashedOutCt: 0, queued: true, cashOutLedgerTxnId: null });
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+
+      // The lazy read retries; the replay applies no chips and arms the hold timer.
+      await h.mgr.getTableState(tableId);
+      expect(stacks(h, tableId)).toEqual(committed);
+      expect(h.clock.pendingCount()).toBe(1);
+
+      // Only the clock moves: the between-hands boundary pays Alice exactly once.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.ledger.credits.length > creditsBefore);
+      h.clock.advance(60_000);
+      await flushAsync();
+      const aliceCredits = h.ledger.credits
+        .slice(creditsBefore)
+        .filter((c) => c.avatarId === 'vis-alice');
+      expect(aliceCredits.map((c) => c.amount)).toEqual([committed['vis-alice']!]);
+      // Bob is alone now, so no next hand deals.
+      expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+      const cons = await h.mgr.assertConservation(tableId);
+      expect(cons.ok).toBe(true);
+      expect(cons.escrow).toBe(committed['vis-bob']!);
+      expect(h.ledger.totalDebited()).toBe(h.ledger.totalCredited() + cons.escrow);
+    });
+
+    it('a leave while the settle is pending is queued, then cashes out the SETTLED stack', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+      const creditsBefore = h.ledger.credits.length;
+
+      failNextTransaction(h, 'before');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('ECONNREFUSED');
+
+      // Pre-settle DB stacks are stale: the leave must NOT cash them out now.
+      const leave = await h.mgr.leaveTable(tableId, humanSubject('vis-alice'));
+      expect(leave).toEqual({ cashedOutCt: 0, queued: true, cashOutLedgerTxnId: null });
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+
+      await h.mgr.getTableState(tableId); // retry settles the hand
+      const aliceSettled = stacks(h, tableId)['vis-alice']!;
+      expect([99, 101]).toContain(aliceSettled);
+
+      // The hold ends; the between-hands boundary cashes Alice out at her settled stack.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.ledger.credits.length > creditsBefore);
+      const aliceCredits = h.ledger.credits.slice(creditsBefore).filter((c) => c.avatarId === 'vis-alice');
+      expect(aliceCredits.map((c) => c.amount)).toEqual([aliceSettled]);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+      expect(h.ledger.totalDebited()).toBe(
+        h.ledger.totalCredited() + (await h.mgr.assertConservation(tableId)).escrow,
+      );
+    });
+  });
 });

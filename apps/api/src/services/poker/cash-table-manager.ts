@@ -626,7 +626,7 @@ export class CashTableManager {
       if (!table || table.source !== 'house' || table.status !== 'open') return false;
 
       const sid = simTableId(tableId);
-      const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
+      const handLive = this.handHoldsChips(sid);
       if (handLive) return false;
 
       const seats = await this.activeSeats(tableId);
@@ -716,7 +716,7 @@ export class CashTableManager {
       if (!table || table.source === 'house' || table.status !== 'open') return false;
 
       const sid = simTableId(tableId);
-      const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
+      const handLive = this.handHoldsChips(sid);
       if (handLive) return false;
 
       if ((await this.activeSeats(tableId)).length > 0) return false;
@@ -794,7 +794,7 @@ export class CashTableManager {
       if (!table) return false;
 
       const sid = simTableId(tableId);
-      const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
+      const handLive = this.handHoldsChips(sid);
       if (handLive) return false;
 
       const seat = (await this.activeSeats(tableId)).find((candidate) => candidate.id === seatId);
@@ -1388,7 +1388,7 @@ export class CashTableManager {
   }> {
     return this.withTableLock(tableId, async () => {
       const sid = simTableId(tableId);
-      const handLive = !!this.sim.getPublicSnapshot(sid) && !this.handIsOver(sid);
+      const handLive = this.handHoldsChips(sid);
 
       const table = await this.getTable(tableId);
       if (!table) throw new CashTableError('no_such_table', 'table not found', 404);
@@ -1937,27 +1937,32 @@ export class CashTableManager {
    * into `pendingResults`), settle it: apply per-seat chip deltas to
    * `current_stack_ct`, persist the `poker_cash_hands` row (idempotent on
    * `settled_at`), stop the sim hand. RAKE = 0 in P1. No-op if no hand resolved.
+   *
+   * The result stays pending until the settle commits: if `settleHand` throws
+   * (e.g. the DB is down), the next caller (tick, timeout, hold timer, lazy read)
+   * retries it. Deleting it first lost the hand and froze the table until restart.
    */
   private async settleIfComplete(tableId: string): Promise<void> {
     const sid = simTableId(tableId);
     const result = this.pendingResults.get(sid);
     if (!result) return;
-    this.pendingResults.delete(sid);
 
     const settledAtMs = await this.settleHand(tableId, result);
+    this.pendingResults.delete(sid);
     this.sim.stopTable(sid);
     // Display bookkeeping only (after the money tx committed): start the
     // between-hands hold and keep the hand's action log for the settled view.
-    // A replayed (already-settled) hand returns null and starts no new hold.
-    if (settledAtMs !== null) {
-      this.lastSettledAtMs.set(tableId, settledAtMs);
-      this.rememberSettledActions(`${tableId}:${result.handNumber}`, result.actions);
-      // Arm the deal-after-hold timer at settle time, so EVERY settle path
-      // (including the lazy settle-on-read in getTableState, which starts no
-      // hand itself) still deals the next hand when the hold ends.
-      if (this.settledHandHoldMs > 0) {
-        this.armHoldTimer(tableId, settledAtMs + this.settledHandHoldMs - this.clock.now());
-      }
+    // A replay (an earlier attempt committed but its ack was lost) returns the
+    // DURABLE settled_at, so it continues the same flow: this pending hand is
+    // still the sim's current hand, so no newer hand can be live here.
+    this.lastSettledAtMs.set(tableId, settledAtMs);
+    this.rememberSettledActions(`${tableId}:${result.handNumber}`, result.actions);
+    // Arm the deal-after-hold timer at settle time, so EVERY settle path
+    // (including the lazy settle-on-read in getTableState, which starts no
+    // hand itself) still deals the next hand when the hold ends. Once per
+    // table (a timer already armed is kept); a past deadline fires at once.
+    if (this.settledHandHoldMs > 0) {
+      this.armHoldTimer(tableId, settledAtMs + this.settledHandHoldMs - this.clock.now());
     }
   }
 
@@ -2040,9 +2045,9 @@ export class CashTableManager {
    * (no second chip application). Conservation: escrow is unchanged (chips only
    * move BETWEEN seats); rake = 0.
    */
-  private async settleHand(tableId: string, result: HandResult): Promise<number | null> {
+  private async settleHand(tableId: string, result: HandResult): Promise<number> {
     let potTotal = 0;
-    // Clock ms of the durable settled_at; stays null on an idempotent replay.
+    // Clock ms of the durable settled_at (this settle's, or the row's on a replay).
     let settledAtMs: number | null = null;
     for (const ps of result.perSeat) potTotal += ps.totalCommitted;
 
@@ -2071,7 +2076,11 @@ export class CashTableManager {
             FOR UPDATE`,
       );
       const existing = existingRows[0];
-      if (existing?.settled_at) return; // replay — already applied under the lock.
+      if (existing?.settled_at) {
+        // Replay — already applied under the lock. Report the durable settle time.
+        settledAtMs = new Date(existing.settled_at).getTime();
+        return;
+      }
 
       const seats = await this.activeSeats(tableId);
       const seatByIndex = new Map(seats.map((s) => [s.seatIndex, s]));
@@ -2231,6 +2240,10 @@ export class CashTableManager {
         });
       }
     });
+    // The transaction either set it (fresh settle or replay) or threw.
+    if (settledAtMs === null) {
+      throw new Error(`cash-table-manager: settle of ${tableId} produced no settled_at`);
+    }
     return settledAtMs;
   }
 
@@ -2651,6 +2664,16 @@ export class CashTableManager {
     // shows toActSeatIndex===null. Pending result is the authoritative signal.
     if (this.pendingResults.has(sid)) return true;
     return snap.toActSeatIndex === null && snap.street === 'showdown';
+  }
+
+  /**
+   * True while a hand still owns the seats' chips: a live hand, OR a resolved
+   * hand whose settle has not committed yet (its result stays pending after a
+   * failed settle). Leave/retire/release must not read pre-settle stacks then.
+   */
+  private handHoldsChips(sid: string): boolean {
+    if (!this.sim.getPublicSnapshot(sid)) return false;
+    return this.pendingResults.has(sid) || !this.handIsOver(sid);
   }
 
   /**
