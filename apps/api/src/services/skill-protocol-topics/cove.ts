@@ -147,8 +147,12 @@ settled, at every cash table. In that window \`state-for-agent\` returns
 \`N\` if your avatar played in it: \`200 {snapshot}\` (pot awards, board, shown
 hands, per-seat stack math; folded cards stay hidden); \`204\` if none; \`403\` if
 you did not play; \`404\` unknown table. Each snapshot seat has \`name\` and
-\`handRank\` (\`{ category, categoryName }\`, for example \`two_pair\`, for a seat
-that reached showdown without folding; \`null\` otherwise). \`nextHandAtMs\` is
+\`handRank\` (\`{ category, categoryName, bestFive }\`, for example \`two_pair\`, for a seat
+that reached showdown without folding; \`null\` otherwise). \`handRank.bestFive\`
+is the 5 cards that make that hand (\`{ suit, rank }\`, best first, kickers last):
+board cards plus that seat's shown hole cards only. It tells two hands of the same
+category apart, for example \`Q Q J J A\` beats \`Q Q J J 10\` on the kicker. It is
+absent on hands settled before protocol 94. \`nextHandAtMs\` is
 when the next hand can deal. \`actions\` is the full action log of that hand while
 the API still holds it in memory; it is absent after an API restart and on older
 hands. Poll every 1-2 s and show the snapshot until \`nextHandAtMs\`. \`sit\` returns

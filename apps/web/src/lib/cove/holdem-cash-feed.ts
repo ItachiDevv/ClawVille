@@ -323,6 +323,18 @@ export interface CashSettledPotLine {
   winners: CashSettledPotWinner[];
   rankLabel: string | null;
   text: string;
+  /**
+   * True when this pot is one seat's own uncalled excess, returned to it.
+   * Nobody won it, so its seat does not count as a winner for this pot.
+   */
+  refund: boolean;
+  /**
+   * Chips of this pot that were one seat's uncalled excess, returned to it
+   * (0 for a normal pot; equals `amount` when `refund` is true). The engine
+   * merges levels with the same eligible seats, so a fold-out pot can hold
+   * both won chips and a returned excess.
+   */
+  returned: number;
 }
 
 export interface CashSettledSeatLine {
@@ -333,6 +345,8 @@ export interface CashSettledSeatLine {
   isWinner: boolean;
   cards: readonly CashPokerCard[] | null;
   rankLabel: string | null;
+  /** The five cards that make the shown hand (server order); null when not shown. */
+  bestFive: readonly CashPokerCard[] | null;
   net: number;
   endStack: number;
 }
@@ -351,6 +365,46 @@ export interface CashSettledSummary {
 function joinNames(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? '';
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+function parseChipsBigInt(value: string): bigint | null {
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Chips of `pot` that are the uncalled excess of its only eligible seat S:
+ * only the LAST pot with exactly one eligible seat can hold them, and the
+ * excess is S.totalCommitted minus the largest totalCommitted of every other
+ * seat (folded seats included), capped at the pot amount. 0n otherwise, or when
+ * a value does not parse. The rest of the pot (other seats' chips) is a win.
+ */
+function uncalledReturnedChips(
+  pot: CashSettledView['pots'][number],
+  index: number,
+  settled: CashSettledView,
+): bigint {
+  if (index !== settled.pots.length - 1) return 0n;
+  if (pot.eligibleSeatIndices.length !== 1) return 0n;
+  const ownerIndex = pot.eligibleSeatIndices[0]!;
+  const owner = settled.seats.find((seat) => seat.seatIndex === ownerIndex);
+  if (!owner) return 0n;
+  const amount = parseChipsBigInt(pot.amount);
+  const ownerCommitted = parseChipsBigInt(owner.totalCommitted);
+  if (amount == null || ownerCommitted == null || amount <= 0n) return 0n;
+  let maxOther = 0n;
+  for (const seat of settled.seats) {
+    if (seat.seatIndex === ownerIndex) continue;
+    const committed = parseChipsBigInt(seat.totalCommitted);
+    if (committed == null) return 0n;
+    if (committed > maxOther) maxOther = committed;
+  }
+  const excess = ownerCommitted - maxOther;
+  if (excess <= 0n) return 0n;
+  return excess < amount ? excess : amount;
 }
 
 /** Name resolver for settled seats: wire name, then a caller fallback. */
@@ -377,11 +431,15 @@ export function summarizeCashSettled(
   };
   const showdown = settled.endedAt === 'showdown';
   const winnerSeats = new Set<number>();
+  const returnedNotes: string[] = [];
   const pots: CashSettledPotLine[] = settled.pots.map((pot, index) => {
+    const returnedChips = uncalledReturnedChips(pot, index, settled);
+    const refund = returnedChips > 0n && returnedChips === parseChipsBigInt(pot.amount);
+    const returned = Number(returnedChips);
     const bySeat = new Map<number, number>();
     for (const award of pot.awards) {
       bySeat.set(award.seatIndex, (bySeat.get(award.seatIndex) ?? 0) + Number(award.amount));
-      winnerSeats.add(award.seatIndex);
+      if (!refund) winnerSeats.add(award.seatIndex);
     }
     const winners = [...bySeat.entries()].map(([seatIndex, amount]) => ({
       seatIndex,
@@ -389,16 +447,26 @@ export function summarizeCashSettled(
       isYou: isYou(seatIndex),
       amount,
     }));
-    const rankLabel = pot.winningRank ? humanizeHandRank(pot.winningRank.categoryName) || null : null;
     const label = settled.pots.length > 1 ? (index === 0 ? 'Main pot' : `Side pot ${index}`) : 'Pot';
     const amount = Number(pot.amount);
+    const returnedText = returned > 0
+      ? `${formatChips(returned)} vCLAW returned to ${isYou(pot.eligibleSeatIndices[0]!) ? 'you' : displayName(pot.eligibleSeatIndices[0]!)} (no one called)`
+      : '';
+    if (returnedText) returnedNotes.push(returnedText);
+    if (refund) {
+      const text = `${label}: ${returnedText}`;
+      return { key: `pot-${index}`, label, amount, winners, rankLabel: null, text, refund, returned };
+    }
+    const wonAmount = amount - returned;
+    const rankLabel = pot.winningRank ? humanizeHandRank(pot.winningRank.categoryName) || null : null;
     const names = joinNames(winners.map((winner) => winner.name));
     const youOnly = winners.length === 1 && winners[0]!.isYou;
     const verb = winners.length > 1 ? 'split' : youOnly ? 'win' : 'wins';
-    const text = winners.length === 0
+    const text = (winners.length === 0
       ? `${label} ${formatChips(amount)} vCLAW`
-      : `${label}: ${names} ${verb} ${formatChips(amount)} vCLAW${rankLabel ? ` with ${rankLabel}` : ''}`;
-    return { key: `pot-${index}`, label, amount, winners, rankLabel, text };
+      : `${label}: ${names} ${verb} ${formatChips(wonAmount)} vCLAW${rankLabel ? ` with ${rankLabel}` : ''}`)
+      + (returnedText ? `. ${returnedText}` : '');
+    return { key: `pot-${index}`, label, amount, winners, rankLabel, text, refund, returned };
   });
   const totalPot = pots.reduce((total, pot) => total + pot.amount, 0);
 
@@ -416,6 +484,7 @@ export function summarizeCashSettled(
         isWinner: winnerSeats.has(seat.seatIndex),
         cards,
         rankLabel: folded ? null : humanizeHandRank(seat.handRank?.categoryName) || null,
+        bestFive: !folded && seat.handRank?.bestFive?.length === 5 ? seat.handRank.bestFive : null,
         net: Number(seat.net),
         endStack: Number(seat.endStack),
       };
@@ -425,8 +494,11 @@ export function summarizeCashSettled(
   if (!showdown) {
     const winnerNames = [...winnerSeats].sort((a, b) => a - b).map(displayName);
     const youOnly = winnerSeats.size === 1 && isYou([...winnerSeats][0]!);
+    // An uncalled bet is returned, not won: keep it out of the "wins" amount.
+    const wonPot = pots.reduce((total, pot) => total + pot.amount - pot.returned, 0);
+    const refundText = returnedNotes.map((note) => `. ${note}`).join('');
     summaryText = winnerNames.length > 0
-      ? `${joinNames(winnerNames)} ${youOnly ? 'win' : winnerNames.length > 1 ? 'split' : 'wins'} ${formatChips(totalPot)} vCLAW. Everyone else folded`
+      ? `${joinNames(winnerNames)} ${youOnly ? 'win' : winnerNames.length > 1 ? 'split' : 'wins'} ${formatChips(wonPot)} vCLAW. Everyone else folded${refundText}`
       : `Hand ended before showdown. Pot ${formatChips(totalPot)} vCLAW`;
   } else {
     summaryText = pots.map((pot) => pot.text).join('. ');

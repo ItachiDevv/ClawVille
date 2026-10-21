@@ -2109,6 +2109,11 @@ export class CashTableManager {
               ? {
                   category: ps.handRankCategory,
                   categoryName: handCategoryKey(ps.handRankCategory),
+                  // Board + this seat's shown hole cards only (the sim nulls it
+                  // unless the seat's cards are shown at showdown).
+                  ...(ps.bestFive && ps.bestFive.length === 5
+                    ? { bestFive: ps.bestFive.map((c) => ({ ...c })) }
+                    : {}),
                 }
               : null,
         };

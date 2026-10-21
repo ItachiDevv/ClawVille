@@ -180,6 +180,11 @@ export interface PokerHandResultSeat {
   status: PokerSeatStatus;
   /** HandCategory (0..8) at showdown, or null if folded / unevaluated. */
   handRankCategory: number | null;
+  /**
+   * Best five cards (engine order) of a seat shown at showdown; null when
+   * `holeCards` is null. Optional: absent on frames from older servers.
+   */
+  bestFive?: PokerCard[] | null;
   isWinner: boolean;
 }
 

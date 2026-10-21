@@ -83,9 +83,11 @@ const TABLE_ROOM_SEAT_REFS: readonly ((element: HTMLDivElement | null) => void)[
     (element: HTMLDivElement | null) => registerHoldemSeatBadge(seat, element)
   ));
 
+// Registry slot 0 is the viewer's own seat; slots 1-5 are BOT_SEATS[0..4]
+// (the projector's SEAT_BADGE_WORLD_ANCHORS), so physical chair N is slot N+1.
 const CASH_ROOM_BADGE_REFS: readonly ((element: HTMLDivElement | null) => void)[] =
   Array.from({ length: 5 }, (_, physicalIndex) => (
-    (element: HTMLDivElement | null) => registerHoldemSeatBadge(physicalIndex, element)
+    (element: HTMLDivElement | null) => registerHoldemSeatBadge(physicalIndex + 1, element)
   ));
 
 function secondsUntil(deadlineMs: number | null): number | null {

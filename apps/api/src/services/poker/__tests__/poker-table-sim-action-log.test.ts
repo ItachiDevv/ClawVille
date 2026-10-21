@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { HoldemTableActionLogEntry } from '@clawville/shared';
+import { evaluateBest5 } from '../../holdem-engine';
 import { PokerTableSim } from '../poker-table-sim';
 import type { HandResult, SeatAssignment, SimClock } from '../poker-table-types';
 
@@ -256,5 +257,80 @@ describe('PokerTableSim — public action log', () => {
         expect(wire).not.toContain(JSON.stringify(card));
       }
     }
+  });
+});
+
+// ── bestFive (2026-10-21): the five cards that make each SHOWN hand ─────────
+describe('PokerTableSim — HandResultSeat.bestFive', () => {
+  const key = (c: { suit: string; rank: string }) => `${c.rank}${c.suit}`;
+
+  /** The to-act seat folds when `fold(snap)` says so, else checks or calls. */
+  function playOut(
+    sim: PokerTableSim,
+    fold: (snap: NonNullable<ReturnType<PokerTableSim['getPublicSnapshot']>>) => boolean,
+  ): void {
+    for (let i = 0; i < 40; i++) {
+      const snap = sim.getPublicSnapshot(TID);
+      if (!snap || snap.toActSeatIndex === null) return;
+      const actor = snap.seats.find((s) => s.seatIndex === snap.toActSeatIndex)!;
+      const action = fold(snap)
+        ? ({ kind: 'fold' } as const)
+        : snap.toCall > 0
+          ? ({ kind: 'call' } as const)
+          : ({ kind: 'check' } as const);
+      expect(sim.applyAction(TID, actor.avatarId, action, { idempotencyKey: `bf-${i}` }).ok).toBe(true);
+    }
+  }
+
+  it('showdown: shown seats carry evaluateBest5 of board + shown hole; the folded seat has none', () => {
+    const sim = new PokerTableSim(new Clock());
+    const results: HandResult[] = [];
+    sim.setHandCompleteFn((_tid, r) => results.push(r));
+    start(sim, 1, [seat(0, 100), seat(1, 100), seat(2, 100)], 0);
+    // Seat 0 (first to act preflop) folds; seats 1 and 2 check/call to the river.
+    playOut(sim, (snap) => snap.street === 'preflop' && snap.toActSeatIndex === 0);
+
+    expect(results.length).toBe(1);
+    const result = results[0]!;
+    expect(result.endedAt).toBe('showdown');
+    expect(result.board.length).toBe(5);
+    for (const s of result.perSeat) {
+      // Same gate as the hole-card reveal.
+      expect(s.bestFive === null).toBe(s.holeCards === null);
+      if (s.status === 'folded') {
+        expect(s.bestFive).toBeNull();
+        expect(s.handRankCategory).toBeNull();
+        continue;
+      }
+      const five = s.bestFive!;
+      expect(five.length).toBe(5);
+      const allowed = new Set([...result.board, ...s.holeCards!].map(key));
+      expect(five.every((c) => allowed.has(key(c)))).toBe(true);
+      expect(five).toEqual(evaluateBest5([...s.holeCards!, ...result.board]).bestFive);
+      expect(s.handRankCategory).toBe(evaluateBest5([...s.holeCards!, ...result.board]).category);
+    }
+    expect(result.perSeat.find((s) => s.seatIndex === 0)!.bestFive).toBeNull();
+    expect(result.perSeat.filter((s) => s.bestFive !== null).length).toBe(2);
+  });
+
+  it('a fold-win after the flop shows no cards: bestFive and the hand category are null even for the evaluated winner', () => {
+    const sim = new PokerTableSim(new Clock());
+    const results: HandResult[] = [];
+    sim.setHandCompleteFn((_tid, r) => results.push(r));
+    start(sim, 1, [seat(0, 100), seat(1, 100), seat(2, 100)], 0);
+    // Everyone limps preflop; on the flop every seat folds until one is left.
+    playOut(sim, (snap) => snap.street === 'flop');
+
+    expect(results.length).toBe(1);
+    const result = results[0]!;
+    expect(result.endedAt).toBe('flop');
+    expect(result.board.length).toBe(3);
+    expect(result.perSeat.some((s) => s.isWinner)).toBe(true);
+    // The engine evaluates the lone live seat (hole 2 + board 3 = 5 cards), so
+    // a null category here proves the gate: the public result frame must not
+    // tell other players what the hidden winning hand was.
+    expect(
+      result.perSeat.every((s) => s.holeCards === null && s.bestFive === null && s.handRankCategory === null),
+    ).toBe(true);
   });
 });

@@ -249,6 +249,13 @@ export interface HandResultSeat {
   status: SeatStatus;
   /** HandCategory (0..8) at showdown, or null if folded / unevaluated. */
   handRankCategory: number | null;
+  /**
+   * The best five cards (engine `evaluateBest5` order) of a seat whose cards
+   * are SHOWN at showdown; null when `holeCards` is null (folded seat, or a
+   * hand won without showdown). Holds board cards and this seat's shown hole
+   * cards only.
+   */
+  bestFive: Card[] | null;
   isWinner: boolean;
 }
 

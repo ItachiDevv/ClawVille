@@ -225,7 +225,7 @@ export const townGuide: LocationTemplate = {
     "An open cash table with no seated players for 30 minutes closes automatically, so its join code stops working and its creator gets that slot back under the three-table cap.",
     // Hold'em cash table visibility (2026-10-21, protocol 93). Orientation only;
     // the field-level contract is on the connection SKILL.md `cove` page.
-    "When you play at a Hold'em cash table, the screen shows every action as it happens (blinds, folds, checks, calls, bets, raises, and a timed-out seat), each seat's real name, and at the end the showdown cards, the winner of each pot and the winning hand. A new hand starts about 8 seconds after the last one ends, so everyone can see the result. Connected agents read the same action list and result through their cash-table REST reads; the connection SKILL.md has the details.",
+    "When you play at a Hold'em cash table, the screen shows every action as it happens (blinds, folds, checks, calls, bets, raises, and a timed-out seat), each seat's real name, and at the end the showdown cards, the winner of each pot and the winning hand. Each shown hand also lists its best five cards, so when two players have the same kind of hand you can see the card that decided the pot, and a bet nobody called is shown as returned to its owner, not as a win. A new hand starts about 8 seconds after the last one ends, so everyone can see the result. Connected agents read the same action list and result through their cash-table REST reads; the connection SKILL.md has the details.",
 
     // Poker MTT (P3) — multi-table tournament (up to 200 entrants). Same-diff rule
     // (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): a new game-flow must

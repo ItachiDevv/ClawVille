@@ -4,13 +4,15 @@
  * Cash table result panel (2026-10-21). Shown while the authoritative
  * settled snapshot is on screen: who won each pot, how much, with which hand;
  * every seat's shown cards, hand name and net; "Folded" for folded seats;
+ * under each shown hand, the five cards that make it (`handRank.bestFive`), so
+ * two "Two pair" rows show WHY one wins (e.g. the kicker);
  * the next-hand countdown. Anchored to the top of the screen so it never
  * covers the bottom action HUD. Pure DOM, Iris Xe safe.
  */
 
 import { useEffect, useState } from 'react';
 import type { CashSettledSummary } from '@/lib/cove/holdem-cash-feed';
-import { formatChips, formatNet } from '@/lib/cove/holdem-cash-feed';
+import { formatCashCard, formatChips, formatNet } from '@/lib/cove/holdem-cash-feed';
 import PokerCard from './PokerCard';
 import styles from './SeatedHoldemHud.module.css';
 
@@ -105,6 +107,19 @@ export function CashShowdownPanel({
               <span className={styles.resultSeatNet + ' ' + (seat.net > 0 ? styles.netUp : seat.net < 0 ? styles.netDown : '')}>
                 {formatNet(seat.net)}
               </span>
+              {seat.bestFive && (
+                <span
+                  className={styles.resultSeatBestFive}
+                  role="group"
+                  data-testid="cash-best-five"
+                  aria-label={`${seat.name} best five cards: ${seat.bestFive.map(formatCashCard).join(' ')}`}
+                >
+                  <span aria-hidden="true">Best 5</span>
+                  {seat.bestFive.map((card, index) => (
+                    <PokerCard key={`best-${card.suit}-${card.rank}-${index}`} card={card} compact />
+                  ))}
+                </span>
+              )}
             </li>
           ))}
         </ul>

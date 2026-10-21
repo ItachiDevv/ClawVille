@@ -92,7 +92,16 @@ export interface CashSettledSeat {
    * Best-five category for a non-folded seat evaluated at showdown; null
    * otherwise. Absent on hands settled before 2026-10-21.
    */
-  handRank?: { category: number; categoryName: string } | null;
+  handRank?: {
+    category: number;
+    categoryName: string;
+    /**
+     * The five cards that make the hand, in engine `evaluateBest5` order
+     * (e.g. Q Q J J A for two pair, Ace kicker). Board cards plus this seat's
+     * `shown` hole cards only. Absent on hands settled before protocol v94.
+     */
+    bestFive?: HoldemCard[];
+  } | null;
   startStack: string;
   endStack: string;
   totalCommitted: string;

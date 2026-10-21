@@ -929,6 +929,20 @@
   font-weight: 700;
 }
 
+.resultSeatBestFive {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--hm-cream-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .resultSeatNet {
   min-width: 48px;
   font-weight: 900;

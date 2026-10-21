@@ -1087,7 +1087,19 @@ export class PokerTableSim {
         won,
         net: won - s.committedTotal,
         status: s.status,
-        handRankCategory: r.handRank ? r.handRank.category : null,
+        // Same gate as holeCards: on a fold-win the lone winner's category
+        // (evaluated on hole + partial board) would leak hidden cards to
+        // every viewer of the public result frame.
+        handRankCategory:
+          endedAt === 'showdown' && s.status !== 'folded' && r.handRank
+            ? r.handRank.category
+            : null,
+        // Same gate as holeCards: awardPots also evaluates the lone live seat
+        // on a fold-win (hole + partial board), and those cards stay hidden.
+        bestFive:
+          endedAt === 'showdown' && s.status !== 'folded' && r.handRank
+            ? r.handRank.bestFive.map((c) => ({ ...c }))
+            : null,
         isWinner: won > 0,
       };
     });

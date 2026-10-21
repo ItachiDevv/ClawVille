@@ -31,6 +31,7 @@ import {
   type CashSubject,
 } from '../cash-table-manager';
 import { FIXTURE_SCENARIOS } from '../../cove-test-fixture';
+import { evaluateBest5 } from '../../holdem-engine';
 import { PokerTableSim } from '../poker-table-sim';
 import type { HandResult, SimClock } from '../poker-table-types';
 
@@ -2927,6 +2928,7 @@ describe('CashTableManager — hold\'em visibility: names, hold, settled log, ha
     expect(settled.seats.find((s) => s.avatarId === 'vis-alice')!.name).toBe('Alice');
     // A fold-win evaluates no hand: handRank is null for every seat.
     expect(settled.seats.every((s) => s.handRank === null)).toBe(true);
+    expect(JSON.stringify(settled.seats)).not.toContain('bestFive');
     // The snapshot's log is a copy.
     settled.actions!.length = 0;
     expect((await h.mgr.getLastSettledHand(tableId, 'vis-alice', 0))!.actions!.length).toBe(3);
@@ -3065,15 +3067,49 @@ describe('CashTableManager — hold\'em visibility: names, hold, settled log, ha
     const winningRank = settled.pots[0]!.winningRank!;
     const winnerSeat = settled.pots[0]!.awards[0]!.seatIndex;
     const winner = settled.seats.find((s) => s.seatIndex === winnerSeat)!;
-    expect(winner.handRank).toEqual({
+    expect(winner.handRank).toMatchObject({
       category: winningRank.category,
       categoryName: winningRank.categoryName,
     });
+    // bestFive: the five cards that make each shown hand. Built from the
+    // REBUILT snapshot (seed re-deal), so it also proves the re-dealt hole
+    // cards agree with the cards the engine evaluated at settle.
+    const cardKey = (c: { suit: string; rank: string }) => `${c.rank}${c.suit}`;
+    expect(settled.board.length).toBe(5);
+    for (const s of settled.seats) {
+      expect(s.shown).not.toBeNull();
+      const five = s.handRank!.bestFive!;
+      expect(five.length).toBe(5);
+      const allowed = new Set([...settled.board, ...s.shown!].map(cardKey));
+      expect(five.every((c) => allowed.has(cardKey(c)))).toBe(true);
+      expect(five).toEqual(evaluateBest5([...s.shown!, ...settled.board]).bestFive);
+    }
     // Showdown log: blinds + only check/call actions, never a card.
     expect(settled.actions![0]!.kind).toBe('post-sb');
     expect(
       settled.actions!.slice(2).every((a) => a.kind === 'check' || a.kind === 'call'),
     ).toBe(true);
+  });
+
+  it('a fold-win after the flop stores no bestFive and shows no cards', async () => {
+    const h = makeHoldHarness();
+    const { tableId, sid } = await seatTwoHumans(h);
+    // Limp/check preflop, then the first flop actor folds (hole 2 + board 3
+    // = 5 cards, so the engine DOES evaluate the lone live seat).
+    for (let i = 0; i < 10 && h.sim.getPublicSnapshot(sid)!.street === 'preflop'; i++) {
+      await actOnce(h, tableId, sid, 'passive');
+    }
+    expect(h.sim.getPublicSnapshot(sid)!.street).toBe('flop');
+    await actOnce(h, tableId, sid, 'fold');
+    expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+
+    const row = h.db.stores.get(pokerCashHands)!.find(
+      (r) => r.table_id === tableId && r.hand_number === 1,
+    )!;
+    expect(row.ended_at).toBe('flop');
+    expect(JSON.stringify(row.seat_result_json)).not.toContain('bestFive');
+    const settled = (await h.mgr.getLastSettledHand(tableId, 'vis-alice', 0))!;
+    expect(settled.seats.every((s) => s.shown === null && s.handRank === null)).toBe(true);
   });
 
   it('settled snapshots from old rows (no name / handRank) and after a restart (no log) stay valid', async () => {
