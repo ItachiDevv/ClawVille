@@ -161,6 +161,8 @@ jobs:
           src/lib/three/cove-figure-model-load.test.tsx
           src/lib/three/__tests__/holdem-table-layout.test.ts
           src/lib/cove/__tests__/holdem-cash-feed.test.ts
+          src/lib/cove/__tests__/card-parity-mirror.test.ts
+          src/lib/cove/__tests__/card-parity-no-leak.test.tsx
           src/lib/three/arena-terrain-decorations.test.ts
           src/lib/three/arena-terrain-decorations-mount.test.tsx
           src/lib/three/arena-terrain-decorations-bounds.test.ts
