@@ -46,6 +46,7 @@ import {
   CHAIR_SCALE,
   FURNITURE_SCALE,
   S,
+  SEAT_MODEL_RETRY,
   SEATED_CAMERA_FOV,
   SEATED_CAM_EYE,
   SEATED_CAM_LOOK,
@@ -617,8 +618,6 @@ function RiglessPerchFigure({
 // perch clears the horn without changing the chair.
 const BACK_CORNER_PERCH_LIFT = 18;
 
-const PLACEHOLDER_RETRY_MS = 4000;
-const PLACEHOLDER_MAX_RETRIES = 3;
 const PLACEHOLDER_HUES = [0.02, 0.12, 0.33, 0.52, 0.66, 0.84] as const;
 const placeholderMaterials = new Map<number, THREE.MeshStandardMaterial>();
 let placeholderTorsoGeometry: THREE.CapsuleGeometry | null = null;
@@ -673,7 +672,7 @@ function SeatPlaceholderFigure({
  *    longer bubble to the room's single Suspense and hide the whole scene);
  *  - a failed load shows the placeholder instead of an empty chair;
  *  - a failed load is retried (cache cleared by the boundary) up to
- *    PLACEHOLDER_MAX_RETRIES times, so one transient 5xx is not permanent.
+ *    SEAT_MODEL_RETRY.maxRetries times, so one transient 5xx is not permanent.
  * Key this component by figure identity so a new avatar starts clean.
  */
 function SeatFigureSlot({
@@ -699,13 +698,13 @@ function SeatFigureSlot({
   }, []);
   const handleFailed = useCallback(() => {
     onModelFailed?.();
-    if (attemptRef.current >= PLACEHOLDER_MAX_RETRIES) return;
+    if (attemptRef.current >= SEAT_MODEL_RETRY.maxRetries) return;
     attemptRef.current += 1;
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
       setAttempt(attemptRef.current);
-    }, PLACEHOLDER_RETRY_MS * attemptRef.current);
+    }, SEAT_MODEL_RETRY.delayMs * attemptRef.current);
   }, [onModelFailed]);
   return (
     <ModelLoadBoundary

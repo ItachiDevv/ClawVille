@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -15,21 +15,22 @@ import { join } from 'path';
 // and still select only the four SAFE columns. `.toSQL()` renders without a
 // connection; the same SQL runs on PostgreSQL in agent-owner-since.db.test.ts.
 
-// `||=`, not `??=`: the isolated runner passes DATABASE_URL='' (empty string).
-const priorDatabaseUrl = process.env.DATABASE_URL;
-process.env.DATABASE_URL ||= 'postgres://unit:unit@127.0.0.1:1/unit_no_connect';
+// The builders read `db` from @clawville/database. A file-local drizzle
+// instance over a never-connecting client replaces it, so this file never warms
+// the shared lazy singleton (CI run 39552570613: a warmed singleton bound to
+// 127.0.0.1:1 stayed cached after DATABASE_URL was restored, and later suites
+// in the same bun process waited on ECONNREFUSED until they timed out).
+// `mock.module` also puts this file in its own CI process (gates.yml).
+const realDatabase = await import('@clawville/database');
+const { drizzle } = await import('drizzle-orm/postgres-js');
+const postgres = (await import('postgres')).default;
+const unitDb = drizzle(postgres('postgres://unit:unit@127.0.0.1:1/unit_no_connect', { max: 1 }));
+mock.module('@clawville/database', () => ({ ...realDatabase, db: unitDb }));
 
 const { buildDurableAgentEventsQuery, buildOwnerScopedRecentAgentEventsQuery } = await import('../agent-event-query');
 const { AGENT_STREAM_EVENT_TYPES } = await import('../agent-stream-config');
 
 const SCOPE = { agentId: 'scope-agent', ownerUserId: '96666666-6666-4666-8666-666666666666' };
-
-// Warm the lazy db singleton, then restore DATABASE_URL at once: CI runs many
-// files in ONE bun process, and a leaked fake URL makes later DB-gated suites
-// stop skipping and fail on 127.0.0.1:1.
-buildDurableAgentEventsQuery(SCOPE, 0n, 1, 'asc').toSQL();
-if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-else process.env.DATABASE_URL = priorDatabaseUrl;
 
 function render(order: 'asc' | 'desc') {
   const { sql, params } = buildDurableAgentEventsQuery(SCOPE, 41n, 25, order).toSQL();

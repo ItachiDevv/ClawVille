@@ -22,6 +22,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, tes
 import { Component, createElement, type ComponentType, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
 import * as THREE from 'three';
+import { SEAT_MODEL_RETRY } from './holdem-table-layout';
 
 const testWindow = new Window({
   // seatModels (dev/localhost only) puts the rigless lobster GLB at hold'em
@@ -58,6 +59,8 @@ let cove: typeof import('./cove-interior');
 let baccarat: typeof import('./baccarat-table-room');
 let blackjack: typeof import('./blackjack-table-room');
 let holdem: typeof import('./holdem-table-room');
+// Retries re-request a failed seat model and log again; zero them so each failed URL logs exactly once.
+SEAT_MODEL_RETRY.maxRetries = 0;
 let fallbackModule: typeof import('./local-player-model-fallback');
 let gameStore: typeof import('../../stores/game');
 let registry: typeof import('./agent-model-registry');
@@ -295,6 +298,11 @@ async function mountScene(element: ReactNode, until: (m: Mounted) => boolean, wh
 const lines = (logged: unknown[][], prefix: string) =>
   logged.filter((args) => String(args[0]).startsWith(prefix)).map((args) => String(args[0]));
 const skippedLines = (logged: unknown[][]) => lines(logged, '[3D] figure skipped');
+/** Hold'em seats pass a placeholder fallback, so a failed seat logs "replaced by fallback"; the dealer logs "skipped". */
+const holdemFailedLines = (logged: unknown[][]) => [
+  ...skippedLines(logged),
+  ...lines(logged, '[3D] figure replaced by fallback'),
+];
 
 function vrmPath(key: string): string {
   return (registry.MODEL_REGISTRY as Record<string, { path: string }>)[key]!.path;
@@ -369,7 +377,7 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
     const lobster = vrmPath('lobster');
     const mounted = await mountScene(
       createElement(holdem.HoldemTableRoomScene, { instanceId: 'holdem-test' }),
-      (m) => skippedLines(m.logged).length >= vrmKeys.length && Boolean(m.scene.getObjectByName('holdem-avatar-lobster')),
+      (m) => holdemFailedLines(m.logged).length >= vrmKeys.length && Boolean(m.scene.getObjectByName('holdem-avatar-lobster')),
       'holdem: 5 figure lines + the lobster seat',
     );
     expectSceneSurvived(mounted);
@@ -387,7 +395,7 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
     for (let seat = 1; seat <= 5; seat += 1) {
       expect(mounted.scene.getObjectByName(`holdem-seat-${seat}`)).toBeTruthy();
     }
-    const skipped = skippedLines(mounted.logged);
+    const skipped = holdemFailedLines(mounted.logged);
     expect(skipped.length).toBe(vrmKeys.length);
     for (const key of vrmKeys) {
       expect(skipped.filter((line) => line.includes(vrmPath(key))).length).toBe(1);
@@ -400,14 +408,16 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
     replies.set(lobster, 404);
     const mounted = await mountScene(
       createElement(holdem.HoldemTableRoomScene, { instanceId: 'holdem-test-2' }),
-      (m) => skippedLines(m.logged).some((line) => line.includes(lobster))
+      (m) => holdemFailedLines(m.logged).some((line) => line.includes(lobster))
         && Boolean(m.scene.getObjectByName(nodeName('/models/cove-table-clean.glb'))),
       'holdem: lobster seat line + table',
     );
     expectSceneSurvived(mounted);
+    // The failed seat keeps a visible placeholder figure instead of an empty chair.
     expect(mounted.scene.getObjectByName('holdem-avatar-lobster')).toBeUndefined();
+    expect(mounted.scene.getObjectByName('holdem-placeholder-seat-2')).toBeTruthy();
     expect(mounted.scene.getObjectByName(nodeName('/models/cove-table-clean.glb'))).toBeTruthy();
-    expect(skippedLines(mounted.logged).filter((line) => line.includes(lobster)).length).toBe(1);
+    expect(holdemFailedLines(mounted.logged).filter((line) => line.includes(lobster)).length).toBe(1);
     replies.delete(lobster);
     await mounted.unmount();
   }, TEST_TIMEOUT_MS);
@@ -424,7 +434,7 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
     try {
       const mounted = await mountScene(
         createElement(holdem.HoldemTableRoomScene, { instanceId: 'holdem-test-3' }),
-        (m) => skippedLines(m.logged).some((line) => line.includes(`holdem-seat:1 ${original}`)),
+        (m) => holdemFailedLines(m.logged).some((line) => line.includes(`holdem-seat:1 ${original}`)),
         'holdem: seat 1 first model failed',
       );
       expectSceneSurvived(mounted);
@@ -432,13 +442,13 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
       entry.path = swapped;
       await mounted.rerender(
         createElement(holdem.HoldemTableRoomScene, { instanceId: 'holdem-test-3b' }),
-        () => (requests.get(swapped) ?? 0) >= 1 && skippedLines(mounted.logged).some((line) => line.includes(swapped)),
+        () => (requests.get(swapped) ?? 0) >= 1 && holdemFailedLines(mounted.logged).some((line) => line.includes(swapped)),
         'holdem: seat 1 boundary reset and requested the new model',
         3_000,
       );
       expectSceneSurvived(mounted);
       expect(requests.get(swapped)).toBeGreaterThanOrEqual(1);
-      expect(skippedLines(mounted.logged).filter((line) => line.includes(`holdem-seat:1 ${swapped}`)).length).toBe(1);
+      expect(holdemFailedLines(mounted.logged).filter((line) => line.includes(`holdem-seat:1 ${swapped}`)).length).toBe(1);
       await mounted.unmount();
     } finally {
       entry.path = original;

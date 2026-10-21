@@ -127,6 +127,13 @@ export const SEATED_CAM_LOOK: readonly [number, number, number] = [
   TABLE_TOP_Y + 16,
   36 * TABLE_FOOTPRINT_SCALE,
 ];
+/**
+ * Failed seat-model retry policy (SeatFigureSlot). A mutable object so a test
+ * can zero it; production never writes it. Each retry that fails again logs
+ * its own `[3D] figure replaced by fallback` line (new loader error).
+ */
+export const SEAT_MODEL_RETRY = { maxRetries: 3, delayMs: 4000 };
+
 /** Vertical field of view in degrees. */
 export const SEATED_CAMERA_FOV = 66;
 
