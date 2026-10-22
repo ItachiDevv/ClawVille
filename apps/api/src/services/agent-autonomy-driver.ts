@@ -1716,7 +1716,7 @@ class AgentAutonomyDriver {
       // 8 picks in a row). Same skip as salvage and build below.
       entry.isHouse
         ? Promise.resolve([] as AutonomousQuestTarget[])
-        : this.readTargetBounded(agentId, 'quests', () => readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+        : this.readTargetBounded(agentId, 'quests', () => readAutonomousQuestTargets({ avatarId: entry.avatarId, userId: entry.houseUserId }).catch((err: unknown) => {
         console.warn(
           `[AutonomyDriver] ${sessionDigest(entry.agentId)} quest targets unavailable (non-fatal):`,
           err instanceof Error ? err.message : err,
@@ -2296,13 +2296,23 @@ class AgentAutonomyDriver {
     // unqualified suggestion costs one refused action, never a wrong payout.
     // Each line carries the exact call, like the cosmetics block: with only a
     // bare id the hosted model invented verbs (`claim_quest`, `complete_quest`,
-    // dropped as not whitelisted on prod and staging 2026-10-22).
+    // dropped as not whitelisted on prod and staging 2026-10-22). Only a READY
+    // quest (its proof already met) carries the call; an unfinished one is
+    // listed with what is still missing and no call, because a listed call
+    // invited blind claims (staging 2026-10-22: five `not_qualified` claims
+    // while two finished quests sat unclaimed).
+    const questUnit = (quest: AutonomousQuestTarget) => `${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'}`;
     const questBlock = [
-      'Claimable quests (server-derived; copy one exact call; unclaimed and live only):',
+      'Claimable quests (server-derived; READY ones have their proof; copy one exact call):',
       ...(questTargets.length > 0
-        ? questTargets.map((quest) =>
-            `- [ACTION: claim_tutorial_quest(questId=${quest.questId})] "${quest.title}" pays ${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'} — requires: ${quest.requirement}`,
-          )
+        ? [
+            ...questTargets.map((quest) => (quest.ready
+              ? `- [ACTION: claim_tutorial_quest(questId=${quest.questId})] READY "${quest.title}" pays ${questUnit(quest)}`
+              : `- ${quest.questId}: "${quest.title}" pays ${questUnit(quest)} — not done yet: ${quest.requirement}`)),
+            ...(questTargets.some((quest) => quest.ready)
+              ? []
+              : ['- none ready yet; do the step a quest requires first.']),
+          ]
         : ['- none claimable right now']),
     ].join('\n');
     // The salvage block. Same reasoning as the quest block above, and the same
