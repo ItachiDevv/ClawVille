@@ -40,6 +40,7 @@ import { useAvatar, useSetSpawnPreference } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { api, ApiError } from '@/lib/api';
+import { claimQuestsAfterStep } from '@/stores/quest';
 import { useLandStore, type ParcelState } from '@/stores/land';
 import { LAND_PARCELS_QUERY_KEY } from '@/lib/three/land-state-hydrator';
 // Dependency-light module (no `three` / R3F imports) — safe in this modal.
@@ -675,6 +676,8 @@ function BuildTab({
         addToast('🔁', `Already at Lv${res.structure.level} (no double-charge).`);
       } else {
         addToast('⬆️', `Upgraded to Lv${res.structure.level} for ${res.costCt.toLocaleString()} vCLAW!`);
+        // A paid upgrade is a big-spender debit (`land_structure_upgrade`).
+        void claimQuestsAfterStep(['big-spender']);
       }
       // Same reason as placement: the public feed carries the LEVEL the yard
       // editor derives its piece caps, stacking rules and reserved shell from.

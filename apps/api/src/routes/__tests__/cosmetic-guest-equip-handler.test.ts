@@ -83,6 +83,10 @@ mock.module('../../services/event-logger', () => ({
   ...realEventLogger,
   logEventFromContext: (...args: Parameters<typeof realLogEvent>) =>
     intercept ? Promise.resolve() : realLogEvent(...args),
+  // The equip events moved into services/cosmetic-actions.ts, which logs via
+  // the context-free logEvent; keep it off the fake db too.
+  logEvent: (...args: Parameters<typeof realEventLogger.logEvent>) =>
+    intercept ? Promise.resolve() : realEventLogger.logEvent(...args),
 }));
 
 const { cosmeticsRoutes } = await import('../cosmetics');

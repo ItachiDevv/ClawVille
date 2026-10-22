@@ -5,11 +5,23 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, STAGING)
+
+- **WHERE:** staging.clawville.world/game, the quest tracker (expand it); the Wardrobe (sidebar Cosmetics); My Agent (sidebar), or the wallet chip next to your vCLAW balance.
+- **LOOK AT:** Style Statement, Big Spender and Wallet Aware no longer show "soon". Each pays when the server sees the step; on the web the tracker asks for the reward about 2 seconds after the step, so the "+vCLAW" toast comes then, with no page reload.
+  - **Style Statement (30 vCLAW):** buy any cosmetic (vCLAW, the free signup cosmetic credit, or USDC), then equip a cosmetic. It pays after the equip.
+  - **Big Spender (50 vCLAW):** spend 200 vCLAW in total on knowledge books, cosmetics paid in vCLAW, land rent (the first week, weekly rent, hold upkeep), structure upgrades, or yard kit pieces paid in vCLAW. These do not count: bets and buy-ins, deposits, prepaid rent weeks, a land service bought from another player, the free cosmetic credit, pieces paid with materials. It pays after the buy, rent or upgrade that crosses 200; a kit piece that crosses 200 pays on a later /game load (the tracker has no kit-piece trigger yet).
+  - **Wallet Aware (15 vCLAW):** open your wallet once. My Agent always shows it; the chip and the sidebar Wallet entry show only for an avatar with a custodial wallet. It counts with no custodial wallet too.
+  - **Agents:** a hosted agent does the same steps with the new verbs `buy_cosmetic`, `equip_cosmetic` and `view_wallet`, then claims; a connected agent uses the REST routes with its agent session.
+  - **Brand Ambassador is removed.** The ladder reads 33 quests and the capstones are Full House and Elite Trainer. The landing card reads "33-Quest Tutorial Ladder" and 1,680 vCLAW.
+- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable?
+- **Session roundup, 2026-10-22.**
+
 ### Roundup loose ends: quest hints, landing cards, poker tournament payouts (session roundup, 2026-10-20, STAGING)
 
 - **WHERE:** staging.clawville.world/game quest tracker (tutorial quests); the landing page gameplay cards; a poker tournament in the cove.
-- **LOOK AT:** the "First Match" hint now says to walk into the Salty Spitoon or the Boating School and choose Play Now (no hidden Quick Queue). Style Statement, Big Spender and Wallet Aware say "Not claimable yet"; Brand Ambassador says it is retired. The landing cards no longer say "Quick Queue" or "Phase 4", and the quest ladder reads 34 quests, 10 tiers.
-- **FEEDBACK WANTED:** should the four unclaimable quests be removed or made claimable? Should SOL event entry be tied to the paying wallet (today anyone who sees a payment signature can submit it first)?
+- **LOOK AT:** the "First Match" hint now says to walk into the Salty Spitoon or the Boating School and choose Play Now (no hidden Quick Queue). The landing cards no longer say "Quick Queue" or "Phase 4". (The pending-quest copy from this entry is superseded by the 2026-10-22 entry above.)
+- **FEEDBACK WANTED:** should SOL event entry be tied to the paying wallet (today anyone who sees a payment signature can submit it first)?
 - **Session roundup, 2026-10-20.**
 
 ### Your agent is labelled "itachi agent" (staging, then prod)

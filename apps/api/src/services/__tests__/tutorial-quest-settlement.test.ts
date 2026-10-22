@@ -13,7 +13,10 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { db, sql } from '@clawville/database';
+import { TUTORIAL_QUEST_STATUS } from '@clawville/shared';
 import {
+  BIG_SPENDER_REASONS,
+  BIG_SPENDER_THRESHOLD_CT,
   settleTutorialQuestClaim,
   validateTutorialQuestEngagement,
   type EngagementResult,
@@ -40,6 +43,42 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   }
   throw new Error('expected the promise to reject, but it resolved');
 }
+
+// No DB: these run in the CI services lane, where DATABASE_URL is unset.
+describe('tutorial quest catalog wiring (2026-10-22 quests wire)', () => {
+  it('no longer knows brand-ambassador, so a claim is refused before any DB read', async () => {
+    expect(Object.keys(TUTORIAL_QUEST_STATUS)).not.toContain('brand-ambassador');
+    const out = await settleTutorialQuestClaim({
+      actor: { kind: 'user', userId: 'u', avatarId: 'a' },
+      questId: 'brand-ambassador',
+      validateEngagement: alwaysQualified,
+    });
+    expect(out.kind).toBe('unknown_quest');
+  });
+
+  it('makes style-statement, big-spender and wallet-aware live', () => {
+    expect(TUTORIAL_QUEST_STATUS['style-statement']).toBe('live');
+    expect(TUTORIAL_QUEST_STATUS['big-spender']).toBe('live');
+    expect(TUTORIAL_QUEST_STATUS['wallet-aware']).toBe('live');
+  });
+
+  it('counts only treasury-bound goods and services toward big-spender', () => {
+    expect([...BIG_SPENDER_REASONS].sort()).toEqual([
+      'buy_book',
+      'buy_cosmetic',
+      'land_kit_piece_fee',
+      'land_parcel_rent',
+      'land_structure_upgrade',
+    ]);
+    // A stake can be won back and a peer sale returns the vCLAW to another
+    // player: counting either turns the quest into a faucet.
+    for (const reason of BIG_SPENDER_REASONS) {
+      expect(reason).not.toMatch(/^(cove_|poker_|house_|exchange_|bounty_|special_event_)/);
+      expect(reason).not.toMatch(/escrow|deposit|refund|redemption|clawback|service_purchase/);
+    }
+    expect(BIG_SPENDER_THRESHOLD_CT).toBe(200);
+  });
+});
 
 describeIfDb('tutorial quest settlement (real DB)', () => {
   const tag = `tqs${Date.now().toString(36)}${Math.floor(Math.random() * 46_656).toString(36)}`;
@@ -86,6 +125,7 @@ describeIfDb('tutorial quest settlement (real DB)', () => {
                           grandfathered = false, updated_at = now()
                       WHERE id = ${parcelId}`);
     }
+    await clean(sql`DELETE FROM events WHERE avatar_id = ${avatarId} OR user_id = ${userId}`);
     await clean(sql`DELETE FROM tutorial_quest_claims WHERE avatar_id = ${avatarId}`);
     await clean(sql`DELETE FROM avatar_material_balances WHERE avatar_id = ${avatarId}`);
     await clean(sql`DELETE FROM claw_token_transactions WHERE avatar_id = ${avatarId}`);
@@ -306,5 +346,70 @@ describeIfDb('tutorial quest settlement (real DB)', () => {
 
     await db.execute(sql`UPDATE land_structures SET level = 2 WHERE id = ${structureId}`);
     expect((await validateTutorialQuestEngagement(userId, avatarId, 'curb-appeal')).ok).toBe(true);
+  });
+
+  async function logTestEvent(eventType: string): Promise<void> {
+    await db.execute(
+      sql`INSERT INTO events (event_type, user_id, avatar_id, payload)
+          VALUES (${eventType}, ${userId}, ${avatarId}, '{}'::jsonb)`,
+    );
+  }
+
+  async function ledgerRow(reason: string, amount: number): Promise<void> {
+    await db.execute(
+      sql`INSERT INTO claw_token_transactions (avatar_id, user_id, amount, balance_after, reason, source)
+          VALUES (${avatarId}, ${userId}, ${amount}, 0, ${reason}, 'api')`,
+    );
+  }
+
+  it('style-statement needs a cosmetic purchase AND an equip', async () => {
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'style-statement')).toEqual({
+      ok: false,
+      pending: false,
+      reason: 'no_cosmetic_purchase',
+    });
+    await logTestEvent('cosmetic.purchased');
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'style-statement')).toEqual({
+      ok: false,
+      pending: false,
+      reason: 'no_cosmetic_equipped',
+    });
+    // An unequip is not an equip.
+    await logTestEvent('cosmetic.unequipped');
+    expect((await validateTutorialQuestEngagement(userId, avatarId, 'style-statement')).ok).toBe(false);
+    await logTestEvent('cosmetic.equipped');
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'style-statement')).toEqual({ ok: true });
+  });
+
+  it('wallet-aware needs one wallet.viewed event', async () => {
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'wallet-aware')).toEqual({
+      ok: false,
+      pending: false,
+      reason: 'no_wallet_view',
+    });
+    await logTestEvent('wallet.viewed');
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'wallet-aware')).toEqual({ ok: true });
+  });
+
+  it('big-spender sums goods debits only, never wagers, deposits or peer sales', async () => {
+    const insufficient = { ok: false, pending: false, reason: 'insufficient_goods_spend' };
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'big-spender')).toEqual(insufficient);
+
+    // Large excluded debits: a wager, a refundable deposit, a peer service buy.
+    await ledgerRow('cove_slots_spin', -500);
+    await ledgerRow('land_deposit_escrow', -500);
+    await ledgerRow('land_service_purchase', -500);
+    // A positive row under an allowlisted reason is not a spend.
+    await ledgerRow('buy_book', 500);
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'big-spender')).toEqual(insufficient);
+
+    // 199 of real goods spend, one cosmetic split across two provenance rows.
+    await ledgerRow('buy_book', -100);
+    await ledgerRow('buy_cosmetic', -60);
+    await ledgerRow('buy_cosmetic', -39);
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'big-spender')).toEqual(insufficient);
+
+    await ledgerRow('land_parcel_rent', -1);
+    expect(await validateTutorialQuestEngagement(userId, avatarId, 'big-spender')).toEqual({ ok: true });
   });
 });

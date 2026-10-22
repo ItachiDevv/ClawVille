@@ -14,6 +14,7 @@ import { RpgButton } from '@/components/rpg';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { api, ApiError } from '@/lib/api';
+import { claimQuestsAfterStep } from '@/stores/quest';
 import {
   parcelDoorModel,
   tierDoorSentence,
@@ -1271,6 +1272,10 @@ export function AvailableParcelCard({
       addToast('🏝️', door === 'hold'
         ? `Claimed ${parcelDisplayName(parcel.parcelCode, parcel.tier)} through the rent-free hold door.`
         : `Rented ${parcelDisplayName(parcel.parcelCode, parcel.tier)} for ${weeks} week${weeks === 1 ? '' : 's'}.`);
+      // The first rent week is a big-spender debit (`land_parcel_rent`);
+      // prepaid weeks go to the deposit and do not count. The hold door is
+      // rent-free.
+      if (door === 'rent') void claimQuestsAfterStep(['big-spender']);
     } catch (error) {
       addToast('⚠️', tenureError(error), 5000);
     } finally {

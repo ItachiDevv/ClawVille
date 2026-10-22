@@ -27,10 +27,10 @@ interface GameplayCard {
 const CARDS: GameplayCard[] = [
   {
     icon: '🪜',
-    title: '34-Quest Tutorial Ladder',
+    title: '33-Quest Tutorial Ladder',
     description:
       '10 tiers from "say hi to Nori" to your first home on land. Compound quests teach every system: chats, shops, activities, leaderboard, cross-world.',
-    meta: '1,585 vCLAW across live quests',
+    meta: '1,680 vCLAW across live quests',
     href: '/game',
     status: 'live',
     accent: 'cyan',

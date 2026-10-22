@@ -130,6 +130,13 @@ import {
   readAutonomousQuestTargets,
   type AutonomousQuestTarget,
 } from './autonomous-quest-targets';
+// Bounded server-derived sku ids for equip_cosmetic / buy_cosmetic (same
+// consumption-mandate reason as the quest block above).
+import {
+  EMPTY_AUTONOMOUS_COSMETIC_TARGETS,
+  readAutonomousCosmeticTargets,
+  type AutonomousCosmeticTargets,
+} from './autonomous-cosmetic-targets';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -253,7 +260,7 @@ interface HouseAgentEntry {
 
 /** A single decision generator — real LLM in prod, canned in tests. */
 type DecideFn = (prompt: string) => Promise<string>;
-type TargetReaderName = 'land' | 'quests' | 'salvage' | 'build' | 'trading';
+type TargetReaderName = 'land' | 'quests' | 'salvage' | 'build' | 'trading' | 'cosmetics';
 const TARGET_READ_TIMEOUT_MS = 10_000;
 
 // Cadence + safety constants.
@@ -526,6 +533,12 @@ export function decisionThought(action: ParsedDriverAction): string {
       return 'Claiming a quest reward';
     case 'salvage_node':
       return 'Salvaging materials from a seabed node';
+    case 'view_wallet':
+      return 'Checking my wallet';
+    case 'equip_cosmetic':
+      return 'Putting on a cosmetic';
+    case 'buy_cosmetic':
+      return 'Buying a cosmetic';
     case 'claim_parcel': {
       const parcelCode = nonEmptyParam(action.params.parcelCode);
       const parcel = parcelCode ? ` ${parcelCode}` : '';
@@ -885,6 +898,18 @@ class AgentAutonomyDriver {
     const entry = this.userAgents.get(agentId);
     if (!entry || entry.avatarId !== avatarId) return;
     entry.lastLesson = `Nori: ${reply.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX)}`;
+  }
+
+  /**
+   * A server-written action result (view_wallet balances, a buy_cosmetic or
+   * equip_cosmetic outcome) must reach the next choice. Same slot and fence as
+   * rememberSystemChatReply: user entries only, exact avatar match. The text is
+   * server-built, and tags are stripped anyway, so it can never act.
+   */
+  rememberActionResult(agentId: string, avatarId: string, text: string): void {
+    const entry = this.userAgents.get(agentId);
+    if (!entry || entry.avatarId !== avatarId) return;
+    entry.lastLesson = text.replace(/\[ACTION:[^\]]*\]/gi, '').replace(/\s+/g, ' ').trim().slice(0, LESSON_SNIPPET_MAX) || null;
   }
 
   /** O(1): does this owner currently have a driver-enrolled autonomous agent?
@@ -1671,7 +1696,7 @@ class AgentAutonomyDriver {
         );
       }
     }
-    const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets, tradingDesk] = await Promise.all([
+    const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets, tradingDesk, cosmeticTargets] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
       this.readTargetBounded(agentId, 'land', () => readAutonomousLandTargets({
@@ -1735,12 +1760,27 @@ class AgentAutonomyDriver {
         );
         return EMPTY_TRADING_DESK;
       })),
+      // House agents are refused all three cosmetic/wallet verbs
+      // (HOUSE_REFUSED_AUTONOMY_VERBS) and their menu omits them, so skip the
+      // read for the fleet, like quests, salvage and build above.
+      entry.isHouse
+        ? Promise.resolve(EMPTY_AUTONOMOUS_COSMETIC_TARGETS)
+        : this.readTargetBounded(agentId, 'cosmetics', () => readAutonomousCosmeticTargets({
+        avatarId: entry.avatarId,
+        userId: entry.houseUserId,
+      }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} cosmetic targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return EMPTY_AUTONOMOUS_COSMETIC_TARGETS;
+      })),
     ]);
     // Target reads can also outlive the owner instruction or enrollment.
     if (entry.directiveRevision !== directiveRevision
       || (this.houseAgents.get(agentId) ?? this.userAgents.get(agentId)) !== entry) return;
     if (landTargets === undefined || questTargets === undefined || salvageTargets === undefined
-      || buildTargets === undefined || tradingDesk === undefined) {
+      || buildTargets === undefined || tradingDesk === undefined || cosmeticTargets === undefined) {
       // Unknown target state cannot become an invented empty world or desk.
       // One immediate follow-up is already bounded by driveAgentNow; unresolved
       // readers stay guarded, then the steady tick retries after they settle.
@@ -1758,6 +1798,7 @@ class AgentAutonomyDriver {
       salvageTargets,
       buildTargets,
       tradingDesk,
+      cosmeticTargets,
     );
     // Directive fast path (founder 2026-10-20: "faster path, same decision").
     // Skips one ~5 s model call ONLY when the decision is already fixed: the
@@ -2157,6 +2198,7 @@ class AgentAutonomyDriver {
     salvageTargets: AutonomousSalvageTargets = EMPTY_SALVAGE_TARGETS,
     buildTargets: AutonomousBuildTargets = EMPTY_AUTONOMOUS_BUILD_TARGETS,
     tradingDesk: AutonomousTradingDesk = EMPTY_TRADING_DESK,
+    cosmeticTargets: AutonomousCosmeticTargets = EMPTY_AUTONOMOUS_COSMETIC_TARGETS,
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -2289,6 +2331,33 @@ class AgentAutonomyDriver {
       ]),
       'If you lack materials for a piece, salvage_node gathers more.',
     ].join('\n');
+    // The cosmetics block. equip_cosmetic / buy_cosmetic take a uuid the model
+    // cannot guess, so list the valid ones (owned-but-unworn first, then the
+    // cheapest buyable). Server-derived and advisory: the buy service re-runs
+    // every check, so a stale row costs one refused action, never a wrong debit.
+    // Omitted when both lists are empty (and always for a house actor, which
+    // never sees these verbs).
+    const cosmeticBlock = [
+      `Cosmetics (server-derived; copy skuId exactly). You hold ${cosmeticTargets.vclawBalance} vCLAW and ${cosmeticTargets.cosmeticCredit} cosmetic credit (credit pays first, then vCLAW):`,
+      ...(cosmeticTargets.ownedUnequipped.length > 0
+        ? [
+            'Owned, not worn (free to wear):',
+            ...cosmeticTargets.ownedUnequipped.map((item) =>
+              `- [ACTION: equip_cosmetic(skuId=${item.skuId})] "${item.displayName}" (${item.category})`,
+            ),
+          ]
+        : []),
+      ...(cosmeticTargets.purchasable.length > 0
+        ? [
+            'Buyable (cheapest first):',
+            ...cosmeticTargets.purchasable.map((item) =>
+              `- [ACTION: buy_cosmetic(skuId=${item.skuId})] "${item.displayName}" (${item.category}) costs ${item.priceVclaw} vCLAW — ${item.creditCovers ? 'your credit covers it' : item.affordable ? 'you can afford it' : 'you cannot afford it yet'}`,
+            ),
+          ]
+        : []),
+    ].join('\n');
+    const showCosmeticBlock = !entry.isHouse
+      && (cosmeticTargets.ownedUnequipped.length > 0 || cosmeticTargets.purchasable.length > 0);
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
@@ -2315,6 +2384,7 @@ class AgentAutonomyDriver {
       landBlock,
       ...(salvageTargets.nodes.length > 0 ? [salvageBlock] : []),
       ...(buildableParcels.length > 0 ? [buildBlock] : []),
+      ...(showCosmeticBlock ? ['', cosmeticBlock] : []),
       '',
       questBlock,
       '',

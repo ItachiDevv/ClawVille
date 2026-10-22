@@ -21,13 +21,44 @@ describe('tutorial quest hints', () => {
     expect(hint).toContain('Queue Solo');
   });
 
-  test('pending quests say they are not claimable and use no em dash', () => {
-    for (const id of ['style-statement', 'big-spender', 'wallet-aware', 'brand-ambassador'] as const) {
+  // Quests wire 2026-10-22: the three formerly pending quests are live and
+  // server-validated; brand-ambassador is gone from the ladder.
+  test('style-statement, big-spender and wallet-aware are live, serverOnly, and say where to go', () => {
+    for (const id of ['style-statement', 'big-spender', 'wallet-aware'] as const) {
       const q = QUEST_DEFINITIONS_BY_ID[id];
-      expect(q.isPending).toBe(true);
-      expect(q.condition.type).toBe('pending');
-      expect(q.hint).toMatch(/^Not claimable/);
+      expect(q.isPending).toBe(false);
+      expect(q.condition.type).toBe('serverOnly');
+      expect(q.hint).not.toMatch(/not claimable/i);
       expect(q.hint).not.toContain('—');
     }
+    expect(QUEST_DEFINITIONS_BY_ID['style-statement'].hint).toContain('Wardrobe');
+    expect(QUEST_DEFINITIONS_BY_ID['big-spender'].hint).toMatch(/books/);
+    expect(QUEST_DEFINITIONS_BY_ID['big-spender'].hint).toMatch(/Land Office/);
+    expect(QUEST_DEFINITIONS_BY_ID['big-spender'].hint).toMatch(/do not count/);
+    expect(QUEST_DEFINITIONS_BY_ID['wallet-aware'].hint).toMatch(/wallet chip/);
+  });
+
+  // Fix pass 2026-10-22: the chip and the sidebar Wallet entry are hidden for
+  // an avatar with no custodial wallet; My Agent always shows the panel.
+  test('wallet-aware names My Agent before the chip', () => {
+    const hint = QUEST_DEFINITIONS_BY_ID['wallet-aware'].hint;
+    expect(hint.indexOf('My Agent')).toBeGreaterThanOrEqual(0);
+    expect(hint.indexOf('My Agent')).toBeLessThan(hint.indexOf('wallet chip'));
+  });
+
+  // The server allowlist (BIG_SPENDER_REASONS) has no shop-item, parcel or
+  // peer-service reason; the hint must not promise them.
+  test('big-spender does not promise shop items, parcels or services', () => {
+    const hint = QUEST_DEFINITIONS_BY_ID['big-spender'].hint;
+    expect(hint).not.toMatch(/shop items/i);
+    expect(hint).not.toMatch(/parcels/i);
+    expect(hint).not.toMatch(/\bservices\)/i);
+    expect(hint).toMatch(/prepaid rent weeks/);
+  });
+
+  test('brand-ambassador is removed and no quest is pending', () => {
+    expect(QUEST_DEFINITIONS.map((q) => q.id)).not.toContain('brand-ambassador');
+    expect(QUEST_DEFINITIONS.length).toBe(33);
+    expect(QUEST_DEFINITIONS.filter((q) => q.isPending)).toEqual([]);
   });
 });

@@ -15,6 +15,12 @@ import type { HatcherActionVerb } from '@clawville/shared';
  *   refuses these BEFORE any session resolve.
  * - claim_tutorial_quest, salvage_node: pure faucets; house fleets never claim
  *   them (`autonomousQuestAgentResolve` refuses the house agentId first).
+ * - view_wallet, equip_cosmetic, buy_cosmetic: each re-resolves the CONNECTED
+ *   agent session (same unregister hazard as above), and each writes the proof
+ *   a tutorial quest reads (`wallet.viewed`, `cosmetic.equipped`,
+ *   `cosmetic.purchased`), so for the house they are faucet inputs too.
+ *   buy_cosmetic also spends vCLAW or the owner's cosmetic credit, and a house
+ *   actor has neither an owner nor a reason to shop.
  *
  * House agents are internal. Connected and hosted agents keep the full
  * HATCHER_ACTION_MENU unchanged; the executor change that introduced this list
@@ -28,6 +34,9 @@ const HOUSE_REFUSED_VERB_LIST = [
   'place_kit_piece',
   'claim_tutorial_quest',
   'salvage_node',
+  'view_wallet',
+  'equip_cosmetic',
+  'buy_cosmetic',
 ] as const satisfies readonly HatcherActionVerb[];
 
 export const HOUSE_REFUSED_AUTONOMY_VERBS: ReadonlySet<string> = new Set<string>(HOUSE_REFUSED_VERB_LIST);

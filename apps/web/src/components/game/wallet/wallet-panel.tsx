@@ -43,13 +43,14 @@
  * the linked wallet's key never leaves the user's browser wallet.
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { parcelDisplayName, parseParcelCode } from '@clawville/shared';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { useWalletBalances } from '@/hooks/use-wallet-balances';
 import { useGameStore } from '@/stores/game';
+import { claimQuestsAfterStep } from '@/stores/quest';
 import {
   api,
   ApiError,
@@ -67,6 +68,21 @@ import {
 export function WalletPanel({ variant = 'section' }: { variant?: 'section' | 'modal' }) {
   const { data: avatar } = useAvatar();
   const custodial = ((avatar as { walletAddress?: string | null } | null)?.walletAddress) ?? null;
+  // Fire GET /api/wallet/balances on every mount, also with NO custodial
+  // wallet: the server records `wallet.viewed` (the wallet-aware tutorial
+  // quest proof) on the ok AND the 404 wallet_missing outcome. Same query key
+  // as WithdrawCard, so TanStack dedupes to one request. The result is unused
+  // here (retry:false in the hook; a 404 adds no UI).
+  const balances = useWalletBalances();
+  // Claim-after-step: once this mount's read has answered (200 or 404), ask
+  // for wallet-aware once (the store waits for the fire-and-forget event and
+  // retries one refusal). The ref keeps it to one trigger per mount.
+  const walletAwareTriggered = useRef(false);
+  useEffect(() => {
+    if (!balances.isFetchedAfterMount || walletAwareTriggered.current) return;
+    walletAwareTriggered.current = true;
+    void claimQuestsAfterStep(['wallet-aware']);
+  }, [balances.isFetchedAfterMount]);
 
   return (
     <div className={variant === 'modal' ? 'space-y-4' : 'space-y-3'}>

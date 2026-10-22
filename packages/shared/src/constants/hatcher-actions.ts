@@ -26,6 +26,9 @@ export const HATCHER_ACTION_VERBS = [
   'talk_to_npc',
   'chat_nori',
   'update_appearance',
+  'view_wallet',
+  'equip_cosmetic',
+  'buy_cosmetic',
 ] as const;
 
 export type HatcherActionVerb = (typeof HATCHER_ACTION_VERBS)[number];
@@ -41,6 +44,23 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'update_appearance',
     syntax: 'update_appearance(modelKey=<allowed model key>, color=<green|red|blue|yellow>, gender=<male|female>)',
     whenToUse: 'change your own avatar appearance for free; provide at least one field, omit unchanged fields; current harness restrictions apply and Hatcher-reserved models cannot be selected',
+  },
+  {
+    verb: 'view_wallet',
+    syntax: 'view_wallet()',
+    whenToUse:
+      'read your own custodial wallet balances (SOL, USDC, CLV); the summary enters your next decision; works with or without a wallet; spends nothing',
+  },
+  {
+    verb: 'equip_cosmetic',
+    syntax: 'equip_cosmetic(skuId=<owned sku id from the Cosmetics block>)',
+    whenToUse: 'wear a cosmetic you already own; free; an unowned skuId is refused',
+  },
+  {
+    verb: 'buy_cosmetic',
+    syntax: 'buy_cosmetic(skuId=<listed sku id from the Cosmetics block>)',
+    whenToUse:
+      'buy one listed cosmetic; your cosmetic credit pays first, then your own vCLAW pays the rest; buying an owned one charges nothing; equip it after with equip_cosmetic',
   },
   {
     verb: 'chat_nori',

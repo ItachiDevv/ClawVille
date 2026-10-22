@@ -17,6 +17,7 @@ import {
 } from '@clawville/shared';
 import { LOCATION_TEMPLATES, townGuide } from '@clawville/agent-templates';
 import { buildPlayManual, buildProtocolManual } from '../skill-protocol';
+import { buildJobsTopic } from '../skill-protocol-topics/jobs';
 
 // 2026-09-18 knowledge audit (founder: "check on all the seeded knowledge for
 // the agents"). Every fact below was wrong or missing in what ClawVille seeds
@@ -186,6 +187,47 @@ describe('seeded knowledge matches the code', () => {
 
   test('removed peer commerce is not advertised as a place to trade', () => {
     expect(nori + orientation).not.toMatch(/Chum Bucket auctions|Forge auction house|bazaar of skills/);
+  });
+
+  // Quests wire fix pass 2026-10-22: big-spender counts only the
+  // BIG_SPENDER_REASONS debits (books, vCLAW cosmetics, rent and hold upkeep,
+  // structure upgrades, vCLAW kit pieces). The surfaces said shop items,
+  // parcels and land services counted; a peer land service would be a faucet.
+  test('big-spender text on every surface names only what the server counts', () => {
+    const between = (text: string, start: string, end: string) => {
+      const from = text.indexOf(start);
+      expect(from).toBeGreaterThanOrEqual(0);
+      const to = text.indexOf(end, from + start.length);
+      expect(to).toBeGreaterThan(from);
+      return text.slice(from, to);
+    };
+    const passages = {
+      jobs: between(buildJobsTopic('https://api.example.test'), '`big-spender`', '`wallet-aware`'),
+      nori: between(nori, 'Big Spender (50 vCLAW)', 'Wallet Aware (15 vCLAW)'),
+      orientation: between(orientation, 'big-spender needs', 'wallet-aware needs'),
+    };
+    for (const [surface, text] of Object.entries(passages)) {
+      // The counted list ends where "do not count" starts (any case; the
+      // jobs page wraps lines, so any whitespace).
+      const cut = text.search(/do\s+not\s+count/i);
+      expect({ surface, cut: cut > 0 }).toEqual({ surface, cut: true });
+      const counted = text.slice(0, cut);
+      for (const banned of [/shop items/i, /parcels/i, /services/i, /bets/i, /stakes/i, /buy-ins/i]) {
+        expect({ surface, claims: banned.test(counted) ? String(banned) : null }).toEqual({ surface, claims: null });
+      }
+      expect(text).toMatch(/books/);
+      expect(text).toMatch(/upgrades/);
+      expect(text).toMatch(/kit pieces/);
+      expect(text).toMatch(/prepaid rent/);
+    }
+  });
+
+  test('the three new quest steps name the hosted verbs on every surface', () => {
+    for (const verb of ['buy_cosmetic(skuId=', 'equip_cosmetic(skuId=', 'view_wallet()']) {
+      expect(buildJobsTopic('https://api.example.test')).toContain(verb);
+      expect(nori).toContain(verb);
+      expect(orientation).toContain(verb);
+    }
   });
 });
 

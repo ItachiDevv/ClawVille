@@ -14,7 +14,11 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 05:10Z (session jev, arena lead). **Staging API is receiving the autonomy "fewer repeated teacher questions" change** (founder 2026-10-22 "yes change the talk prompt"; API only, no route, schema, env or PROTOCOL_VERSION change, protocol stays 97). Web stays `118dc26bd`. **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
+Last Audited: 2026-10-22 05:50Z (session roundup). **Staging is receiving `feat/quests-wire` (PROTOCOL 98, no migration): Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`.** Not yet verified; see the DEPLOY LOG entry of 2026-10-22 05:50Z. **PROD API + WEB = `ae1e1589d`** (promotion #12).
+
+Prior - Last Audited: 2026-10-22 05:10Z (session jev, arena lead). **Staging API is receiving the autonomy "fewer repeated teacher questions" change** (founder 2026-10-22 "yes change the talk prompt"; API only, no route, schema, env or PROTOCOL_VERSION change, protocol stays 97). Web stays `118dc26bd`. **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
+
+Prior - Last Audited: 2026-10-22 04:45Z (session roundup). **PROD API + WEB = `ae1e1589d` (promotion #12, PR #322: shared-table baccarat, PROTOCOL 97, migration 0087), verified live.** Staging API + WEB = `118dc26bd` (docs `dfdf473e2` on top). SCHEMA: synced. Detail in the DEPLOY LOG entry of 2026-10-22 04:45Z. Founder eyes owed (FOUNDER-REVIEW COVE).
 
 Prior - Last Audited: 2026-10-22 04:45Z (session roundup). **PROD API + WEB = `ae1e1589d` (promotion #12, PR #322: shared-table baccarat, PROTOCOL 97, migration 0087), verified live.** Staging API + WEB = `118dc26bd` (docs `dfdf473e2` on top). SCHEMA: synced. Detail in the DEPLOY LOG entry of 2026-10-22 04:45Z. Founder eyes owed (FOUNDER-REVIEW COVE).
 
@@ -660,6 +664,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-22 05:50Z (session roundup) - quests wire to staging (PROTOCOL 98, no migration)
+- **What changed:** founder decision 2026-10-22 ("do whatever you best recommend"). The tutorial quests Style Statement (buy + equip a cosmetic), Big Spender (200 vCLAW of goods debits: `buy_book`, `buy_cosmetic`, `land_kit_piece_fee`, `land_structure_upgrade`, `land_parcel_rent`; never bets, deposits, prepaid rent or peer land services) and Wallet Aware (`wallet.viewed`, once per avatar, from `GET /api/wallet/balances` on the 200 and the no-wallet 404) are claimable. Brand Ambassador is deleted (its Milady check never existed; 0 claim rows on staging and prod). The ladder is 33 quests, 29 pay vCLAW. New hosted-agent verbs `buy_cosmetic(skuId)`, `equip_cosmetic(skuId)`, `view_wallet()` run the same services as the REST routes (`services/cosmetic-actions.ts`, `services/wallet-view-record.ts`); the decide prompt gets a cosmetics block; quest targets put actionable quests first. The USDC cosmetic checkout now logs `cosmetic.purchased`. The web claims a quest right after the step. Tracked `AGENTS.md` synced to the brain copy (founder: keep it tracked).
+- **Review:** two build waves, then one review pass each: Codex money (big-spender overflow fixed: compare in SQL), Opus parity (BLOCKING: hosted agents had no verb for the steps, fixed by the three verbs; wording, docs, claim timing fixed), Codex on the new money paths (an agent without ledger authority could record the wallet proof through REST: fixed). Kept on purpose: a buy paid with the signup cosmetic credit counts for Style Statement; a cross-process duplicate `wallet.viewed` row is possible but pays nothing twice (claims are unique per avatar and quest).
+- **Local gates:** typecheck 0 for api, web, shared, agent-templates; 95 API test files that import a changed module pass, one process each (local `clawville_test` DB); web quest suites 10 + 6 + 8 + 4 pass; doc-path guard pass.
+- **Verification:** pending at push time (next entry).
+- **Who it is for:** every player and agent on the quest ladder. PARITY: human path: Wardrobe + `POST /api/cosmetics/:skuId/{buy,equip}`, Wallet panel + `GET /api/wallet/balances`, `POST /api/quests/tutorial/:id/claim`; agent path: the same routes with an agent session, or the hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`, `claim_tutorial_quest`; settlement binds to the live ledger-capable bound avatar. SCHEMA: synced.
 
 ### 2026-10-22 05:10Z (session jev, arena lead) - autonomy talk prompt lists prior questions, to staging
 - **What changed:** `agent-autonomy-driver.ts` keeps each autonomous agent's last 4 questions per teacher (driver-level map, in memory, bounded) and the teacher talk prompt lists them with "ask about a DIFFERENT part of the topic". The first visit gets the old prompt byte for byte. The talk prefetch still matches the arrival prompt (the list changes only after a talk). The talk debug line gains `prior=N`.
