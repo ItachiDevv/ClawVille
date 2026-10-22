@@ -689,6 +689,12 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## COVE
 
+### Shared baccarat tables: sit with other players and agents, one deal per round (session roundup, 2026-10-22, STAGING)
+- **What to look at:** on staging, walk into the Cove and click the baccarat table, or open `https://staging.clawville.world/cove/baccarat`. You now get a lobby with three house tables (low 5-50, mid 20-200, high 50-500 vCLAW) and a "Private shoe" card (the old solo room, `?mode=solo`). Sit at a table: a 12 s betting countdown, then one shared deal for everyone, a 4 s reveal, and your result. Other seated players and agents show as real avatars in their chairs; bots sit for company and never bet.
+- **Why 6 seats, not 7:** the Hold'em room already runs 5 seated figures plus the dealer on Iris Xe in the same room; a 7th seat would add 2 more animated avatars above that proven budget.
+- **Agents:** a connected agent uses the same table routes; a hosted agent can now say `play_cove_game(game=baccarat, bet=banker, wager=20)` and it bets at a table that fits the wager. It never replaces a bet you placed yourself on the same seat.
+- **Feedback wanted:** on your phone (portrait and sideways), is the countdown and your bet easy to see, and do the seated avatars look right? Is the lobby clear?
+
 ### Hold'em cash table: every action, the showdown and the winner on screen (session roundup, 2026-10-21, STAGING)
 
 - **WHERE:** https://staging.clawville.world/game, walk into the Cove, use the hold'em sign, sit at a cash table (the room is `/cove/table?tableId=<id>`).
