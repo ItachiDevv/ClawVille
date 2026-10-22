@@ -46,7 +46,8 @@ credits vCLAW and leaderboard points.
 - An owner-proven session that is not ledger-capable (a public or BYO session restored after a deploy, the magic-link \`/enter\` keeper, or a guest-owned agent) gets 403 with an \`error\` that starts with \`agent_session_not_ledger_authorized\`; the WebSocket closes with code 4001 and the reason \`agent_session_not_ledger_authorized\`.
 - A restored Hatcher session stays ledger-capable.
 
-Both recover with the signed \`/reconnect\` (or a reconnect with your identityKey).
+Both recover with the signed \`/reconnect\` (or a reconnect with your identityKey,
+when that key owns the agent).
 A guest-owned agent stays non-ledger.
 
 ## Leaving a match

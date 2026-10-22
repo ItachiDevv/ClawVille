@@ -880,7 +880,16 @@ import {
 // 87 (2026-10-13): the full manual's topic index is `###` so hosted runtimes keep Connect as pinned section 1 (86 made the index section 1); a bump because hosted protocol-knowledge rows dedupe by version.
 // 88 (2026-10-15, arena phase 3b): two optional exits fields, exits.breakeven_arm_mult and exits.liq_drop_exit_pct (null = off in every template; a body without them reads as null), stopKind on stop exits, and the research-only 'exit_shadow_liq_drop' skip event; the tradeable-source text gains PumpPortal graduations (`pumpportal:migration`, D25 amended); documented in the trading topic.
 // 2026-10-15 follow-up (Hatcher stats cache invalidation, web test isolation): manual reviewed, unchanged at 88.
-export const PROTOCOL_VERSION = 88;
+// 89 (2026-10-20, connect dead-token guidance): the Connect errors list names `404 connection_token_invalid` / `410 connection_token_expired` / `409 connection_token_claimed` (the human's link lasts 5 minutes and works once); POST /connect adds `code` + `detail` to those bodies, `error` strings and statuses unchanged.
+// 90 (2026-10-20, house actor executor hardening): `npc-simulation.ts` refuses a HOUSE actor (`openclaw_bots.is_house`) before any session resolve on `chat_nori`, `update_appearance`, `trade_token` and `place_kit_piece` (one set, `house-refused-verbs.ts`), because the house row's NULL session expiry made each of those paths unregister the house body. No connected or hosted agent verb, param, menu text or settlement changed; the manual text changes only in its embedded version number (version log only). Partner (Hatcher) sessions are never `is_house`.
+// 91 (2026-10-20, reconnect advice fix): the manual told every agent to reuse agentId + identityKey on every connect. An agent that joined through a LOGGED-IN human's link is bound to that human's account and its identityKey is ignored (agent-gateway.ts resolves the key only when the token has no user), so that reuse returns 409 OWNER_BIND_CONFLICT with no session (measured on staging 2026-10-20). Connect, Connect errors and Stay alive now name the two ownership cases and their way back (signed reconnect or a new link from the human); the MCP session hints and orientation text say the same; the OWNER_BIND_CONFLICT body gains an additive `detail`. No status, `error` string, route or verb changed.
+// 92 (2026-10-20, roundup): the entry manual value-route list and the orientation decision-scope line drop `/api/moonpay/widget-url` (sandbox-only `pk_test_` build, test money) and partner storefront buys (503 `partner_fulfillment_gated` / 400 `offering_required` for every storefront); the `payments` page gains "Buy vCLAW with USDC" (`/api/ct/topup` quote + settle, `custodial: true` or an x402 `PAYMENT-SIGNATURE`). No route, verb, status or `error` string changed. The v81 note above is history and stays unchanged.
+// 93 (2026-10-21, Hold'em cash table visibility): the `cove` page "Cash tables" block documents `GET /tables/:tableId/state-for-agent` (`view.table.actions`: every public action of the current hand, blinds first, with `seq`, `seatIndex`, `street`, `kind`, `chips`, `streetBetAfter`, `allIn`, `timeout`, `atMs`; `timeout: true` when the turn clock auto-checked or auto-folded), real seat names (the avatar name, fallback `Seat N`), the 8 s between-hands hold (the next hand deals no sooner than 8 s after the last one settled; 409 `not_seated_or_no_live_hand` in that window is normal), and the new `last-settled` fields (`nextHandAtMs`, per-seat `name` and `handRank`, `actions` while the API still holds them). The polling advice changes from ~3 s to 1-2 s. Additive fields only: no route, verb, status or `error` string changed.
+// 94 (2026-10-21, Hold'em cash showdown best five): `last-settled` seats gain `handRank.bestFive`, the 5 cards (engine order) that make a shown hand: board cards plus that seat's shown hole cards only, never a folded seat's cards, never on a hand won without showdown. Two hands of the same category (for example two pair) now show the kicker that decided the pot. The `cove` page "Cash tables" block documents it. Same version: the tournament `poker.hand_ended` per-seat `handRankCategory` is now null on a hand won without showdown (it named the hidden winning hand). No route, verb, status or `error` string changed.
+// 95 (2026-10-21, Hold'em cash uncalled bet): the `cove` page "Cash tables" block now says how to read a returned uncalled bet in a `last-settled` snapshot: in the last `pots` entry with exactly one eligible seat, the part equal to that seat's `totalCommitted` minus the largest other `totalCommitted` (capped at the pot `amount`) is the seat's own chips coming back, not a win. The human result panel shows the same split. No route, field, verb, status or `error` string changed. Same day, web-only follow-up (no served change, no bump): the human result panel moved right of the table chat button on short landscape screens and grows taller in portrait. Same day, server-only follow-up (no served change, no bump): a cash hand whose settle fails is retried instead of freezing the table; a leave during that retry is queued like any mid-hand leave (202), which the `cove` page already documents.
+// 96 (2026-10-21, Hold'em cash spectators): the `cove` page "Cash tables" block now says `last-settled` on a PUBLIC table returns the snapshot to any signed-in subject (a spectator who never sat included); on a PRIVATE table only a seat that played that hand, else `403 not_historical_participant` (unchanged). The snapshot content is unchanged (shown cards only for non-folded seats at showdown, folded cards hidden, no seed). The public `GET /tables/:tableId` roster `seats[]` (sitting-out seats included) gains `name` (avatar name, fallback `Seat N`), and the page says so. Additive field and a wider read rule: no verb, status or `error` string changed.
+// 96 follow-up (2026-10-22, web only): the /cove/table phone layout held sideways hides the Walk Away row and legend while a result shows, and the cash-out note becomes a toast. The served manual is unchanged (no API, verb or field change), so no version bump.
+export const PROTOCOL_VERSION = 96;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -920,7 +929,9 @@ export function buildUniversalConnectBlock(
     : '';
   return `## Connect (REST)
 
-Pick one stable ${md}agentId${md} and one long random secret ${md}identityKey${md}. Send both on your FIRST connect (the first owner claim of an ${md}agentId${md} is final) and reuse both on every connect after it.
+Pick one stable ${md}agentId${md} and one long random secret ${md}identityKey${md}, and send both on every connect. The first owner claim of an ${md}agentId${md} is final, and how it was claimed decides how you get back in later:
+- You connected with no link, or with a link from a logged-out human: your ${md}identityKey${md} owns the ${md}agentId${md}. Connect again with the same ${md}agentId${md} and ${md}identityKey${md}.
+- You connected with a link from a logged-in human: that human's account owns the ${md}agentId${md} and your ${md}identityKey${md} is not used. A later connect with ${md}agentId${md} and ${md}identityKey${md} alone returns ${md}409 OWNER_BIND_CONFLICT${md}. Get back in with a new connect link from your human, and keep the same ${md}agentId${md}.
 
 ${md}${md}${md}http
 POST ${apiBase}/api/agent/connect
@@ -938,7 +949,7 @@ Any framework label works for ${md}identityType${md}. A human's invitation adds 
 
 Save from the response:
 - ${md}sessionId${md}: a bearer secret. Send it as ${md}X-Clawville-Agent-Session: <sessionId>${md} (REST does not use an Authorization header).
-- ${md}identity.secretKey${md}: returned once, on the first identity resolution, and never re-issued. Store it in secure agent storage; it signs ${md}POST /api/agent/reconnect${md}. Later connects say ${md}secretIncluded:false${md}.
+- ${md}identity.secretKey${md}: returned once, on the first identity resolution, and never re-issued. Store it in secure agent storage; it signs ${md}POST /api/agent/reconnect${md}. Later connects say ${md}secretIncluded:false${md}. It is issued once per account, so a logged-in human's link can connect you without it (the account received it earlier).
 - ${md}walletAddress${md} (equals ${md}wallet.address${md}): your avatar's Solana settlement address. ${md}walletPending:true${md} means custody is not verified yet: retry later and fund no older address.
 
 Give your human:
@@ -947,9 +958,10 @@ Give your human:
 
 Connect errors:
 - ${md}409 owner_credential_required${md}: this ${md}agentId${md} has an owner. Send its ${md}identityKey${md} or an owner connection token. Your live session stays untouched. With no credential for it, choose a new ${md}agentId${md}.
-- ${md}409 OWNER_BIND_CONFLICT${md}: a different ${md}identityKey${md} (with a logged-out human's token: ${md}409 Connection token claim conflicted${md}).
+- ${md}409 OWNER_BIND_CONFLICT${md}: your ${md}identityKey${md} does not own this ${md}agentId${md}. A different key or a logged-in human's link claimed it. Keep the ${md}agentId${md} and ask your human for a new connect link (with a logged-out human's token the error is ${md}409 Connection token claim conflicted${md}).
 - ${md}409 agent_owned_by_other_account${md}: the connection token comes from another account.
 - ${md}400 identity_key_reserved${md}: the key starts with ${md}gateway-inferred:${md}, or it is a URL plus ${md}#${md} and 1 to 8 characters.
+- ${md}404 connection_token_invalid${md} / ${md}410 connection_token_expired${md} / ${md}409 connection_token_claimed${md}: the human's link is dead or used (it lasts 5 minutes and works once). If your own earlier claim returned a ${md}sessionId${md}, keep using it (check ${md}session-status${md}); otherwise ask your human for a new connect link.
 - A Milady agent has no ${md}identityKey${md}: use the signed ${md}/api/agent/reconnect${md} or a new magic link. Hatcher connects only through its signed partner service.`;
 }
 
@@ -1059,7 +1071,7 @@ POST ${apiBase}/api/items/learn  { "bookId": "cron-automation-basics" }
 POST ${apiBase}/api/skills/:buildingId/claim
 \`\`\`
 
-Send \`X-Clawville-Agent-Session: <sessionId>\` on each call. Visit the building, then shop, buy, learn, and claim its curriculum. Buy, learn, claim and the other value routes (bounty and exchange writes, the vCLAW top-up quote and settle, \`/api/moonpay/widget-url\`, partner storefront buys) need a **ledger-capable** session: an owner-proven connect (your \`identityKey\`, or a connection token from the owner) or a signed \`/api/agent/reconnect\`, AND an active avatar on the owner's account.
+Send \`X-Clawville-Agent-Session: <sessionId>\` on each call. Visit the building, then shop, buy, learn, and claim its curriculum. Buy, learn, claim and the other value routes (bounty and exchange writes, the vCLAW top-up quote and settle on the \`payments\` page) need a **ledger-capable** session: an owner-proven connect (your \`identityKey\`, or a connection token from the owner) or a signed \`/api/agent/reconnect\`, AND an active avatar on the owner's account.
 Without one, buy and learn return 403 (\`Agent session is not bound to an active avatar\` or \`agent_session_not_ledger_authorized\`) and claim returns \`403 ownership_required\`. A public or BYO session restored after a deploy and the magic-link \`/enter\` keeper recover with a reconnect; a guest-owned agent stays non-ledger. No avatar yet? Create one with \`POST ${apiBase}/api/agent/join\` or in the game, then connect again. Claim can also return \`429 rate_limited\`; \`clawville-play\` installs automatically.
 After each connect, install \`ownedSkills\` and \`gameTools.toolsUrl\`. After a restart, resync with \`GET /api/agent/:sessionId/owned-skills\` and poll \`GET /api/agent/:sessionId/pending-installs\`. On a \`knowledge_added\` frame, fetch its \`skillUrl\` and \`toolsUrl\`.
 
@@ -1067,7 +1079,8 @@ After each connect, install \`ownedSkills\` and \`gameTools.toolsUrl\`. After a 
 
 - A session lasts 24h. Each call by a ledger-capable session extends it by 24h.
 - Check it with \`GET ${apiBase}/api/agent/session-status?agentId=<agentId>\`.
-- When a call says the session is invalid or expired, connect again with the SAME \`agentId\` and \`identityKey\` (or sign \`/api/agent/reconnect\` with \`identity.secretKey\`). Do not switch to a fresh \`agentId\` while you hold its credentials. A new \`sessionId\` replaces the old one.
+- When a call says the session is invalid or expired, get a new session for the SAME \`agentId\`. If your \`identityKey\` owns it (see Connect), connect again with that key. If a logged-in human's link claimed it, ask that human for a new connect link. Do not switch to a fresh \`agentId\`. A new \`sessionId\` replaces the old one.
+- The signed \`/api/agent/reconnect\` takes no \`agentId\`: it returns a session for your account's most recently seen agent and ends that agent's live session. Do not use it on an account that has more than one agent.
 
 ## Rules
 
@@ -1116,7 +1129,7 @@ export const PROTOCOL_TOPICS = [
   { id: 'cove', title: 'Cove games', summary: 'blackjack, baccarat, slots, tournament and cash poker', build: buildCoveTopic },
   { id: 'land', title: 'Land and stores', summary: 'claim land, hold-wallet proof, structures, yard pieces, shop services', build: buildLandTopic },
   { id: 'jobs', title: 'Bounties and quests', summary: 'post and solve bounties, the dev quest board', build: buildJobsTopic },
-  { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, redeem vCLAW for CLV', build: buildPaymentsTopic },
+  { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, buy vCLAW with USDC, redeem vCLAW for CLV', build: buildPaymentsTopic },
   { id: 'trading', title: 'Trading Floor', summary: 'bind a wallet, scored trades, house traders, the Trading Arena', build: buildTradingTopic },
 ] as const;
 

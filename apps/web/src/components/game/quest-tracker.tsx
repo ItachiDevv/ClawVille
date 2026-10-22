@@ -15,7 +15,8 @@ import {
 } from '@/lib/hud-anchors';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar } from '@/hooks/use-avatar';
-import { useIsMobile } from '@/hooks/use-is-mobile';
+import { detectIsMobile, useIsMobile } from '@/hooks/use-is-mobile';
+import { bottomPromptOffset, useBottomPromptOwner } from '@/hooks/use-bottom-prompt-slot';
 import { useGameStore } from '@/stores/game';
 
 const TUTORIAL_KEY = 'clawville-tutorial-seen';
@@ -66,6 +67,16 @@ const QUEST_BODY_MAX_PX = 420;
  * expanded, which is the pinned live-tested case.
  */
 const QUEST_BODY_MIN_PX = 120;
+
+/** The mobile pill's top, `top-[7.75rem]` on its wrapper. Change both together. */
+const MOBILE_QUEST_TOP_PX = 124;
+/**
+ * The tallest pill the bottom-centre prompt slot shows (the parcel pill: two
+ * text lines plus a 44px button row), as `use-bottom-prompt-slot` derives its
+ * MOBILE_PROMPT_TOP_RESERVE_PX (110 + 123 + 27 = 260). Reserving the tallest
+ * keeps the list clear of whichever pill is up.
+ */
+const MOBILE_PROMPT_TALLEST_PX = 123;
 
 /** Gap between the minimap card's bottom edge and the tracker. */
 const MINIMAP_STACK_GAP_PX = 8;
@@ -206,6 +217,10 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
   // so the two components always agree about which device they are on.
   const isMobile = useIsMobile();
   const { isLoading: avatarLoading } = useAvatar();
+  // The bottom-centre prompt slot (building / Nori / parcel / salvage pill).
+  // Only the mobile list shares its column, so only that list yields to it.
+  const promptOwner = useBottomPromptOwner();
+  const controlMode = useGameStore((s) => s.controlMode);
   // Desktop top = the minimap card's MEASURED bottom + gap; null until measured
   // (the class fallback below renders on the server and the first paint).
   const minimapBottomPx = useMinimapBottomPx(visible && !isMobile);
@@ -280,7 +295,14 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
           // Auto-expand on the DESKTOP placement only, decided by the same
           // touch check the placement itself uses. A bare `innerWidth < 768`
           // auto-expanded the tracker on every iPad.
-          if (!isMobile) setExpanded(true);
+          //
+          // Read LIVE, not the `isMobile` this closure captured (2026-10-20):
+          // on a mount with the tour already dismissed (the reload after an
+          // agent connect) this runs in the FIRST commit's passive effect,
+          // before `useIsMobile()`'s layout-effect update re-renders, so the
+          // captured value was still `false` and every phone opened expanded,
+          // its list under the bottom "Talk to Nori" pill.
+          if (!detectIsMobile()) setExpanded(true);
           setIsNew(true);
           localStorage.setItem(QUEST_INTRO_KEY, 'true');
           useGameStore.getState().addToast('📋', 'Complete quests to learn the ropes!', 5000);
@@ -291,7 +313,7 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
     check();
     const interval = setInterval(check, 1500);
     return () => clearInterval(interval);
-  }, [forceVisible, visible, isMobile]);
+  }, [forceVisible, visible]);
 
   if (!visible) return null;
 
@@ -323,6 +345,26 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
   const overlapsStatusBar = desktopBandPx !== null && desktopBandPx < QUEST_BODY_MIN_PX;
   const desktopZ = expanded && overlapsStatusBar ? 'z-[42]' : 'z-40';
 
+  // Mobile list band. With a prompt in the bottom-centre slot the list ends a
+  // gap above the TALLEST pill that slot shows, at the slot's own offset
+  // (2026-10-20: at 390x844 the 420px list ran ~135px under the "Talk to Nori"
+  // pill, which stacks higher at z 45 and took the taps). With no prompt up,
+  // the old `100dvh - 288px` band stands. The 120px floor still wins on a
+  // short landscape phone, where no list fits above the pill.
+  const mobileBodyBandCss =
+    promptOwner === null
+      ? 'calc(100dvh - 288px)'
+      : `calc(100dvh - ${MOBILE_QUEST_TOP_PX + QUEST_HEADER_PX + QUEST_STACK_GAP_PX + MOBILE_PROMPT_TALLEST_PX}px - ${bottomPromptOffset(true, controlMode)})`;
+  // Where the floor wins (844x390: list ~177->297, pill ~177->260) the list
+  // still meets the pill. Same trade as `desktopZ` over the status bar:
+  // expanding is an explicit, reversible tap, so while expanded the tracker
+  // stacks one layer above the slot's z 45 and its own rows stay tappable;
+  // collapsed, it hands the layer straight back. CSS `env()`/`dvh` make the
+  // floor-won case invisible to JS, so this keys on `expanded` alone; where
+  // the band fits, the list ends above the pill and the raise changes nothing
+  // there. z 46 stays under the z-50 top-centre stack (agent pill, mode toggle).
+  const mobileZ = expanded ? 'z-[46]' : 'z-40';
+
   // EXACTLY ONE placement renders, chosen by TOUCH. It used to render both and
   // let CSS hide one, which is how an iPad Pro in landscape got the desktop
   // geometry (and its status-bar height reserve) while the status bar itself
@@ -337,7 +379,7 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
       // 124px clears the whole stack whether or not the agent pill renders.
       // The status bar returns null on every touch device, so the desktop
       // left-column reserve does not apply here.
-      <div className="fixed top-[7.75rem] left-1/2 -translate-x-1/2 z-40">
+      <div className={`fixed top-[7.75rem] left-1/2 -translate-x-1/2 ${mobileZ}`}>
         <QuestPanel
           expanded={expanded}
           onToggle={() => setExpanded((e) => !e)}
@@ -348,7 +390,7 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
           progress={progress}
           getProgress={getProgress}
           isNew={isNew}
-          bodyMaxHeight={`min(${QUEST_BODY_MAX_PX}px, max(${QUEST_BODY_MIN_PX}px, calc(100dvh - 288px)))`}
+          bodyMaxHeight={`min(${QUEST_BODY_MAX_PX}px, max(${QUEST_BODY_MIN_PX}px, ${mobileBodyBandCss}))`}
           mobile
         />
       </div>
@@ -397,7 +439,8 @@ interface QuestPanelProps {
    * CSS max-height for the expanded scroll region, decided by the caller
    * because the two placements have different neighbours: the desktop column
    * shares its space with the avatar status bar (measured), the mobile pill
-   * does not (the bar is hidden on touch).
+   * does not (the bar is hidden on touch). The mobile pill shares its column
+   * with the bottom-centre prompt slot instead (2026-10-20, `mobileBodyBandCss`).
    */
   bodyMaxHeight: string;
   mobile?: boolean;

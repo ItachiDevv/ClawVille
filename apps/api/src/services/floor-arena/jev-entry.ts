@@ -1,7 +1,7 @@
 // FEATURE_GATE: jev_arena_entry_shadow
 // Status: shadow + virtual twin (no trade effect)
 // Metric to graduate: virtual-twin net pnl beats actual across bots after >=1 day, founder go
-// Current reading: prod 2026-10-15 09:55Z (1 day, 239 trades): actual -$157.94, twin -$135.70, vetoed -$22.25; v0 helps only dip-hunter
+// Current reading: prod 2026-10-20 03:28Z (6 days, 2012 ok rows, 1727 joined trades): actual -$1692.63, twin -$854.59 (954 trades), vetoed -$838.03 (773, 45%); mean pnl/trade -$0.98 actual vs -$0.90 twin, so most of the gap is fewer trades; twin still loses; $0.115 of the $0.90 cap
 // Review deadline: 2026-10-23 (renewed 2026-10-16: founder "see what it learns"; one day is too small)
 // On deadline: delete, or enforce the gate on paper twins (founder decision)
 // Reference: docs/trading-floor-arena.md
@@ -24,12 +24,16 @@
 import { createHash } from 'node:crypto';
 import { db, sql } from '@clawville/database';
 import type { FloorArenaExits } from '@clawville/shared';
-import { JEV_ENDPOINT, JEV_ENVELOPE_TOKENS, JEV_USD_PER_MTOK } from '../jev-decide-shadow';
 import { pairAgeSeconds, type FloorArenaFeatures } from './filters';
 
+export const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
+/** USD per 1,000,000 billed input tokens. */
+export const JEV_USD_PER_MTOK = 0.042;
+/** Token allowance for the request envelope (model name, JSON keys). */
+export const JEV_ENVELOPE_TOKENS = 256;
 export const JEV_ARENA_MODEL = 'jev-1.13.0'; // pinned: a new jev-latest can shift every probability (resolved 2026-10-14)
 export const JEV_ARENA_TIMEOUT_MS = 2_000;
-/** Fixed advisory-lock key for THIS ledger (the decide shadow uses 7_413_008_101). */
+/** Fixed advisory-lock key that this ledger owns (serializes the cap check + reserve insert). */
 export const JEV_ARENA_CAP_LOCK_KEY = 7_413_008_202;
 export const JEV_ARENA_MAX_IN_FLIGHT = 4;
 export const JEV_ARENA_DEDUPE_MS = 10 * 60_000;

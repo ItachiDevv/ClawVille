@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { AVATAR_COLORS, HATCHER_ACTION_VERBS, CLAWVILLE_GAME_TOOLS } from '@clawville/shared';
+import { AVATAR_COLORS, DECISION_SCOPE, HATCHER_ACTION_MENU, HATCHER_ACTION_VERBS, CLAWVILLE_GAME_TOOLS } from '@clawville/shared';
 import { npcSimulation } from '../npc-simulation';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
+import { HOUSE_REFUSED_AUTONOMY_VERBS } from '../house-refused-verbs';
 const sim = npcSimulation as any;
 const original = npcSimulation.autonomousAppearanceUpdate;
+const originalHouseCheck = npcSimulation.autonomousHouseActorCheck;
 const requests: any[] = [];
 let body: any;
 let session: any;
@@ -20,9 +22,11 @@ beforeEach(() => {
   sim.npcs.delete('appearance-test-body'); sim.npcOverrides.delete('appearance-test-body');
   sim.npcs.set(body.id, body); sim.npcOverrides.set(body.id, 'appearance-session');
   npcSimulation.autonomousAppearanceUpdate = async (input) => { requests.push(input); };
+  npcSimulation.autonomousHouseActorCheck = async () => false;
 });
 afterEach(() => {
   npcSimulation.autonomousAppearanceUpdate = original;
+  npcSimulation.autonomousHouseActorCheck = originalHouseCheck;
   sim.npcs.delete(body.id); sim.npcOverrides.delete(body.id); sim.agentBotSessions.delete('appearance-session');
 });
 const dispatch = (params: string) => npcSimulation.dispatchHatcherActions(body.id, `[ACTION: update_appearance(${params})]`);
@@ -37,6 +41,43 @@ test('actual parser calls shared service with exact actor and full decision menu
   for (const verb of HATCHER_ACTION_VERBS) expect(prompt).toContain(`${verb}(`);
   expect(CLAWVILLE_GAME_TOOLS.find((tool) => tool.name === 'clawville_update_appearance')?.description).toContain('PATCH /api/avatars/me/appearance');
 });
+test('a house actor never reaches the shared appearance write; a non-house actor does', async () => {
+  for (const house of [true, false]) {
+    requests.length = 0;
+    const checked: string[] = [];
+    npcSimulation.autonomousHouseActorCheck = async (agentId) => { checked.push(agentId); return house; };
+    dispatch('color=blue'); await settle();
+    expect(checked).toEqual(['external-appearance-agent']);
+    expect(requests).toHaveLength(house ? 0 : 1);
+    expect(sim.appearanceUpdatesInFlight.has('appearance-avatar')).toBe(false);
+  }
+});
+test('a failed house-actor check drops the write, releases the slot, and the next dispatch runs', async () => {
+  npcSimulation.autonomousHouseActorCheck = async () => { throw new Error('db down'); };
+  dispatch('color=blue'); await settle();
+  expect(requests).toHaveLength(0);
+  expect(sim.appearanceUpdatesInFlight.has('appearance-avatar')).toBe(false);
+  npcSimulation.autonomousHouseActorCheck = async () => false;
+  dispatch('color=red'); await settle();
+  expect(requests).toHaveLength(1);
+});
+test('decision menu: a house entry omits every house-refused verb; a non-house entry keeps the full menu', () => {
+  const perception = npcSimulation.buildPerception(body.id)!;
+  const entry = { agentId: session.config.agentId, avatarId: session.config.avatarId, bodyId: body.id, lastLesson: null, lastBuildingId: null };
+  const userPrompt = agentAutonomyDriver.buildDecisionPrompt(perception, { ...entry, isHouse: false } as any);
+  const housePrompt = agentAutonomyDriver.buildDecisionPrompt(perception, { ...entry, isHouse: true } as any);
+  for (const action of HATCHER_ACTION_MENU) expect(userPrompt).toContain(action.syntax);
+  for (const line of DECISION_SCOPE) expect(userPrompt).toContain(line);
+  expect(HOUSE_REFUSED_AUTONOMY_VERBS.size).toBe(6);
+  for (const action of HATCHER_ACTION_MENU) {
+    if (HOUSE_REFUSED_AUTONOMY_VERBS.has(action.verb)) {
+      expect(housePrompt).not.toContain(action.syntax);
+      expect(housePrompt).not.toContain(`[ACTION: ${action.verb}(`);
+    } else {
+      expect(housePrompt).toContain(action.syntax);
+    }
+  }
+});
 test('strict grammar rejects empty, unknown authority, malformed, duplicate and invalid edits', async () => {
   for (const params of ['', 'color=red,userId=other', 'avatarId=other', 'color=red,garbage', 'color=red,color=blue', 'color=purple', 'gender=unknown', 'modelKey=', 'color=red,']) dispatch(params);
   await settle(); expect(requests).toHaveLength(0);
@@ -45,7 +86,8 @@ test('strict grammar rejects empty, unknown authority, malformed, duplicate and 
 test('one mutation stays in flight and exact same-ID session replacement invalidates the captured fence', async () => {
   let release!: () => void;
   npcSimulation.autonomousAppearanceUpdate = async (input) => { requests.push(input); await new Promise<void>((resolve) => { release = resolve; }); };
-  dispatch('color=red'); dispatch('color=blue');
+  // The executor awaits the house-actor check before the shared write starts.
+  dispatch('color=red'); dispatch('color=blue'); await new Promise((resolve) => setTimeout(resolve, 0));
   expect(requests).toHaveLength(1);
   sim.agentBotSessions.set('appearance-session', { config: { ...session.config } });
   expect(requests[0].isCurrent()).toBe(false);

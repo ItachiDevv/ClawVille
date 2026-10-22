@@ -88,9 +88,11 @@ import { createHash, randomUUID } from 'crypto';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { BLACKJACK_MIN_BET, BLACKJACK_MAX_BET } from './blackjack-engine';
 import {
+  isHouseAgentId,
   resolveAutonomousCoveAgentBinding,
   type ResolvedAutonomousCoveAgent,
 } from './autonomous-cove-agent-binding';
+import { HOUSE_REFUSED_AUTONOMY_VERBS } from './house-refused-verbs';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
@@ -784,6 +786,13 @@ class NpcSimulation {
     const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
     return resolveAgentSession(sessionId);
   };
+  /**
+   * Test seam; true when `agentId` is a server-owned HOUSE bot. The verbs in
+   * HOUSE_REFUSED_AUTONOMY_VERBS ask this BEFORE any connected-session resolve:
+   * a house bot holds no bearer session on purpose, and that resolver treats it
+   * as expired and unregisters the house body as a side effect.
+   */
+  autonomousHouseActorCheck: (agentId: string) => Promise<boolean> = isHouseAgentId;
 
   /**
    * Test seam; production dispatches into the SAME shared quest-settlement
@@ -2664,6 +2673,14 @@ class NpcSimulation {
     attribution: AgentActionAttribution,
     intent: ParsedTradeTokenAction,
   ): Promise<void> {
+    // A house actor can never trade here (no connected session), and the
+    // resolve below would unregister its body. Refuse first; fail closed.
+    try {
+      if (await this.refusedForHouseActor('trade_token', attribution.agentId)) return;
+    } catch {
+      console.warn('[Hatcher] trade_token dropped - house actor check unavailable');
+      return;
+    }
     const resolved = await this.autonomousTradeAgentResolve(
       attribution.sessionId,
       attribution.agentId,
@@ -3082,24 +3099,33 @@ class NpcSimulation {
     attribution: AgentActionAttribution,
     operation: AutonomousLandOperation,
   ): Promise<void> {
+    // place_kit_piece revalidates the CONNECTED session under its locks, which
+    // a house actor can never pass and which unregisters its body. The other
+    // land verbs are not house-refused and skip this check. Fail closed.
+    try {
+      if (await this.refusedForHouseActor(operation.verb, attribution.agentId)) return;
+    } catch {
+      console.warn(`[Hatcher] ${operation.verb} dropped - house actor check unavailable`);
+      return;
+    }
     const resolved = await this.autonomousCoveAgentResolve(
       attribution.sessionId,
       attribution.agentId,
     );
     if (!resolved) {
-      console.warn(`[Hatcher] ${operation.verb} dropped â€” invalid or expired agent session`);
+      console.warn(`[Hatcher] ${operation.verb} dropped - invalid or expired agent session`);
       return;
     }
     if (!resolved.ledgerCapable) {
-      console.warn(`[Hatcher] ${operation.verb} dropped â€” agent session is not ledger-authorized`);
+      console.warn(`[Hatcher] ${operation.verb} dropped - agent session is not ledger-authorized`);
       return;
     }
     if (!resolved.avatarId || !resolved.userId) {
-      console.warn(`[Hatcher] ${operation.verb} dropped â€” agent has no bound avatar`);
+      console.warn(`[Hatcher] ${operation.verb} dropped - agent has no bound avatar`);
       return;
     }
     if (resolved.avatarId !== attribution.avatarId || resolved.agentId !== attribution.agentId) {
-      console.warn(`[Hatcher] ${operation.verb} dropped â€” live agent/avatar binding changed`);
+      console.warn(`[Hatcher] ${operation.verb} dropped - live agent/avatar binding changed`);
       return;
     }
 
@@ -3119,7 +3145,7 @@ class NpcSimulation {
     const reservationKey = `${resolved.avatarId}:${operation.verb}:${operation.parcelCode}`;
     const prior = this.autonomousLandActionLastAdmittedAt.get(reservationKey);
     if (prior !== undefined && admittedAt - prior < AUTONOMOUS_LAND_ACTION_INTERVAL_MS) {
-      console.warn(`[Hatcher] ${operation.verb} dropped â€” duplicate action reserved for 60 seconds`);
+      console.warn(`[Hatcher] ${operation.verb} dropped - duplicate action reserved for 60 seconds`);
       return;
     }
     // Reserve synchronously before the settlement await. The deterministic
@@ -3143,14 +3169,14 @@ class NpcSimulation {
       await this.autonomousLandEffects({ result, identity });
       const body = this.npcs.get(npcId);
       if (body) {
-        this.setNpcActivity(npcId, 'trading', 'ðŸï¸');
+        this.setNpcActivity(npcId, 'trading', '🏝️');
         body.intentDescription = operation.verb === 'place_kit_piece'
           ? `placing ${operation.pieceKey} in the home yard`
           : `${operation.verb.replaceAll('_', ' ')} ${operation.parcelCode}`;
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      console.warn(`[Hatcher] ${operation.verb} dropped â€” ${reason}`);
+      console.warn(`[Hatcher] ${operation.verb} dropped - ${reason}`);
     }
   }
 
@@ -3162,6 +3188,9 @@ class NpcSimulation {
     if (!isCurrent() || this.noriChatsInFlight.has(attribution.avatarId)) return;
     this.noriChatsInFlight.add(attribution.avatarId);
     try {
+      // Both the shared Nori turn and the resolve below re-resolve the
+      // connected session; refuse a house actor before either runs.
+      if (await this.refusedForHouseActor('chat_nori', attribution.agentId)) return;
       const result = await this.autonomousNoriChat({
         actor: { kind: 'agent', sessionId: attribution.sessionId, expectedAgentId: attribution.agentId, expectedAvatarId: attribution.avatarId },
         slug: 'town-guide', content: message, isCurrent,
@@ -3190,6 +3219,9 @@ class NpcSimulation {
     if (!isCurrent() || this.appearanceUpdatesInFlight.has(attribution.avatarId)) return;
     this.appearanceUpdatesInFlight.add(attribution.avatarId);
     try {
+      // The shared appearance write re-resolves the connected session; refuse
+      // a house actor before it runs.
+      if (await this.refusedForHouseActor('update_appearance', attribution.agentId)) return;
       await this.autonomousAppearanceUpdate({
         actor: { kind: 'agent', sessionId: attribution.sessionId, expectedAgentId: attribution.agentId, expectedAvatarId: attribution.avatarId },
         patch, isCurrent,
@@ -3197,6 +3229,18 @@ class NpcSimulation {
     } catch {
       console.warn('[Autonomy] Appearance update refused or unavailable');
     } finally { this.appearanceUpdatesInFlight.delete(attribution.avatarId); }
+  }
+
+  /**
+   * True, with one warn line, when `verb` is in HOUSE_REFUSED_AUTONOMY_VERBS
+   * and the actor is a house bot. Callers return on true BEFORE any
+   * connected-session resolve. A verb outside the set never queries the DB.
+   */
+  private async refusedForHouseActor(verb: string, agentId: string): Promise<boolean> {
+    if (!HOUSE_REFUSED_AUTONOMY_VERBS.has(verb)) return false;
+    if (!(await this.autonomousHouseActorCheck(agentId))) return false;
+    console.warn(`[Hatcher] ${verb} dropped - house actor (no connected session)`);
+    return true;
   }
 
   /** Validate + execute ONE whitelisted Hatcher action. Invalid params drop. */
@@ -3399,34 +3443,34 @@ class NpcSimulation {
       case 'claim_parcel': {
         const keys = Object.keys(params);
         if (keys.some((key) => key !== 'parcelCode' && key !== 'door' && key !== 'weeks')) {
-          console.warn('[Hatcher] claim_parcel dropped â€” unknown parameter');
+          console.warn('[Hatcher] claim_parcel dropped - unknown parameter');
           return;
         }
         if (!HATCHER_LAND_PARCEL_CODES.has(params.parcelCode)) {
-          console.warn(`[Hatcher] claim_parcel dropped â€” unknown parcelCode "${params.parcelCode}"`);
+          console.warn(`[Hatcher] claim_parcel dropped - unknown parcelCode "${params.parcelCode}"`);
           return;
         }
         if (params.door !== 'hold' && params.door !== 'rent') {
-          console.warn(`[Hatcher] claim_parcel dropped â€” door must be hold or rent (got "${params.door}")`);
+          console.warn(`[Hatcher] claim_parcel dropped - door must be hold or rent (got "${params.door}")`);
           return;
         }
         let weeks: number | undefined;
         if (params.door === 'rent') {
           if (!/^\d+$/.test(params.weeks ?? '')) {
-            console.warn('[Hatcher] claim_parcel dropped â€” rent weeks must be an integer');
+            console.warn('[Hatcher] claim_parcel dropped - rent weeks must be an integer');
             return;
           }
           weeks = Number(params.weeks);
           if (!Number.isSafeInteger(weeks) || weeks < 1 || weeks > 26) {
-            console.warn('[Hatcher] claim_parcel dropped â€” rent weeks must be 1..26');
+            console.warn('[Hatcher] claim_parcel dropped - rent weeks must be 1..26');
             return;
           }
         } else if (params.weeks !== undefined) {
-          console.warn('[Hatcher] claim_parcel dropped â€” weeks is rent-only');
+          console.warn('[Hatcher] claim_parcel dropped - weeks is rent-only');
           return;
         }
         if (!attribution) {
-          console.warn('[Hatcher] claim_parcel dropped â€” no bound agent/avatar attribution');
+          console.warn('[Hatcher] claim_parcel dropped - no bound agent/avatar attribution');
           return;
         }
         void this.settleAutonomousLandAction(npcId, attribution, {
@@ -3440,24 +3484,24 @@ class NpcSimulation {
       case 'prepay_rent': {
         const keys = Object.keys(params);
         if (keys.some((key) => key !== 'parcelCode' && key !== 'weeks')) {
-          console.warn('[Hatcher] prepay_rent dropped â€” unknown parameter');
+          console.warn('[Hatcher] prepay_rent dropped - unknown parameter');
           return;
         }
         if (!HATCHER_LAND_PARCEL_CODES.has(params.parcelCode)) {
-          console.warn(`[Hatcher] prepay_rent dropped â€” unknown parcelCode "${params.parcelCode}"`);
+          console.warn(`[Hatcher] prepay_rent dropped - unknown parcelCode "${params.parcelCode}"`);
           return;
         }
         if (!/^\d+$/.test(params.weeks ?? '')) {
-          console.warn('[Hatcher] prepay_rent dropped â€” weeks must be an integer');
+          console.warn('[Hatcher] prepay_rent dropped - weeks must be an integer');
           return;
         }
         const weeks = Number(params.weeks);
         if (!Number.isSafeInteger(weeks) || weeks < 1 || weeks > 26) {
-          console.warn('[Hatcher] prepay_rent dropped â€” weeks must be 1..26');
+          console.warn('[Hatcher] prepay_rent dropped - weeks must be 1..26');
           return;
         }
         if (!attribution) {
-          console.warn('[Hatcher] prepay_rent dropped â€” no bound agent/avatar attribution');
+          console.warn('[Hatcher] prepay_rent dropped - no bound agent/avatar attribution');
           return;
         }
         void this.settleAutonomousLandAction(npcId, attribution, {
@@ -3469,15 +3513,15 @@ class NpcSimulation {
       }
       case 'release_parcel': {
         if (Object.keys(params).some((key) => key !== 'parcelCode')) {
-          console.warn('[Hatcher] release_parcel dropped â€” unknown parameter');
+          console.warn('[Hatcher] release_parcel dropped - unknown parameter');
           return;
         }
         if (!HATCHER_LAND_PARCEL_CODES.has(params.parcelCode)) {
-          console.warn(`[Hatcher] release_parcel dropped â€” unknown parcelCode "${params.parcelCode}"`);
+          console.warn(`[Hatcher] release_parcel dropped - unknown parcelCode "${params.parcelCode}"`);
           return;
         }
         if (!attribution) {
-          console.warn('[Hatcher] release_parcel dropped â€” no bound agent/avatar attribution');
+          console.warn('[Hatcher] release_parcel dropped - no bound agent/avatar attribution');
           return;
         }
         void this.settleAutonomousLandAction(npcId, attribution, {

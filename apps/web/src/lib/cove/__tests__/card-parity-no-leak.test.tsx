@@ -170,6 +170,7 @@ describe('whole-mirror no-leak boundary', () => {
         ],
         settledAtMs: 1,
         displayExpiresAtMs: 2,
+        nextHandAtMs: 2,
       },
       correlation: { hand: 'cash-table:44', handNumber: 44 },
       dealStep: 'showdown',

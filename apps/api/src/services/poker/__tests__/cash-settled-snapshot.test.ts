@@ -222,15 +222,25 @@ describe('BA-1 snapshot entitlement and serialization', () => {
       settledAt: new Date(1_700_000_000_000),
     });
 
-    expect(() => assertCashSettledHandEntitlement(seats, 'winner')).not.toThrow();
-    expect(() => assertCashSettledHandEntitlement(seats, 'loser')).not.toThrow();
-    expect(() => assertCashSettledHandEntitlement(seats, 'folder')).not.toThrow();
-    expect(() => assertCashSettledHandEntitlement(seats, 'unrelated')).toThrow(CashTableError);
+    // Private table: participants only.
+    expect(() => assertCashSettledHandEntitlement(seats, 'winner', 'private')).not.toThrow();
+    expect(() => assertCashSettledHandEntitlement(seats, 'loser', 'private')).not.toThrow();
+    expect(() => assertCashSettledHandEntitlement(seats, 'folder', 'private')).not.toThrow();
+    expect(() => assertCashSettledHandEntitlement(seats, 'unrelated', 'private')).toThrow(
+      CashTableError,
+    );
     try {
-      assertCashSettledHandEntitlement(seats, 'unrelated');
+      assertCashSettledHandEntitlement(seats, 'unrelated', 'private');
     } catch (error) {
       expect((error as CashTableError).httpStatus).toBe(403);
+      expect((error as CashTableError).code).toBe('not_historical_participant');
     }
+    // Public table: any resolved subject, a never-seated spectator included.
+    expect(() => assertCashSettledHandEntitlement(seats, 'unrelated', 'public')).not.toThrow();
+    // Unknown visibility fails closed to the participant rule.
+    expect(() => assertCashSettledHandEntitlement(seats, 'unrelated', undefined)).toThrow(
+      CashTableError,
+    );
 
     expect(snapshot.handId).toBe('table-1:7');
     expect(snapshot.seats.find((seat) => seat.avatarId === 'winner')!.shown).not.toBeNull();
@@ -263,13 +273,17 @@ describe('BA-1 snapshot entitlement and serialization', () => {
 });
 
 describe('BA-1 last-settled transport service semantics', () => {
-  function managerWith(hand: Record<string, unknown> | null, tableExists = true) {
+  function managerWith(
+    hand: Record<string, unknown> | null,
+    tableExists = true,
+    visibility: 'public' | 'private' = 'private',
+  ) {
     const fakeDb = {
       select() {
         return {
           from(table: unknown) {
             const rows = table === pokerCashTables
-              ? (tableExists ? [{ id: 'table-1' }] : [])
+              ? (tableExists ? [{ id: 'table-1', visibility }] : [])
               : table === pokerCashHands && hand
                 ? [hand]
                 : [];
@@ -324,8 +338,23 @@ describe('BA-1 last-settled transport service semantics', () => {
     expect(await managerWith(null).getLastSettledHand('table-1', 'winner', 4)).toBeNull();
   });
 
-  it('returns the latest persisted snapshot to historical requesters and 403 to unrelated ones', async () => {
-    const manager = managerWith(persistedHand());
+  it('public table: a never-seated spectator gets the snapshot, folded cards hidden, no seed', async () => {
+    const manager = managerWith(persistedHand(), true, 'public');
+    const spectator = await manager.getLastSettledHand('table-1', 'unrelated', 3);
+    expect(spectator?.handNumber).toBe(4);
+    expect(spectator?.handId).toBe('table-1:4');
+    expect(spectator?.seats.find((seat) => seat.avatarId === 'winner')?.shown).not.toBeNull();
+    expect(spectator?.seats.find((seat) => seat.avatarId === 'loser')?.shown).not.toBeNull();
+    expect(spectator?.seats.find((seat) => seat.avatarId === 'folder')?.shown).toBeNull();
+    // The spectator sees exactly what a participant sees.
+    expect(spectator).toEqual(await manager.getLastSettledHand('table-1', 'winner', 3));
+    const wire = JSON.stringify(spectator);
+    expect(wire).not.toContain('c'.repeat(64)); // the revealed server seed
+    expect(wire).not.toMatch(/serverSeed|clientSeed|seedReveal|seedCommit/i);
+  });
+
+  it('private table: the latest persisted snapshot goes to historical requesters, 403 to unrelated ones', async () => {
+    const manager = managerWith(persistedHand(), true, 'private');
     const winner = await manager.getLastSettledHand('table-1', 'winner', 3);
     const loser = await manager.getLastSettledHand('table-1', 'loser', 3);
     const folder = await manager.getLastSettledHand('table-1', 'folder', 3);

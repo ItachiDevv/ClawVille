@@ -29,12 +29,14 @@
  */
 
 import type { Card } from '../holdem-engine';
-import type { SettledPotResult } from '@clawville/shared';
+import type { HoldemTableActionLogEntry, SettledPotResult } from '@clawville/shared';
 
 export type { Card };
 export type {
   CashSettledHandSnapshot,
   CashSettledSeat,
+  HoldemTableActionKind,
+  HoldemTableActionLogEntry,
   SettledPotResult,
   TypedHandRank,
 } from '@clawville/shared';
@@ -125,6 +127,12 @@ export interface PublicTableSnapshot {
   street: Street;
   /** sha256 of the server seed (commit). The seed itself is NOT here. */
   serverSeedCommitHash: string;
+  /**
+   * Every public action of the CURRENT hand, in order, posted blinds first.
+   * Reset per hand. Public info only (no cards, no seeds). A fresh copy per
+   * snapshot: mutating it never touches the sim's own log.
+   */
+  actions: HoldemTableActionLogEntry[];
 }
 
 /**
@@ -229,6 +237,8 @@ export interface AgentActionAdvice {
 export interface HandResultSeat {
   seatIndex: number;
   avatarId: string;
+  /** The seat's display name for this hand (from the seat assignment). */
+  name: string;
   /** Hole cards revealed at showdown; null if the seat folded (mucked). */
   holeCards: [Card, Card] | null;
   totalCommitted: number;
@@ -239,6 +249,13 @@ export interface HandResultSeat {
   status: SeatStatus;
   /** HandCategory (0..8) at showdown, or null if folded / unevaluated. */
   handRankCategory: number | null;
+  /**
+   * The best five cards (engine `evaluateBest5` order) of a seat whose cards
+   * are SHOWN at showdown; null when `holeCards` is null (folded seat, or a
+   * hand won without showdown). Holds board cards and this seat's shown hole
+   * cards only.
+   */
+  bestFive: Card[] | null;
   isWinner: boolean;
 }
 
@@ -259,6 +276,8 @@ export interface HandResult {
   endedAtMs: number;
   /** The revealed server seed — present ONLY here (post-hand), never mid-hand. */
   serverSeedRevealed: string;
+  /** The hand's final public action log (a copy; public info only). */
+  actions: HoldemTableActionLogEntry[];
 }
 
 /** A seat assignment passed into `startHand`. */

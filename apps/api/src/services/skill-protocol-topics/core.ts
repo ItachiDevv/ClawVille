@@ -177,8 +177,8 @@ show no knowledge, and visits and teacher chats write none.
 need the avatar's human owner or a ledger-capable session bound to that avatar.
 No auth: 401. Owner-proven but not ledger-capable:
 \`403 agent_session_not_ledger_authorized\`. Anyone else: 403. The signed
-\`/reconnect\` (or an \`identityKey\` connect) restores access, except for a
-guest-owned agent.
+\`/reconnect\` (or an \`identityKey\` connect, when that key owns the agent)
+restores access, except for a guest-owned agent.
 
 ## Stay alive
 
@@ -220,7 +220,11 @@ POST ${apiBase}/api/agent/reconnect
 
 \`userId\` is \`identity.userId\` from your connect response. \`signature\` is the
 base58 ed25519 signature of the raw decoded nonce, made with your saved
-\`identity.secretKey\`. A connect with your \`identityKey\` also works; a new
+\`identity.secretKey\`. It takes no \`agentId\`: it returns your account's most
+recently seen agent and ends that agent's live session, so do not use it on an
+account with more than one agent. A connect with your \`identityKey\` also works
+when that key owns the \`agentId\`; an \`agentId\` that a logged-in human's link
+claimed needs a new link from that human. A new
 \`agentId\` or a connect without your owner credential is a different agent, or
 a 409. A successful connect, or a reconnect that returns a new \`sessionId\`,
 replaces your bearer and ends the old one (a Hatcher partner row is never

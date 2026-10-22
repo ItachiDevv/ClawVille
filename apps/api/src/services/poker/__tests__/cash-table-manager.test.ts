@@ -22,7 +22,7 @@
  *       stack) → seat freed; net CT across the whole session conserves.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, spyOn } from 'bun:test';
 import { randomUUID } from 'crypto';
 import {
   buildCashSettledHandSnapshot,
@@ -31,6 +31,7 @@ import {
   type CashSubject,
 } from '../cash-table-manager';
 import { FIXTURE_SCENARIOS } from '../../cove-test-fixture';
+import { evaluateBest5 } from '../../holdem-engine';
 import { PokerTableSim } from '../poker-table-sim';
 import type { HandResult, SimClock } from '../poker-table-types';
 
@@ -489,6 +490,8 @@ class FakeDb {
     kind: ['kind', 'kind'],
     amountCt: ['amountCt', 'amount_ct'],
     ledgerTxnId: ['ledgerTxnId', 'ledger_txn_id'],
+    // avatars.name (seat display names, 2026-10-21).
+    name: ['name', 'name'],
   };
 
   /** camelCase input → row keyed by snake_case (matchRow uses snake). Fills defaults. */
@@ -584,6 +587,8 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
       ledger: ledger as never,
       sim,
       clock: new FakeClock(),
+      // Pre-hold semantics: these tests expect the next hand to deal at once.
+      settledHandHoldMs: 0,
       seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
       seededAgentProvider: () => ({
         avatarId: seededAvatarId,
@@ -1021,6 +1026,8 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
       ledger: ledger as never,
       sim,
       clock: new FakeClock(),
+      // Pre-hold semantics: these tests expect the next hand to deal at once.
+      settledHandHoldMs: 0,
       seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
       seededAgentProvider: () => ({
         avatarId: 'agent-seed-x',
@@ -1097,6 +1104,8 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
       ledger: ledger as never,
       sim,
       clock: new FakeClock(),
+      // Pre-hold semantics: these tests expect the next hand to deal at once.
+      settledHandHoldMs: 0,
       seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
       seededAgentProvider: () => ({ avatarId: 'agent-seed-x', agentId: 'agent-seed', name: 'Seeded Agent' }),
       houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
@@ -1122,6 +1131,8 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
       ledger: ledger as never,
       sim,
       clock: new FakeClock(),
+      // Pre-hold semantics: these tests expect the next hand to deal at once.
+      settledHandHoldMs: 0,
       seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
       seededAgentProvider: () => ({ avatarId: 'agent-seed-y', agentId: 'agent-seed', name: 'Seeded Agent' }),
     });
@@ -1248,6 +1259,8 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
       ledger: ledger as never,
       sim,
       clock: new FakeClock(),
+      // Pre-hold semantics: these tests expect the next hand to deal at once.
+      settledHandHoldMs: 0,
       seedFn: opts?.seedFn ?? (() => (seedCounter++).toString(16).padStart(64, '0')),
       seededAgentProvider: bots.provider,
       houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
@@ -2499,6 +2512,8 @@ describe('CashTableManager — turn-clock timeout settles under the lock (OPEN H
       ledger: ledger as never,
       sim,
       clock,
+      // Pre-hold semantics: these tests expect the next hand to deal at once.
+      settledHandHoldMs: 0,
       seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
       seededAgentProvider: bots.provider,
       houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
@@ -2606,6 +2621,8 @@ describe('CashTableManager — W-F FIX-D2 fixture/tick deal arbitration', () => 
       ledger: ledger as never,
       sim,
       clock: new FakeClock(),
+      // Pre-hold semantics: these tests expect the next hand to deal at once.
+      settledHandHoldMs: 0,
       seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
       seededAgentProvider: (_tableId, seatIndex) => ({
         avatarId: `fixture-guard-seeded-bot-${seatIndex}`,
@@ -2741,5 +2758,624 @@ describe('CashTableManager — W-F FIX-D2 fixture/tick deal arbitration', () => 
       .filter((row) => row.table_id === table.id);
     expect(placeholder?.fixture_run_id).toBe(FIXTURE_RUN_ID);
     expect(harness.sim.getPublicSnapshot(`cash:${table.id}`)).not.toBeNull();
+  });
+});
+
+// ── Hold'em visibility (founder order 2026-10-21) ────────────────────────────
+//
+// Seat names from avatars.name, the between-hands hold (default 8 s) with the
+// one-shot hold timer that deals a no-tick table with NO poke, the settled
+// snapshot's in-memory action log + nextHandAtMs, and handRank persistence.
+
+/** A clock whose now() advances on demand and whose timers fire by due time. */
+class AdvancingClock implements SimClock {
+  t = 2_000_000;
+  private timers: Array<{ id: number; due: number; cb: () => void }> = [];
+  private nextId = 1;
+  now(): number {
+    return this.t;
+  }
+  setTimer(cb: () => void, ms: number): unknown {
+    const id = this.nextId++;
+    this.timers.push({ id, due: this.t + ms, cb });
+    return id;
+  }
+  clearTimer(handle: unknown): void {
+    this.timers = this.timers.filter((timer) => timer.id !== handle);
+  }
+  pendingCount(): number {
+    return this.timers.length;
+  }
+  /** Move time forward by `ms`, firing every timer that falls due, in order. */
+  advance(ms: number): void {
+    const target = this.t + ms;
+    for (;;) {
+      const due = this.timers
+        .filter((timer) => timer.due <= target)
+        .sort((a, b) => a.due - b.due)[0];
+      if (!due) break;
+      this.timers = this.timers.filter((timer) => timer.id !== due.id);
+      this.t = Math.max(this.t, due.due);
+      due.cb();
+    }
+    this.t = target;
+  }
+}
+
+/**
+ * Let fire-and-forget async work (the hold timer's locked start) run. Stops
+ * early once `until()` holds; bounded so a broken path fails the assertion
+ * after it instead of hanging.
+ */
+async function flushAsync(until: () => boolean = () => false, rounds = 200): Promise<void> {
+  for (let i = 0; i < rounds && !until(); i++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+describe('CashTableManager — hold\'em visibility: names, hold, settled log, hand rank', () => {
+  function makeHoldHarness(settledHandHoldMs?: number) {
+    const db = new FakeDb();
+    const ledger = new FakeLedger();
+    const clock = new AdvancingClock();
+    // The sim keeps its own never-firing clock so ONLY the manager's hold timer
+    // is on the advancing clock (turn clocks never fire by accident here).
+    const sim = new PokerTableSim(new FakeClock());
+    let seedCounter = 0;
+    const mgr = new CashTableManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim,
+      clock,
+      ...(settledHandHoldMs === undefined ? {} : { settledHandHoldMs }),
+      seedFn: () => (0xabc + seedCounter++).toString(16).padStart(64, '0'),
+    });
+    return { db, ledger, clock, sim, mgr };
+  }
+
+  async function seatTwoHumans(h: ReturnType<typeof makeHoldHarness>) {
+    const table = await h.mgr.createTable(
+      {
+        source: 'player-public',
+        visibility: 'public',
+        tierKey: null,
+        buyInCt: 100,
+        smallBlindCt: 1,
+        bigBlindCt: 2,
+        maxSeats: 6,
+        seededAgentSlots: 0,
+      },
+      humanSubject('vis-creator'),
+    );
+    // Only Alice has an avatars row: Bob must fall back to "Seat N+1".
+    h.db.stores.get(avatars)!.push({ id: 'vis-alice', name: 'Alice' });
+    h.ledger.setBalance('vis-alice', 1000);
+    h.ledger.setBalance('vis-bob', 1000);
+    const a = await h.mgr.sitDown(table.id, humanSubject('vis-alice'), 100);
+    const b = await h.mgr.sitDown(table.id, humanSubject('vis-bob'), 100);
+    return {
+      tableId: table.id,
+      sid: `cash:${table.id}`,
+      aliceSeat: a.seatIndex,
+      bobSeat: b.seatIndex,
+    };
+  }
+
+  let seq = 0;
+  /** The to-act seat checks when free, else calls (or folds when `fold`). */
+  async function actOnce(
+    h: ReturnType<typeof makeHoldHarness>,
+    tableId: string,
+    sid: string,
+    mode: 'passive' | 'fold',
+  ) {
+    const snap = h.sim.getPublicSnapshot(sid)!;
+    const actor = snap.seats.find((s) => s.seatIndex === snap.toActSeatIndex)!;
+    const action =
+      mode === 'fold'
+        ? ({ kind: 'fold' } as const)
+        : snap.toCall > 0
+          ? ({ kind: 'call' } as const)
+          : ({ kind: 'check' } as const);
+    const res = await h.mgr.submitAction({
+      tableId,
+      subject: humanSubject(actor.avatarId),
+      handNumber: snap.handNumber,
+      actionSeq: seq++,
+      action,
+    });
+    expect(res.ok).toBe(true);
+    return res;
+  }
+
+  it('names seats from avatars.name with a "Seat N+1" fallback', async () => {
+    const h = makeHoldHarness();
+    const { sid, aliceSeat, bobSeat } = await seatTwoHumans(h);
+    const snap = h.sim.getPublicSnapshot(sid)!;
+    const byAvatar = new Map(snap.seats.map((s) => [s.avatarId, s.name]));
+    expect(byAvatar.get('vis-alice')).toBe('Alice');
+    expect(byAvatar.get('vis-bob')).toBe(`Seat ${bobSeat + 1}`);
+    expect(aliceSeat).not.toBe(bobSeat);
+    for (const s of snap.seats) {
+      expect(s.name).not.toMatch(/^(Agent|Player) \d+$/);
+    }
+    // The live public snapshot carries the current hand's log, blinds first.
+    expect(snap.actions.map((a) => a.kind)).toEqual(['post-sb', 'post-bb']);
+  });
+
+  it('getTableState roster seats carry name, sitting-out seats included, with a "Seat N+1" fallback', async () => {
+    const h = makeHoldHarness();
+    const { tableId, aliceSeat, bobSeat } = await seatTwoHumans(h);
+    // Two sitting-out seats that are NOT in the live hand: a named bot and a
+    // blank-named avatar (blank falls back like a missing row).
+    h.db.stores.get(avatars)!.push({ id: 'vis-bot', name: 'Felt-Bot-007' });
+    h.db.stores.get(avatars)!.push({ id: 'vis-blank', name: '   ' });
+    for (const [avatarId, seatIndex] of [['vis-bot', 4], ['vis-blank', 5]] as const) {
+      (h.db.stores.get(pokerCashSeats) as Row[]).push({
+        id: randomUUID(),
+        table_id: tableId,
+        avatar_id: avatarId,
+        agent_id: null,
+        subject_type: 'agent',
+        is_seeded: 'true',
+        seat_index: seatIndex,
+        current_stack_ct: '0',
+        total_bought_in_ct: '0',
+        total_cashed_out_ct: '0',
+        status: 'sitting_out',
+        seated_at: new Date('2026-10-21T00:00:00Z'),
+        updated_at: new Date('2026-10-21T00:00:00Z'),
+      });
+    }
+
+    const state = (await h.mgr.getTableState(tableId))!;
+    const byAvatar = new Map(state.seats.map((s) => [s.avatarId, s]));
+    expect(byAvatar.get('vis-alice')!.name).toBe('Alice');
+    expect(byAvatar.get('vis-bob')!.name).toBe(`Seat ${bobSeat + 1}`);
+    expect(byAvatar.get('vis-bot')!.name).toBe('Felt-Bot-007');
+    expect(byAvatar.get('vis-bot')!.status).toBe('sitting_out');
+    expect(byAvatar.get('vis-blank')!.name).toBe('Seat 6');
+    expect(aliceSeat).not.toBe(bobSeat);
+    // Roster names agree with the live hand's names for the seats in it.
+    const live = new Map(state.live!.seats.map((s) => [s.avatarId, s.name]));
+    expect(live.get('vis-alice')).toBe(byAvatar.get('vis-alice')!.name);
+    expect(live.get('vis-bob')).toBe(byAvatar.get('vis-bob')!.name);
+    expect(live.has('vis-bot')).toBe(false);
+  });
+
+  it('holds the next deal for 8 s after settle, then the hold timer deals a no-tick table with no poke', async () => {
+    const h = makeHoldHarness(); // the REAL default hold
+    const { tableId, sid } = await seatTwoHumans(h);
+    expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(1);
+
+    // The first actor folds: hand 1 settles. The next hand must NOT deal now.
+    const res = await actOnce(h, tableId, sid, 'fold');
+    expect(res.handComplete).toBe(true);
+    const settledAt = h.clock.now();
+    expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+    expect(h.clock.pendingCount()).toBe(1); // exactly one hold timer armed
+
+    // A REST poke inside the hold is refused too (every path goes through it).
+    expect(await h.mgr.startHandWhenReady(tableId)).toBe(false);
+    expect(h.clock.pendingCount()).toBe(1); // no duplicate timer
+
+    // The settled snapshot: in-memory log + nextHandAtMs = settledAt + 8000.
+    const settled = (await h.mgr.getLastSettledHand(tableId, 'vis-alice', 0))!;
+    expect(settled.handNumber).toBe(1);
+    expect(settled.settledAtMs).toBe(settledAt);
+    expect(settled.nextHandAtMs).toBe(settledAt + 8_000);
+    expect(settled.actions!.map((a) => a.kind)).toEqual(['post-sb', 'post-bb', 'fold']);
+    expect(settled.seats.find((s) => s.avatarId === 'vis-alice')!.name).toBe('Alice');
+    // A fold-win evaluates no hand: handRank is null for every seat.
+    expect(settled.seats.every((s) => s.handRank === null)).toBe(true);
+    expect(JSON.stringify(settled.seats)).not.toContain('bestFive');
+    // The snapshot's log is a copy.
+    settled.actions!.length = 0;
+    expect((await h.mgr.getLastSettledHand(tableId, 'vis-alice', 0))!.actions!.length).toBe(3);
+
+    // 1 ms before the hold ends: still no hand.
+    h.clock.advance(7_999);
+    await flushAsync(undefined, 20);
+    expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+    expect(await h.mgr.startHandWhenReady(tableId)).toBe(false);
+
+    // The hold ends: the timer deals hand 2 by itself (player-public = no tick).
+    h.clock.advance(1);
+    await flushAsync(() => h.sim.getPublicSnapshot(sid) !== null);
+    const next = h.sim.getPublicSnapshot(sid);
+    expect(next).not.toBeNull();
+    expect(next!.handNumber).toBe(2);
+    // The new hand's log is reset to its own blinds.
+    expect(next!.actions.map((a) => [a.seq, a.kind])).toEqual([
+      [0, 'post-sb'],
+      [1, 'post-bb'],
+    ]);
+    expect(h.clock.pendingCount()).toBe(0);
+    expect((h.mgr['lastSettledAtMs'] as Map<string, number>).size).toBe(0);
+  });
+
+  it('a table that empties during the hold does not deal and drops its hold entry', async () => {
+    const h = makeHoldHarness();
+    const { tableId, sid } = await seatTwoHumans(h);
+    await actOnce(h, tableId, sid, 'fold');
+    await h.mgr.leaveTable(tableId, humanSubject('vis-bob'));
+    h.clock.advance(8_000);
+    await flushAsync(undefined, 40);
+    expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+    expect((h.mgr['lastSettledAtMs'] as Map<string, number>).size).toBe(0);
+    expect(h.clock.pendingCount()).toBe(0);
+  });
+
+  it('a poke after the hold deals at once and cancels the armed hold timer', async () => {
+    const h = makeHoldHarness();
+    const { tableId, sid } = await seatTwoHumans(h);
+    await actOnce(h, tableId, sid, 'fold');
+    expect(h.clock.pendingCount()).toBe(1);
+    // Jump past the hold WITHOUT firing timers (the house tick wins the race),
+    // then poke.
+    h.clock.t += 8_000;
+    expect(await h.mgr.startHandWhenReady(tableId)).toBe(true);
+    expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(2);
+    expect(h.clock.pendingCount()).toBe(0);
+  });
+
+  it('an API restart inside the hold restores it from settled_at, then deals after it', async () => {
+    const h = makeHoldHarness();
+    const { tableId } = await seatTwoHumans(h);
+    await actOnce(h, tableId, `cash:${tableId}`, 'fold');
+    h.clock.t += 2_000; // the API restarts 2 s into the 8 s hold
+    const sim2 = new PokerTableSim(new FakeClock());
+    const restarted = new CashTableManager({
+      db: h.db as never,
+      ledger: h.ledger as never,
+      sim: sim2,
+      clock: h.clock,
+      seedFn: () => 'f'.repeat(64),
+    });
+    expect(await restarted.startHandWhenReady(tableId)).toBe(false);
+    expect(sim2.getPublicSnapshot(`cash:${tableId}`)).toBeNull();
+    // The restored hold armed the restarted manager's own deal timer.
+    h.clock.advance(6_000);
+    await flushAsync(() => sim2.getPublicSnapshot(`cash:${tableId}`) !== null);
+    expect(sim2.getPublicSnapshot(`cash:${tableId}`)!.handNumber).toBe(2);
+  });
+
+  it('a hold timer whose start fails retries, so a no-tick table does not stall', async () => {
+    const h = makeHoldHarness();
+    const { tableId, sid } = await seatTwoHumans(h);
+    await actOnce(h, tableId, sid, 'fold');
+    const mgr = h.mgr as unknown as Record<string, (...args: unknown[]) => Promise<void>>;
+    const original = mgr['startAndAdvance']!.bind(h.mgr);
+    let calls = 0;
+    mgr['startAndAdvance'] = async (...args: unknown[]) => {
+      calls++;
+      if (calls === 1) throw new Error('transient db error');
+      return original(...args);
+    };
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      h.clock.advance(8_000);
+      await flushAsync(() => h.clock.pendingCount() === 1);
+      expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+      expect(h.clock.pendingCount()).toBe(1); // the retry is armed
+      h.clock.advance(2_000);
+      await flushAsync(() => h.sim.getPublicSnapshot(sid) !== null);
+      expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(2);
+      expect(calls).toBe(2);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('settledHandHoldMs: 0 keeps the immediate next deal', async () => {
+    const h = makeHoldHarness(0);
+    const { tableId, sid } = await seatTwoHumans(h);
+    await actOnce(h, tableId, sid, 'fold');
+    expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(2);
+    expect(h.clock.pendingCount()).toBe(0);
+    const settled = (await h.mgr.getLastSettledHand(tableId, 'vis-alice', 0))!;
+    expect(settled.nextHandAtMs).toBe(settled.settledAtMs);
+  });
+
+  it('persists name + handRank per seat at showdown and returns them in the settled snapshot', async () => {
+    const h = makeHoldHarness();
+    const { tableId, sid } = await seatTwoHumans(h);
+    for (let i = 0; i < 20 && h.sim.getPublicSnapshot(sid); i++) {
+      await actOnce(h, tableId, sid, 'passive');
+    }
+    expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+
+    const row = h.db.stores.get(pokerCashHands)!.find(
+      (r) => r.table_id === tableId && r.hand_number === 1,
+    )!;
+    expect(row.ended_at).toBe('showdown');
+    const persisted = row.seat_result_json as Array<{
+      avatarId: string;
+      name?: string;
+      handRank?: { category: number; categoryName: string } | null;
+    }>;
+    expect(persisted.find((s) => s.avatarId === 'vis-alice')!.name).toBe('Alice');
+    for (const s of persisted) {
+      expect(s.handRank).not.toBeNull();
+      expect(s.handRank!.category).toBeGreaterThanOrEqual(0);
+      expect(s.handRank!.categoryName).toMatch(/^[a-z_]+$/);
+    }
+
+    const settled = (await h.mgr.getLastSettledHand(tableId, 'vis-bob', 0))!;
+    expect(settled.endedAt).toBe('showdown');
+    // The winning pot's rank uses the SAME key spelling as the seat handRank.
+    const winningRank = settled.pots[0]!.winningRank!;
+    const winnerSeat = settled.pots[0]!.awards[0]!.seatIndex;
+    const winner = settled.seats.find((s) => s.seatIndex === winnerSeat)!;
+    expect(winner.handRank).toMatchObject({
+      category: winningRank.category,
+      categoryName: winningRank.categoryName,
+    });
+    // bestFive: the five cards that make each shown hand. Built from the
+    // REBUILT snapshot (seed re-deal), so it also proves the re-dealt hole
+    // cards agree with the cards the engine evaluated at settle.
+    const cardKey = (c: { suit: string; rank: string }) => `${c.rank}${c.suit}`;
+    expect(settled.board.length).toBe(5);
+    for (const s of settled.seats) {
+      expect(s.shown).not.toBeNull();
+      const five = s.handRank!.bestFive!;
+      expect(five.length).toBe(5);
+      const allowed = new Set([...settled.board, ...s.shown!].map(cardKey));
+      expect(five.every((c) => allowed.has(cardKey(c)))).toBe(true);
+      expect(five).toEqual(evaluateBest5([...s.shown!, ...settled.board]).bestFive);
+    }
+    // Showdown log: blinds + only check/call actions, never a card.
+    expect(settled.actions![0]!.kind).toBe('post-sb');
+    expect(
+      settled.actions!.slice(2).every((a) => a.kind === 'check' || a.kind === 'call'),
+    ).toBe(true);
+  });
+
+  it('a fold-win after the flop stores no bestFive and shows no cards', async () => {
+    const h = makeHoldHarness();
+    const { tableId, sid } = await seatTwoHumans(h);
+    // Limp/check preflop, then the first flop actor folds (hole 2 + board 3
+    // = 5 cards, so the engine DOES evaluate the lone live seat).
+    for (let i = 0; i < 10 && h.sim.getPublicSnapshot(sid)!.street === 'preflop'; i++) {
+      await actOnce(h, tableId, sid, 'passive');
+    }
+    expect(h.sim.getPublicSnapshot(sid)!.street).toBe('flop');
+    await actOnce(h, tableId, sid, 'fold');
+    expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+
+    const row = h.db.stores.get(pokerCashHands)!.find(
+      (r) => r.table_id === tableId && r.hand_number === 1,
+    )!;
+    expect(row.ended_at).toBe('flop');
+    expect(JSON.stringify(row.seat_result_json)).not.toContain('bestFive');
+    const settled = (await h.mgr.getLastSettledHand(tableId, 'vis-alice', 0))!;
+    expect(settled.seats.every((s) => s.shown === null && s.handRank === null)).toBe(true);
+  });
+
+  it('settled snapshots from old rows (no name / handRank) and after a restart (no log) stay valid', async () => {
+    const h = makeHoldHarness();
+    const { tableId, sid } = await seatTwoHumans(h);
+    await actOnce(h, tableId, sid, 'fold');
+    const row = h.db.stores.get(pokerCashHands)!.find((r) => r.table_id === tableId)!;
+    // Simulate a pre-2026-10-21 row.
+    row.seat_result_json = (row.seat_result_json as Array<Record<string, unknown>>).map(
+      ({ name: _n, handRank: _r, ...rest }) => rest,
+    );
+    // A fresh manager (API restart) has no in-memory log and no hold.
+    const restarted = new CashTableManager({
+      db: h.db as never,
+      ledger: h.ledger as never,
+      sim: new PokerTableSim(new FakeClock()),
+      clock: new AdvancingClock(),
+    });
+    const settled = (await restarted.getLastSettledHand(tableId, 'vis-alice', 0))!;
+    expect(settled.actions).toBeUndefined();
+    expect(
+      settled.seats.every((s) => s.name === undefined && s.handRank === undefined),
+    ).toBe(true);
+    expect(settled.nextHandAtMs).toBe(settled.settledAtMs + 8_000);
+  });
+
+  it('keeps at most 200 settled logs in memory (oldest evicted)', async () => {
+    const h = makeHoldHarness(0);
+    const remember = h.mgr['rememberSettledActions'].bind(h.mgr) as (
+      id: string,
+      actions: HandResult['actions'],
+    ) => void;
+    for (let i = 1; i <= 205; i++) remember(`t:${i}`, []);
+    const store = h.mgr['settledActions'] as Map<string, unknown>;
+    expect(store.size).toBe(200);
+    expect(store.has('t:5')).toBe(false);
+    expect(store.has('t:6')).toBe(true);
+    expect(store.has('t:205')).toBe(true);
+  });
+
+  // ── Settle retry (staging 2026-10-21, table 3f5ce6e6 hand 8570): a settle whose
+  // DB write fails must keep the hand pending, then settle it exactly once later.
+  // Before the fix the result was deleted first and the table froze until restart.
+  describe('settle retry after a failed settle write', () => {
+    type Harness = ReturnType<typeof makeHoldHarness>;
+
+    /** Fail the NEXT db.transaction once: before the body runs, or after it commits (lost ack). */
+    function failNextTransaction(h: Harness, mode: 'before' | 'after-commit'): void {
+      const original = h.db.transaction.bind(h.db);
+      let armed = true;
+      h.db.transaction = (async <T>(fn: (tx: FakeDb) => Promise<T>): Promise<T> => {
+        if (!armed) return original(fn);
+        armed = false;
+        if (mode === 'before') throw new Error('connect ECONNREFUSED clawville-db:5432');
+        await original(fn);
+        throw new Error('Connection terminated unexpectedly');
+      }) as FakeDb['transaction'];
+    }
+
+    function stacks(h: Harness, tableId: string): Record<string, number> {
+      const out: Record<string, number> = {};
+      for (const r of h.db.stores.get(pokerCashSeats)!) {
+        if (r.table_id === tableId && r.status !== 'left') {
+          out[String(r.avatar_id)] = Number(r.current_stack_ct);
+        }
+      }
+      return out;
+    }
+
+    function settledHandRows(h: Harness, tableId: string, handNumber: number): Row[] {
+      return h.db.stores.get(pokerCashHands)!.filter(
+        (r) => r.table_id === tableId && r.hand_number === handNumber && !!r.settled_at,
+      );
+    }
+
+    function pending(h: Harness): Map<string, HandResult> {
+      return h.mgr['pendingResults'] as Map<string, HandResult>;
+    }
+
+    /** The to-act seat folds via the REST action path (expected to throw on the failed settle). */
+    function foldToAct(h: Harness, tableId: string, sid: string) {
+      const snap = h.sim.getPublicSnapshot(sid)!;
+      const actor = snap.seats.find((s) => s.seatIndex === snap.toActSeatIndex)!;
+      return h.mgr.submitAction({
+        tableId,
+        subject: humanSubject(actor.avatarId),
+        handNumber: snap.handNumber,
+        actionSeq: 9_000,
+        action: { kind: 'fold' },
+      });
+    }
+
+    it('a DB failure keeps the hand pending (no chips move); the next pass settles it once and the next hand deals', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+      const before = stacks(h, tableId);
+      const creditsBefore = h.ledger.credits.length;
+
+      failNextTransaction(h, 'before');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('ECONNREFUSED');
+
+      // The resolved hand is still pending and still on the sim; nothing moved.
+      expect(pending(h).has(sid)).toBe(true);
+      expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(1);
+      expect(stacks(h, tableId)).toEqual(before);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(0);
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+      expect(h.clock.pendingCount()).toBe(0);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+
+      // Next pass (the no-tick table's lazy settle-on-read) retries and settles.
+      const state = (await h.mgr.getTableState(tableId))!;
+      expect(pending(h).has(sid)).toBe(false);
+      expect(state.live).toBeNull();
+      const after = stacks(h, tableId);
+      expect(Object.values(after).sort((a, b) => a - b)).toEqual([99, 101]); // SB folded to BB
+      expect(after['vis-alice']! + after['vis-bob']!).toBe(200);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+      expect(h.clock.pendingCount()).toBe(1); // the deal-after-hold timer is armed
+
+      // A further pass is a no-op: no second chip application, no second row.
+      await h.mgr.getTableState(tableId);
+      expect(stacks(h, tableId)).toEqual(after);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+
+      // The hold ends and the next hand deals.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.sim.getPublicSnapshot(sid) !== null);
+      expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(2);
+    });
+
+    it('a lost commit ack replays idempotently on retry (deltas applied once) and the hold timer deals the next hand', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+
+      failNextTransaction(h, 'after-commit');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('Connection terminated');
+
+      // The write committed, but the manager never saw the ack: still pending.
+      const committed = stacks(h, tableId);
+      expect(Object.values(committed).sort((a, b) => a - b)).toEqual([99, 101]);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+      expect(pending(h).has(sid)).toBe(true);
+      expect(h.sim.getPublicSnapshot(sid)).not.toBeNull();
+
+      // Retry: the hand row's settled_at makes it a replay; nothing applies twice.
+      await h.mgr.getTableState(tableId);
+      expect(pending(h).has(sid)).toBe(false);
+      expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+      expect(stacks(h, tableId)).toEqual(committed);
+      expect(settledHandRows(h, tableId, 1)).toHaveLength(1);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+      // The replay still continues the between-hands flow from the durable settled_at.
+      expect(h.clock.pendingCount()).toBe(1);
+
+      // No manual start: only the clock moves, and the hold timer deals hand 2.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.sim.getPublicSnapshot(sid) !== null);
+      expect(h.sim.getPublicSnapshot(sid)!.handNumber).toBe(2);
+      expect(h.clock.pendingCount()).toBe(0);
+    });
+
+    it('a lost commit ack with a queued leave pays the SETTLED stack once via the hold timer', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+      const creditsBefore = h.ledger.credits.length;
+
+      failNextTransaction(h, 'after-commit');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('Connection terminated');
+      const committed = stacks(h, tableId);
+
+      // The settle is pending in memory: the leave is queued, nothing paid yet.
+      const leave = await h.mgr.leaveTable(tableId, humanSubject('vis-alice'));
+      expect(leave).toEqual({ cashedOutCt: 0, queued: true, cashOutLedgerTxnId: null });
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+
+      // The lazy read retries; the replay applies no chips and arms the hold timer.
+      await h.mgr.getTableState(tableId);
+      expect(stacks(h, tableId)).toEqual(committed);
+      expect(h.clock.pendingCount()).toBe(1);
+
+      // Only the clock moves: the between-hands boundary pays Alice exactly once.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.ledger.credits.length > creditsBefore);
+      h.clock.advance(60_000);
+      await flushAsync();
+      const aliceCredits = h.ledger.credits
+        .slice(creditsBefore)
+        .filter((c) => c.avatarId === 'vis-alice');
+      expect(aliceCredits.map((c) => c.amount)).toEqual([committed['vis-alice']!]);
+      // Bob is alone now, so no next hand deals.
+      expect(h.sim.getPublicSnapshot(sid)).toBeNull();
+      const cons = await h.mgr.assertConservation(tableId);
+      expect(cons.ok).toBe(true);
+      expect(cons.escrow).toBe(committed['vis-bob']!);
+      expect(h.ledger.totalDebited()).toBe(h.ledger.totalCredited() + cons.escrow);
+    });
+
+    it('a leave while the settle is pending is queued, then cashes out the SETTLED stack', async () => {
+      const h = makeHoldHarness();
+      const { tableId, sid } = await seatTwoHumans(h);
+      const creditsBefore = h.ledger.credits.length;
+
+      failNextTransaction(h, 'before');
+      await expect(foldToAct(h, tableId, sid)).rejects.toThrow('ECONNREFUSED');
+
+      // Pre-settle DB stacks are stale: the leave must NOT cash them out now.
+      const leave = await h.mgr.leaveTable(tableId, humanSubject('vis-alice'));
+      expect(leave).toEqual({ cashedOutCt: 0, queued: true, cashOutLedgerTxnId: null });
+      expect(h.ledger.credits.length).toBe(creditsBefore);
+
+      await h.mgr.getTableState(tableId); // retry settles the hand
+      const aliceSettled = stacks(h, tableId)['vis-alice']!;
+      expect([99, 101]).toContain(aliceSettled);
+
+      // The hold ends; the between-hands boundary cashes Alice out at her settled stack.
+      h.clock.advance(8_000);
+      await flushAsync(() => h.ledger.credits.length > creditsBefore);
+      const aliceCredits = h.ledger.credits.slice(creditsBefore).filter((c) => c.avatarId === 'vis-alice');
+      expect(aliceCredits.map((c) => c.amount)).toEqual([aliceSettled]);
+      expect((await h.mgr.assertConservation(tableId)).ok).toBe(true);
+      expect(h.ledger.totalDebited()).toBe(
+        h.ledger.totalCredited() + (await h.mgr.assertConservation(tableId)).escrow,
+      );
+    });
   });
 });

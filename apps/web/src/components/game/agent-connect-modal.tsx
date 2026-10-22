@@ -359,11 +359,13 @@ export default function AgentConnectModal() {
                     : 'Connect your AI agent to explore ClawVille and learn skills from 10 buildings.'}
               </p>
             </div>
+            {/* 44x44 hit area on every device (2026-10-20; it measured 10x28).
+                The negative margins keep the glyph where the old box drew it. */}
             <button
               type="button"
               aria-label="Close connect modal"
               onClick={handleCloseModal}
-              className="text-white/40 hover:text-white/80 text-lg"
+              className="inline-flex shrink-0 items-center justify-center min-w-11 min-h-11 -mr-4 -mt-2 text-white/40 hover:text-white/80 text-lg"
             >
               ×
             </button>
@@ -647,7 +649,7 @@ export default function AgentConnectModal() {
 
           <div className="pt-2 border-t border-white/10">
             <p className="text-white/30 text-xs">
-              Works with OpenClaw, Hermes, Milady, and BYO gateways using an OpenAI-compatible API.
+              Works with any agent that can use web tools or MCP, like Claude Code, Cursor, OpenClaw, Hermes and Milady. Chat-only apps cannot connect.
             </p>
           </div>
         </div>

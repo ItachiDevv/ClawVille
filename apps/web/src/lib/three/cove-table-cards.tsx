@@ -25,7 +25,9 @@ const ATLAS_WIDTH = ATLAS_CELL_WIDTH * ATLAS_COLUMNS;
 const ATLAS_HEIGHT = ATLAS_CELL_HEIGHT * ATLAS_ROWS;
 const ATLAS_BACK_CELL = 52;
 const ATLAS_UV_INSET = 2;
-const MAX_CARD_QUADS = 17;
+// 5 board + 10 opponent hole + 2 own hole = 17; a little slack so a future
+// extra slot can never be dropped silently by the guard in appendCardQuad.
+const MAX_CARD_QUADS = 24;
 
 const SUITS: readonly HoldemSuit[] = ['clubs', 'diamonds', 'hearts', 'spades'];
 const RANKS: readonly HoldemRank[] = [
@@ -94,13 +96,15 @@ function drawCardCorner(
   symbol: string,
   color: string,
 ): void {
+  // Oversized corner index: the seated eye reads a card at ~40-60 px wide, so
+  // the rank must occupy ~a quarter of the cell height to stay legible.
   context.fillStyle = color;
   context.textAlign = 'center';
   context.textBaseline = 'top';
-  context.font = '800 42px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-  context.fillText(rank, 30, 14);
-  context.font = '36px Georgia, serif';
-  context.fillText(symbol, 30, 58);
+  context.font = '900 78px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  context.fillText(rank, 50, 6);
+  context.font = '66px Georgia, serif';
+  context.fillText(symbol, 50, 84);
 }
 
 function drawFaceCell(
@@ -135,8 +139,8 @@ function drawFaceCell(
   context.fillStyle = color;
   context.textAlign = 'center';
   context.textBaseline = 'middle';
-  context.font = '86px Georgia, serif';
-  context.fillText(symbol, ATLAS_CELL_WIDTH / 2, ATLAS_CELL_HEIGHT / 2 + 5);
+  context.font = '104px Georgia, serif';
+  context.fillText(symbol, ATLAS_CELL_WIDTH * 0.58, ATLAS_CELL_HEIGHT * 0.66);
   context.restore();
 
   context.save();
@@ -149,29 +153,51 @@ function drawFaceCell(
 function drawBackCell(context: CanvasRenderingContext2D): void {
   const x = (ATLAS_BACK_CELL % ATLAS_COLUMNS) * ATLAS_CELL_WIDTH;
   const y = Math.floor(ATLAS_BACK_CELL / ATLAS_COLUMNS) * ATLAS_CELL_HEIGHT;
+  // A face-down card must read against dark-green felt from ~300 wu: bright
+  // teal field, cream border, diamond lattice (a 20 px dark back vanished).
   const gradient = context.createLinearGradient(
     x,
     y,
     x + ATLAS_CELL_WIDTH,
     y + ATLAS_CELL_HEIGHT,
   );
-  gradient.addColorStop(0, '#0d3a4a');
-  gradient.addColorStop(1, '#0a2d3a');
+  gradient.addColorStop(0, '#1d8a9f');
+  gradient.addColorStop(1, '#0f5f73');
   context.fillStyle = gradient;
   context.fillRect(x, y, ATLAS_CELL_WIDTH, ATLAS_CELL_HEIGHT);
 
-  context.strokeStyle = 'rgba(0, 200, 180, 0.25)';
+  context.strokeStyle = '#f2ead2';
+  context.lineWidth = 12;
+  traceRoundedRect(context, x + 6, y + 6, ATLAS_CELL_WIDTH - 12, ATLAS_CELL_HEIGHT - 12, 16);
+  context.stroke();
+
+  context.save();
+  context.beginPath();
+  traceRoundedRect(context, x + 22, y + 22, ATLAS_CELL_WIDTH - 44, ATLAS_CELL_HEIGHT - 44, 10);
+  context.clip();
+  context.strokeStyle = 'rgba(242, 234, 210, 0.55)';
   context.lineWidth = 5;
-  traceRoundedRect(context, x + 3, y + 3, ATLAS_CELL_WIDTH - 6, ATLAS_CELL_HEIGHT - 6, 14);
+  for (let offset = -ATLAS_CELL_HEIGHT; offset < ATLAS_CELL_WIDTH + ATLAS_CELL_HEIGHT; offset += 34) {
+    context.beginPath();
+    context.moveTo(x + offset, y);
+    context.lineTo(x + offset + ATLAS_CELL_HEIGHT, y + ATLAS_CELL_HEIGHT);
+    context.moveTo(x + offset + ATLAS_CELL_HEIGHT, y);
+    context.lineTo(x + offset, y + ATLAS_CELL_HEIGHT);
+    context.stroke();
+  }
+  context.restore();
+
+  context.fillStyle = '#0b3f50';
+  context.beginPath();
+  context.ellipse(x + ATLAS_CELL_WIDTH / 2, y + ATLAS_CELL_HEIGHT / 2, 40, 52, 0, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = '#f2ead2';
+  context.lineWidth = 6;
   context.stroke();
-  context.strokeStyle = 'rgba(0, 200, 180, 0.14)';
-  context.lineWidth = 3;
-  traceRoundedRect(context, x + 18, y + 18, ATLAS_CELL_WIDTH - 36, ATLAS_CELL_HEIGHT - 36, 10);
-  context.stroke();
-  context.fillStyle = 'rgba(0, 200, 180, 0.18)';
+  context.fillStyle = '#f2ead2';
   context.textAlign = 'center';
   context.textBaseline = 'middle';
-  context.font = '800 92px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  context.font = '800 64px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   context.fillText('?', x + ATLAS_CELL_WIDTH / 2, y + ATLAS_CELL_HEIGHT / 2 + 4);
 }
 
@@ -297,6 +323,11 @@ export interface TableCardSeat {
   x: number;
   z: number;
   faceYaw: number;
+  /** Optional explicit table-local anchor for this seat's hole-card pair. The
+   * legacy `seat * botAnchorScale` anchor lands behind the far rim / under the
+   * side horns from the seated eye, so the room supplies on-felt anchors. */
+  cardX?: number;
+  cardZ?: number;
 }
 
 export interface TableCardLayout {
@@ -317,6 +348,22 @@ export interface TableCardLayout {
   /** Conservative card-layer audit envelope in table-local world units. */
   feltHalfX: number;
   feltHalfZ: number;
+  /** Yaw that makes opponent hole cards read upright to the seated camera.
+   * Default: each seat's own `faceYaw` (legacy behavior). */
+  holeYaw?: number;
+  /** Hinge tilt (radians) tipping hole cards toward the seated eye. */
+  holeTiltRad?: number;
+  /** Hinge tilt (radians) tipping board cards toward the seated eye. */
+  boardTiltRad?: number;
+  /** Multiplier applied to opponent cards that are face UP (showdown). */
+  faceUpScale?: number;
+  /** The viewer's own hole cards, face up on the felt at the POV position. */
+  ownCardWidth?: number;
+  ownCardHeight?: number;
+  ownSpacing?: number;
+  ownX?: number;
+  ownZ?: number;
+  ownTiltRad?: number;
 }
 
 export interface TableCards3DProps {
@@ -339,6 +386,9 @@ export interface TableCards3DProps {
       holeCardCount: number;
       cards: readonly [HoldemCard, HoldemCard] | null;
     }>[];
+    /** The requesting participant's OWN hole cards (selfView only; never the
+     * public snapshot). Drawn face up at the POV position when present. */
+    ownCards?: readonly [HoldemCard, HoldemCard] | null;
   }>;
   /** Exact card decisions consumed by the geometry build. The room remains
    * the sole publisher because it also owns the separate PeekHandCards. */
@@ -359,6 +409,8 @@ export interface ResolvedTableCardSlots {
   board: readonly (HoldemCard | null)[];
   opponents: readonly ResolvedTableCardOpponent[];
   onFelt: boolean;
+  /** The viewer's own two cards when (and only when) they are drawn face up. */
+  ownCards: readonly [HoldemCard, HoldemCard] | null;
 }
 
 function practiceSlotStatus(status: SeatState['status'] | undefined): SlotStatus {
@@ -394,6 +446,11 @@ export function TableCards3D({
   const muckMeshRef = useRef<THREE.Mesh>(null);
   const muckFadeRef = useRef({ active: false, elapsed: 0 });
   const muckSpanTokenRef = useRef<number | null>(null);
+  // The layout effect reads the CONTENT of externalState, which
+  // cardStateSignature already covers; its identity changes on every poll, so
+  // reading it through a ref keeps a no-change poll from rebuilding geometry.
+  const externalStateRef = useRef(externalState);
+  externalStateRef.current = externalState;
   const resolvedCallbackRef = useRef(onResolvedSlots);
   const muckStartCallbackRef = useRef(onMuckFadeStart);
   const muckCompleteCallbackRef = useRef(onMuckFadeComplete);
@@ -439,11 +496,12 @@ export function TableCards3D({
   const settleCueReady = phase === 'settled' && settled?.handId === revealHandId;
   const revealShowdown = settleCueReady && settled?.outcome.endedAt === 'showdown';
   const cardStateSignature = externalState
-    ? `cash:${externalState.active ? 'live' : 'idle'};b=${externalState.board.map(cardSignature).join(',')};s=${externalState.seats.map((seat) => `${seat.seatIndex}:${seat.status}:${seat.holeCardCount}:${seat.cards?.map(cardSignature).join(',') ?? '-'}`).join('|')}`
+    ? `cash:${externalState.active ? 'live' : 'idle'};b=${externalState.board.map(cardSignature).join(',')};s=${externalState.seats.map((seat) => `${seat.seatIndex}:${seat.status}:${seat.holeCardCount}:${seat.cards?.map(cardSignature).join(',') ?? '-'}`).join('|')};o=${externalState.ownCards?.map(cardSignature).join(',') ?? '-'}`
     : handSignature(phase, playerHoleCards, communityCards, seats);
   const suppressedSeatSignature = suppressSeatIndices.join(',');
 
   useLayoutEffect(() => {
+    const externalState = externalStateRef.current;
     const mesh = meshRef.current;
     const muckMesh = muckMeshRef.current;
     if (!mesh || !muckMesh) return;
@@ -467,6 +525,7 @@ export function TableCards3D({
         board: [null, null, null, null, null],
         opponents: [],
         onFelt: true,
+        ownCards: null,
       });
       return;
     }
@@ -530,14 +589,17 @@ export function TableCards3D({
       const targetPositions = settleCueReady && foldedAtSettle ? muckPositions : positions;
       const targetUvs = settleCueReady && foldedAtSettle ? muckUvs : uvs;
       const targetIndices = settleCueReady && foldedAtSettle ? muckIndices : indices;
-      const cardWidth = layout.botCardWidth;
-      const cardHeight = layout.botCardHeight;
-      const anchorScale = layout.botAnchorScale;
+      const showingFaces = !resolvedFaceDown && resolvedCards !== null;
+      const sizeScale = showingFaces ? layout.faceUpScale ?? 1 : 1;
+      const cardWidth = layout.botCardWidth * sizeScale;
+      const cardHeight = layout.botCardHeight * sizeScale;
       const pairCenterSpacing = cardWidth + layout.botPairGap;
-      const anchorX = centerX + tableSeat.x * anchorScale;
-      const anchorZ = centerZ + tableSeat.z * anchorScale;
-      const cosine = Math.cos(tableSeat.faceYaw);
-      const sine = Math.sin(tableSeat.faceYaw);
+      const anchorX = centerX + (tableSeat.cardX ?? tableSeat.x * layout.botAnchorScale);
+      const anchorZ = centerZ + (tableSeat.cardZ ?? tableSeat.z * layout.botAnchorScale);
+      const holeYaw = layout.holeYaw ?? tableSeat.faceYaw;
+      // World direction of screen-right for a card that reads upright at holeYaw.
+      const rightX = -Math.cos(holeYaw);
+      const rightZ = Math.sin(holeYaw);
 
       for (let cardIndex = 0; cardIndex < holeCardCount && cardIndex < 2; cardIndex += 1) {
         const card = externalState
@@ -548,22 +610,23 @@ export function TableCards3D({
           targetPositions,
           targetUvs,
           targetIndices,
-          anchorX + across * cosine,
+          anchorX + across * rightX,
           cardY,
-          anchorZ - across * sine,
-          tableSeat.faceYaw,
+          anchorZ + across * rightZ,
+          holeYaw,
           cardWidth,
           cardHeight,
           faceDown || foldedAtSettle || !card ? ATLAS_BACK_CELL : atlasCellForCard(card),
-          0,
+          layout.holeTiltRad ?? 0,
         );
       }
     }
 
     // Placement is supplied by the dedicated room, whose camera/table axes
-    // are code-owned. Player hole cards intentionally have no 3D path.
-    const boardRightX = Math.cos(layout.boardYaw);
-    const boardRightZ = -Math.sin(layout.boardYaw);
+    // are code-owned. The board row is centered on (boardX, boardZ) and runs
+    // along the screen-right axis of the board's reading yaw.
+    const boardRightX = -Math.cos(layout.boardYaw);
+    const boardRightZ = Math.sin(layout.boardYaw);
     const renderedBoard = externalState?.board ?? controller.communityCards;
     for (let slotIndex = 0; slotIndex < renderedBoard.length && slotIndex < 5; slotIndex += 1) {
       const card = renderedBoard[slotIndex];
@@ -580,8 +643,42 @@ export function TableCards3D({
         layout.boardCardWidth,
         layout.boardCardHeight,
         atlasCellForCard(card),
-        0,
+        layout.boardTiltRad ?? 0,
       );
+    }
+
+    // Own hole cards (cash selfView): face up, at the POV position, only when
+    // the room was given them AND the layout reserves a spot.
+    const ownCards = externalState?.ownCards ?? null;
+    let drawnOwnCards: readonly [HoldemCard, HoldemCard] | null = null;
+    if (
+      ownCards
+      && layout.ownCardWidth !== undefined
+      && layout.ownCardHeight !== undefined
+      && layout.ownX !== undefined
+      && layout.ownZ !== undefined
+    ) {
+      const ownYaw = layout.holeYaw ?? layout.boardYaw;
+      const ownRightX = -Math.cos(ownYaw);
+      const ownRightZ = Math.sin(ownYaw);
+      const ownSpacing = layout.ownSpacing ?? layout.ownCardWidth * 1.2;
+      for (let cardIndex = 0; cardIndex < 2; cardIndex += 1) {
+        const across = (cardIndex - 0.5) * ownSpacing;
+        appendCardQuad(
+          positions,
+          uvs,
+          indices,
+          centerX + layout.ownX + across * ownRightX,
+          cardY,
+          centerZ + layout.ownZ + across * ownRightZ,
+          ownYaw,
+          layout.ownCardWidth,
+          layout.ownCardHeight,
+          atlasCellForCard(ownCards[cardIndex]!),
+          layout.ownTiltRad ?? 0,
+        );
+      }
+      drawnOwnCards = ownCards;
     }
 
     if (process.env.NODE_ENV !== 'production') {
@@ -640,6 +737,7 @@ export function TableCards3D({
       board: Array.from({ length: 5 }, (_, index) => renderedBoard[index] ?? null),
       opponents: resolvedOpponents,
       onFelt,
+      ownCards: drawnOwnCards,
     };
     if (muckIndices.length > 0) {
       muckSpanTokenRef.current = muckStartCallbackRef.current?.(resolved) ?? null;
@@ -656,7 +754,6 @@ export function TableCards3D({
     centerZ,
     feltTopY,
     geometry,
-    externalState,
     isVisible,
     layout,
     material,

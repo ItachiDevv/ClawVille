@@ -5,6 +5,13 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### Roundup loose ends: quest hints, landing cards, poker tournament payouts (session roundup, 2026-10-20, STAGING)
+
+- **WHERE:** staging.clawville.world/game quest tracker (tutorial quests); the landing page gameplay cards; a poker tournament in the cove.
+- **LOOK AT:** the "First Match" hint now says to walk into the Salty Spitoon or the Boating School and choose Play Now (no hidden Quick Queue). Style Statement, Big Spender and Wallet Aware say "Not claimable yet"; Brand Ambassador says it is retired. The landing cards no longer say "Quick Queue" or "Phase 4", and the quest ladder reads 34 quests, 10 tiers.
+- **FEEDBACK WANTED:** should the four unclaimable quests be removed or made claimable? Should SOL event entry be tied to the paying wallet (today anyone who sees a payment signature can submit it first)?
+- **Session roundup, 2026-10-20.**
+
 ### Your agent is labelled "itachi agent" (staging, then prod)
 
 - **WHERE:** clawville.world/game (after promotion), the agent chat bar at the bottom.
@@ -395,11 +402,18 @@
 
 ## AGENTS / ONBOARDING
 
+### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, STAGING)
+
+- **WHERE:** `https://staging.clawville.world/game`, logged out. Click "Connect Agent", then "Generate Connect Link". On a phone, also look at the quest list ("Say Hi to Nori") right after the agent connects and the page reloads.
+- **LOOK AT:** the modal footer now reads "Works with any agent that can use web tools or MCP, like Claude Code, Cursor, OpenClaw, Hermes and Milady. Chat-only apps cannot connect." On a phone the quest list stays closed after the connect reload; when you open it, it is not hidden under the "Talk to Nori" button. An agent that uses a dead or used link now gets a reply that tells it to ask you for a new link.
+- **FEEDBACK WANTED:** is the footer text right? On a real phone or iPad, does the bottom of the quest list sit clear of the bottom buttons (the safe area cannot be tested in emulation)?
+- **Session mcp, 2026-10-20.**
+
 ### Simple agent skill: short entry manual, 8 topic pages, hosted MCP (session skill, 2026-10-13, STAGING)
 
 - **WHERE:** staging. Click "Connect Your Agent" at `https://staging.clawville.world/game` and give the copied line to any agent (Claude, OpenClaw, Hermes). Read `https://api-staging.clawville.world/api/skills/clawville-play/skill.md` yourself. MCP clients add `https://api-staging.clawville.world/api/agent/mcp`.
 - **LOOK AT:** the entry manual is about 110 lines (it was 300). The big protocol manual is split into 8 pages (`/api/skills/protocol/<topic>.md`: core, actions, world, cove, land, jobs, payments, trading) and is about 40 percent shorter. An MCP client can connect with `clawville_connect` and then play with tools.
-- **FEEDBACK WANTED:** does a fresh agent connect and play with no help? Is anything an agent needs now missing? Open question: the manual and code say house agents are never eligible for arena prizes; your note says they are full contenders. That text is unchanged until you decide.
+- **FEEDBACK WANTED:** does a fresh agent connect and play with no help? Is anything an agent needs now missing? (House-agent prize question answered 2026-10-20: the contest is over and the prizes are announced, so the manual and code stay as they are.)
 - **Session skill, 2026-10-13.**
 
 ### Moving an agent to another account with a connect token is removed (staging, pending)
@@ -674,6 +688,15 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - Built by: session prf, 2026-09-07.
 
 ## COVE
+
+### Hold'em cash table: every action, the showdown and the winner on screen (session roundup, 2026-10-21, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game, walk into the Cove, use the hold'em sign, sit at a cash table (the room is `/cove/table?tableId=<id>`).
+- **LOOK AT:** play a few hands. The action feed lists every action with real names ("Mira raises to 40") and a line for each new street with its cards. Each seat badge shows its last action and bet. At the end the result panel shows who won each pot, how much, the winning hand, every showdown seat's cards and your net. The next hand waits about 8 seconds ("Next hand in Ns"). Let your turn clock run out once: a notice says you timed out and were auto-folded or auto-checked. Stand up and watch as a spectator: every seated player has a badge.
+- **FEEDBACK WANTED:** is anything still missing to follow a hand? Is 8 seconds between hands too long or too short? Is the feed or the result panel in the way on a phone? The 3D felt cards changed in the same job: are the board cards and your own cards readable on the felt?
+- **ROUND 2 (protocol 94, same day, from the lead's own play-through):** each shown hand now has a "Best 5" row, so two hands of the same name show the card that decided the pot (for example J J J 5 5 beat J J J 2 2). A bet nobody called reads "N vCLAW returned to <name> (no one called)" and is not counted as a win. Seat badges now sit over their own chair (before, every badge sat one chair off). On a phone held sideways, the result panel sits to the right of the chat button and the card tray and feed step aside while it shows (tap Hide to get them back); with three seats the last row needs a short scroll inside the panel, but your own result is always in the top line. On a phone held upright, the panel now shows every row without a scroll. Feedback wanted: is the Best 5 row clear, and is the sideways phone layout readable on your real phone?
+- **ROUND 4 (protocol 96, 2026-10-22, your answers):** spectators now see the result panel at a public table (do not sit, just watch a hand end). On a phone held sideways, a 3-seat showdown fits with no scroll (one line per seat, smaller cards). A bot that sits out keeps its badge and its real name (before: no badge during a hand, "SEAT 3" between hands). Two seat labels no longer cover each other on a phone held sideways. Feedback wanted: on your phone, are the smaller cards in the sideways result still readable?
+- **Session roundup, 2026-10-21.**
 
 ### Slot machine screens no longer show a black triangle (on prod via #292, cache fix following)
 - **What:** every slot machine screen in the cove had a big black triangle over

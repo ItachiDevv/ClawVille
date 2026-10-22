@@ -12,10 +12,10 @@ import { activityRooms } from './activity-rooms';
 /**
  * Q2 Activity Portals §7 — input log per match.
  *
- * Used for:
- *   - Reef Race personal-best ghost rendering (own-best-time only in Q2)
- *   - Post-hoc anti-cheat audit of flagged matches
- *   - Bot controller baselines (heuristic learning from prior matches)
+ * Write-only today: no code reads this table (checked 2026-10-20). Planned
+ * uses were post-hoc anti-cheat audit and bot controller baselines. Reef
+ * Race personal-best ghosts do NOT come from here; they live in
+ * `reef_race_personal_bests.ghost_replay_data`.
  *
  * `frames` is a compressed JSONB array of input frames (typed as
  * `unknown[]` here; shape is owned by the activity-replay-log service).
@@ -23,10 +23,10 @@ import { activityRooms } from './activity-rooms';
  * the replay viewer can render without re-fetching live avatar rows that
  * may have changed.
  *
- * Retention: 14 days. Pruned via boot sweep or `scripts/prune-activity-
- * replays.ts` when implemented. The `(activity_id, created_at DESC)`
- * index supports both the "recent ghosts for this activity" query and
- * the prune scan.
+ * Retention: 14 days. Pruned daily by
+ * `apps/api/src/services/activity/activity-replay-prune.ts`. The only
+ * index is `(activity_id, created_at DESC)`; the prune's `created_at <`
+ * scan has no leading-column index (fine at current size).
  *
  * One replay per room (UNIQUE on room_id + ON DELETE CASCADE so dropping
  * a room cascades the replay).

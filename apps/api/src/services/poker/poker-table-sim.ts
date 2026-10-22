@@ -54,7 +54,11 @@ import {
   type PotResult,
   type SeatResult,
 } from '../holdem-engine';
-import type { SettledPotResult } from '@clawville/shared';
+import type {
+  HoldemTableActionKind,
+  HoldemTableActionLogEntry,
+  SettledPotResult,
+} from '@clawville/shared';
 import type {
   Action,
   ActionKind,
@@ -96,6 +100,17 @@ interface SimSeat {
   hasActed: boolean;
 }
 
+/**
+ * Stable display key for a HandCategory (e.g. "two_pair", "flush"). The ONE
+ * spelling used by `SettledPotResult.winningRank.categoryName` and the cash
+ * settled seat `handRank.categoryName`.
+ */
+export function handCategoryKey(category: number): string {
+  return handCategoryName(category as Parameters<typeof handCategoryName>[0])
+    .toLowerCase()
+    .replaceAll(' ', '_');
+}
+
 /** Freeze the engine-mutated pot awards before the public lossy projection. */
 export function serializeSettledPots(
   pots: readonly PotResult[],
@@ -132,9 +147,7 @@ export function serializeSettledPots(
       winningRank: winningRank
         ? {
             category: winningRank.category,
-            categoryName: handCategoryName(winningRank.category)
-              .toLowerCase()
-              .replaceAll(' ', '_'),
+            categoryName: handCategoryKey(winningRank.category),
             tiebreakers: [...winningRank.tiebreakers],
           }
         : null,
@@ -183,6 +196,13 @@ interface SimTable {
 
   /** Idempotency: key → the result we returned for it. */
   appliedKeys: Map<string, ApplyActionResult>;
+
+  /**
+   * Public action log of THIS hand (posted blinds, every applied action, every
+   * turn-clock auto-action), in order. Display data only: it never feeds chip
+   * math. A fresh SimTable per hand resets it. Never shared out by reference.
+   */
+  actions: HoldemTableActionLogEntry[];
 
   ended: boolean;
 }
@@ -360,6 +380,7 @@ export class PokerTableSim {
       deadlineMs: null,
       turnTimerHandle: undefined,
       appliedKeys: new Map(),
+      actions: [],
       ended: false,
     };
 
@@ -380,9 +401,11 @@ export class PokerTableSim {
     const sbPay = Math.min(sb, sbSeat.stack);
     this.commit(sbSeat, sbPay);
     if (sbSeat.stack === 0) sbSeat.status = 'allin';
+    this.logAction(table, sbSeat, 'post-sb', sbPay, false);
     const bbPay = Math.min(bb, bbSeat.stack);
     this.commit(bbSeat, bbPay);
     if (bbSeat.stack === 0) bbSeat.status = 'allin';
+    this.logAction(table, bbSeat, 'post-bb', bbPay, false);
 
     table.currentBet = Math.max(sbSeat.streetCommitted, bbSeat.streetCommitted, bb);
     // First to act preflop = seat after the BB (heads-up: after BB wraps to SB =
@@ -632,10 +655,15 @@ export class PokerTableSim {
     const seat = t.bySeatIndex.get(seatIndex)!;
     const toCall = t.currentBet - seat.streetCommitted;
     const canReopen = !seat.hasActed;
+    const stackBefore = seat.stack;
 
     // Validate + apply legality (mirrors holdem-engine applyDecision exactly).
     const legal = this.validateAndApply(t, seat, action, toCall, canReopen);
     if (!legal.ok) return this.fail(t, opts, legal.reason ?? 'illegal_action');
+    // Log BEFORE advance(): advance can deal the next street (resetting
+    // streetCommitted + changing t.street) and broadcasts a snapshot that must
+    // already carry this action.
+    this.logAction(t, seat, action.kind, stackBefore - seat.stack, false);
 
     // Clear the current clock (the seat acted).
     this.disarmClock(t);
@@ -686,10 +714,12 @@ export class PokerTableSim {
     if (toCall === 0) {
       // Auto-check.
       seat.hasActed = true;
+      this.logAction(t, seat, 'check', 0, true);
     } else {
       // Auto-fold.
       seat.status = 'folded';
       seat.hasActed = true;
+      this.logAction(t, seat, 'fold', 0, true);
     }
     this.advance(t);
   }
@@ -697,6 +727,34 @@ export class PokerTableSim {
   // ──────────────────────────────────────────────────────────────────────────
   // Internals
   // ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Append one public entry to the hand's action log. Call AFTER the chips
+   * moved and BEFORE `advance` (the street + streetCommitted are the action's).
+   * Display data only: no card, no seed, no effect on chip math.
+   */
+  private logAction(
+    t: SimTable,
+    seat: SimSeat,
+    kind: HoldemTableActionKind,
+    chips: number,
+    timeout: boolean,
+  ): void {
+    // Actions never happen at showdown (betting is closed there); keep the
+    // contract's street union total anyway.
+    const street = t.street === 'showdown' ? 'river' : t.street;
+    t.actions.push({
+      seq: t.actions.length,
+      seatIndex: seat.seatIndex,
+      street,
+      kind,
+      chips,
+      streetBetAfter: seat.streetCommitted,
+      allIn: seat.stack === 0,
+      timeout,
+      atMs: this.clock.now(),
+    });
+  }
 
   /** Move `amount` chips from behind into the pot for this seat. */
   private commit(seat: SimSeat, amount: number): void {
@@ -1019,6 +1077,7 @@ export class PokerTableSim {
       return {
         seatIndex: s.seatIndex,
         avatarId: s.avatarId,
+        name: s.name,
         // Reveal hole cards ONLY at a genuine showdown, and only for seats that
         // did not fold. On a fold-around (endedAt !== 'showdown', exactly one live
         // seat) NOBODY shows — the lone winner takes the pot without revealing.
@@ -1028,7 +1087,19 @@ export class PokerTableSim {
         won,
         net: won - s.committedTotal,
         status: s.status,
-        handRankCategory: r.handRank ? r.handRank.category : null,
+        // Same gate as holeCards: on a fold-win the lone winner's category
+        // (evaluated on hole + partial board) would leak hidden cards to
+        // every viewer of the public result frame.
+        handRankCategory:
+          endedAt === 'showdown' && s.status !== 'folded' && r.handRank
+            ? r.handRank.category
+            : null,
+        // Same gate as holeCards: awardPots also evaluates the lone live seat
+        // on a fold-win (hole + partial board), and those cards stay hidden.
+        bestFive:
+          endedAt === 'showdown' && s.status !== 'folded' && r.handRank
+            ? r.handRank.bestFive.map((c) => ({ ...c }))
+            : null,
         isWinner: won > 0,
       };
     });
@@ -1049,6 +1120,7 @@ export class PokerTableSim {
       endedAt,
       endedAtMs: this.clock.now(),
       serverSeedRevealed: t.serverSeed,
+      actions: copyActions(t.actions),
     };
 
     // Broadcast the final (showdown) public snapshot, then fire completion.
@@ -1119,6 +1191,7 @@ export class PokerTableSim {
       seats,
       street: t.street,
       serverSeedCommitHash: t.serverSeedCommitHash,
+      actions: copyActions(t.actions),
     };
   }
 
@@ -1219,6 +1292,11 @@ export class PokerTableSim {
     t.appliedKeys.set(opts.idempotencyKey, r);
     return r;
   }
+}
+
+/** Entry-by-entry copy (entries are flat primitives, so a spread is a full copy). */
+function copyActions(actions: readonly HoldemTableActionLogEntry[]): HoldemTableActionLogEntry[] {
+  return actions.map((a) => ({ ...a }));
 }
 
 /** Map sim street → engine endedAt enum (only used for the ≤1-live path). */

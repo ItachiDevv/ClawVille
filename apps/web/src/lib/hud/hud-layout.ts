@@ -51,6 +51,16 @@ export const HUD_Z = {
   worldHudExpanded: 42,
   /** Joystick bands + interact/jump buttons. */
   touchInput: 45,
+  /**
+   * Quest tracker's TOUCH expanded state (2026-10-20): one step above the
+   * bottom-centre prompt pills (`location-hud.tsx`, `land-options-pill.tsx`,
+   * `land/salvage-gather-pill.tsx`, all inline `zIndex: 45`), so on a short
+   * landscape phone, where the list's 120px floor still meets the pill, its
+   * own rows stay tappable. Same trade as `worldHudExpanded` over the status
+   * bar; still below the z-50 top-centre stack (see `quest-tracker.tsx`
+   * `mobileZ`).
+   */
+  worldHudOverPrompt: 46,
   /** In-world seated action HUDs (e.g. the seated hold'em action panel); also the value most of `/game`'s top-of-stack chrome happens to share — see Slice 2 note above. */
   seatedGameHud: 50,
   /** Interact button, floating prompts. */
@@ -103,6 +113,14 @@ export const GAME_HUD: readonly GameHudEntry[] = [
     expectedZ: HUD_Z.worldHudExpanded,
     form: 'class',
     note: 'Only renders while expanded AND the measured band is too short — see desktopZ.',
+  },
+  {
+    file: 'components/game/quest-tracker.tsx',
+    name: 'quest-tracker (touch expanded, above the bottom-centre prompt pills)',
+    layer: 'worldHudOverPrompt',
+    expectedZ: HUD_Z.worldHudOverPrompt,
+    form: 'class',
+    note: 'Only renders on the touch placement while expanded; collapsed it is z-40 — see mobileZ.',
   },
   {
     file: 'components/game/avatar-status-bar.tsx',

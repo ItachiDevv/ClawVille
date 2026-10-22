@@ -1,11 +1,17 @@
 /**
  * Jev decide SHADOW ledger (founder-approved 2026-10-13; migration 0081).
  *
- * One row per shadow call (or cap refusal) made by
+ * One row per shadow call (or cap refusal) made by the former writer
  * `apps/api/src/services/jev-decide-shadow.ts`. SHADOW ONLY: no game path reads
  * this table. `usd` is both the spend record and the spend-cap ledger: a row is
  * inserted as `reserved` with a cost estimate under an advisory lock, then
  * updated with the actual cost. The prompt and the reply text are NEVER stored.
+ *
+ * WRITER REMOVED 2026-10-20 (founder: Jev does not choose world actions; the
+ * user guides them, also in autonomous mode). The decide shadow and the staging
+ * world-decide demo were deleted, so nothing writes this table now. It is kept
+ * read-only as history. Dropping it is a later founder decision, and a DROP
+ * migration must land AFTER the code flip.
  */
 
 import {

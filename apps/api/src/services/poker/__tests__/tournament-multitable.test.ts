@@ -202,6 +202,11 @@ class FakeDb {
       const cnt = [...this.entrants.values()].filter((e) => e.tournament_id === p[0] && e.status !== 'refunded').length;
       return [{ cnt }];
     }
+    // isTournamentFullyPlaced + the cancelAndRefundOrphan under-lock re-check.
+    if (text.startsWith("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE placement IS NULL)::int AS unplaced FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> 'refunded'")) {
+      const es = [...this.entrants.values()].filter((e) => e.tournament_id === p[0] && e.status !== 'refunded');
+      return [{ total: es.length, unplaced: es.filter((e) => e.placement == null).length }];
+    }
     if (text.startsWith("SELECT id, avatar_id, agent_id, subject_type, buy_in_paid_ct, status FROM poker_tournament_entrants WHERE tournament_id = ? AND status <> 'refunded' ORDER BY registered_at ASC")) {
       return [...this.entrants.values()]
         .filter((e) => e.tournament_id === p[0] && e.status !== 'refunded')
@@ -427,7 +432,16 @@ async function driveMttToCompletion(
   let guard = 0;
   const lastHandByTable = new Map<string, number>();
   while (guard++ < 2_000_000) {
-    if (!tm.isRunning(tournamentId)) return; // champion crowned + settled
+    if (!tm.isRunning(tournamentId)) {
+      // r.done is claimed BEFORE the final-hand write (Codex 2026-10-20), so
+      // isRunning flips false while completion is still committing. Wait until
+      // the completion removes the in-memory record (settled + cleaned up).
+      const running = (tm as unknown as { running: Map<string, unknown> }).running;
+      for (let i = 0; i < 1000 && running.has(tournamentId); i++) {
+        await new Promise((res) => setTimeout(res, 0));
+      }
+      return; // champion crowned + settled
+    }
     const tableIds = tm.getAllTableIds(tournamentId);
     let actedAny = false;
     for (const tableId of tableIds) {

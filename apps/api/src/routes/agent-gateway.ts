@@ -622,11 +622,19 @@ agentGatewayRoutes.post('/connect', async (c) => {
   if (data.connectionToken) {
     const pending = pendingConnections.get(data.connectionToken);
     if (!pending) {
-      return c.json({ error: 'Connection token not found or expired' }, 404);
+      return c.json({
+        error: 'Connection token not found or expired',
+        code: 'connection_token_invalid',
+        detail: CONNECTION_TOKEN_DEAD_DETAIL,
+      }, 404);
     }
     if (Date.now() > pendingConnectionExpiresAt(pending)) {
       pendingConnections.delete(data.connectionToken);
-      return c.json({ error: 'Connection token expired' }, 410);
+      return c.json({
+        error: 'Connection token expired',
+        code: 'connection_token_expired',
+        detail: CONNECTION_TOKEN_DEAD_DETAIL,
+      }, 410);
     }
     // A public front-door token proves only that the human invited this claim;
     // it does not itself define a durable agent identity. Require the existing
@@ -650,7 +658,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // ROLLS BACK the reservation (`pending.connected = false`) so the human can
     // retry without regenerating the token.
     if (pending.connected) {
-      return c.json({ error: 'Connection token already claimed' }, 409);
+      return c.json({
+        error: 'Connection token already claimed',
+        code: 'connection_token_claimed',
+        detail: CONNECTION_TOKEN_CLAIMED_DETAIL,
+      }, 409);
     }
     pending.connected = true;
     if (pending.publicHandoff) {
@@ -753,6 +765,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // Never log or echo the raw key.
   let identityKeyUserId: string | null = null;
   let identityKeyAvatarId: string | null = null;
+  // TRUE when the agentId row already had an owner and the presented identity
+  // has no account. A new account can never own that row, so the connect is
+  // refused below as OWNER_BIND_CONFLICT and no account is created. Before
+  // 2026-10-20 a key-only reconnect to a row that a logged-in human's link
+  // bound created an empty account for the key, then got the same 409.
+  let identityKeyAccountMissing = false;
   if (data.identityKey && tokenUserId === null) {
     try {
       const identity = resolveIdentityForTicket({
@@ -762,18 +780,31 @@ agentGatewayRoutes.post('/connect', async (c) => {
         authToken: normalized.authToken,
       }, identityType);
       if (identity) {
+        // Owned row: look up only. A new or unowned row keeps resolve-or-create,
+        // which is how a self-connecting agent gets its account. A row that
+        // gains an owner after this read still resolves-or-creates; the
+        // identity-claim CAS below refuses that connect.
+        const rowOwner = await db.query.agentBots.findFirst({
+          where: eq(agentBots.agentId, resolvedAgentId),
+          columns: { userId: true },
+        });
         const coordinated = await resolvePublicOnboardingIdentity(
           identity.identityType,
           identity.identityKey,
+          { createIfMissing: !rowOwner?.userId },
         );
-        const user = coordinated.user;
-        identityKeyUserId = user.id;
-        if (!pendingConn?.publicHandoff) {
-          const activeAvatar = await db.query.avatars.findFirst({
-            where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-            columns: { id: true },
-          });
-          identityKeyAvatarId = activeAvatar?.id ?? null;
+        if (!coordinated) {
+          identityKeyAccountMissing = true;
+        } else {
+          const user = coordinated.user;
+          identityKeyUserId = user.id;
+          if (!pendingConn?.publicHandoff) {
+            const activeAvatar = await db.query.avatars.findFirst({
+              where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+              columns: { id: true },
+            });
+            identityKeyAvatarId = activeAvatar?.id ?? null;
+          }
         }
       }
     } catch (err) {
@@ -827,6 +858,15 @@ agentGatewayRoutes.post('/connect', async (c) => {
         return c.json({ error: 'Invalid request' }, 400);
       }
       existingBoundUserId = existing.userId ?? null;
+      // The presented identity has no account and this row had an owner at the
+      // look-up above. Refuse before any write; no account was created.
+      if (identityKeyAccountMissing) {
+        console.warn(
+          `[AgentConnect] identity has no account and agentId=${resolvedAgentId} has an owner; refusing without creating one`,
+        );
+        if (pendingConn) releasePendingConnectionClaim(pendingConn);
+        return c.json(ownerBindConflictBody(pendingConn), 409);
+      }
       // Owned row + no owner credential (security 2026-09-30). A public agentId
       // is not an ownership credential. Refuse BEFORE any UPDATE, body
       // registration, ticket mint or event, so the owner's live session, bearer
@@ -1020,6 +1060,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
         persistedLiveUserId = liveOwner?.userId ?? null;
       }
     } else {
+      // The owned row seen at the identity look-up is gone. Refuse; a retry
+      // resolves the identity against the current state.
+      if (identityKeyAccountMissing) {
+        if (pendingConn) releasePendingConnectionClaim(pendingConn);
+        return c.json(ownerBindConflictBody(pendingConn), 409);
+      }
       // First-time contact — use miladyCharacterName when present so the
       // bot is named from the Milady runtime rather than needing a separate
       // `name` field in the request body.
@@ -1106,16 +1152,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
   if (ownerBindConflict) {
     if (pendingConn) releasePendingConnectionClaim(pendingConn);
-    if (pendingConn?.publicHandoff) {
-      return c.json({ error: 'Connection token claim conflicted' }, 409);
-    }
-    return c.json(
-      {
-        error: 'Owner binding changed during connect',
-        code: 'OWNER_BIND_CONFLICT',
-      },
-      409,
-    );
+    return c.json(ownerBindConflictBody(pendingConn), 409);
   }
 
   // Fail closed: only a credential-proven owner with an active avatar gets the
@@ -1422,7 +1459,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     if (!stillCurrent || claimDeadline == null || Date.now() > claimDeadline) {
       releasePendingConnectionClaim(pendingConn);
       npcSimulation.unregisterAgentBot(sessionId);
-      return c.json({ error: 'Connection token expired' }, 410);
+      return c.json({
+        error: 'Connection token expired',
+        code: 'connection_token_expired',
+        detail: CONNECTION_TOKEN_DEAD_DETAIL,
+      }, 410);
     }
     const claimConflict =
       ownerBinding.identityMismatch
@@ -2032,7 +2073,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
         expired: true,
         lastSeenAt: row.lastSeenAt.toISOString(),
         expiresAt: row.sessionExpiresAt?.toISOString() ?? null,
-        hint: 'Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
+        hint: "Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId, or connect again with your owner credential (an identityKey that owns this agentId, or a new connect link from your human if a logged-in human's link connected you).",
       },
       410,
     );
@@ -2078,7 +2119,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
         lastSeenAt: row.lastSeenAt.toISOString(),
         // Non-null: the `expired` guard above returned on a NULL sessionExpiresAt.
         expiresAt: row.sessionExpiresAt!.toISOString(),
-        hint: 'Session row is live but no in-memory session is attached and it cannot self-restore. Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
+        hint: 'Session row is live but no in-memory session is attached and it cannot self-restore. Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId, or connect again with your owner credential (an identityKey that owns this agentId, or a new connect link from your human if a logged-in human\'s link connected you).',
       },
       410,
     );
@@ -4470,6 +4511,39 @@ export interface PendingConnection {
 
 const pendingConnections = new Map<string, PendingConnection>();
 const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+/** Agent-facing recovery text on the POST /connect dead-token bodies (404 / 410). */
+const CONNECTION_TOKEN_DEAD_DETAIL =
+  `The invitation link lasts ${Math.round(TOKEN_TTL_MS / 60_000)} minutes and works once. `
+  + 'If you already completed a claim with it, keep using the sessionId it returned (check '
+  + 'GET /api/agent/session-status?agentId=<agentId>). Otherwise ask your human for a new '
+  + 'connect link from the ClawVille game.';
+/** Agent-facing recovery text on the POST /connect 409 already-claimed body. */
+const CONNECTION_TOKEN_CLAIMED_DETAIL =
+  'This invitation link was already used. If your own earlier call returned a sessionId, '
+  + 'keep using it (check GET /api/agent/session-status?agentId=<agentId>); when it ends, '
+  + 'read "Stay alive" in the protocol manual for the way back. Otherwise ask your human '
+  + 'for a new connect link from the ClawVille game.';
+/**
+ * Agent-facing recovery text on the POST /connect 409 OWNER_BIND_CONFLICT body.
+ * The usual cause: the agentId was claimed through a logged-in human's link, so
+ * the human's account owns it and the agent's identityKey proves nothing.
+ */
+const OWNER_BIND_CONFLICT_DETAIL =
+  'This agentId belongs to an account that this connect did not prove. If a logged-in '
+  + "human's link connected you, that human's account owns the agentId and your identityKey "
+  + 'is not used: ask your human for a new connect link, and keep the same agentId. If this '
+  + 'connect used a link, retry that link once; 409 agent_owned_by_other_account then means '
+  + 'another account owns this agentId.';
+
+/** The /connect 409 body when the owner binding cannot be applied. */
+function ownerBindConflictBody(pending: PendingConnection | null) {
+  if (pending?.publicHandoff) return { error: 'Connection token claim conflicted' };
+  return {
+    error: 'Owner binding changed during connect',
+    code: 'OWNER_BIND_CONFLICT',
+    detail: OWNER_BIND_CONFLICT_DETAIL,
+  };
+}
 
 function releasePendingConnectionClaim(pending: PendingConnection): void {
   pending.connected = false;

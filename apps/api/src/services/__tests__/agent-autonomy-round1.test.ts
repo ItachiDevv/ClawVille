@@ -9,6 +9,7 @@ import {
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
 import { agentOrchestrator } from '../agent-orchestrator';
 import { npcSimulation } from '../npc-simulation';
+import { HOUSE_REFUSED_AUTONOMY_VERBS } from '../house-refused-verbs';
 
 type RuntimeState = ReturnType<typeof agentOrchestrator.getRunningAgentRuntime>;
 type DriverEntry = {
@@ -151,12 +152,23 @@ describe('round 1 perception + decision prompt', () => {
     const id = 'prompt-agent';
     const entry = registerHouse(id);
     const perception = npcSimulation.buildPerception(id)!;
+    // A non-house entry sees the FULL executor menu; a house entry sees the
+    // menu minus the verbs the executor refuses for house actors.
     const prompt = agentAutonomyDriver.buildDecisionPrompt(
+      perception,
+      { ...entry, isHouse: false } as never,
+      [],
+      'go play cards',
+    );
+    const housePrompt = agentAutonomyDriver.buildDecisionPrompt(
       perception,
       entry as never,
       [],
       'go play cards',
     );
+    for (const verb of HATCHER_ACTION_VERBS) {
+      expect(housePrompt.includes(`${verb}(`)).toBe(!HOUSE_REFUSED_AUTONOMY_VERBS.has(verb));
+    }
 
     const directiveAt = prompt.indexOf('go play cards');
     const scopeAt = prompt.indexOf(DECISION_SCOPE[0]);
@@ -174,9 +186,11 @@ describe('round 1 perception + decision prompt', () => {
     const id = 'trading-prompt-agent';
     const entry = registerHouse(id);
     const perception = npcSimulation.buildPerception(id)!;
-    const unlinked = agentAutonomyDriver.buildDecisionPrompt(perception, entry as never);
+    const unlinked = agentAutonomyDriver.buildDecisionPrompt(perception, { ...entry, isHouse: false } as never);
     expect(unlinked).toContain('trade_token(');
     expect(unlinked).not.toContain('Trading desk:');
+    // trade_token is house-refused: a house entry never sees it on the menu.
+    expect(agentAutonomyDriver.buildDecisionPrompt(perception, entry as never)).not.toContain('trade_token(');
 
     const desk = {
       linked: true as const,

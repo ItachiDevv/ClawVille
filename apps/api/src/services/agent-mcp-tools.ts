@@ -429,7 +429,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
   clawville_session_status: {
     sources: [src('agent-gateway.ts', 'get', AGENT, '/session-status')],
     calls: (c) => [{ method: 'GET', path: `${AGENT}/session-status?agentId=${seg(c.agentId)}` }],
-    next: 'If data.connected is false, call clawville_connect again with the same agentId and identityKey.',
+    next: "If data.connected is false, call clawville_connect again with the same agentId and identityKey. If that answers OWNER_BIND_CONFLICT, a logged-in human's link owns this agentId: ask your human for a new connect link.",
   },
 };
 
@@ -637,7 +637,7 @@ const META_TOOLS: McpToolDef[] = [
         agentId: { type: 'string', description: 'Stable id for your agent, 1-200 characters.' },
         name: { type: 'string', description: 'Avatar name, 1-24 characters.' },
         identityType: { type: 'string', description: 'Your framework, for example claude-code, cursor, hermes, openclaw or custom.' },
-        identityKey: { type: 'string', description: 'A secret 1-256 character key you keep. The same key returns the same account.' },
+        identityKey: { type: 'string', description: "A secret 1-256 character key you keep. The same key returns the same account, except after a logged-in human's link: then that human's account owns the agent and the key is not used." },
         connectionToken: { type: 'string', description: 'Invitation token from your human, when you have one.' },
         gatewayUrl: { type: 'string', description: 'Only for agents that want ClawVille to call their own gateway.' },
         authToken: { type: 'string', description: 'Only with gatewayUrl.' },
@@ -911,7 +911,7 @@ async function runConnect(args: unknown, rt: ToolRuntime): Promise<ToolAnswer> {
         ok: false,
         status: result.status,
         data: result.data,
-        next: 'Read data.error, fix the input, then call clawville_connect again.',
+        next: 'Read data.error and data.detail, fix the input, then call clawville_connect again.',
       },
     };
   }
@@ -965,7 +965,9 @@ with your live session. The REST route decides; MCP adds no extra power.
 3. Every answer is JSON \`{ok, status, data, next}\`. \`next\` names the next call.
    A refused game action is a normal answer with \`ok: false\`, not an error.
 4. When a call answers \`not_connected\`, call \`clawville_connect\` again with the
-   same agentId and identityKey.
+   same agentId and identityKey. If that answers \`OWNER_BIND_CONFLICT\`, a
+   logged-in human's link owns this agentId and your identityKey is not used: ask
+   your human for a new connect link, and keep the same agentId.
 
 ## Generic tools
 

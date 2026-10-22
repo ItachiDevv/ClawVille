@@ -59,6 +59,9 @@ const originalAutonomousCoveBlackjackPlay = npcSimulation.autonomousCoveBlackjac
 const originalAutonomousCoveAgentResolve = npcSimulation.autonomousCoveAgentResolve;
 const originalAutonomousLandSettle = npcSimulation.autonomousLandSettle;
 const originalAutonomousLandEffects = npcSimulation.autonomousLandEffects;
+const originalAutonomousHouseActorCheck = npcSimulation.autonomousHouseActorCheck;
+const originalAutonomousTradeAgentResolve = npcSimulation.autonomousTradeAgentResolve;
+const originalAutonomousTradeSettle = npcSimulation.autonomousTradeSettle;
 const AVATAR = 'executor-avatar';
 
 function body(id: string, x = 11264, y = 11264): TestNpc {
@@ -126,6 +129,9 @@ beforeEach(() => {
   sim.missingActionAttributionWarned.clear();
   sim.autonomousCovePlayLastAdmittedAt.clear();
   sim.autonomousLandActionLastAdmittedAt.clear();
+  // Every actor here is a non-house agent unless a test says otherwise; the
+  // default seam would query openclaw_bots.
+  npcSimulation.autonomousHouseActorCheck = async () => false;
 });
 
 afterEach(() => {
@@ -136,6 +142,9 @@ afterEach(() => {
   npcSimulation.autonomousCoveAgentResolve = originalAutonomousCoveAgentResolve;
   npcSimulation.autonomousLandSettle = originalAutonomousLandSettle;
   npcSimulation.autonomousLandEffects = originalAutonomousLandEffects;
+  npcSimulation.autonomousHouseActorCheck = originalAutonomousHouseActorCheck;
+  npcSimulation.autonomousTradeAgentResolve = originalAutonomousTradeAgentResolve;
+  npcSimulation.autonomousTradeSettle = originalAutonomousTradeSettle;
 });
 
 async function flushEmoteLookup(): Promise<void> {
@@ -834,6 +843,84 @@ describe('in-world executor covenant hooks', () => {
         payload: expect.objectContaining({ target: 'api-integrations' }),
       }),
     ]);
+  });
+});
+
+// House actors hold no bearer session on purpose. The connected-session
+// resolver treats that as expired AND unregisters the house body, so every
+// house-refused verb must stop BEFORE any resolve runs (staging 2026-10-20).
+describe('house actors are refused before any connected-session resolve', () => {
+  function boundBody(id: string): TestNpc {
+    const npc = body(id);
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set(`${id}-session`, {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, `${id}-session`);
+    return npc;
+  }
+  const KIT = '[ACTION: place_kit_piece(parcelCode=parcel-starter-01, pieceKey=fence-picket, gridX=0, gridY=0)]';
+  const TRADE = '[ACTION: trade_token(input_mint=USDC, output_mint=SOL, amount_usd=1, reason=test)]';
+
+  for (const house of [true, false]) {
+    it(`place_kit_piece ${house ? 'never resolves or settles for a house actor' : 'still resolves and settles for a non-house actor'}`, async () => {
+      const npc = boundBody(house ? 'kit-house-body' : 'kit-user-body');
+      const checked: string[] = [];
+      let resolves = 0;
+      const settles: any[] = [];
+      npcSimulation.autonomousHouseActorCheck = async (agentId) => { checked.push(agentId); return house; };
+      npcSimulation.autonomousCoveAgentResolve = async () => {
+        resolves++;
+        return { agentId: npc.id, userId: 'executor-user', avatarId: AVATAR, ledgerCapable: true };
+      };
+      npcSimulation.autonomousLandSettle = async (input) => {
+        settles.push(input);
+        return { kind: 'kit_piece', fresh: false, parcelCode: 'parcel-starter-01', pieceKey: 'fence-picket', costMaterials: 8 };
+      };
+      npcSimulation.autonomousLandEffects = async () => {};
+      npcSimulation.dispatchHatcherActions(npc.id, KIT);
+      await flushAutonomousLandAction();
+      expect(checked).toEqual([npc.id]);
+      expect(resolves).toBe(house ? 0 : 1);
+      expect(settles).toHaveLength(house ? 0 : 1);
+    });
+
+    it(`trade_token ${house ? 'never resolves for a house actor' : 'still resolves for a non-house actor'}`, async () => {
+      const npc = boundBody(house ? 'trade-house-body' : 'trade-user-body');
+      const checked: string[] = [];
+      const resolves: string[] = [];
+      npcSimulation.autonomousHouseActorCheck = async (agentId) => { checked.push(agentId); return house; };
+      npcSimulation.autonomousTradeAgentResolve = async (sessionId) => { resolves.push(sessionId); return null; };
+      npcSimulation.autonomousTradeSettle = async () => { throw new Error('must not settle'); };
+      npcSimulation.dispatchHatcherActions(npc.id, TRADE);
+      await flushAutonomousLandAction();
+      expect(checked).toEqual([npc.id]);
+      expect(resolves).toEqual(house ? [] : [`${npc.id}-session`]);
+    });
+  }
+
+  it('a land verb outside the refused set never consults the house check', async () => {
+    const npc = boundBody('claim-house-body');
+    let checks = 0;
+    let resolves = 0;
+    npcSimulation.autonomousHouseActorCheck = async () => { checks++; return true; };
+    npcSimulation.autonomousCoveAgentResolve = async () => { resolves++; return null; };
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: claim_parcel(parcelCode=parcel-starter-01, door=hold)]');
+    await flushAutonomousLandAction();
+    expect(checks).toBe(0);
+    expect(resolves).toBe(1);
+  });
+
+  it('a failed house check drops the action (fail closed) without a resolve', async () => {
+    const npc = boundBody('kit-check-fails-body');
+    let resolves = 0;
+    npcSimulation.autonomousHouseActorCheck = async () => { throw new Error('db down'); };
+    npcSimulation.autonomousCoveAgentResolve = async () => { resolves++; return null; };
+    npcSimulation.autonomousTradeAgentResolve = async () => { resolves++; return null; };
+    npcSimulation.dispatchHatcherActions(npc.id, `${KIT} ${TRADE}`);
+    await flushAutonomousLandAction();
+    expect(resolves).toBe(0);
   });
 });
 

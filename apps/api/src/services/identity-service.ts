@@ -173,6 +173,16 @@ export interface PublicOnboardingIdentityResolution {
   user: IdentityUser;
 }
 
+export interface PublicOnboardingIdentityOptions {
+  /**
+   * `false` = look up only: never insert a `users` row, and return null when
+   * the identity has no account yet. `/connect` uses it when the agentId row
+   * already has an owner: a new account could never own that row, so creating
+   * one would only leave an empty account behind (2026-10-20).
+   */
+  createIfMissing?: boolean;
+}
+
 /**
  * The identity coordinator shared verbatim by public `/connect` and `/join`.
  * Callers must reject reserved partner labels before entering this function.
@@ -180,25 +190,52 @@ export interface PublicOnboardingIdentityResolution {
  * canonical type feeds the fingerprint resolver, so route response, ticket,
  * account lookup/heal, and persisted identity can never disagree.
  */
+export function resolvePublicOnboardingIdentityWithStore(
+  presentedIdentityType: string,
+  identityKey: string,
+  store: IdentityResolutionStore,
+): Promise<PublicOnboardingIdentityResolution>;
+export function resolvePublicOnboardingIdentityWithStore(
+  presentedIdentityType: string,
+  identityKey: string,
+  store: IdentityResolutionStore,
+  options: PublicOnboardingIdentityOptions,
+): Promise<PublicOnboardingIdentityResolution | null>;
 export async function resolvePublicOnboardingIdentityWithStore(
   presentedIdentityType: string,
   identityKey: string,
   store: IdentityResolutionStore,
-): Promise<PublicOnboardingIdentityResolution> {
+  options: PublicOnboardingIdentityOptions = {},
+): Promise<PublicOnboardingIdentityResolution | null> {
   const identityType = canonicalizePublicAgentIdentityType(presentedIdentityType);
+  if (options.createIfMissing === false) {
+    const found = await findUserByIdentityWithStore(identityType, identityKey, store);
+    return found ? { identityType, user: found } : null;
+  }
   const user = await resolveOrCreateUserByIdentityWithStore(identityType, identityKey, store);
   return { identityType, user };
 }
 
 /** Production database wrapper for the shared public-onboarding coordinator. */
+export function resolvePublicOnboardingIdentity(
+  presentedIdentityType: string,
+  identityKey: string,
+): Promise<PublicOnboardingIdentityResolution>;
+export function resolvePublicOnboardingIdentity(
+  presentedIdentityType: string,
+  identityKey: string,
+  options: PublicOnboardingIdentityOptions,
+): Promise<PublicOnboardingIdentityResolution | null>;
 export async function resolvePublicOnboardingIdentity(
   presentedIdentityType: string,
   identityKey: string,
-): Promise<PublicOnboardingIdentityResolution> {
+  options: PublicOnboardingIdentityOptions = {},
+): Promise<PublicOnboardingIdentityResolution | null> {
   return resolvePublicOnboardingIdentityWithStore(
     presentedIdentityType,
     identityKey,
     databaseIdentityStore,
+    options,
   );
 }
 
@@ -231,15 +268,17 @@ export async function resolveOrCreateUserByIdentity(
   );
 }
 
-/** Test seam for the fingerprint resolver; production callers use the wrapper above. */
-export async function resolveOrCreateUserByIdentityWithStore(
+/**
+ * Look-up half of the resolver: the row for this identity, or undefined. It
+ * never inserts. A legacy-fingerprint row is healed to the current digest (an
+ * existing account keeps its continuity; no new account appears).
+ */
+async function findUserByIdentityWithStore(
   identityType: string,
   identityKey: string,
   store: IdentityResolutionStore,
-): Promise<IdentityUser> {
+): Promise<IdentityUser | undefined> {
   const fingerprint = identityFingerprint(identityType, identityKey);
-
-  // 1. Try to find an existing row by fingerprint.
   const existing = await store.findByFingerprint(fingerprint);
   if (existing) {
     return identityResult(existing, false);
@@ -255,6 +294,20 @@ export async function resolveOrCreateUserByIdentityWithStore(
     );
     if (healed) return identityResult(healed, false);
   }
+  return undefined;
+}
+
+/** Test seam for the fingerprint resolver; production callers use the wrapper above. */
+export async function resolveOrCreateUserByIdentityWithStore(
+  identityType: string,
+  identityKey: string,
+  store: IdentityResolutionStore,
+): Promise<IdentityUser> {
+  const fingerprint = identityFingerprint(identityType, identityKey);
+
+  // 1. Try to find an existing row by fingerprint (or heal a legacy one).
+  const existing = await findUserByIdentityWithStore(identityType, identityKey, store);
+  if (existing) return existing;
 
   // 2. Not found — try to insert. Friendly default name:
   //    `Agent <first-12-of-fingerprint>`. The identityKey is the account

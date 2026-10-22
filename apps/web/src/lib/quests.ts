@@ -176,19 +176,22 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
     prerequisites: ['library-card'],
   },
   'style-statement': {
-    hint: 'Coming soon — cosmetic shop opens in Phase 4.',
+    // Pending: the Wardrobe shop is live, but the server claim check is not
+    // (status `pending` in TUTORIAL_QUESTS; settlement returns pending_feature).
+    hint: 'Not claimable yet. You can already buy and equip cosmetics in the Wardrobe (sidebar Cosmetics).',
     condition: { type: 'pending' },
     prerequisites: [],
   },
   'big-spender': {
-    hint: 'Coming soon — server-side spending tracker rolls out with the shop.',
+    // Pending: no server-side spend total exists yet (status `pending`).
+    hint: 'Not claimable yet. The server does not track total vCLAW spent yet.',
     condition: { type: 'pending' },
     prerequisites: [],
   },
 
   // TIER 5
   'first-match': {
-    hint: 'Use the sidebar Quick Queue → Bumper Shells or Reef Race.',
+    hint: 'Walk into the Salty Spitoon (Bumper Shells) or the Boating School (Reef Race), choose Play Now, then Queue Solo.',
     condition: { type: 'counter', counterKey: 'activityMatchesPlayed', threshold: 1 },
     prerequisites: [],
   },
@@ -256,7 +259,8 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
 
   // TIER 8
   'wallet-aware': {
-    hint: 'Coming soon — wallet view tracking ships with the wallet UI.',
+    // Pending: wallet views are not recorded server-side (status `pending`).
+    hint: 'Not claimable yet. Wallet views are not tracked yet.',
     condition: { type: 'pending' },
     prerequisites: [],
   },
@@ -278,7 +282,9 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
     prerequisites: ['bot-master', 'match-maker', 'polymath', 'top-100'],
   },
   'brand-ambassador': {
-    hint: 'Coming soon — Milady install verification ships with the app store integration.',
+    // Pending and unreachable: one of its conditions was the Milady sideload
+    // install, retired 2026-07-23. Removal needs packages/shared + settlement.
+    hint: 'Not claimable. This quest is retired.',
     condition: { type: 'pending' },
     prerequisites: [],
   },

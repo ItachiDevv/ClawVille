@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 import '@/styles/cove-tokens.css';
 import {
   computeAllIn,
@@ -16,6 +17,8 @@ import {
 } from '@/lib/cove/holdem-settlement-narration';
 import PokerCard from './PokerCard';
 import CommunityCardRow from './CommunityCardRow';
+import { CashHandFeed } from './CashHandFeed';
+import { CashShowdownPanel, cashResultFreesTray } from './CashShowdownPanel';
 import styles from './SeatedHoldemHud.module.css';
 import {
   registerHoldemSeatBadge,
@@ -24,7 +27,6 @@ import {
 } from '@/lib/cove/holdem-table-view';
 import {
   deriveHoldemPublicSeats,
-  type CashSettledHandSnapshot,
   type HoldemStreet,
   type SerializedHoldemLogEntry,
 } from '@clawville/shared';
@@ -37,9 +39,24 @@ import type {
   CashAction,
   CashActionKind,
   CashAgentView,
+  CashPokerCard,
   CashPublicSeat,
+  CashSettledSeatView,
+  CashSettledView,
   PublicTableStateResponse,
 } from '@/lib/cove/cash-poker';
+import {
+  EMPTY_CASH_FEED,
+  buildCashFeedLines,
+  formatChips,
+  lastCashActionBySeat,
+  mergeCashHandFeed,
+  ownTimeoutNotice,
+  secondsUntilMs,
+  summarizeCashSettled,
+  type CashHandFeedStore,
+  type CashSeatLastAction,
+} from '@/lib/cove/holdem-cash-feed';
 
 const EMPTY_LOG: readonly SerializedHoldemLogEntry[] = [];
 /** Display-only decision duration. A future enforcement round may reuse this
@@ -66,9 +83,11 @@ const TABLE_ROOM_SEAT_REFS: readonly ((element: HTMLDivElement | null) => void)[
     (element: HTMLDivElement | null) => registerHoldemSeatBadge(seat, element)
   ));
 
+// Registry slot 0 is the viewer's own seat; slots 1-5 are BOT_SEATS[0..4]
+// (the projector's SEAT_BADGE_WORLD_ANCHORS), so physical chair N is slot N+1.
 const CASH_ROOM_BADGE_REFS: readonly ((element: HTMLDivElement | null) => void)[] =
   Array.from({ length: 5 }, (_, physicalIndex) => (
-    (element: HTMLDivElement | null) => registerHoldemSeatBadge(physicalIndex, element)
+    (element: HTMLDivElement | null) => registerHoldemSeatBadge(physicalIndex + 1, element)
   ));
 
 function secondsUntil(deadlineMs: number | null): number | null {
@@ -79,7 +98,7 @@ interface CashTableRoomHudProps {
   instanceId: string;
   state: PublicTableStateResponse | null;
   selfView: CashAgentView | null;
-  settled: CashSettledHandSnapshot | null;
+  settled: CashSettledView | null;
   povSeatIndex: number;
   amSeated: boolean;
   sitting: boolean;
@@ -92,6 +111,9 @@ interface CashTableRoomHudProps {
   onSit: () => void;
   onLeave: () => void;
   onAction: (action: CashAction) => void;
+  /** The viewer's avatar id. A settled hand resolves "You" by avatar, never by
+   *  the current seat (seats can change hands during the between-hands hold). */
+  selfAvatarId?: string | null;
 }
 
 interface CashSeatBadgeView {
@@ -99,11 +121,41 @@ interface CashSeatBadgeView {
   name: string;
   chipStack: number;
   status: CashPublicSeat['status'] | 'roster';
+  /** Roster (no live hand) status label, e.g. "Sitting out" / "Waiting". */
+  rosterLabel?: string;
+  streetBet: number;
+  lastAction: CashSeatLastAction | null;
   isButton: boolean;
   isSB: boolean;
   isBB: boolean;
   isActing: boolean;
 }
+
+/** Server roster seat status -> badge label (no live hand). */
+function rosterStatusLabel(status: string): string {
+  if (status === 'sitting_out') return 'Sitting out';
+  if (status === 'sitting_in') return 'Waiting';
+  if (status === 'busted') return 'Busted';
+  return 'Waiting';
+}
+
+/** Live seat status -> badge label. */
+function liveStatusLabel(seat: CashSeatBadgeView, countdown: number | null): string {
+  if (seat.status === 'roster') return seat.rosterLabel ?? 'Waiting';
+  if (seat.status === 'allin') return 'All in';
+  if (seat.status === 'folded') return 'Folded';
+  if (seat.status === 'sitting_out') return 'Sitting out';
+  if (seat.status === 'busted') return 'Busted';
+  if (seat.isActing) return `${countdown ?? 0}s`;
+  return 'In hand';
+}
+
+/** How long a timeout toast stays up. */
+const TIMEOUT_TOAST_MS = 6_000;
+/** Hole cards kept per hand for the settle tray (own cards only). */
+const HOLE_CACHE_HANDS = 4;
+/** Stable empty card list (keeps memo/effect deps stable across renders). */
+const NO_CARDS: readonly CashPokerCard[] = [];
 
 /** Live cash-table overlay. Public badges/board come only from the public
  * snapshot; the private fan/actions come only from the own-seat poll after a
@@ -126,10 +178,15 @@ export function CashTableRoomHud({
   onSit,
   onLeave,
   onAction,
+  selfAvatarId = null,
 }: CashTableRoomHudProps) {
+  const isMobile = useIsMobile();
   const live = state?.live ?? null;
   const freshSelf = live && selfView?.handNumber === live.handNumber ? selfView : null;
   const ownDeadline = freshSelf?.isYourTurn ? freshSelf.deadlineMs : null;
+  const tableId = state?.table.id ?? null;
+  /** "You" only for a seated viewer. A spectator's POV is an empty seat. */
+  const youSeatIndex = amSeated ? povSeatIndex : null;
   const [countdown, setCountdown] = useState<number | null>(
     secondsUntil(ownDeadline ?? live?.toActDeadlineMs ?? null),
   );
@@ -139,6 +196,14 @@ export function CashTableRoomHud({
   const [confirmingSit, setConfirmingSit] = useState(false);
   const [raiseTo, setRaiseTo] = useState(0);
   const seatNameByAvatarRef = useRef<Map<string, string>>(new Map());
+  /** Own hole cards per hand number. The server nulls `shown` for a folded
+   * owner and the own-seat poll ends with the live hand, so the settle tray
+   * reads the cards from here. Own cards only, never sent anywhere. */
+  const holeCacheRef = useRef<Map<number, readonly CashPokerCard[]>>(new Map());
+  const [feed, setFeed] = useState<CashHandFeedStore>(EMPTY_CASH_FEED);
+  const [timeoutToast, setTimeoutToast] = useState<string | null>(null);
+  const toastedTimeoutsRef = useRef<Set<string>>(new Set());
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     const deadline = ownDeadline ?? live?.toActDeadlineMs ?? null;
@@ -161,33 +226,142 @@ export function CashTableRoomHud({
   }, [amSeated]);
 
   useEffect(() => {
+    setFeed(EMPTY_CASH_FEED);
+    holeCacheRef.current.clear();
+    toastedTimeoutsRef.current.clear();
+    setTimeoutToast(null);
+  }, [tableId]);
+
+  useEffect(() => {
+    for (const seat of state?.seats ?? []) {
+      if (seat.name) seatNameByAvatarRef.current.set(seat.avatarId, seat.name);
+    }
+  }, [state?.seats]);
+
+  useEffect(() => {
     if (!live) return;
     for (const seat of live.seats) {
       seatNameByAvatarRef.current.set(seat.avatarId, seat.name);
     }
+    setFeed((previous) => mergeCashHandFeed(previous, live.handNumber, live.actions, live.board));
   }, [live]);
+
+  useEffect(() => {
+    if (!settled) return;
+    for (const seat of settled.seats) {
+      if (seat.name) seatNameByAvatarRef.current.set(seat.avatarId, seat.name);
+    }
+    setFeed((previous) => mergeCashHandFeed(previous, settled.handNumber, settled.actions, settled.board));
+  }, [settled]);
+
+  useEffect(() => {
+    if (!amSeated || !selfView) return;
+    const cache = holeCacheRef.current;
+    cache.set(selfView.handNumber, selfView.holeCards);
+    while (cache.size > HOLE_CACHE_HANDS) cache.delete(Math.min(...cache.keys()));
+  }, [amSeated, selfView]);
+
+  const feedHand = feed.current;
+  /** The viewer's seat IN the settled hand (by avatar id), or null. */
+  const settledYouSeatIndex = settled && selfAvatarId
+    ? settled.seats.find((seat) => seat.avatarId === selfAvatarId)?.seatIndex ?? null
+    : null;
+  const feedIsSettledHand = Boolean(settled && feedHand && feedHand.handNumber === settled.handNumber);
+  const feedYouSeatIndex = feedIsSettledHand ? settledYouSeatIndex : youSeatIndex;
+
+  useEffect(() => {
+    if (feedYouSeatIndex == null || !feedHand) return;
+    for (const entry of feedHand.entries) {
+      if (!entry.timeout || entry.seatIndex !== feedYouSeatIndex) continue;
+      const key = `${feedHand.handNumber}:${entry.seq}`;
+      if (toastedTimeoutsRef.current.has(key)) continue;
+      toastedTimeoutsRef.current.add(key);
+      const notice = ownTimeoutNotice(entry);
+      if (notice) setTimeoutToast(notice);
+    }
+  }, [feedHand, feedYouSeatIndex]);
+
+  useEffect(() => {
+    if (!timeoutToast) return;
+    const timer = window.setTimeout(() => setTimeoutToast(null), TIMEOUT_TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [timeoutToast]);
+
+  const nextHandAtMs = settled?.nextHandAtMs ?? null;
+  useEffect(() => {
+    if (nextHandAtMs == null) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [nextHandAtMs]);
+  const nextHandSeconds = secondsUntilMs(nextHandAtMs, nowMs);
+
+  const nameForSeat = useCallback((seatIndex: number): string => {
+    const settledSeat = settled?.seats.find((seat) => seat.seatIndex === seatIndex);
+    // The settled hand's feed names its own historical occupants first.
+    if (feedIsSettledHand && settledSeat?.name) return settledSeat.name;
+    const liveSeat = live?.seats.find((seat) => seat.seatIndex === seatIndex);
+    if (liveSeat) return liveSeat.name;
+    if (settledSeat?.name) return settledSeat.name;
+    const rosterSeat = state?.seats.find((seat) => seat.seatIndex === seatIndex && seat.status !== 'left');
+    if (rosterSeat?.name) return rosterSeat.name;
+    const avatarId = settledSeat?.avatarId ?? rosterSeat?.avatarId;
+    return (avatarId ? seatNameByAvatarRef.current.get(avatarId) : undefined) ?? `Seat ${seatIndex + 1}`;
+  }, [feedIsSettledHand, live, settled, state?.seats]);
+
+  const settledSeatName = useCallback((seat: CashSettledSeatView): string => (
+    seat.name
+      ?? seatNameByAvatarRef.current.get(seat.avatarId)
+      ?? live?.seats.find((liveSeat) => liveSeat.avatarId === seat.avatarId)?.name
+      ?? `Seat ${seat.seatIndex + 1}`
+  ), [live]);
+
+  const feedLines = useMemo(
+    () => (feedHand ? buildCashFeedLines(feedHand.entries, feedHand.board, nameForSeat, feedYouSeatIndex) : []),
+    [feedHand, feedYouSeatIndex, nameForSeat],
+  );
+
+  /** Each seat's last action on the live street (badges). */
+  const liveLastActions = useMemo(() => {
+    if (!live) return new Map<number, CashSeatLastAction>();
+    const entries = feedHand?.handNumber === live.handNumber ? feedHand.entries : live.actions ?? [];
+    return lastCashActionBySeat(entries, live.street);
+  }, [feedHand, live]);
 
   const physicalSeats = useMemo<Array<CashSeatBadgeView | null>>(() => Array.from({ length: 5 }, (_, index) => {
     const serverSeatIndex = (povSeatIndex + index + 1) % 6;
     const liveSeat = live?.seats.find((seat) => seat.seatIndex === serverSeatIndex);
-    if (liveSeat) return liveSeat;
-    if (live) return null;
+    if (liveSeat) {
+      return {
+        ...liveSeat,
+        streetBet: liveSeat.streetBet,
+        lastAction: liveLastActions.get(serverSeatIndex) ?? null,
+      };
+    }
+    // Not in the live hand (sitting out, or between hands): still show the
+    // seated player from the roster, so every chair with a player has a badge.
     const rosterSeat = state?.seats.find(
       (seat) => seat.status !== 'left' && seat.seatIndex === serverSeatIndex,
     );
     if (!rosterSeat) return null;
     return {
       avatarId: rosterSeat.avatarId,
-      name: seatNameByAvatarRef.current.get(rosterSeat.avatarId) ?? 'Seated',
+      name: rosterSeat.name
+        ?? seatNameByAvatarRef.current.get(rosterSeat.avatarId)
+        ?? `Seat ${serverSeatIndex + 1}`,
       chipStack: Number(rosterSeat.stackCt),
       status: 'roster',
+      rosterLabel: rosterStatusLabel(rosterSeat.status),
+      streetBet: 0,
+      lastAction: null,
       isButton: false,
       isSB: false,
       isBB: false,
       isActing: false,
     };
-  }), [live, povSeatIndex, state?.seats]);
-  const povSeat = live?.seats.find((seat) => seat.seatIndex === povSeatIndex) ?? null;
+  }), [live, liveLastActions, povSeatIndex, state?.seats]);
+  const povSeat = amSeated ? live?.seats.find((seat) => seat.seatIndex === povSeatIndex) ?? null : null;
+  const ownLastAction = povSeat ? liveLastActions.get(povSeatIndex) ?? null : null;
   const legal: readonly CashActionKind[] = freshSelf?.legalActions ?? [];
   const canFold = legal.includes('fold');
   const canCheck = legal.includes('check');
@@ -213,19 +387,48 @@ export function CashTableRoomHud({
     ].filter((preset, index, all) => all.findIndex((item) => item.value === preset.value) === index);
   }, [canSize, freshSelf, live]);
   const hasOpenSeat = Boolean(state && state.seats.length < state.table.maxSeats);
-  const settledSelf = settled?.seats.find((seat) => seat.seatIndex === povSeatIndex) ?? null;
+  const settledSelf = settled && settledYouSeatIndex != null
+    ? settled.seats.find((seat) => seat.seatIndex === settledYouSeatIndex) ?? null
+    : null;
+  /** Own cards for the settled hand: server-shown, else the per-hand cache. */
+  const settledOwnCards: readonly CashPokerCard[] | null = settled && settledSelf
+    ? settledSelf.shown ?? holeCacheRef.current.get(settled.handNumber) ?? null
+    : null;
   const settledPot = settled?.pots
     .reduce((total, item) => total + BigInt(item.amount), 0n)
     .toString() ?? null;
   const settlementHeadline = settled
     ? settled.endedAt === 'showdown' ? 'Showdown' : 'Hand won without showdown'
     : null;
+  /** The next hand is already live: the result shrinks to one line. */
+  const resultIsStale = Boolean(settled && live && live.handNumber > settled.handNumber);
+  const settledSummary = useMemo(
+    () => (settled ? summarizeCashSettled(settled, settledSeatName, settledYouSeatIndex, settledOwnCards) : null),
+    [settled, settledOwnCards, settledSeatName, settledYouSeatIndex],
+  );
+  /** Short landscape: hide the tray + feed while the full result shows (CSS). */
+  const resultFreesTray = cashResultFreesTray({
+    hasResult: settledSummary != null,
+    resultIsStale,
+    isYourTurn: Boolean(freshSelf?.isYourTurn),
+  });
+  /** Tray source: the settled hand while its result is current, else the live own view. */
+  const trayMode: 'live' | 'settled' | null = settled && amSeated && !resultIsStale
+    && ((settledOwnCards?.length ?? 0) === 2 || settled.board.length > 0)
+    ? 'settled'
+    : freshSelf ? 'live' : null;
+  const trayHole: readonly CashPokerCard[] = trayMode === 'settled'
+    ? settledOwnCards ?? NO_CARDS
+    : freshSelf?.holeCards ?? NO_CARDS;
+  const trayBoard: readonly CashPokerCard[] = trayMode === 'settled'
+    ? settled?.board ?? NO_CARDS
+    : live?.board ?? NO_CARDS;
 
   useEffect(() => {
-    if (settled) {
+    if (settled && !resultIsStale) {
       publishFeltParity(instanceId, buildHoldemTrayParity({
         kind: 'cash',
-        hole: settledSelf?.shown ?? [],
+        hole: trayMode === 'settled' ? [...trayHole] : [],
         board: settled.board,
         settled,
         correlation: {
@@ -264,43 +467,66 @@ export function CashTableRoomHud({
     instanceId,
     live,
     povSeatIndex,
+    resultIsStale,
     settled,
     settlementHeadline,
     settledPot,
-    settledSelf,
     state?.table.id,
+    trayHole,
+    trayMode,
   ]);
 
   return (
-    <div className={styles.surface} data-testid="cash-table-room-hud">
+    <div
+      className={styles.surface
+        + (resultFreesTray ? ' ' + styles.surfaceSettled : '')
+        + (amSeated ? ' ' + styles.surfaceSeated : '')}
+      data-testid="cash-table-room-hud"
+    >
       <ParityMirror surface="holdem-tray-3d" instanceId={instanceId} />
-      {physicalSeats.map((seat, physicalIndex) => seat ? (
-        <div
-          key={seat.avatarId}
-          ref={CASH_ROOM_BADGE_REFS[physicalIndex]}
-          className={styles.seatBadge
-            + (seat.status === 'folded' ? ' ' + styles.seatBadgeFolded : '')
-            + (seat.isActing ? ' ' + styles.seatBadgeThinking : '')}
-          style={{
-            left: TABLE_ROOM_SEAT_ANCHORS[physicalIndex + 1]!.left + '%',
-            top: TABLE_ROOM_SEAT_ANCHORS[physicalIndex + 1]!.top + '%',
-          }}
-        >
-          <div className={styles.seatNameRow + ' ' + styles.smallCaps}>
-            <span>{seat.name}</span>
-            {seat.isButton && <span className={styles.positionChip + ' ' + styles.dealerChip}>D</span>}
-            {seat.isSB && <span className={styles.positionChip}>SB</span>}
-            {seat.isBB && <span className={styles.positionChip}>BB</span>}
+      {physicalSeats.map((seat, physicalIndex) => {
+        if (!seat) return null;
+        const actionChip = seat.lastAction
+          && !(seat.status === 'folded' && seat.lastAction.label === 'Folded')
+          ? seat.lastAction
+          : null;
+        const showBet = seat.streetBet > 0 && !actionChip?.statesAmount;
+        return (
+          <div
+            key={seat.avatarId}
+            ref={CASH_ROOM_BADGE_REFS[physicalIndex]}
+            className={styles.seatBadge
+              + (seat.status === 'folded' ? ' ' + styles.seatBadgeFolded : '')
+              + (seat.isActing ? ' ' + styles.seatBadgeThinking : '')}
+            style={{
+              left: TABLE_ROOM_SEAT_ANCHORS[physicalIndex + 1]!.left + '%',
+              top: TABLE_ROOM_SEAT_ANCHORS[physicalIndex + 1]!.top + '%',
+            }}
+          >
+            <div className={styles.seatNameRow + ' ' + styles.smallCaps}>
+              <span>{seat.name}</span>
+              {seat.isButton && <span className={styles.positionChip + ' ' + styles.dealerChip}>D</span>}
+              {seat.isSB && <span className={styles.positionChip}>SB</span>}
+              {seat.isBB && <span className={styles.positionChip}>BB</span>}
+            </div>
+            <div className={styles.seatAction}>
+              {seat.chipStack.toLocaleString()} vCLAW
+              {' · '}
+              {liveStatusLabel(seat, countdown)}
+            </div>
+            {(actionChip || showBet) && (
+              <div className={styles.seatLastAction} data-testid="cash-seat-last-action">
+                {actionChip && (
+                  <span className={actionChip.timeout ? styles.seatTimeout : undefined}>{actionChip.label}</span>
+                )}
+                {showBet && <span className={styles.seatBetChip}>Bet {formatChips(seat.streetBet)}</span>}
+              </div>
+            )}
           </div>
-          <div className={styles.seatAction}>
-            {seat.chipStack.toLocaleString()} vCLAW
-            {' · '}
-            {seat.status === 'roster' ? 'Seated' : seat.status === 'allin' ? 'All in' : seat.status === 'folded' ? 'Folded' : seat.isActing ? `${countdown ?? 0}s` : 'In hand'}
-          </div>
-        </div>
-      ) : null)}
+        );
+      })}
 
-      {!live && cashedOutCt == null && (
+      {!live && !settled && cashedOutCt == null && (
         <div className={styles.settlement} data-testid="cash-table-waiting">
           <div className={styles.settlementHeadline}>
             {amSeated && physicalSeats.some(Boolean) ? 'Next hand' : 'Waiting for players'}
@@ -309,55 +535,51 @@ export function CashTableRoomHud({
             {amSeated
               ? physicalSeats.some(Boolean)
                 ? 'The next hand is starting…'
-                : 'You are seated — the game starts when another player joins.'
+                : 'You are seated. The game starts when another player joins.'
               : 'Sit down to start the game.'}
           </div>
         </div>
       )}
 
-      {cashedOutCt != null && (
+      {/* While a result panel shows, the cash-out note is a toast in the
+          action panel instead (the floating box sat under the panel on a
+          short landscape screen, 2026-10-22). */}
+      {cashedOutCt != null && !settledSummary && (
         <div className={styles.settlement} data-testid="cash-table-cashed-out">
           <div className={styles.settlementHeadline}>Cashed out</div>
           <div className={styles.settlementDetail}>{cashedOutCt.toLocaleString()} vCLAW returned to your avatar.</div>
         </div>
       )}
 
-      {settled && settlementHeadline && (
-        <div className={styles.settlement} data-testid="holdem-settlement-narration">
-          <div className={styles.settlementHeadline}>{settlementHeadline}</div>
-          <div className={styles.settlementDetail}>
-            Hand {settled.handNumber}
-            {settledPot != null && (
-              <> · <span data-testid="holdem-pot-amount">Pot {Number(settledPot).toLocaleString()} vCLAW</span></>
-            )}
-            {settledSelf && (
-              <>
-                {' · '}
-                <span data-testid="holdem-self-stack">
-                  Stack {Number(settledSelf.endStack).toLocaleString()} vCLAW
-                </span>
-                {` · ${Number(settledSelf.net) >= 0 ? '+' : ''}${settledSelf.net} vCLAW net`}
-              </>
-            )}
-          </div>
-        </div>
+      {settledSummary && (
+        <CashShowdownPanel
+          summary={settledSummary}
+          nextHandSeconds={nextHandSeconds}
+          forceCompact={resultIsStale}
+          mobile={isMobile}
+        />
       )}
 
+      <CashHandFeed lines={feedLines} handNumber={feedHand?.handNumber ?? null} mobile={isMobile} />
+
       <div className={styles.hud}>
-        {freshSelf && (
+        {trayMode && (
           <div className={styles.cardTray} data-testid="cash-private-card-tray">
             <div className={styles.privateCards}>
-              <div className={styles.trayLabel + ' ' + styles.smallCaps}>Your hand</div>
+              <div className={styles.trayLabel + ' ' + styles.smallCaps}>
+                {trayMode === 'settled' && settled ? `Your hand · Hand ${settled.handNumber}` : 'Your hand'}
+              </div>
               <div aria-label="Your private hole cards" className={styles.cardPair}>
-                {freshSelf.holeCards.map((card, index) => (
+                {trayHole.map((card, index) => (
                   <PokerCard key={`${card.suit}-${card.rank}-${index}`} card={card} compact />
                 ))}
+                {trayHole.length === 0 && <span className={styles.trayEmpty}>Cards not shown</span>}
               </div>
             </div>
             <div className={styles.trayDivider} aria-hidden />
             <div className={styles.boardCards}>
               <div className={styles.trayLabel + ' ' + styles.smallCaps}>Table</div>
-              <CommunityCardRow cards={live?.board ?? []} />
+              <CommunityCardRow cards={[...trayBoard]} />
             </div>
           </div>
         )}
@@ -377,22 +599,42 @@ export function CashTableRoomHud({
             {live && <span className={styles.metric}>{live.street.toUpperCase()} · Hand {live.handNumber}</span>}
             {live?.toActSeatIndex != null && (
               <span className={styles.metric}>
-                Acting <strong>{live.seats.find((seat) => seat.seatIndex === live.toActSeatIndex)?.name ?? `Seat ${live.toActSeatIndex + 1}`}</strong>
+                Acting <strong>{live.toActSeatIndex === youSeatIndex ? 'You' : live.seats.find((seat) => seat.seatIndex === live.toActSeatIndex)?.name ?? `Seat ${live.toActSeatIndex + 1}`}</strong>
                 {countdown != null ? ` · ${countdown}s` : ''}
               </span>
             )}
             {povSeat && (
               <span
-                className={styles.metric}
+                className={styles.metric + ' ' + styles.selfChip}
                 data-testid={settled ? undefined : 'holdem-self-stack'}
               >
-                {povSeat.name} · <strong>{povSeat.chipStack.toLocaleString()}</strong> vCLAW
+                <span className={styles.selfChipName}>You</span>
+                {povSeat.isButton && <span className={styles.positionChip + ' ' + styles.dealerChip}>D</span>}
+                {povSeat.isSB && <span className={styles.positionChip}>SB</span>}
+                {povSeat.isBB && <span className={styles.positionChip}>BB</span>}
+                <span><strong>{povSeat.chipStack.toLocaleString()}</strong> vCLAW</span>
+                {povSeat.streetBet > 0 && <span>Bet <strong>{formatChips(povSeat.streetBet)}</strong></span>}
+                {povSeat.status === 'allin' && <span>All in</span>}
+                {povSeat.status === 'folded' && <span>Folded</span>}
+                {ownLastAction && povSeat.status !== 'folded' && !ownLastAction.statesAmount && (
+                  <span>{ownLastAction.label}</span>
+                )}
               </span>
             )}
           </div>
           {pollNotice && <div className={styles.toast + ' ' + styles.toastWarn}>{pollNotice}</div>}
           {actionNotice && <div className={styles.toast + ' ' + styles.toastError}>{actionNotice}</div>}
+          {timeoutToast && (
+            <div className={styles.toast + ' ' + styles.toastWarn} role="status" data-testid="cash-timeout-notice">
+              {timeoutToast}
+            </div>
+          )}
           {leaveQueued && <div className={styles.toast + ' ' + styles.toastWarn}>Cashing out after this hand…</div>}
+          {cashedOutCt != null && settledSummary && (
+            <div className={styles.toast} role="status" data-testid="cash-table-cashed-out">
+              Cashed out: {cashedOutCt.toLocaleString()} vCLAW returned to your avatar.
+            </div>
+          )}
 
           {freshSelf?.isYourTurn && (
             <div

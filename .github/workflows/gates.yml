@@ -159,6 +159,12 @@ jobs:
           src/lib/three/model-load-boundary.test.tsx
           src/lib/three/local-player-model-fallback.test.tsx
           src/lib/three/cove-figure-model-load.test.tsx
+          src/lib/three/__tests__/holdem-table-layout.test.ts
+          src/lib/cove/__tests__/holdem-cash-feed.test.ts
+          src/lib/cove/__tests__/card-parity-mirror.test.ts
+          src/lib/cove/__tests__/card-parity-no-leak.test.tsx
+          src/components/cove/holdem/__tests__/cash-table-badge-slots.test.tsx
+          src/components/cove/holdem/__tests__/cash-showdown-panel.test.tsx
           src/lib/three/arena-terrain-decorations.test.ts
           src/lib/three/arena-terrain-decorations-mount.test.tsx
           src/lib/three/arena-terrain-decorations-bounds.test.ts

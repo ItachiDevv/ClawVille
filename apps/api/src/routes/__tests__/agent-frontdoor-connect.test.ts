@@ -320,6 +320,156 @@ describe('logged-out front-door agent connect', () => {
     expect(pendingConnections.get(token)?.connected).toBe(false);
   });
 
+  test('protocol 89: an unknown connection token answers 404 connection_token_invalid with recovery detail', async () => {
+    const response = await buildApp().request('/api/agent/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.40' },
+      body: JSON.stringify({
+        connectionToken: `ct-${'f'.repeat(32)}`,
+        agentId: 'frontdoor-dead-token-agent',
+        identityType: 'custom',
+        identityKey: 'dead-token-identity-secret',
+      }),
+    });
+    expect(response.status).toBe(404);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      error: 'Connection token not found or expired',
+      code: 'connection_token_invalid',
+    });
+    expect(body.detail).toContain('lasts 5 minutes and works once');
+    expect(body.detail).toContain('ask your human for a new connect link');
+    expect(body.detail).toContain('keep using the sessionId it returned');
+    expect(body.detail).not.toContain('without connectionToken');
+    expect(insertedBot).toBeNull();
+  });
+
+  test('protocol 89: an expired connection token answers 410 connection_token_expired and is dropped', async () => {
+    const app = buildApp();
+    const realDateNow = Date.now;
+    const mintedAt = 2_200_000_000_000;
+    let now = mintedAt;
+    Date.now = () => now;
+    try {
+      const minted = await mint(app, '203.0.113.41');
+      const token = String(minted.body.token);
+      now = mintedAt + 5 * 60_000 + 1;
+      const response = await app.request('/api/agent/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.41' },
+        body: JSON.stringify({
+          connectionToken: token,
+          agentId: 'frontdoor-expired-token-agent',
+          identityType: 'custom',
+          identityKey: 'expired-token-identity-secret',
+        }),
+      });
+      expect(response.status).toBe(410);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body).toMatchObject({
+        error: 'Connection token expired',
+        code: 'connection_token_expired',
+      });
+      expect(body.detail).toContain('lasts 5 minutes and works once');
+      expect(pendingConnections.has(token)).toBe(false);
+      expect(insertedBot).toBeNull();
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  test('protocol 89: a claim that outlives its grace deadline answers 410 connection_token_expired', async () => {
+    const app = buildApp();
+    const realDateNow = Date.now;
+    const mintedAt = 2_300_000_000_000;
+    let now = mintedAt;
+    Date.now = () => now;
+    let releaseTicket!: () => void;
+    let signalTicketStarted!: () => void;
+    const ticketStarted = new Promise<void>((resolve) => {
+      signalTicketStarted = resolve;
+    });
+    const ticketRelease = new Promise<void>((resolve) => {
+      releaseTicket = resolve;
+    });
+    ticketMintHook = async () => {
+      signalTicketStarted();
+      await ticketRelease;
+    };
+    try {
+      const minted = await mint(app, '203.0.113.42');
+      const token = String(minted.body.token);
+      now = mintedAt + 5 * 60_000 - 1;
+      const connectPromise = app.request('/api/agent/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.42' },
+        body: JSON.stringify({
+          connectionToken: token,
+          agentId: 'frontdoor-grace-expiry-agent',
+          identityType: 'custom',
+          identityKey: 'grace-expiry-identity-secret',
+        }),
+      });
+      await ticketStarted;
+      // Past the one-minute claim grace (PUBLIC_CONNECT_CLAIM_GRACE_MS).
+      now += 61_000;
+      releaseTicket();
+      const response = await connectPromise;
+      expect(response.status).toBe(410);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body).toMatchObject({
+        error: 'Connection token expired',
+        code: 'connection_token_expired',
+      });
+      expect(body.detail).toContain('lasts 5 minutes and works once');
+      expect(pendingConnections.get(token)?.connected ?? false).toBe(false);
+    } finally {
+      releaseTicket();
+      ticketMintHook = null;
+      Date.now = realDateNow;
+    }
+  });
+
+  test('protocol 89: a used connection token answers 409 connection_token_claimed with recovery detail', async () => {
+    const app = buildApp();
+    const minted = await mint(app, '203.0.113.43');
+    const token = String(minted.body.token);
+    const claimBody = {
+      connectionToken: token,
+      agentId: 'frontdoor-claimed-token-agent',
+      identityType: 'custom',
+      identityKey: 'claimed-token-identity-secret',
+    };
+    const first = await app.request('/api/agent/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.43' },
+      body: JSON.stringify(claimBody),
+    });
+    expect(first.status).toBe(200);
+    const { sessionId } = await first.json() as { sessionId: string };
+    try {
+      const again = await app.request('/api/agent/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-real-ip': '198.51.100.43' },
+        body: JSON.stringify(claimBody),
+      });
+      expect(again.status).toBe(409);
+      const body = await again.json() as Record<string, unknown>;
+      expect(body).toMatchObject({
+        error: 'Connection token already claimed',
+        code: 'connection_token_claimed',
+      });
+      expect(body.detail).toContain('This invitation link was already used.');
+      expect(body.detail).toContain('session-status?agentId=<agentId>');
+      expect(body.detail).toContain('read "Stay alive" in the protocol manual');
+      expect(body.detail).not.toContain('/api/agent/reconnect');
+      expect(body.detail).toContain('ask your human for a new connect link');
+      expect(body.detail).not.toContain('identityKey');
+    } finally {
+      npcSimulation.unregisterAgentBot(sessionId);
+    }
+  });
+
   test('preserves a different existing owner and issues no public handoff', async () => {
     const app = buildApp();
     const minted = await mint(app);
@@ -415,6 +565,7 @@ describe('logged-out front-door agent connect', () => {
         }),
       });
       expect(duplicateClaim.status).toBe(409);
+      expect(await duplicateClaim.json()).toMatchObject({ code: 'connection_token_claimed' });
       expect(pendingConnections.has(token)).toBe(true);
 
       const waiting = await app.request(`/api/agent/connect-status/public/${token}`, {

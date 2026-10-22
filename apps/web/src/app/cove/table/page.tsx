@@ -20,15 +20,30 @@ import {
   describeCashPokerError,
   type CashAction,
   type CashAgentView,
+  type CashPokerCard,
+  type CashSettledView,
   type PublicTableStateResponse,
 } from '@/lib/cove/cash-poker';
+import { pickSpectatorPovSeat } from '@/lib/cove/holdem-cash-feed';
 import type { LiveTableRoomState } from '@/lib/three/holdem-table-room';
 import { clearFeltParity } from '@/lib/cove/card-parity-mirror';
-import type { CashSettledHandSnapshot } from '@clawville/shared';
 import styles from '@/components/cove/holdem/SeatedHoldemHud.module.css';
 
+/** Lobby + spectator public-state poll. */
 const PUBLIC_POLL_MS = 3000;
+/** Seated: public state and last-settled every second so no action or result
+ *  is missed between polls (2026-10-21 visibility contract). */
+const SEATED_PUBLIC_POLL_MS = 1000;
+const SEATED_SETTLED_POLL_MS = 1000;
+/** Spectators: the 8 s result window still shows at least 6 s of each hand. */
+const SPECTATOR_SETTLED_POLL_MS = 1500;
 const SELF_POLL_MS = 1500;
+
+/** A settled result stays up until the later of the server display window
+ *  and the server's next deal (older rows have no `nextHandAtMs`). */
+function settledShowUntilMs(snapshot: CashSettledView): number {
+  return Math.max(snapshot.displayExpiresAtMs, snapshot.nextHandAtMs ?? 0);
+}
 
 const HoldemTableRoomCanvas = dynamic(
   () => import('@/lib/three/holdem-table-room'),
@@ -123,7 +138,7 @@ function CashTableRoom({ tableId }: { tableId: string }) {
   const instanceId = useRef(crypto.randomUUID()).current;
   const { data: avatar } = useAvatar();
   const [state, setState] = useState<PublicTableStateResponse | null>(null);
-  const [settled, setSettled] = useState<CashSettledHandSnapshot | null>(null);
+  const [settled, setSettled] = useState<CashSettledView | null>(null);
   const [pollNotice, setPollNotice] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [selfView, setSelfView] = useState<CashAgentView | null>(null);
@@ -144,9 +159,15 @@ function CashTableRoom({ tableId }: { tableId: string }) {
     setSettled(null);
   }, [tableId]);
 
+  const amSeated = useMemo(
+    () => Boolean(avatar?.id && state?.seats.some((seat) => seat.avatarId === avatar.id)),
+    [avatar?.id, state?.seats],
+  );
+
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollMs = amSeated ? SEATED_PUBLIC_POLL_MS : PUBLIC_POLL_MS;
     const tick = async () => {
       try {
         const next = await cashPokerApi.publicTableState(tableId);
@@ -157,7 +178,7 @@ function CashTableRoom({ tableId }: { tableId: string }) {
       } catch (error) {
         if (!cancelled) setPollNotice(`${describeCashPokerError(error)} Retrying…`);
       } finally {
-        if (!cancelled) timer = setTimeout(tick, PUBLIC_POLL_MS);
+        if (!cancelled) timer = setTimeout(tick, pollMs);
       }
     };
     void tick();
@@ -165,30 +186,30 @@ function CashTableRoom({ tableId }: { tableId: string }) {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [tableId]);
+  }, [amSeated, tableId]);
 
-  const amSeated = useMemo(
-    () => Boolean(avatar?.id && state?.seats.some((seat) => seat.avatarId === avatar.id)),
-    [avatar?.id, state?.seats],
-  );
-
+  // Seated players AND spectators read every settled hand (protocol 96: a
+  // public table's result is open to any signed-in viewer). A private table
+  // answers 403 to a spectator; that viewer stops polling it.
   useEffect(() => {
-    if (!amSeated) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollMs = amSeated ? SEATED_SETTLED_POLL_MS : SPECTATOR_SETTLED_POLL_MS;
     const tick = async () => {
+      let forbidden = false;
       try {
         const snapshot = await cashPokerApi.lastSettled(tableId, lastSettledHandRef.current);
         if (!cancelled && snapshot) {
           lastSettledHandRef.current = snapshot.handNumber;
-          setSettled(Date.now() < snapshot.displayExpiresAtMs ? snapshot : null);
+          setSettled(Date.now() < settledShowUntilMs(snapshot) ? snapshot : null);
         }
       } catch (error) {
-        if (!cancelled && !(error instanceof CoveApiError && error.status === 403)) {
+        forbidden = error instanceof CoveApiError && error.status === 403;
+        if (!cancelled && !forbidden) {
           setPollNotice(`${describeCashPokerError(error)} Retrying…`);
         }
       } finally {
-        if (!cancelled) timer = setTimeout(tick, PUBLIC_POLL_MS);
+        if (!cancelled && !(forbidden && !amSeated)) timer = setTimeout(tick, pollMs);
       }
     };
     void tick();
@@ -200,7 +221,7 @@ function CashTableRoom({ tableId }: { tableId: string }) {
 
   useEffect(() => {
     if (!settled) return;
-    const remainingMs = settled.displayExpiresAtMs - Date.now();
+    const remainingMs = settledShowUntilMs(settled) - Date.now();
     if (remainingMs <= 0) {
       setSettled(null);
       return;
@@ -253,18 +274,50 @@ function CashTableRoom({ tableId }: { tableId: string }) {
     }
     if (leaveQueued && wasSeatedRef.current) {
       setLeaveQueued(false);
+      setSeatedSeatIndex(null);
       setCashedOutCt(lastKnownStackRef.current);
     }
   }, [amSeated, avatar?.id, leaveQueued, state?.live?.seats]);
 
+  // Seated: own seat (POV chair). Not seated: an EMPTY seat, so every
+  // occupied seat lands on a visible badge slot (seat N -> slot (pov+N+1)%6).
   const povSeatIndex = useMemo(() => {
+    const ownSeat = avatar?.id
+      ? state?.seats.find((seat) => seat.avatarId === avatar.id)?.seatIndex
+      : undefined;
+    if (ownSeat != null) return ownSeat;
     if (seatedSeatIndex != null) return seatedSeatIndex;
-    if (!avatar?.id || !state) return 0;
-    return state.seats.find((seat) => seat.avatarId === avatar.id)?.seatIndex ?? 0;
+    if (!state) return 0;
+    const occupied = new Set<number>();
+    for (const seat of state.seats) {
+      if (seat.status !== 'left') occupied.add(seat.seatIndex);
+    }
+    for (const seat of state.live?.seats ?? []) occupied.add(seat.seatIndex);
+    return pickSpectatorPovSeat(occupied, state.table.maxSeats);
   }, [avatar?.id, seatedSeatIndex, state]);
+  // Own hole cards for the 3D felt. Kept past the hand's end (selfView goes
+  // null on the 409 between hands) so the settle window still shows them; the
+  // felt only draws them when the handNumber matches the hand on the table.
+  const [ownHole, setOwnHole] = useState<LiveTableRoomState['ownHole']>(null);
+  useEffect(() => {
+    // Bind to THIS table: a view polled for another table never feeds the felt.
+    if (!selfView || selfView.table.tableId !== `cash:${tableId}`) return;
+    const key = (cards: readonly CashPokerCard[]) => cards.map((c) => c.rank + c.suit).join(',');
+    setOwnHole((current) => (
+      current?.handNumber === selfView.handNumber && key(current.cards) === key(selfView.holeCards)
+        ? current
+        : { handNumber: selfView.handNumber, cards: selfView.holeCards }
+    ));
+  }, [selfView, tableId]);
+  useEffect(() => {
+    if (!amSeated) setOwnHole(null);
+  }, [amSeated]);
+  useEffect(() => {
+    setOwnHole(null);
+  }, [tableId]);
   const liveTable = useMemo<LiveTableRoomState>(
-    () => ({ table: state, povSeatIndex, settled }),
-    [povSeatIndex, settled, state],
+    () => ({ table: state, povSeatIndex, settled, ownHole }),
+    [ownHole, povSeatIndex, settled, state],
   );
   const handleBack = useCallback(() => router.push('/cove'), [router]);
   const handleSit = useCallback(async () => {
@@ -372,6 +425,7 @@ function CashTableRoom({ tableId }: { tableId: string }) {
         onSit={() => { void handleSit(); }}
         onLeave={() => { void handleLeave(); }}
         onAction={(action) => { void handleAction(action); }}
+        selfAvatarId={avatar?.id ?? null}
       />
       <AvatarChatBar surface="table" />
     </RoomShell>

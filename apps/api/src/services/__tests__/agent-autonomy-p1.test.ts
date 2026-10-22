@@ -371,6 +371,168 @@ describe('P1 autonomy driver — decide → enter_building', () => {
   });
 });
 
+// 2026-10-20 staging wedge: an unregistered house session deleted the `ocb-`
+// body and driveOnce returned SILENTLY on the null perception every tick for
+// 30+ minutes. The watchdog must WARN (rate-limited) and re-run house activation
+// under a backoff; a USER agent is never re-registered by the driver.
+describe('missing-body watchdog - warn + house self-heal', () => {
+  type DriverInternals = {
+    houseReactivate: () => Promise<{ agentId: string; bodyId: string } | null>;
+    bodyMissing: Map<string, { misses: number; healAttempts: number; lastHealAt: number; healDisabled: boolean }>;
+  };
+  const internals = () => agentAutonomyDriver as unknown as DriverInternals;
+  const realReactivate = internals().houseReactivate;
+  const realWarn = console.warn;
+  let warns: string[] = [];
+  let reactivateCalls = 0;
+
+  beforeEach(() => {
+    warns = [];
+    reactivateCalls = 0;
+    console.warn = (...args: unknown[]) => { warns.push(args.map(String).join(' ')); };
+    // Never reach the real seeder (DB) from a unit test.
+    internals().houseReactivate = async () => {
+      reactivateCalls++;
+      return { agentId: 'ocb-missing-house', bodyId: 'ocb-missing-house' };
+    };
+  });
+  afterEach(() => {
+    console.warn = realWarn;
+    internals().houseReactivate = realReactivate;
+    agentAutonomyDriver.unregisterHouseAgent('ocb-missing-house');
+    agentAutonomyDriver.unregisterUserAgent('ocb-missing-user');
+  });
+
+  const bodyMissingWarns = () => warns.filter((w) => w.includes('body missing for'));
+
+  it('null perception WARNs once (rate-limited), never decides, and stays deciding', async () => {
+    // No body registered in the sim for this id -> buildPerception returns null.
+    agentAutonomyDriver.registerUserAgent({
+      agentId: 'ocb-missing-user',
+      bodyId: 'ocb-missing-user',
+      platformAgentId: 'pa-missing-user',
+      systemUserId: 'owner-missing-user',
+      houseUserId: 'owner-missing-user',
+      avatarId: 'av-missing-user',
+    });
+    let decisions = 0;
+    const decide = async () => { decisions++; return '[ACTION: emote(emote=wave)]'; };
+    await agentAutonomyDriver.driveOnce('ocb-missing-user', decide);
+    await agentAutonomyDriver.driveOnce('ocb-missing-user', decide);
+    await agentAutonomyDriver.driveOnce('ocb-missing-user', decide);
+
+    expect(decisions).toBe(0);
+    expect(bodyMissingWarns().length).toBe(1);
+    // Digest only: the raw agent id never appears in the warn line.
+    expect(bodyMissingWarns()[0]).not.toContain('ocb-missing-user');
+    expect(agentAutonomyDriver.getOwnerStatus('owner-missing-user')).toMatchObject({
+      enrolled: true,
+      phase: 'deciding',
+      targetBuildingId: null,
+    });
+  });
+
+  it('house agent: re-activation runs once at the miss threshold, then backoff is respected', async () => {
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: 'ocb-missing-house',
+      bodyId: 'ocb-missing-house',
+      platformAgentId: 'pa-missing-house',
+      systemUserId: 'sys-missing-house',
+      houseUserId: 'hu-missing-house',
+      avatarId: 'av-missing-house',
+    });
+    const decide = async () => '';
+
+    await agentAutonomyDriver.driveOnce('ocb-missing-house', decide); // miss 1: warn only
+    expect(reactivateCalls).toBe(0);
+    await agentAutonomyDriver.driveOnce('ocb-missing-house', decide); // miss 2: heal
+    expect(reactivateCalls).toBe(1);
+    // The stub "succeeded" but spawned no body: still missing, inside backoff.
+    await agentAutonomyDriver.driveOnce('ocb-missing-house', decide);
+    await agentAutonomyDriver.driveOnce('ocb-missing-house', decide);
+    expect(reactivateCalls).toBe(1);
+    expect(bodyMissingWarns().length).toBe(1);
+
+    // Age the last attempt past the 60 s floor -> exactly one more attempt.
+    const state = internals().bodyMissing.get('ocb-missing-house')!;
+    state.lastHealAt -= 61_000;
+    await agentAutonomyDriver.driveOnce('ocb-missing-house', decide);
+    expect(reactivateCalls).toBe(2);
+    // Backoff doubled to 120 s: 61 s of age is no longer enough.
+    state.lastHealAt -= 61_000;
+    await agentAutonomyDriver.driveOnce('ocb-missing-house', decide);
+    expect(reactivateCalls).toBe(2);
+  });
+
+  it('house agent: a re-activation that lands a different agent disables self-heal', async () => {
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: 'ocb-missing-house',
+      bodyId: 'ocb-missing-house',
+      platformAgentId: 'pa-missing-house',
+      systemUserId: 'sys-missing-house',
+      houseUserId: 'hu-missing-house',
+      avatarId: 'av-missing-house',
+    });
+    internals().houseReactivate = async () => {
+      reactivateCalls++;
+      return { agentId: 'some-other-house-agent', bodyId: 'ocb-other' };
+    };
+    const realError = console.error;
+    console.error = () => {};
+    try {
+      const decide = async () => '';
+      await agentAutonomyDriver.driveOnce('ocb-missing-house', decide);
+      await agentAutonomyDriver.driveOnce('ocb-missing-house', decide);
+      expect(reactivateCalls).toBe(1);
+      internals().bodyMissing.get('ocb-missing-house')!.lastHealAt -= 60 * 60 * 1000;
+      await agentAutonomyDriver.driveOnce('ocb-missing-house', decide);
+      expect(reactivateCalls).toBe(1);
+    } finally {
+      console.error = realError;
+    }
+  });
+
+  it('user agent missing body: never re-activated, however many drives', async () => {
+    agentAutonomyDriver.registerUserAgent({
+      agentId: 'ocb-missing-user',
+      bodyId: 'ocb-missing-user',
+      platformAgentId: 'pa-missing-user',
+      systemUserId: 'owner-missing-user',
+      houseUserId: 'owner-missing-user',
+      avatarId: 'av-missing-user',
+    });
+    for (let i = 0; i < 5; i++) {
+      await agentAutonomyDriver.driveOnce('ocb-missing-user', async () => '');
+    }
+    expect(reactivateCalls).toBe(0);
+    expect(bodyMissingWarns().length).toBe(1);
+  });
+
+  it('a body seen again resets the miss counter (no heal on an isolated miss)', async () => {
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: 'ocb-missing-house',
+      bodyId: 'ocb-missing-house',
+      platformAgentId: 'pa-missing-house',
+      systemUserId: 'sys-missing-house',
+      houseUserId: 'hu-missing-house',
+      avatarId: 'av-missing-house',
+    });
+    await agentAutonomyDriver.driveOnce('ocb-missing-house', async () => ''); // miss 1
+    expect(internals().bodyMissing.get('ocb-missing-house')?.misses).toBe(1);
+    // Body returns: the next drive clears the watchdog state.
+    registerBody('ocb-missing-house', 'oc-missing-house', 'nanoclaw', 11264, 11264);
+    const originalDirectiveStateRead = agentAutonomyDriver.directiveStateRead;
+    agentAutonomyDriver.directiveStateRead = async () => ({ directive: null, lastActedDirectiveSha: null });
+    try {
+      await agentAutonomyDriver.driveOnce('ocb-missing-house', async () => '');
+    } finally {
+      agentAutonomyDriver.directiveStateRead = originalDirectiveStateRead;
+    }
+    expect(internals().bodyMissing.has('ocb-missing-house')).toBe(false);
+    expect(reactivateCalls).toBe(0);
+  });
+});
+
 describe('P1 house agent config + ambient-conversation exclusion', () => {
   // B1 regression guard: the seeder must register the in-world body as
   // 'self-managed' so the 200ms sim planner leaves it to the autonomy driver.

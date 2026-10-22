@@ -785,7 +785,7 @@ describe("directive expiry and durable acted issuance", () => {
   it("lets only one overlapping claimant emit for a standing issuance", async () => {
     const entry = enroll();
     const directive: CurrentDirective = {
-      text: "visit the cove",
+      text: "visit the cove soon",
       setAt: new Date().toISOString(),
       setBy: "api",
     };
@@ -830,7 +830,7 @@ describe("directive expiry and durable acted issuance", () => {
   it("keeps action dispatch fail-soft when the acted claim is unknown", async () => {
     const entry = enroll();
     const directive: CurrentDirective = {
-      text: "visit the cove",
+      text: "visit the cove soon",
       setAt: new Date().toISOString(),
       setBy: "api",
     };

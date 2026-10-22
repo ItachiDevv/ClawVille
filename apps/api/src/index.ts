@@ -958,6 +958,14 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Message memory sweeper failed to start:', err);
   }
 
+  // 2026-10-20 - prune activity_replays rows older than 14 days, then daily.
+  try {
+    const { startActivityReplayPrune } = await import('./services/activity/activity-replay-prune');
+    startActivityReplayPrune();
+  } catch (err) {
+    console.error('[API] Activity replay prune failed to start:', err);
+  }
+
   // 2026-07-20 — send the process-local inference usage heartbeat to Telegram:
   // first after the boot settle window, then hourly. Production-default, fail-soft.
   try {
@@ -1772,6 +1780,12 @@ async function gracefulShutdown(signal: string) {
       stopMessageMemorySweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopActivityReplayPrune } = await import('./services/activity/activity-replay-prune');
+      stopActivityReplayPrune();
+    } catch {
+      // If the prune module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopInferenceUsageReporter } = await import(

@@ -644,7 +644,24 @@
   .actionPanel { gap: 6px; padding-block: 7px; }
   .statusRow { min-height: 20px; }
   .legendRow { font-size: 8px; }
-  .settlement { top: 46%; }
+  /* Small badges on a short screen: at 844 x 390 the full badge (154 x 62)
+     covered the next chair's badge. The projector also pushes overlapping
+     badges apart (holdem-table-room `separateSeatBadges`). */
+  .seatBadge {
+    min-width: 0;
+    max-width: 124px;
+    padding: 4px 7px;
+  }
+  .seatBadge .seatAction,
+  .seatBadge .seatLastAction { margin-top: 2px; font-size: 9px; }
+  /* "Waiting for players" sits at the top, clear of the seat badges. */
+  .settlement {
+    top: max(8px, env(safe-area-inset-top));
+    width: min(340px, calc(100vw - 340px));
+    padding: 8px 12px;
+    transform: translateX(-50%);
+  }
+  .settlement .settlementHeadline { font-size: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -657,4 +674,440 @@
   .timerFill {
     transition: none;
   }
+}
+
+/* ── Cash table: "everything visible on screen" (2026-10-21) ──────────────
+   Result panel (top center), action feed (top right), seat last-action
+   line, own-seat chip. All anchored to the TOP of the screen so nothing
+   covers the bottom action HUD. Light text on dark panels only. The chat
+   bar owns the top-left column under the back button. */
+
+.seatLastAction {
+  display: flex;
+  margin-top: 3px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--hm-cream);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.seatTimeout { color: #efbd6f; }
+
+.seatBetChip {
+  padding: 1px 5px;
+  border: 1px solid var(--hm-gold-muted);
+  border-radius: 4px;
+  color: var(--hm-gold-bright);
+}
+
+.selfChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 3px 8px;
+  border: 1px solid var(--hm-gold-muted);
+  border-radius: 6px;
+}
+
+.selfChipName { color: var(--hm-cream); }
+
+.trayEmpty {
+  display: inline-flex;
+  min-height: 52px;
+  align-items: center;
+  color: var(--hm-cream-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.feed {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 46;
+  width: min(270px, calc(100vw - 24px));
+  border: var(--hm-border);
+  border-radius: var(--hm-radius);
+  background: rgba(26, 18, 28, 0.92);
+  box-shadow: 0 10px 26px rgba(5, 2, 7, 0.45);
+  pointer-events: auto;
+}
+
+.feedMobile {
+  width: auto;
+  min-width: 150px;
+  max-width: min(300px, calc(100vw - 24px));
+}
+
+.feedToggle {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--hm-radius);
+  background: transparent;
+  color: var(--hm-cream);
+  cursor: pointer;
+  font: 900 14px/1 var(--pt-data), ui-monospace, monospace;
+}
+
+.feedToggle:focus-visible {
+  outline: 2px solid var(--hm-cream);
+  outline-offset: 2px;
+}
+
+.feedList {
+  max-height: min(26vh, 240px);
+  margin: 0;
+  padding: 2px 12px 9px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.feedMobile .feedList { max-height: min(36dvh, 280px); }
+
+.feedLine { color: var(--hm-cream-muted); }
+.feedLineYou { color: var(--hm-cream); font-weight: 800; }
+.feedLineTimeout { color: #efbd6f; }
+
+.feedStreet {
+  margin: 5px 0 2px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(212, 175, 55, 0.3);
+  color: var(--hm-gold-bright);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.result {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  left: 50%;
+  z-index: 47;
+  width: max(320px, min(560px, calc(100vw - 600px)));
+  max-height: min(42vh, 420px);
+  padding: 10px 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgba(226, 193, 90, 0.8);
+  border-radius: var(--hm-radius);
+  /* Opaque (was 0.95 alpha): the 3D DEALER plate is a bright mesh in the
+     WebGL canvas, so no z-index can cover it; a 5% bleed showed it through. */
+  background: var(--hm-panel-solid);
+  box-shadow: 0 0 30px rgba(212, 175, 55, 0.2), 0 14px 32px rgba(4, 2, 5, 0.5);
+  color: var(--hm-cream);
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.resultMobile {
+  top: calc(max(70px, calc(env(safe-area-inset-top) + 58px)) + 52px);
+  width: min(620px, calc(100vw - 16px));
+  max-height: 34dvh;
+}
+
+.resultCompact { max-height: none; }
+
+/* Portrait phone, result current and not your turn: the settled HUD (tray +
+   action panel, about 262 px with its bottom gap) is the only thing below
+   the panel, so the panel may grow down to it (top 122 + 8 gap). At 390x844
+   that is 444 px, enough for a 3-seat showdown without a scroll. */
+@media (orientation: portrait) {
+  .surfaceSettled .resultMobile:not(.resultCompact) {
+    max-height: max(34dvh, calc(100dvh - 400px));
+  }
+}
+
+.resultHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.resultTitle {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resultMeta {
+  color: var(--hm-cream-muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.resultToggle {
+  min-width: 72px;
+  min-height: 44px;
+  flex: none;
+  padding: 0 12px;
+  border: 1px solid rgba(212, 175, 55, 0.72);
+  border-radius: var(--hm-radius);
+  background: rgba(31, 21, 33, 0.94);
+  color: var(--hm-cream);
+  cursor: pointer;
+  font: 800 10px/1 var(--pt-data), ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.resultToggle:focus-visible {
+  outline: 2px solid var(--hm-cream);
+  outline-offset: 2px;
+}
+
+.resultSummary {
+  margin: 6px 0 0;
+  color: var(--hm-gold-bright);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.resultYou {
+  margin: 3px 0 0;
+  color: var(--hm-cream);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.resultSeats {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 0;
+  gap: 4px;
+  list-style: none;
+}
+
+.resultSeat {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: rgba(243, 234, 216, 0.04);
+  font-size: 11px;
+}
+
+.resultSeatYou { border-color: var(--hm-gold-muted); }
+.resultSeatWinner { background: rgba(212, 175, 55, 0.13); }
+.resultSeatFolded { opacity: 0.78; }
+
+.resultSeatName {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--hm-cream);
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The name shrinks with an ellipsis; the Won chip never shrinks or clips. */
+.resultSeatNameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resultSeatName > .winnerChip { flex: none; }
+
+/* Touch devices (useIsMobile): the chip sits under the name. */
+.resultMobile .resultSeatName {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.resultMobile .resultSeatNameText { max-width: 100%; }
+
+.winnerChip {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--hm-gold);
+  color: #1a121c;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.resultSeatCards {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.resultFolded {
+  color: var(--hm-cream-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.resultSeatRank {
+  min-width: 0;
+  color: var(--hm-cream);
+  font-weight: 700;
+}
+
+.resultSeatBestFive {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--hm-cream-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.resultSeatNet {
+  min-width: 48px;
+  font-weight: 900;
+  text-align: right;
+}
+
+.netUp { color: #8fd9a8; }
+.netDown { color: #f0a1a4; }
+
+@media (max-width: 800px) {
+  .result:not(.resultMobile) {
+    top: calc(max(70px, calc(env(safe-area-inset-top) + 58px)) + 52px);
+    width: calc(100vw - 16px);
+    max-height: 34vh;
+  }
+  .resultSeat { gap: 6px; padding-inline: 6px; }
+  /* 390 px portrait: the chip sits under the name, so the hole cards in the
+     next column never cover it. */
+  .resultSeatName {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .resultSeatNameText { max-width: 100%; }
+}
+
+/* Short landscape (phone landscape, iPad landscape, short desktop windows).
+   `.surface .result` (0,2,0) beats `.result:not(.resultMobile)` from the
+   max-width block above. Left inset 158 px clears the back button
+   ("← Cashing out…" is about 140 px wide at left 14 px). The feed gets a
+   known width so the panel can end 8 px left of it. */
+@media (orientation: landscape) and (max-height: 760px) {
+  .surface .result {
+    top: max(8px, env(safe-area-inset-top));
+    right: calc(max(14px, env(safe-area-inset-right)) + min(270px, 30vw) + 8px);
+    left: calc(max(14px, env(safe-area-inset-left)) + 158px);
+    width: auto;
+    max-width: 520px;
+    max-height: max(96px, calc(100dvh - 330px));
+    margin-inline: auto;
+    transform: none;
+  }
+  .surface .resultCompact { max-height: none; }
+  .feed,
+  .feedMobile {
+    width: min(270px, 30vw);
+    min-width: 0;
+    max-width: none;
+  }
+  .feedList,
+  .feedMobile .feedList { max-height: max(88px, calc(100dvh - 300px)); }
+  /* One line per seat (2026-10-21, founder: no scroll on a phone held
+     sideways): name and hand name stacked on the left, then the hole cards,
+     the Best 5 and the net. Cards render at 2/3 size (24 x 35) through
+     `zoom`, which also shrinks their layout box. A 3-seat showdown is about
+     40 px per row, so the panel fits in the 844 x 390 height. */
+  .resultSeat {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "name cards best net"
+      "rank cards best net";
+    row-gap: 0;
+    column-gap: 6px;
+    padding-block: 2px;
+  }
+  .result .resultSeatName {
+    grid-area: name;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+  }
+  .result .resultSeatNameText { max-width: none; }
+  .resultSeatCards { grid-area: cards; gap: 2px; }
+  .resultSeatRank { grid-area: rank; font-size: 10px; }
+  .resultSeatNet { grid-area: net; min-width: 40px; }
+  .resultSeatBestFive {
+    grid-area: best;
+    grid-column: auto;
+    flex-wrap: nowrap;
+    gap: 2px;
+    padding-left: 4px;
+    border-left: 1px solid rgba(226, 193, 90, 0.35);
+  }
+  .resultSeatBestFive > span[aria-hidden] { display: none; }
+  .resultSeatCards > div,
+  .resultSeatBestFive > div { zoom: 0.66; }
+  .resultSeats { margin-top: 5px; gap: 3px; }
+  .resultSummary { margin-top: 3px; }
+
+  /* `.surfaceSettled` (CashTableRoomHud, `cashResultFreesTray`): the full
+     result is current and the viewer is not acting. While the panel is
+     expanded, hide the private card tray (the panel repeats those cards and
+     the board) and the action feed (it returns on "Hide" or the next hand),
+     and give the panel the freed height. The action panel keeps only its
+     status row and toasts: the legend hides, and for a seated viewer
+     (`surfaceSeated`) the Walk Away row hides too (2026-10-22, measured at
+     844x390: the action panel was 268-384, so a 3-seat result needed a
+     scroll). Walk Away stays reachable at the top left (the back button does
+     the same leave). A spectator keeps "Sit down" (and a buy-in confirm in
+     progress). Reserve 70 px seated (top 8 + gap 8 + action panel about 41
+     + bottom 6, plus a few px) and 120 px for a spectator (+ the 44 px Sit
+     down row). The `.hud` (z 50) stays above the panel (z 47) if a toast
+     grows it. */
+  .surfaceSettled .result:not(.resultCompact) {
+    /* Right of the table chat button (avatar-chat-bar: fixed z 70, left
+       max(12px, inset), width min(360px, 100vw - 24px), top 70). Its box
+       takes taps across that width, so the panel must not sit under it. */
+    left: calc(max(12px, env(safe-area-inset-left)) + min(360px, calc(100vw - 24px)) + 8px);
+    right: max(14px, env(safe-area-inset-right));
+    max-width: 560px;
+    max-height: max(140px, calc(100dvh - 120px));
+  }
+  .surfaceSettled.surfaceSeated .result:not(.resultCompact) {
+    max-height: max(140px, calc(100dvh - 70px));
+  }
+  .surfaceSettled .result:not(.resultCompact) ~ .feed { display: none; }
+  .surfaceSettled .result:not(.resultCompact) ~ .hud .cardTray,
+  .surfaceSettled .result:not(.resultCompact) ~ .hud .legendRow,
+  .surfaceSettled.surfaceSeated .result:not(.resultCompact) ~ .hud .actionRow { display: none; }
 }
