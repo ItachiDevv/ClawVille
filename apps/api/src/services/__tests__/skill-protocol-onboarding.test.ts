@@ -269,10 +269,30 @@ describe('open-agent onboarding manuals', () => {
     expect(block).toContain(`POST   ${API_BASE}/api/cove/baccarat/tables/:tableId/leave`);
     const blockFlat = block.replace(/\s+/g, ' ');
     expect(blockFlat).toContain('Tiers: low 5..50, mid 20..200, high 50..500 vCLAW. 6 seats; house bots sit for show and never bet. No guest play.');
-    expect(blockFlat).toContain('a late bet returns `409 betting_closed`, a stale round `409 stale_round`');
+    expect(blockFlat).toContain('a late bet returns `409 betting_closed` (with `nextBettingOpensAt` when the table is in `reveal`), a stale round `409 stale_round`');
+    expect(blockFlat).toContain('`nextBettingOpensAt` is the epoch ms when the next window opens, set only in `reveal`');
+    // Every public refusal of the table routes is named with its real status.
+    expect(blockFlat).toContain('`409 table_full`');
+    expect(blockFlat).toContain('`409 seat_taken`');
+    expect(blockFlat).toContain('`409 not_seated`');
+    expect(blockFlat).toContain("`400 stake_out_of_bounds`: the stake is outside this table's tier");
+    expect(blockFlat).toContain('`402 insufficient_clawtokens` at bet time: your balance is less than this stake plus your other pending stakes');
+    expect(blockFlat).toContain('`409 bet_conflict`');
+    expect(blockFlat).toContain('never replaces your pending REST bet for that round');
+    expect(blockFlat).toContain('`429 cove_baccarat_table_rate_limit`: more than 120 bet writes (place or cancel) per minute per owner account');
+    // Verify id: the history UUID (`historyEventId`), never the stream eventId; solo via the history list.
+    expect(blockFlat).toContain('Its `historyEventId` is the history id: verify it at `GET /api/cove/history/:historyEventId/verify`');
+    expect(blockFlat).toContain("The event's stream `eventId` is a different id and does not work there.");
+    expect(blockFlat).not.toContain('can be verified at `/api/cove/history/:eventId/verify`');
+    expect(blockFlat).toContain('read `GET /api/cove/history?game=baccarat`: the row whose `sessionId` is your `shoeId` and whose `nonce` is your `coupIndex`');
+    // Hosted-agent table move (cove one-shot block + actions page).
+    expect(flat).toContain('the action leaves that table and sits you at one that admits the wager');
+    expect(flat).toContain('If you have a pending bet there, the action is dropped (`already_seated_elsewhere`)');
+    expect(flat).not.toContain('leave it by REST first');
+    expect(actions.replace(/\s+/g, ' ')).toContain('the action moves you to one that does when you have no pending bet there; with a pending bet there it is dropped (`already_seated_elsewhere`)');
     expect(blockFlat).toContain('debited and your gross payout credited in one transaction when the window closes, never at bet time');
     expect(blockFlat).toContain('is void: no vCLAW moved (`me.voidedLastRound`)');
-    expect(blockFlat).toContain('One seat across all shared tables (`409 already_seated_elsewhere`)');
+    expect(blockFlat).toContain('One seat across all shared tables (`409 already_seated_elsewhere`, with the `tableId` you sit at)');
     // Hosted-agent verb in the one-shot block and on the actions page.
     expect(flat).toContain('`[ACTION: play_cove_game(game=baccarat, bet=banker, wager=20)]` places one bet at a shared baccarat table');
     expect(flat).toContain('Wager 5..500; same 30 s and daily-cap rules.');
@@ -286,6 +306,14 @@ describe('open-agent onboarding manuals', () => {
     expect(orientation).toContain('a bet the balance cannot cover at that moment is void');
     expect(townGuide.knowledge.some((entry) => entry.includes('or one bet at a shared baccarat table with their own vCLAW'))).toBe(true);
     expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((entry) => entry.includes('or one bet at a shared baccarat table with its own vCLAW'))).toBe(true);
+    // The station click opens the lobby; the solo room is its "Private shoe" card.
+    const soloRoom = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Cove has a real baccarat (Punto Banco) table'))!;
+    expect(soloRoom).toContain('click it to open the baccarat lobby (/cove/baccarat); this solo table is the lobby\'s "Private shoe" card (/cove/baccarat?mode=solo)');
+    expect(soloRoom).not.toContain('click it to enter.');
+    expect(townGuide.knowledge.some((entry) => entry.includes('this solo table is its "Private shoe" card'))).toBe(true);
+    // The table move reaches both knowledge surfaces too.
+    expect(townGuide.knowledge.some((entry) => entry.includes('moving it from a table that does not, unless it has a pending bet there'))).toBe(true);
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE.some((entry) => entry.includes('it moves the agent from a seat at a table that does not admit the wager, unless the agent has a pending bet there'))).toBe(true);
     // Outward copy rules on the new text.
     for (const text of [block, nori!, orientation!]) {
       expect(text).not.toContain('—');

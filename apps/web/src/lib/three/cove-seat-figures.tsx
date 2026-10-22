@@ -15,7 +15,7 @@ import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { VRMCharacterAnimator, type AnimName } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
@@ -318,7 +318,14 @@ export function FrozenFigure({
     };
   }, [cushionY, freezeVia, handSampleSeat, instanceId, invalidate, manualSeat, onHandSample, pose, reg.animatorId, relaxManualUpperBody, sampleAt, vrm]);
 
-  useEffect(() => () => disposeVRMInstance(reg.path, instanceId), [instanceId, reg.path]);
+  useEffect(() => {
+    // Setup cancels the dispose that this effect's own cleanup scheduled on a
+    // StrictMode replay or a fast remount of the same instance (vrm-loader
+    // retain contract). Without it the deferred dispose fired ~500 ms later
+    // against a still-mounted figure and destroyed GPU buffers in use.
+    retainVRMInstance(reg.path, instanceId);
+    return () => disposeVRMInstance(reg.path, instanceId);
+  }, [instanceId, reg.path]);
 
   return (
     <group ref={groupRef} name={instanceId} position={position} rotation={[0, yaw, 0]}>

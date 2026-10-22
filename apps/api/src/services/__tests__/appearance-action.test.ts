@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { AVATAR_COLORS, DECISION_SCOPE, HATCHER_ACTION_MENU, HATCHER_ACTION_VERBS, CLAWVILLE_GAME_TOOLS } from '@clawville/shared';
+import { AVATAR_COLORS, DECISION_SCOPE, HATCHER_ACTION_MENU, HATCHER_ACTION_VERBS, HOUSE_PLAY_COVE_GAME_MENU_ITEM, CLAWVILLE_GAME_TOOLS } from '@clawville/shared';
 import { npcSimulation } from '../npc-simulation';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
 import { HOUSE_REFUSED_AUTONOMY_VERBS } from '../house-refused-verbs';
@@ -73,6 +73,10 @@ test('decision menu: a house entry omits every house-refused verb; a non-house e
     if (HOUSE_REFUSED_AUTONOMY_VERBS.has(action.verb)) {
       expect(housePrompt).not.toContain(action.syntax);
       expect(housePrompt).not.toContain(`[ACTION: ${action.verb}(`);
+    } else if (action.verb === 'play_cove_game') {
+      // The executor refuses a house actor for game=baccarat only.
+      expect(housePrompt).not.toContain(action.syntax);
+      expect(housePrompt).toContain(HOUSE_PLAY_COVE_GAME_MENU_ITEM.syntax);
     } else {
       expect(housePrompt).toContain(action.syntax);
     }

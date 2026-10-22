@@ -80,7 +80,9 @@ export type BaccaratTableVoidReason =
   | 'no_owner'
   | 'daily_cap'
   | 'settle_failed'
-  | 'orphaned';
+  | 'orphaned'
+  /** A pending bet from a seeded / pool bot found at settle (should never happen; critical alert). */
+  | 'bot_bet_refused';
 
 /** A pending bet as the settle tx reads it (spec section 5.3 step 3). */
 export interface PendingSeatBet {
@@ -113,7 +115,7 @@ export interface SettledSeatResult {
  * Wire error codes (spec section 3.3) and their HTTP status. The route maps a
  * thrown `BaccaratTableError` to `HTTPException(httpStatus, { message: code })`.
  * Route-only codes (`invalid_table_id`, `invalid_bet_body`, `invalid_sit_body`,
- * `idempotency_key_must_be_1_to_64_chars`, `auth_required`, the agent-session
+ * `invalid_leave_body`, `invalid_lobby_query`, `idempotency_key_must_be_1_to_64_chars`, `auth_required`, the agent-session
  * codes, `guest_not_allowed`, `fixture_not_supported_on_shared_tables`, the rate
  * limit) are listed so one table holds every status.
  */
@@ -121,6 +123,8 @@ export const BACCARAT_TABLE_ERROR_STATUS = {
   invalid_table_id: 400,
   invalid_bet_body: 400,
   invalid_sit_body: 400,
+  invalid_leave_body: 400,
+  invalid_lobby_query: 400,
   stake_out_of_bounds: 400,
   idempotency_key_must_be_1_to_64_chars: 400,
   auth_required: 401,

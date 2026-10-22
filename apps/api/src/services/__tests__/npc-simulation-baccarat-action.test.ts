@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   BUILDING_INTERACTION_RADIUS,
   HATCHER_ACTION_MENU,
+  HOUSE_PLAY_COVE_GAME_MENU_ITEM,
   MAP_LOCATIONS,
 } from '@clawville/shared';
 import { npcSimulation } from '../npc-simulation';
-import { decisionThought } from '../agent-autonomy-driver';
+import { agentAutonomyDriver, decisionThought } from '../agent-autonomy-driver';
 
 // Shared-table baccarat through the hosted-agent [ACTION:] executor
 // (spec baccarat-shared-table-port-2026-10-22 §6.3). The manager seam is
@@ -335,5 +336,55 @@ describe('play_cove_game(game=baccarat) executor', () => {
     expect(item.syntax).toContain('baccarat 5..500 int');
     expect(item.syntax).toContain('bet=<player|banker|tie; baccarat only>');
     expect(item.whenToUse).toContain('baccarat places one bet at a shared table');
+  });
+});
+
+// Consumption mandate: the executor refuses a HOUSE actor for game=baccarat,
+// so the house decide prompt must not offer it; every other actor keeps it.
+describe('play_cove_game decide menu per actor', () => {
+  const HOUSE_ID = 'baccarat-menu-house';
+
+  afterEach(() => {
+    agentAutonomyDriver.unregisterHouseAgent(HOUSE_ID);
+  });
+
+  function prompts(): { house: string; user: string } {
+    sim.npcs.set(HOUSE_ID, body(HOUSE_ID));
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: HOUSE_ID,
+      bodyId: HOUSE_ID,
+      platformAgentId: `platform-${HOUSE_ID}`,
+      systemUserId: `system-${HOUSE_ID}`,
+      houseUserId: `house-${HOUSE_ID}`,
+      avatarId: `avatar-${HOUSE_ID}`,
+    });
+    const entry = (agentAutonomyDriver as unknown as { houseAgents: Map<string, { isHouse: boolean }> })
+      .houseAgents.get(HOUSE_ID)!;
+    expect(entry.isHouse).toBe(true);
+    const perception = npcSimulation.buildPerception(HOUSE_ID)!;
+    return {
+      house: agentAutonomyDriver.buildDecisionPrompt(perception, entry as never),
+      user: agentAutonomyDriver.buildDecisionPrompt(perception, { ...entry, isHouse: false } as never),
+    };
+  }
+
+  it('a house actor sees play_cove_game for slots and blackjack only, in the menu and the here-now line', () => {
+    const { house } = prompts();
+    expect(house).toContain(`- ${HOUSE_PLAY_COVE_GAME_MENU_ITEM.syntax} — ${HOUSE_PLAY_COVE_GAME_MENU_ITEM.whenToUse}`);
+    expect(house).toContain(`you can play right now — [ACTION: ${HOUSE_PLAY_COVE_GAME_MENU_ITEM.syntax}]`);
+    expect(house).not.toContain('game=<slots|blackjack|baccarat>');
+    expect(house).not.toContain('game=baccarat');
+    expect(house).not.toContain('bet=<player|banker|tie');
+    expect(house).not.toContain('baccarat 5..500');
+    expect(house).not.toContain('baccarat places one bet');
+  });
+
+  it('a non-house actor keeps the full play_cove_game item with baccarat', () => {
+    const { user } = prompts();
+    const full = HATCHER_ACTION_MENU.find((action) => action.verb === 'play_cove_game')!;
+    expect(user).toContain(`- ${full.syntax} — ${full.whenToUse}`);
+    expect(user).toContain(`you can play right now — [ACTION: ${full.syntax}]`);
+    expect(user).toContain('game=<slots|blackjack|baccarat>');
+    expect(user).toContain('bet=<player|banker|tie; baccarat only>');
   });
 });

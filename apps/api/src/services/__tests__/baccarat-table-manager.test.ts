@@ -156,11 +156,22 @@ function chunksOf(node: SQL): unknown[] {
   return (node as unknown as { queryChunks: unknown[] }).queryChunks.filter((c) => !isBlank(c));
 }
 
+/** The DB clock `clock_timestamp()` reads (the fake clock + an optional DB skew). */
+interface EvalCtx {
+  dbNow(): number;
+}
+
+function rawText(node: SQL): string {
+  const out = { text: '', params: [] as unknown[] };
+  flattenRaw(node, out);
+  return out.text.trim().toLowerCase();
+}
+
 /** Evaluate one real Drizzle condition tree against a stored (snake-keyed) row. */
-function evalCond(node: unknown, row: Row): boolean {
+function evalCond(node: unknown, row: Row, ctx: EvalCtx): boolean {
   if (!is(node, SQL)) throw new Error('FakeDb: unsupported condition node');
   const ch = chunksOf(node);
-  if (ch.length === 1 && is(ch[0], SQL)) return evalCond(ch[0], row);
+  if (ch.length === 1 && is(ch[0], SQL)) return evalCond(ch[0], row, ctx);
   if (ch.length === 1 && is(ch[0], StringChunk)) {
     const t = chunkText(ch[0]);
     if (t === 'false') return false;
@@ -173,13 +184,15 @@ function evalCond(node: unknown, row: Row): boolean {
     is(ch[2], StringChunk) &&
     chunkText(ch[2]) === ')'
   ) {
-    return evalCond(ch[1], row);
+    return evalCond(ch[1], row, ctx);
   }
   if (ch.length >= 3 && is(ch[0], SQL) && is(ch[1], StringChunk)) {
     const op = chunkText(ch[1]);
     if (op === 'and' || op === 'or') {
       const conds = ch.filter((_, i) => i % 2 === 0);
-      return op === 'and' ? conds.every((c) => evalCond(c, row)) : conds.some((c) => evalCond(c, row));
+      return op === 'and'
+        ? conds.every((c) => evalCond(c, row, ctx))
+        : conds.some((c) => evalCond(c, row, ctx));
     }
   }
   if (is(ch[0], Column) && is(ch[1], StringChunk)) {
@@ -187,8 +200,16 @@ function evalCond(node: unknown, row: Row): boolean {
     const op = chunkText(ch[1]);
     if (op === 'is null') return lhs == null;
     if (op === 'is not null') return lhs != null;
-    const val = (x: unknown): unknown =>
-      is(x, Param) ? (x as Param).value : is(x, Column) ? row[(x as Column).name] : x;
+    const val = (x: unknown): unknown => {
+      if (is(x, Param)) return (x as Param).value;
+      if (is(x, Column)) return row[(x as Column).name];
+      if (is(x, SQL)) {
+        // The only raw SQL value the manager compares against: the DB wall clock.
+        if (rawText(x as SQL) === 'clock_timestamp()') return ctx.dbNow();
+        throw new Error(`FakeDb: unsupported SQL operand ${rawText(x as SQL)}`);
+      }
+      return x;
+    };
     if (op === 'in') return (ch[2] as unknown[]).map(val).some((v) => same(lhs, v));
     const rhs = val(ch[2]);
     switch (op) {
@@ -255,6 +276,7 @@ class SelectBuilder implements PromiseLike<Row[]> {
   private order: unknown[] = [];
   private lim: number | undefined;
   private locked = false;
+  private strength = '';
   constructor(
     private readonly db: FakeDb,
     private readonly table: AnyTable,
@@ -272,17 +294,30 @@ class SelectBuilder implements PromiseLike<Row[]> {
     this.lim = n;
     return this;
   }
-  for(_strength: string): this {
+  for(strength: string): this {
     this.locked = true;
+    this.strength = strength;
     return this;
   }
   private run(): Row[] {
     const name = getTableName(this.table);
-    if (name === 'baccarat_table_bets' && this.locked && this.db.root.hidePendingBetsForUpdateOnce) {
-      this.db.root.hidePendingBetsForUpdateOnce = false;
+    const root = this.db.root;
+    if (this.locked && (name === 'avatars' || name === 'baccarat_tables')) {
+      root.lockTrace.push(`${name}:${this.strength}`);
+    }
+    if (name === 'baccarat_tables' && this.locked && root.onTableLockOnce) {
+      // Time passes while this tx waits for the table row lock.
+      const fn = root.onTableLockOnce;
+      root.onTableLockOnce = null;
+      fn();
+    }
+    if (name === 'baccarat_table_bets' && this.locked && root.hidePendingBetsForUpdateOnce) {
+      root.hidePendingBetsForUpdateOnce = false;
       return [];
     }
-    let rows = this.db.rows(this.table).filter((r) => (this.cond === undefined ? true : evalCond(this.cond, r)));
+    let rows = this.db
+      .rows(this.table)
+      .filter((r) => (this.cond === undefined ? true : evalCond(this.cond, r, root)));
     if (this.order.length > 0) {
       const keys = orderKeys(this.order);
       rows = [...rows].sort((a, b) => {
@@ -323,6 +358,16 @@ class FakeDb {
   stores: Record<string, Row[]> = {};
   private mutex: Promise<void> = Promise.resolve();
   hidePendingBetsForUpdateOnce = false;
+  /** Runs once when the next `baccarat_tables ... FOR UPDATE` read executes (a lock-wait seam). */
+  onTableLockOnce: (() => void) | null = null;
+  /** Row locks (`<table>:<strength>`) and advisory locks (`advisory:<key>`) in execution order. */
+  lockTrace: string[] = [];
+  /** The raw SQL text of every advisory lock statement. */
+  advisorySql: string[] = [];
+  /** The app clock the DB clock follows; the harness wires the fake clock. */
+  clockNow: () => number = () => Date.now();
+  /** DB clock minus app clock (ms): models a second process with a skewed app clock. */
+  dbSkewMs = 0;
   advisoryKeys: string[] = [];
   /** Settled autonomous usage today from outside this test's ledger, per avatar. */
   autoUsageBase = new Map<string, number>();
@@ -330,6 +375,10 @@ class FakeDb {
 
   constructor() {
     this.root = this;
+  }
+
+  dbNow(): number {
+    return this.root.clockNow() + this.root.dbSkewMs;
   }
 
   rows(table: AnyTable | string): Row[] {
@@ -473,7 +522,7 @@ class FakeDb {
             const snakePatch = this.toSnake(table, patch, false);
             const touched: Row[] = [];
             const next = this.rows(table).map((r) => {
-              if (!evalCond(cond, r)) return r;
+              if (!evalCond(cond, r, this.root)) return r;
               const u = { ...r, ...snakePatch };
               touched.push(u);
               return u;
@@ -522,6 +571,8 @@ class FakeDb {
     if (text.includes('pg_advisory_xact_lock')) {
       if (!this.inTx) throw new Error('FakeDb: advisory xact lock outside a tx');
       this.root.advisoryKeys.push(String(raw.params[0]));
+      this.root.advisorySql.push(raw.text);
+      this.root.lockTrace.push(`advisory:${String(raw.params[0])}`);
       return [];
     }
     if (text.includes('claw_token_transactions') && text.includes('autonomouscove')) {
@@ -639,6 +690,7 @@ function makeHarness(): Harness {
   const db = new FakeDb();
   const ledger = new FakeLedger();
   const clock = new FakeClock();
+  db.clockNow = () => clock.now();
   const bots = new FakeBotPool();
   const alerts: AlertErrorParams[] = [];
   const events: BaccaratSettledSeatEvent[] = [];
@@ -1285,6 +1337,20 @@ describe('BaccaratTableManager: settle safety (spec 5)', () => {
     expect(bets(h)[0]!.shoe_id).toBe(fresh.id);
     const st = await h.mgr.getTableState(t.id);
     expect(st!.previousShoe!.serverSeed).toBe(old.server_seed as string);
+    // The fallback roll picks the seed after the bets are in: it must be visible.
+    const rollAlerts = h.alerts.filter((a) => a.severity === 'critical' && /shoe/.test(a.message));
+    expect(rollAlerts.length).toBe(1);
+    expect(rollAlerts[0]!.source).toBe('baccarat-table-settle');
+    expect(rollAlerts[0]!.context).toMatchObject({ tableId: t.id, oldShoeId: old.id, newShoeId: fresh.id });
+  });
+
+  it('shoe roll fallback on an empty round (IDLE GATE) also sends the critical alert', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    h.db.rows(baccaratShoes)[0]!.status = 'closed';
+    await h.mgr.sitDown(t.id, human(h, 'p'));
+    expect(await settleWindow(h, t.id)).toBe('idle_gate');
+    expect(h.alerts.filter((a) => a.severity === 'critical' && /shoe/.test(a.message)).length).toBe(1);
   });
 
   it('shoe roll at the coup that crosses 312: next shoe committed in the same settle tx', async () => {
@@ -1385,7 +1451,7 @@ describe('BaccaratTableManager: settle safety (spec 5)', () => {
     expect(h.alerts.filter((a) => a.severity === 'critical').length).toBe(1);
   });
 
-  it('bot guard at settle: a pending bet from a pool bot aborts the settle (critical alert, no vCLAW)', async () => {
+  it('bot guard at settle: only the pool-bot bet is void (bot_bet_refused, critical alert); real bets settle', async () => {
     const h = makeHarness();
     addBots(h, 1);
     const t = await h.mgr.createTable(LOW, null);
@@ -1406,9 +1472,37 @@ describe('BaccaratTableManager: settle safety (spec 5)', () => {
       stake: '10',
       status: 'pending',
     });
-    expect(await settleWindow(h, t.id)).toBe('settle_failed');
-    expect(ledgerRows(h).length).toBe(0);
-    expect(h.alerts.some((a) => a.severity === 'critical' && /seeded bot/.test(a.message))).toBe(true);
+    expect(await settleWindow(h, t.id)).toBe('settled');
+    const botBet = bets(h).find((b) => b.avatar_id === 'bot-1')!;
+    expect(botBet.status).toBe('void');
+    expect(botBet.void_reason).toBe('bot_bet_refused');
+    expect(bets(h).find((b) => b.avatar_id === 'p')!.status).toBe('settled');
+    expect(ledgerOf(h, 'bot-1').length).toBe(0);
+    expect(ledgerOf(h, 'p').length).toBeGreaterThan(0);
+    expect(h.db.rows(coveGameEvents).every((e) => e.user_id !== 'u-bot-1')).toBe(true);
+    expect(h.alerts.filter((a) => a.severity === 'critical' && /bot/.test(a.message)).length).toBe(1);
+    expect(tableRow(h, t.id).round_phase).toBe('reveal');
+
+    // A round with ONLY a bot bet: that bet is void, no coup is dealt, the round advances.
+    const coupsBefore = h.db.rows(baccaratCoups).length;
+    await endReveal(h, t.id);
+    h.db.rows(baccaratTableBets).push({
+      id: randomUUID(),
+      table_id: t.id,
+      round_seq: 1,
+      seat_index: 0,
+      avatar_id: 'bot-1',
+      actor_kind: 'agent',
+      agent_id: 'bac-bot-001',
+      origin: 'rest',
+      bet: 'tie',
+      stake: '5',
+      status: 'pending',
+    });
+    expect(await settleWindow(h, t.id)).toBe('all_void');
+    expect(h.db.rows(baccaratCoups).length).toBe(coupsBefore);
+    expect(bets(h).filter((b) => b.void_reason === 'bot_bet_refused').length).toBe(2);
+    expect(ledgerOf(h, 'bot-1').length).toBe(0);
   });
 });
 
@@ -1628,5 +1722,183 @@ describe('BaccaratTableManager: shoe replay parity', () => {
     }
     expect(mine.cursor).toBe(state.cursor);
     expect(mine.remaining).toEqual(state.remaining!);
+  });
+});
+
+describe('BaccaratTableManager: fix pass FX-A (review findings)', () => {
+  const pending = (h: Harness) => bets(h).filter((b) => b.status === 'pending');
+
+  it('F1: the window decision uses time read AFTER the table lock (place, cancel, leave)', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    const p = human(h, 'p');
+    await h.mgr.sitDown(t.id, p);
+    await h.mgr.placeBet(t.id, p, { roundSeq: 0, bet: 'player', stake: 10 });
+    // 1 ms of window left when the request arrives; the window closes while it waits for the lock.
+    h.clock.advance(WINDOW_MS - 1);
+    h.db.onTableLockOnce = () => h.clock.advance(2);
+    await expectCode(h.mgr.placeBet(t.id, p, { roundSeq: 0, bet: 'tie', stake: 5 }), 'betting_closed', 409);
+    expect(pending(h).map((b) => [b.bet, b.stake])).toEqual([['player', '10']]);
+
+    h.clock.t -= 2;
+    h.db.onTableLockOnce = () => h.clock.advance(2);
+    await expectCode(h.mgr.cancelBet(t.id, p), 'betting_closed', 409);
+    expect(pending(h).length).toBe(1);
+
+    h.clock.t -= 2;
+    h.db.onTableLockOnce = () => h.clock.advance(2);
+    const left = await h.mgr.leaveTable(t.id, p);
+    expect(left.lockedBet).toEqual({ roundSeq: 0, bet: 'player', stake: 10 });
+    expect(pending(h).length).toBe(1);
+    expect(await h.mgr.tickRound(t.id)).toBe('settled');
+  });
+
+  it('F1: the DB clock decides the deadline, so a lagging app clock can not place, cancel or keep a late bet', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    const p = human(h, 'p');
+    await h.mgr.sitDown(t.id, p);
+    await h.mgr.placeBet(t.id, p, { roundSeq: 0, bet: 'banker', stake: 20 });
+    h.clock.advance(WINDOW_MS - 5_000); // the app clock says 5 s left
+    h.db.dbSkewMs = 6_000; // the DB clock says the window closed 1 s ago
+    await expectCode(h.mgr.placeBet(t.id, p, { roundSeq: 0, bet: 'tie', stake: 5 }), 'betting_closed', 409);
+    await expectCode(h.mgr.cancelBet(t.id, p), 'betting_closed', 409);
+    const left = await h.mgr.leaveTable(t.id, p);
+    expect(left.lockedBet).toEqual({ roundSeq: 0, bet: 'banker', stake: 20 });
+    expect(pending(h).map((b) => [b.bet, b.stake])).toEqual([['banker', '20']]);
+
+    // An autonomous bet with an open app window but a closed DB window plays the NEXT round.
+    const a = agent(h, 'a1');
+    await h.mgr.sitDown(t.id, a);
+    expect((await h.mgr.placeAutonomousBet(auto(a, 'player', 10))).roundSeq).toBe(1);
+  });
+
+  it('F2: daily-cap advisory locks use hashtextextended(key, 0) and come BEFORE the avatar row locks', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    const a = agent(h, 'a1');
+    await h.mgr.placeAutonomousBet(auto(a, 'player', 10));
+    h.db.lockTrace.length = 0;
+    await h.mgr.placeAutonomousBet(auto(a, 'banker', 10)); // replaces its own autonomous bet
+    const key = 'advisory:agent-cove-play-daily:a1';
+    let trace = h.db.lockTrace;
+    expect(trace.indexOf(key)).toBeGreaterThanOrEqual(0);
+    expect(trace.indexOf('avatars:share')).toBeGreaterThan(trace.indexOf(key));
+
+    h.db.lockTrace.length = 0;
+    expect(await settleWindow(h, t.id)).toBe('settled');
+    trace = h.db.lockTrace;
+    expect(trace.indexOf(key)).toBeGreaterThanOrEqual(0);
+    expect(trace.indexOf('avatars:update')).toBeGreaterThan(trace.indexOf(key));
+
+    expect(h.db.advisorySql.length).toBeGreaterThanOrEqual(3);
+    for (const text of h.db.advisorySql) {
+      expect(text).toMatch(/pg_advisory_xact_lock\(hashtextextended\(, 0\)\)/);
+      expect(text).not.toMatch(/\bhashtext\(/);
+    }
+  });
+
+  it('F3: an autonomous bet never overwrites the owner REST bet on the same seat (409 bet_conflict)', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    addAvatar(h, 'o', 1_000);
+    const owner: BaccaratTableSubject = { kind: 'user', userId: 'u-o', avatarId: 'o', agentId: null };
+    h.sessions.set('sess-o', { userId: 'u-o', avatarId: 'o', agentId: 'agent-o', ledgerCapable: true });
+    await h.mgr.sitDown(t.id, owner);
+    await h.mgr.placeBet(t.id, owner, { roundSeq: 0, bet: 'banker', stake: 50 });
+    await expectCode(
+      h.mgr.placeAutonomousBet({
+        agentSessionId: 'sess-o',
+        expectedAgentId: 'agent-o',
+        expectedAvatarId: 'o',
+        expectedUserId: 'u-o',
+        bet: 'tie',
+        wager: 5,
+      }),
+      'bet_conflict',
+      409,
+    );
+    expect(pending(h).map((b) => [b.bet, b.stake, b.origin, b.actor_kind])).toEqual([['banker', '50', 'rest', 'human']]);
+    // The owner keeps the seat (the agent did not sit, so it frees nothing).
+    expect(h.db.rows(baccaratTableSeats).filter((s) => s.avatar_id === 'o' && s.status === 'seated').length).toBe(1);
+  });
+
+  it('F4: a failed autonomous bet after a NEW sit frees the seat and the table goes idle again', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    const poor = agent(h, 'poor', 1);
+    await expectCode(h.mgr.placeAutonomousBet(auto(poor, 'player', 10)), 'insufficient_clawtokens', 402);
+    expect(h.db.rows(baccaratTableSeats).filter((s) => s.avatar_id === 'poor' && s.status === 'seated').length).toBe(0);
+    expect(tableRow(h, t.id).round_phase).toBe('idle');
+    expect(bets(h).length).toBe(0);
+  });
+
+  it('F5: an agent seated at another tier with NO pending bet there leaves it and sits at the fitting table', async () => {
+    const h = makeHarness();
+    const low = await h.mgr.createTable(LOW, null);
+    const mid = await h.mgr.createTable(MID, null);
+    const a = agent(h, 'a1');
+    await h.mgr.sitDown(mid.id, a);
+    const res = await h.mgr.placeAutonomousBet(auto(a, 'banker', 10));
+    expect(res.tableId).toBe(low.id);
+    expect(res.seated).toBe(true);
+    const seats = h.db.rows(baccaratTableSeats).filter((s) => s.avatar_id === 'a1');
+    expect(seats.find((s) => s.table_id === mid.id)!.status).toBe('left');
+    expect(seats.find((s) => s.table_id === low.id)!.status).toBe('seated');
+    expect(tableRow(h, mid.id).round_phase).toBe('idle');
+    expect(pending(h).map((b) => [b.table_id, b.bet, b.origin])).toEqual([[low.id, 'banker', 'autonomous']]);
+  });
+
+  it('F5: with a pending bet at the other table (the owner REST bet) the refusal stays and nothing is cancelled', async () => {
+    const h = makeHarness();
+    await h.mgr.createTable(LOW, null);
+    const mid = await h.mgr.createTable(MID, null);
+    addAvatar(h, 'o', 1_000);
+    const owner: BaccaratTableSubject = { kind: 'user', userId: 'u-o', avatarId: 'o', agentId: null };
+    h.sessions.set('sess-o', { userId: 'u-o', avatarId: 'o', agentId: 'agent-o', ledgerCapable: true });
+    await h.mgr.sitDown(mid.id, owner);
+    await h.mgr.placeBet(mid.id, owner, { roundSeq: 0, bet: 'player', stake: 100 });
+    const err = await expectCode(
+      h.mgr.placeAutonomousBet({
+        agentSessionId: 'sess-o',
+        expectedAgentId: 'agent-o',
+        expectedAvatarId: 'o',
+        expectedUserId: 'u-o',
+        bet: 'tie',
+        wager: 10,
+      }),
+      'already_seated_elsewhere',
+      409,
+    );
+    expect((err.details as { tableId: string }).tableId).toBe(mid.id);
+    expect(pending(h).map((b) => [b.table_id, b.stake])).toEqual([[mid.id, '100']]);
+    expect(h.db.rows(baccaratTableSeats).find((s) => s.avatar_id === 'o')!.status).toBe('seated');
+  });
+
+  it('F8: the settle event carries historyEventId = the cove_game_events row id (for /verify)', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    const p = human(h, 'p');
+    const a = agent(h, 'a1');
+    await h.mgr.sitDown(t.id, p);
+    await h.mgr.sitDown(t.id, a);
+    await h.mgr.placeBet(t.id, p, { roundSeq: 0, bet: 'player', stake: 10 });
+    await h.mgr.placeBet(t.id, a, { roundSeq: 0, bet: 'banker', stake: 10 });
+    expect(await settleWindow(h, t.id)).toBe('settled');
+    expect(h.events.length).toBe(2);
+    const rows = h.db.rows(coveGameEvents);
+    for (const ev of h.events) {
+      const row = rows.find((r) => r.nonce === ev.payload.coupIndex * 100 + ev.payload.seatIndex)!;
+      expect(typeof ev.payload.historyEventId).toBe('string');
+      expect(ev.payload.historyEventId).toBe(row.id as string);
+      expect(row.user_id).toBe(ev.ownerUserId);
+    }
+    expect(new Set(h.events.map((e) => e.payload.historyEventId)).size).toBe(2);
+  });
+
+  it('F9: invalid_leave_body and invalid_lobby_query map to 400; bet_conflict to 409', () => {
+    expect(new BaccaratTableError('invalid_leave_body').httpStatus).toBe(400);
+    expect(new BaccaratTableError('invalid_lobby_query').httpStatus).toBe(400);
+    expect(new BaccaratTableError('bet_conflict').httpStatus).toBe(409);
   });
 });

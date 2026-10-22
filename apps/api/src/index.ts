@@ -1628,25 +1628,57 @@ process.on('uncaughtException', (err) => {
     }
 
     // Shared-table BACCARAT house tables + visual-only seeded bots (2026-10-22).
-    // Same order as cash poker above:
-    //   1. `baccaratHouseSeeder.ensure()` provisions the bot pool (0 vCLAW, never
+    // Three INDEPENDENT steps, each in its own try so one failure never stops the
+    // others (unlike cash poker, the baccarat tick does not need the bot pool):
+    //   1. `startBaccaratTableTick()` FIRST: it drives the round clock persisted
+    //      on each table row (betting -> CAS deal -> settle -> reveal) and runs
+    //      `maintainTable` (orphan guard + idle sweep). It must run even when the
+    //      seeder fails, or pending bets stay pending and tables stay in
+    //      betting/dealing on this process.
+    //   2. `baccaratHouseSeeder.ensure()` provisions the bot pool (0 vCLAW, never
     //      bets) and rebuilds the seat reservations from the DB.
-    //   2. `startBaccaratHouseScaler()` keeps BAC_HOUSE_TABLES_LOW|MID|HIGH open
-    //      house tables per tier (gated on BAC_HOUSE_SCALER_ENABLED).
-    //   3. `startBaccaratTableTick()` drives the round clock persisted on each
-    //      table row (betting -> CAS deal -> settle -> reveal).
-    // Non-fatal: a failure here leaves the lobby empty until the next restart;
-    // it never blocks the rest of the API boot.
+    //   3. `startBaccaratHouseScaler()` keeps BAC_HOUSE_TABLES_LOW|MID|HIGH open
+    //      house tables per tier (gated on BAC_HOUSE_SCALER_ENABLED). Without the
+    //      pool it still creates tables (`created_by` null) and seats no bots.
+    // Non-fatal: each failure logs + alerts; it never blocks the rest of the boot.
+    try {
+      const { startBaccaratTableTick } = await import('./services/baccarat/baccarat-table-tick');
+      startBaccaratTableTick();
+      console.log('[API] Baccarat table tick ready');
+    } catch (err) {
+      console.error('[API] Baccarat table tick init failed (non-fatal):', err);
+      void alertError({
+        severity: 'critical',
+        source: 'baccarat-boot',
+        message: 'Baccarat table tick failed to start: shared-table rounds will not close on this process',
+        context: { error: String(err) },
+      });
+    }
     try {
       const { baccaratHouseSeeder } = await import('./services/baccarat/baccarat-house-seeder');
-      const { startBaccaratHouseScaler } = await import('./services/baccarat/baccarat-house-scaler');
-      const { startBaccaratTableTick } = await import('./services/baccarat/baccarat-table-tick');
       await baccaratHouseSeeder.ensure();
-      startBaccaratHouseScaler();
-      startBaccaratTableTick();
-      console.log('[API] Baccarat house seeder + scaler + tick ready');
+      console.log('[API] Baccarat house seeder ready');
     } catch (err) {
-      console.error('[API] Baccarat house-table init failed (non-fatal):', err);
+      console.error('[API] Baccarat house seeder init failed (non-fatal):', err);
+      void alertError({
+        severity: 'warning',
+        source: 'baccarat-boot',
+        message: 'Baccarat house seeder failed: house tables run without seeded bots',
+        context: { error: String(err) },
+      });
+    }
+    try {
+      const { startBaccaratHouseScaler } = await import('./services/baccarat/baccarat-house-scaler');
+      startBaccaratHouseScaler();
+      console.log('[API] Baccarat house scaler ready');
+    } catch (err) {
+      console.error('[API] Baccarat house scaler init failed (non-fatal):', err);
+      void alertError({
+        severity: 'warning',
+        source: 'baccarat-boot',
+        message: 'Baccarat house scaler failed to start: no new house tables on this process',
+        context: { error: String(err) },
+      });
     }
 
     // HOUSE TREASURY (Tokenomics T0, 2026-07-07) — the named fee-sink subject.

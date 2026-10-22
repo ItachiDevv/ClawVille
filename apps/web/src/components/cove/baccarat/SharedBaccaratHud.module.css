@@ -109,6 +109,16 @@
   color: #1a1018;
 }
 
+/* Disabled primary: light text on a muted panel, no opacity (the primary
+   text #1a1018 at 0.5 opacity over the dark panel was dark on dark). This
+   rule comes after .button:disabled (same specificity), so it wins. */
+.primary:disabled {
+  opacity: 1;
+  border-color: rgba(224, 176, 76, 0.4);
+  background: #3a2d36;
+  color: #c9bba6;
+}
+
 .danger {
   border-color: #ef6868;
   background: #b52f37;
@@ -468,10 +478,14 @@
 
 /* ---- Fairness dialog ---------------------------------------------------- */
 
+/* Rendered through a portal into document.body (outside the .hud z 50
+   stacking context), so z 80 sits above the table chat bar (z 70). It no
+   longer inherits the .hud font, so it sets its own. */
 .dialogBackdrop {
   position: fixed;
   inset: 0;
   z-index: 80;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   display: grid;
   place-items: center;
   pointer-events: auto;
@@ -567,8 +581,12 @@
   padding: 0 11px;
 }
 
+/* The table chat bar (avatar-chat-bar.tsx, fixed, z 70) sits at left 12,
+   top max(70px, inset + 58px), 44 px tall, and its box takes taps across
+   min(360px, 100vw - 24px). It covers the top center of a 390 px screen, so
+   the ring starts 8 px below it (bar top + 44 + 8). */
 .phonePortrait .ring {
-  top: calc(max(10px, env(safe-area-inset-top)) + 54px);
+  top: calc(max(70px, env(safe-area-inset-top) + 58px) + 52px);
   width: 120px;
 }
 
@@ -582,8 +600,9 @@
   font-size: 16px;
 }
 
+/* 92 px below the ring top (ring 60 + caption), same gap as before. */
 .phonePortrait .hands {
-  top: calc(max(10px, env(safe-area-inset-top)) + 146px);
+  top: calc(max(70px, env(safe-area-inset-top) + 58px) + 144px);
   width: calc(100vw - 20px);
   padding: 8px;
   gap: 8px;
@@ -611,7 +630,11 @@
 }
 
 /* ---- Layout: phone landscape (844 x 390 class) --------------------------- */
-/* Left column: seat rail beside the top-left chat toggle (left 12, 44 wide).
+/* Left column: seat rail. The table chat bar (avatar-chat-bar.tsx, fixed,
+   z 70) is a pill at left 12, top max(70px, inset + 58px), 44 px tall, and
+   its box takes taps across min(360px, 100vw - 24px), so it covers the top
+   of this column. The rail starts 8 px below the bar (bar top + 44 + 8), so
+   its touch scroll is not under the bar.
    Right column: bet spots + chips + actions. Center: ring + hands. */
 
 .phoneLandscape .topBar {
@@ -644,7 +667,7 @@
 }
 
 .phoneLandscape .seatRail {
-  top: calc(max(8px, env(safe-area-inset-top)) + 54px);
+  top: calc(max(70px, env(safe-area-inset-top) + 58px) + 52px);
   left: max(64px, calc(env(safe-area-inset-left) + 54px));
   right: auto;
   bottom: max(10px, env(safe-area-inset-bottom));

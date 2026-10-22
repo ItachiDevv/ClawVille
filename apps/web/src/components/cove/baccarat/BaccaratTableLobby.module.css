@@ -195,6 +195,16 @@
   opacity: 0.5;
 }
 
+/* Disabled primary: light text on a muted panel, no opacity (#1a1018 text at
+   0.5 opacity over the dark card was dark on dark). Same specificity as the
+   rule above and later in the file, so it wins. */
+.primaryButton:disabled {
+  opacity: 1;
+  border-color: rgba(224, 176, 76, 0.4);
+  background: #3a2d36;
+  color: #c9bba6;
+}
+
 .notice {
   margin: 0;
   padding: 10px 24px 16px;

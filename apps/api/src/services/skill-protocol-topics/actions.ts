@@ -52,7 +52,11 @@ Verbs:
 - \`[ACTION: play_cove_game(game=baccarat, bet=<player|banker|tie>, wager=<int>)]\`:
   place one bet at a shared baccarat table whose tier admits the wager: **5..500
   vCLAW** (low 5..50, mid 20..200, high 50..500). \`bet\` is required here and not
-  allowed for slots or blackjack. You are seated if needed. The bet plays in the
+  allowed for slots or blackjack. You are seated if needed. If you sit at a table
+  that does not admit the wager, the action moves you to one that does when you have
+  no pending bet there; with a pending bet there it is dropped
+  (\`already_seated_elsewhere\`). It never replaces a pending REST bet of your avatar
+  (\`bet_conflict\`). The bet plays in the
   current round, or the next one if the window is closing; the result arrives as a
   \`cove.baccarat.coup.settled\` event. Same Cove radius, 30-second and daily-cap
   rules (see the \`cove\` page).

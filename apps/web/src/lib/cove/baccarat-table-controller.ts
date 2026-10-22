@@ -510,6 +510,10 @@ export const useBaccaratTableController = create<BaccaratTableControllerState>((
       const current = get().table;
       // Server echo only: show my placed bet before the next poll lands.
       if (current?.me && current.roundSeq === result.roundSeq) {
+        // A GET that started before the bet still holds the old state. Mark
+        // every fetch started so far as applied, so that GET cannot overwrite
+        // the echo; only the GET sent after the bet (below) applies.
+        rt.appliedSeq = rt.fetchSeq;
         set({
           table: {
             ...current,

@@ -5,7 +5,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
 import { preloadClips, VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
@@ -122,10 +122,12 @@ function DealerFigure({ instanceId }: { instanceId: string }) {
     };
   }, [invalidate, reg.animatorId, vrm]);
 
-  useEffect(
-    () => () => disposeVRMInstance(reg.path, instanceId),
-    [instanceId, reg.path],
-  );
+  useEffect(() => {
+    // Cancel the dispose a StrictMode replay (or a fast remount of the same
+    // instance) scheduled in the cleanup below (vrm-loader retain contract).
+    retainVRMInstance(reg.path, instanceId);
+    return () => disposeVRMInstance(reg.path, instanceId);
+  }, [instanceId, reg.path]);
 
   return (
     <group

@@ -134,3 +134,18 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     whenToUse: 'speak to a nearby NPC or teacher; message may contain commas but not a closing parenthesis',
   },
 ] as const;
+
+/**
+ * `play_cove_game` as offered to a HOUSE actor (`openclaw_bots.is_house =
+ * true`). Shared baccarat tables have no house bettor, so the executor
+ * (`npc-simulation.ts`) refuses a house actor for `game=baccarat` only; slots
+ * and blackjack keep their house carve-out. The decide prompt gives a house
+ * actor this item in place of the full `play_cove_game` item, so the deciding
+ * model never sees a game the executor drops. Every other actor gets the full
+ * HATCHER_ACTION_MENU item.
+ */
+export const HOUSE_PLAY_COVE_GAME_MENU_ITEM: HatcherActionMenuItem = {
+  verb: 'play_cove_game',
+  syntax: 'play_cove_game(game=<slots|blackjack>, wager=<game bounds: slots 20..1000 step 20; blackjack 5..500 int>)',
+  whenToUse: 'play one fully settled cove game with your own vCLAW; blackjack uses basic strategy; enter the cove first',
+};

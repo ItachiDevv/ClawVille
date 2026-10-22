@@ -19,7 +19,7 @@
  *   lobster also fails, the player body renders nothing and the scene runs.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { Component, createElement, type ComponentType, type ReactNode } from 'react';
+import { Component, StrictMode, Suspense, createElement, type ComponentType, type ReactNode } from 'react';
 import { Window } from 'happy-dom';
 import * as THREE from 'three';
 import { SEAT_MODEL_RETRY } from './holdem-table-layout';
@@ -52,6 +52,9 @@ const GLTF_FOR = (node: string) =>
 /** url (path + query) -> reply. Default: '.vrm' 404, anything else a tiny valid glTF. */
 const replies = new Map<string, number | string>();
 const requests = new Map<string, number>();
+/** url -> a promise the reply waits for (holds a model load open). */
+const gates = new Map<string, Promise<void>>();
+const CHAIR_GLB = '/models/cove-chair-clean.glb';
 
 type R3F = typeof import('@react-three/fiber');
 let r3f: R3F;
@@ -125,6 +128,8 @@ beforeAll(async () => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const key = pathOf(input);
     requests.set(key, (requests.get(key) ?? 0) + 1);
+    const gate = gates.get(key);
+    if (gate) await gate;
     const reply = replies.get(key) ?? (key.includes('.vrm') ? 404 : 'gltf');
     if (typeof reply === 'number') return new Response('missing', { status: reply });
     const node = reply === 'gltf' ? nodeName(key) : reply;
@@ -175,6 +180,8 @@ beforeEach(() => {
   // The lobster GLB is loaded OK by one test and 404 in another: start each
   // test with no cached lobster entry (R3F useLoader cache is per URL).
   drei.useGLTF.clear(registry.MODEL_REGISTRY.lobster.path);
+  // Same for the chair: one test 404s it, the others expect 5 chairs.
+  drei.useGLTF.clear(CHAIR_GLB);
 });
 
 /** Stand-in for the R3F Canvas error bridge (rethrows to the DOM page). */
@@ -435,6 +442,135 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
     expect(failed.filter((line) => line.includes(`baccarat-seat:4 ${helen}`)).length).toBe(1);
     expect(failed.some((line) => line.includes('baccarat-seat:2'))).toBe(false);
     await mounted.unmount();
+  }, TEST_TIMEOUT_MS);
+
+  test('/cove/baccarat shared table: chair GLB 404 -> only the chairs go; room, table, bet zones and every seat figure keep rendering; one line', async () => {
+    replies.set(CHAIR_GLB, 404);
+    try {
+      const hermes = vrmPath('hermes_female');
+      const seats = [
+        seatView(1, 'avatar-chairless-1', 'lobster'),
+        seatView(2, 'avatar-chairless-2', 'hermes_female'),
+      ];
+      const mounted = await mountScene(
+        createElement(baccarat.BaccaratTableRoomScene, {
+          instanceId: 'bac-chair-404',
+          view: idleFeltView(),
+          seats,
+          povSeatIndex: null,
+        }),
+        (m) => skippedLines(m.logged).some((line) => line.includes(`baccarat-chairs ${CHAIR_GLB}`))
+          && Boolean(m.scene.getObjectByName('holdem-avatar-lobster'))
+          && Boolean(m.scene.getObjectByName('holdem-placeholder-seat-2'))
+          && Boolean(m.scene.getObjectByName('baccarat-bet-zones-merged')),
+        'baccarat shared: chair line + lobster seat + placeholder seat + bet zones',
+      );
+      expectSceneSurvived(mounted);
+      expect(mounted.scene.getObjectByName(nodeName('/models/cove-room-only.glb'))).toBeTruthy();
+      expect(mounted.scene.getObjectByName(nodeName('/models/cove-table-clean.glb'))).toBeTruthy();
+      expect(mounted.scene.getObjectByName('baccarat-bet-zones-merged')).toBeTruthy();
+      let chairs = 0;
+      mounted.scene.traverse((object) => {
+        if (object.name === nodeName(CHAIR_GLB)) chairs += 1;
+      });
+      expect(chairs).toBe(0);
+      // The figures sit OUTSIDE the chair boundary: they still render.
+      expect(mounted.scene.getObjectByName('baccarat-seat-1')).toBeTruthy();
+      expect(mounted.scene.getObjectByName('baccarat-seat-2')).toBeTruthy();
+      expect(mounted.scene.getObjectByName('holdem-avatar-lobster')).toBeTruthy();
+      expect(mounted.scene.getObjectByName('holdem-placeholder-seat-2')).toBeTruthy();
+      const chairLines = skippedLines(mounted.logged).filter((line) => line.includes('baccarat-chairs'));
+      expect(chairLines.length).toBe(1);
+      expect(chairLines[0]).toContain(CHAIR_GLB);
+      expect(holdemFailedLines(mounted.logged).filter((line) => line.includes(`baccarat-seat:2 ${hermes}`)).length).toBe(1);
+      await mounted.unmount();
+    } finally {
+      replies.delete(CHAIR_GLB);
+    }
+  }, TEST_TIMEOUT_MS);
+
+  test('/cove/baccarat one canvas: lobby -> shared -> lobby in the SAME root keeps the room mounted and visible while the chairs load; the dealer is not reloaded', async () => {
+    // The page keeps one Canvas for every mode, so a mode switch is a prop
+    // change on one live scene: seats appear (shared) and go (lobby).
+    const dealer = vrmPath('milady_official_6');
+    const roomName = nodeName('/models/cove-room-only.glb');
+    let releaseChair!: () => void;
+    gates.set(CHAIR_GLB, new Promise<void>((resolve) => {
+      releaseChair = resolve;
+    }));
+    try {
+      // Inside a Suspense like the room Canvas's own scene Suspense, so a
+      // suspend that bubbles past the seat ring would hide the whole room.
+      const sceneFor = (seats?: readonly SeatView[]) => createElement(
+        Suspense,
+        { fallback: null },
+        createElement(baccarat.BaccaratTableRoomScene, {
+          instanceId: 'bac-one-canvas',
+          view: idleFeltView(),
+          ...(seats ? { seats, povSeatIndex: null } : {}),
+        }),
+      );
+      const mounted = await mountScene(
+        sceneFor(),
+        (m) => skippedLines(m.logged).some((line) => line.includes('baccarat-dealer'))
+          && Boolean(m.scene.getObjectByName('baccarat-bet-zones-merged')),
+        'baccarat lobby: dealer line + bet zones',
+      );
+      expectSceneSurvived(mounted);
+      const room = mounted.scene.getObjectByName(roomName)!;
+      expect(room).toBeTruthy();
+      const dealerRequests = requests.get(dealer) ?? 0;
+      expect(dealerRequests).toBeGreaterThanOrEqual(1);
+      const chairRequests = requests.get(CHAIR_GLB) ?? 0;
+
+      // Lobby -> shared table. The chair GLB is held open: the seat ring
+      // suspends on it. The room, the table and the bet zones must stay
+      // VISIBLE meanwhile (the ring has its own Suspense; with the old shared
+      // scene Suspense, React hid the whole room until the chairs loaded).
+      await mounted.rerender(
+        sceneFor([seatView(1, 'avatar-one-canvas-1', 'lobster')]),
+        () => (requests.get(CHAIR_GLB) ?? 0) > chairRequests,
+        'baccarat shared: chair GLB requested',
+      );
+      // Let the suspended commit land while the chair is still held.
+      await r3f.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      expect(mounted.scene.getObjectByName(nodeName(CHAIR_GLB))).toBeUndefined();
+      expect(mounted.scene.getObjectByName(roomName)).toBe(room);
+      let visibleUp = true;
+      for (let node: THREE.Object3D | null = room; node; node = node.parent) visibleUp &&= node.visible;
+      expect(visibleUp).toBe(true);
+      expect(mounted.scene.getObjectByName('baccarat-bet-zones-merged')!.visible).toBe(true);
+      expect(mounted.scene.getObjectByName(nodeName('/models/cove-table-clean.glb'))!.parent!.visible).toBe(true);
+
+      releaseChair();
+      await waitFor(() => {
+        let chairs = 0;
+        mounted.scene.traverse((object) => {
+          if (object.name === nodeName(CHAIR_GLB)) chairs += 1;
+        });
+        return chairs === 5 && Boolean(mounted.scene.getObjectByName('holdem-avatar-lobster'));
+      }, 'baccarat shared: 5 chairs + the lobster seat');
+      expectSceneSurvived(mounted);
+      expect(mounted.scene.getObjectByName(roomName)).toBe(room);
+
+      // Shared -> lobby: the seats go, the room stays the same object.
+      await mounted.rerender(
+        sceneFor(),
+        (m) => !m.scene.getObjectByName(nodeName(CHAIR_GLB)) && !m.scene.getObjectByName('holdem-avatar-lobster'),
+        'baccarat lobby again: chairs and seats removed',
+      );
+      expectSceneSurvived(mounted);
+      expect(mounted.scene.getObjectByName(roomName)).toBe(room);
+      // A remount of the dealer would request its (cleared) failed model again.
+      expect(requests.get(dealer) ?? 0).toBe(dealerRequests);
+      expect(skippedLines(mounted.logged).filter((line) => line.includes('baccarat-dealer')).length).toBe(1);
+      await mounted.unmount();
+    } finally {
+      releaseChair?.();
+      gates.delete(CHAIR_GLB);
+    }
   }, TEST_TIMEOUT_MS);
 
   test('/cove/blackjack: dealer VRM 404 -> room and table render; no dealer; one line', async () => {
@@ -728,6 +864,156 @@ describe('cove interior: local player + seated bust', () => {
   }, TEST_TIMEOUT_MS);
 });
 
+describe("FrozenFigure (hold'em + shared baccarat seats): the VRM retain contract", () => {
+  // Every .vrm 404s at fetch in the tests above, so no FrozenFigure there ever
+  // held a RESOLVED instance. Here one probe path parses to a stand-in VRM:
+  // GLTFLoader.parseAsync (the instance vrm-loader parses with) and
+  // VRMCharacterAnimator.init are patched for this block only and restored.
+  // The REAL vrm-loader cache + 500 ms dispose grace run.
+  const PROBE_PATH = '/avatars/fx-d1-retain-probe.vrm';
+  const GRACE_WAIT_MS = 800; // > VRM_DISPOSE_GRACE_MS (500)
+  let loader: typeof import('./vrm-loader');
+  let restore: (() => void) | null = null;
+  const disposedGeometries: string[] = [];
+  let parses = 0;
+
+  beforeAll(async () => {
+    loader = await import('./vrm-loader');
+    const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+    const animatorModule = await import('./vrm-character-animator');
+    const proto = GLTFLoader.prototype as unknown as { parseAsync: (...args: unknown[]) => Promise<unknown> };
+    const animatorProto = animatorModule.VRMCharacterAnimator.prototype as unknown as { init: (...args: unknown[]) => Promise<void> };
+    const realParse = proto.parseAsync;
+    const realInit = animatorProto.init;
+    proto.parseAsync = async function fakeParse() {
+      parses += 1;
+      const scene = new threeCjs.Group();
+      scene.name = `fake-vrm-${parses}`;
+      const geometry = new threeCjs.BoxGeometry(0.5, 1.6, 0.3);
+      geometry.addEventListener('dispose', () => disposedGeometries.push(scene.name));
+      scene.add(new threeCjs.Mesh(geometry, new threeCjs.MeshBasicMaterial()));
+      const vrm = { scene, meta: { metaVersion: '1' }, update: () => undefined };
+      return { userData: { vrm }, parser: { associations: new Map() } };
+    };
+    // No clip loads: the animator never becomes ready, applyFrozenPose
+    // returns false and the figure keeps its rest pose. Not under test.
+    animatorProto.init = async function fakeInit() {};
+    restore = () => {
+      proto.parseAsync = realParse;
+      animatorProto.init = realInit;
+    };
+  });
+
+  afterAll(() => {
+    restore?.();
+    replies.delete(PROBE_PATH);
+    loader?._vrmClearAllCaches();
+  });
+
+  beforeEach(() => {
+    // Also clears every earlier test's pending dispose timer, so the
+    // instance count below moves only for this block's figure.
+    loader._vrmClearAllCaches();
+    disposedGeometries.length = 0;
+    parses = 0;
+    replies.set(PROBE_PATH, 'gltf');
+  });
+
+  function figure(instanceId: string) {
+    const reg = {
+      ...(registry.MODEL_REGISTRY.milady_official_2 as object),
+      path: PROBE_PATH,
+    } as Parameters<typeof figures.FrozenFigure>[0]['reg'];
+    return createElement(Suspense, { fallback: null }, createElement(figures.FrozenFigure, {
+      reg,
+      instanceId,
+      pose: 'cove_peek',
+      position: [0, 0, 0],
+      yaw: 0,
+      targetHeight: 160,
+      cushionY: 50,
+    }));
+  }
+
+  const figureMounted = (m: Mounted, id: string) => (m.scene.getObjectByName(id)?.children.length ?? 0) > 0;
+
+  async function waitRealMs(ms: number): Promise<void> {
+    const until = Date.now() + ms;
+    await waitFor(() => Date.now() >= until, `${ms} ms of real time`, ms + 2_000);
+  }
+
+  test('mount -> unmount -> remount within the grace window keeps the SAME instance alive; a real unmount still disposes it', async () => {
+    const id = 'fx-d1-remount';
+    const mounted = await mountScene(figure(id), (m) => figureMounted(m, id), 'frozen figure mounted');
+    expectSceneSurvived(mounted);
+    const vrmScene = mounted.scene.getObjectByName(id)!.children[0]!;
+    expect(loader._vrmInstanceCount()).toBe(1);
+
+    const unmountedAt = Date.now();
+    await mounted.rerender(createElement('group', { name: 'no-figure' }), (m) => !m.scene.getObjectByName(id), 'figure unmounted');
+    await mounted.rerender(figure(id), (m) => figureMounted(m, id), 'figure remounted');
+    // The remount landed inside the 500 ms grace window.
+    expect(Date.now() - unmountedAt).toBeLessThan(500);
+
+    await waitRealMs(GRACE_WAIT_MS);
+    expectSceneSurvived(mounted);
+    expect(disposedGeometries).toEqual([]);
+    expect(loader._vrmInstanceCount()).toBe(1);
+    expect(parses).toBe(1);
+    expect(mounted.scene.getObjectByName(id)!.children[0]).toBe(vrmScene);
+
+    // A real unmount (no re-acquire) still disposes once after the grace.
+    await mounted.unmount();
+    await waitRealMs(GRACE_WAIT_MS);
+    expect(disposedGeometries).toEqual([vrmScene.name]);
+    expect(loader._vrmInstanceCount()).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  test('StrictMode effect replay (setup -> cleanup -> setup) never disposes the mounted figure', async () => {
+    const id = 'fx-d1-strict';
+    const mounted = await mountScene(createElement(StrictMode, null, figure(id)), (m) => figureMounted(m, id), 'strict figure mounted');
+    expectSceneSurvived(mounted);
+    const vrmScene = mounted.scene.getObjectByName(id)!.children[0]!;
+    await waitRealMs(GRACE_WAIT_MS);
+    expect(disposedGeometries).toEqual([]);
+    expect(loader._vrmInstanceCount()).toBe(1);
+    expect(mounted.scene.getObjectByName(id)!.children[0]).toBe(vrmScene);
+    await mounted.unmount();
+    await waitRealMs(GRACE_WAIT_MS);
+    expect(disposedGeometries).toEqual([vrmScene.name]);
+    expect(loader._vrmInstanceCount()).toBe(0);
+  }, TEST_TIMEOUT_MS);
+
+  test('/cove/baccarat dealer (DealerFigure): a StrictMode effect replay never disposes the mounted dealer', async () => {
+    const dealer = vrmPath('milady_official_6');
+    replies.set(dealer, 'gltf');
+    try {
+      const mounted = await mountScene(
+        // Suspense as in the room Canvas: React replays the effects of a tree
+        // a Suspense boundary reveals (a root-level suspend skips the replay).
+        createElement(StrictMode, null, createElement(Suspense, { fallback: null }, createElement(baccarat.BaccaratTableRoomScene, {
+          instanceId: 'fx-d1-dealer',
+          view: idleFeltView(),
+        }))),
+        (m) => (m.scene.getObjectByName('baccarat-room-dealer')?.children.length ?? 0) > 0,
+        'baccarat dealer mounted',
+      );
+      expectSceneSurvived(mounted);
+      const dealerScene = mounted.scene.getObjectByName('baccarat-room-dealer')!.children[0]!;
+      await waitRealMs(GRACE_WAIT_MS);
+      expect(disposedGeometries).toEqual([]);
+      expect(loader._vrmInstanceCount()).toBe(1);
+      expect(mounted.scene.getObjectByName('baccarat-room-dealer')!.children[0]).toBe(dealerScene);
+      await mounted.unmount();
+      await waitRealMs(GRACE_WAIT_MS);
+      expect(disposedGeometries).toEqual([dealerScene.name]);
+      expect(loader._vrmInstanceCount()).toBe(0);
+    } finally {
+      replies.delete(dealer);
+    }
+  }, TEST_TIMEOUT_MS);
+});
+
 describe('/cove/baccarat felt view + shared seat mapping (pure)', () => {
   type RoomState = import('../cove/baccarat-room-controller').BaccaratRoomState;
   const settledCoup = { winner: 'banker', tag: 'settled' };
@@ -782,6 +1068,39 @@ describe('/cove/baccarat felt view + shared seat mapping (pure)', () => {
     expect(empty.correlation).toBeNull();
     expect(empty.bannerText).toBeNull();
     expect(empty.betzoneSelected).toBeNull();
+  });
+
+  test('page canvas mapping: only the shared mode passes seats (whatever the stores hold); solo maps 1:1; the lobby shows the empty felt', () => {
+    const solo = soloState({});
+    const sharedView = { ...idleFeltView(), stake: 50, shoeId: 'shared-shoe' };
+    const tableSeats = [seatView(2, 'avatar-map-2', 'lobster')];
+    const inputs = {
+      soloController: solo,
+      sharedView,
+      sharedSeats: tableSeats,
+      sharedPovSeatIndex: 2,
+    };
+    const lobby = baccarat.baccaratRoomCanvasProps({ ...inputs, mode: 'lobby' });
+    expect(lobby.view).toBe(baccarat.BACCARAT_EMPTY_FELT_VIEW);
+    expect('seats' in lobby).toBe(false);
+    expect('povSeatIndex' in lobby).toBe(false);
+    expect(baccarat.BACCARAT_EMPTY_FELT_VIEW).toEqual({
+      coup: null, revealedStep: 0, dealSteps: [], phase: 'idle', betType: 'player', stake: 0,
+      correlation: null, shoeId: null, bannerText: null, betzoneSelected: null,
+    } as unknown as FeltView);
+
+    const soloProps = baccarat.baccaratRoomCanvasProps({ ...inputs, mode: 'solo' });
+    expect(soloProps.view).toEqual(baccarat.soloFeltView(solo));
+    expect('seats' in soloProps).toBe(false);
+
+    const shared = baccarat.baccaratRoomCanvasProps({ ...inputs, mode: 'shared' });
+    expect(shared.view).toBe(sharedView);
+    expect(shared.seats).toBe(tableSeats);
+    expect(shared.povSeatIndex).toBe(2);
+    // Before the first table poll: the room still mounts its (empty) chairs.
+    const beforePoll = baccarat.baccaratRoomCanvasProps({ ...inputs, mode: 'shared', sharedSeats: undefined, sharedPovSeatIndex: null });
+    expect(beforePoll.seats).toEqual([]);
+    expect(beforePoll.povSeatIndex).toBeNull();
   });
 
   test('POV seat: own seat when seated; lowest free seat for a spectator; seat 0 at a full table', () => {

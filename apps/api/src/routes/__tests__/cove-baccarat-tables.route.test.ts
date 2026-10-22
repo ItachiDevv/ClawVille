@@ -456,6 +456,18 @@ describe('input validation', () => {
     expect(obj.status).toBe(200);
     const extra = await req(`${BASE}/leave`, { method: 'POST', body: { force: true }, headers: asHuman });
     expect(extra.status).toBe(400);
+    expect(await extra.json()).toEqual({ error: 'invalid_leave_body', code: 400 });
+    const notJson = await req(`${BASE}/leave`, { method: 'POST', rawBody: '{nope', headers: asHuman });
+    expect(notJson.status).toBe(400);
+    expect(await errorOf(notJson)).toBe('invalid_leave_body');
+  });
+
+  it('the two 400 codes come from the ONE status map', async () => {
+    const { BACCARAT_TABLE_ERROR_STATUS } = await import('../../services/baccarat/baccarat-table-types');
+    const map = BACCARAT_TABLE_ERROR_STATUS as Record<string, number>;
+    expect(map.invalid_leave_body).toBe(400);
+    expect(map.invalid_lobby_query).toBe(400);
+    expect(map.bet_conflict).toBe(409);
   });
 
   it('checks the Idempotency-Key length (1..64)', async () => {
@@ -479,7 +491,13 @@ describe('input validation', () => {
     for (const q of ['0', '51', 'abc']) {
       const res = await req(`/api/cove/baccarat/tables?limit=${q}`);
       expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; code: number };
+      expect(body.error).toStartWith('invalid_lobby_query');
+      expect(body.code).toBe(400);
     }
+    const unknownKey = await req('/api/cove/baccarat/tables?tier=low');
+    expect(unknownKey.status).toBe(400);
+    expect(await errorOf(unknownKey)).toStartWith('invalid_lobby_query');
     const ok = await req('/api/cove/baccarat/tables?limit=3');
     expect(ok.status).toBe(200);
     expect(managerCalls[0]?.args).toEqual([3]);
@@ -539,6 +557,24 @@ describe('manager error mapping', () => {
     expect(await noNext.json()).toEqual({ error: 'betting_closed', code: 409 });
   });
 
+  it('passes the manager bet_conflict (409, as placeBet/cancelBet throw it) through on place and cancel', async () => {
+    for (const [method, message] of [
+      ['POST', 'bet changed under the lock, retry'],
+      ['POST', 'concurrent bet on this seat, retry'],
+      ['DELETE', 'bet changed under the lock, retry'],
+    ] as const) {
+      managerThrow = new BaccaratTableError('bet_conflict', message, 409);
+      const res = await req(`${BASE}/bet`, {
+        method,
+        body: method === 'POST' ? goodBet : undefined,
+        headers: asAgent,
+      });
+      expect(res.status).toBe(409);
+      // The wire carries the code, never the manager's internal message.
+      expect(await res.json()).toEqual({ error: 'bet_conflict', code: 409 });
+    }
+  });
+
   it('maps InsufficientTokensError to 402 insufficient_clawtokens', async () => {
     managerThrow = new InsufficientTokensError(HUMAN_AVATAR, 3, 20);
     const res = await req(`${BASE}/bet`, { method: 'POST', body: goodBet, headers: asHuman });
@@ -563,6 +599,32 @@ describe('manager error mapping', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, cancelled: true });
     expect(managerCalls[0]?.method).toBe('cancelBet');
+  });
+});
+
+// ── Boot wiring (index.ts) ───────────────────────────────────────────────────
+// index.ts cannot boot in isolation (it starts the whole API), so this pins the
+// source: the round tick starts FIRST and in its own try block, so a seeder
+// failure (bot insert error) can never stop rounds closing on the process.
+
+describe('index.ts baccarat boot order', () => {
+  it('starts the tick before the seeder and the scaler, each in its own try block', async () => {
+    const { join } = await import('path');
+    const src = await Bun.file(join(import.meta.dir, '..', '..', 'index.ts')).text();
+    const tick = src.indexOf('startBaccaratTableTick();');
+    const ensure = src.indexOf('await baccaratHouseSeeder.ensure();');
+    const scaler = src.indexOf('startBaccaratHouseScaler();');
+    expect(tick).toBeGreaterThan(-1);
+    expect(ensure).toBeGreaterThan(tick);
+    expect(scaler).toBeGreaterThan(ensure);
+    // A catch closes the tick's try before the seeder runs, and the seeder's try
+    // before the scaler starts.
+    expect(src.slice(tick, ensure)).toContain('} catch (err) {');
+    expect(src.slice(ensure, scaler)).toContain('} catch (err) {');
+    // Each step appears once (no second, combined boot block).
+    expect(src.split('startBaccaratTableTick();').length - 1).toBe(1);
+    expect(src.split('await baccaratHouseSeeder.ensure();').length - 1).toBe(1);
+    expect(src.split('startBaccaratHouseScaler();').length - 1).toBe(1);
   });
 });
 

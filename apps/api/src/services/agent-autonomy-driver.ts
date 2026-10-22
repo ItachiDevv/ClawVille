@@ -61,6 +61,7 @@ import {
   AUTONOMY_ENTERABLE_PLACES,
   DECISION_SCOPE,
   HATCHER_ACTION_MENU,
+  HOUSE_PLAY_COVE_GAME_MENU_ITEM,
   MAP_LOCATIONS,
   type AutonomyStatusResponse,
   type AutonomyStatusThought,
@@ -2135,7 +2136,17 @@ class AgentAutonomyDriver {
     const inRangePlaces = perception.places.filter(
       (place) => place.distance <= BUILDING_INTERACTION_RADIUS,
     );
-    const covePlaySyntax = HATCHER_ACTION_MENU.find(
+    // Consumption mandate: the menu equals what the executor runs for THIS
+    // actor. The executor refuses HOUSE_REFUSED_AUTONOMY_VERBS for a house
+    // actor, so a house menu omits them, and it refuses a house actor for
+    // play_cove_game(game=baccarat), so a house menu offers slots and
+    // blackjack only. Every other entry gets the full menu.
+    const actorMenu = HATCHER_ACTION_MENU
+      .filter((action) => !entry.isHouse || !HOUSE_REFUSED_AUTONOMY_VERBS.has(action.verb))
+      .map((action) =>
+        entry.isHouse && action.verb === 'play_cove_game' ? HOUSE_PLAY_COVE_GAME_MENU_ITEM : action,
+      );
+    const covePlaySyntax = actorMenu.find(
       (action) => action.verb === 'play_cove_game',
     )!.syntax;
     const hereNow =
@@ -2155,11 +2166,7 @@ class AgentAutonomyDriver {
           `- ${place.placeId}: "${place.label}" — ${place.description} — ${place.actionSyntax} — ${place.distance}wu away${place.distance <= BUILDING_INTERACTION_RADIUS ? ' (you are HERE — no need to enter again)' : ''}`,
       )
       .join('\n');
-    // Consumption mandate: the menu equals what the executor runs for THIS
-    // actor. The executor refuses HOUSE_REFUSED_AUTONOMY_VERBS for a house
-    // actor, so a house menu omits them; every other entry gets the full menu.
-    const actionMenu = HATCHER_ACTION_MENU
-      .filter((action) => !entry.isHouse || !HOUSE_REFUSED_AUTONOMY_VERBS.has(action.verb))
+    const actionMenu = actorMenu
       .map((action) => `- ${action.syntax} — ${action.whenToUse}`)
       .join('\n');
     // The scope preamble also teaches two of those verbs by example syntax.

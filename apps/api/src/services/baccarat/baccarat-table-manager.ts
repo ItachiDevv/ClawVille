@@ -58,8 +58,16 @@
  * ── SEEDED BOTS ──────────────────────────────────────────────────────────────
  * Visual only. Three guards keep them from ever betting: (1) only `seatHouseBots`
  * inserts a seeded seat; (2) `placeBet` refuses a seeded seat (403
- * `seeded_seat_cannot_bet`); (3) the settle tx aborts (critical alert) on any
- * pending bet whose avatar is a pool bot or holds a seeded seat at the table.
+ * `seeded_seat_cannot_bet`); (3) the settle tx voids (`bot_bet_refused`, critical
+ * alert) any pending bet whose avatar is a pool bot or holds a seeded seat at the
+ * table, and settles the real bets normally. Bots never move vCLAW.
+ *
+ * ── BETTING DEADLINE ─────────────────────────────────────────────────────────
+ * Every bet write, cancel and leave reads the clock AFTER it holds the table row
+ * lock, and re-checks the window with the DB clock (`clock_timestamp()`, the wall
+ * clock, not the tx-start `now()`) right before the mutation, so a request that
+ * waited behind the lock, or a second process with a lagging app clock, can not
+ * place, replace or cancel a current-round bet after `bettingClosesAt`.
  */
 
 import { randomBytes } from 'crypto';
@@ -76,7 +84,7 @@ import {
   type BaccaratTableBet,
   type BaccaratTableSeat,
 } from '@clawville/database';
-import { and, asc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import * as ledgerModule from '../claw-token-ledger';
 import { alertError, type AlertErrorParams } from '../alert-error';
 import { createServerSeed } from '../provable-rng';
@@ -183,6 +191,8 @@ export interface BaccaratSettledSeatEvent {
     winner: 'player' | 'banker' | 'tie';
     isAgent: boolean;
     origin: BaccaratTableBetOrigin;
+    /** `cove_game_events.id` (UUID) of this seat's fairness row: the `/api/cove/history/:eventId/verify` key. */
+    historyEventId: string;
   };
 }
 
@@ -318,7 +328,7 @@ type ShoeRow = typeof baccaratShoes.$inferSelect;
 /** Result of one settle tx. */
 type SettleOutcome =
   | { kind: 'skipped' }
-  | { kind: 'idle_gate' }
+  | { kind: 'idle_gate'; alerts: AlertErrorParams[] }
   | { kind: 'all_void'; alerts: AlertErrorParams[] }
   | { kind: 'settled'; events: BaccaratSettledSeatEvent[]; alerts: AlertErrorParams[] };
 
@@ -831,6 +841,39 @@ export class BaccaratTableManager {
     return ends === null || now >= ends;
   }
 
+  /**
+   * DB-clock re-check of the open window on the table row this tx holds FOR UPDATE.
+   * `clock_timestamp()` is the wall clock at this statement; `now()` would be the tx
+   * start, which is exactly the stale time a request that waited for the lock holds.
+   * Deciding by the DB clock means an app-clock skew between two API processes can
+   * not let a late write through.
+   */
+  private async dbWindowOpenTx(tx: TxLike, tableId: string, roundSeq: number): Promise<boolean> {
+    const rows = await tx
+      .select({ id: baccaratTables.id })
+      .from(baccaratTables)
+      .where(
+        and(
+          eq(baccaratTables.id, tableId),
+          eq(baccaratTables.roundPhase, 'betting'),
+          eq(baccaratTables.roundSeq, roundSeq),
+          gt(baccaratTables.phaseEndsAt, sql`clock_timestamp()`),
+        ),
+      )
+      .limit(1);
+    return rows.length === 1;
+  }
+
+  /**
+   * True when the current round's bets are frozen: the app clock (read after the table
+   * lock) OR the DB clock says the window closed. Call it right before the mutation.
+   */
+  private async roundLockedTx(tx: TxLike, t: BaccaratTable): Promise<boolean> {
+    if (this.isRoundLocked(t, this.clock.now())) return true;
+    if (t.roundPhase !== 'betting') return false;
+    return !(await this.dbWindowOpenTx(tx, t.id, t.roundSeq));
+  }
+
   private bettingClosesAt(t: BaccaratTable): number | null {
     return t.roundPhase === 'betting' ? toMs(t.phaseEndsAt) : null;
   }
@@ -854,8 +897,8 @@ export class BaccaratTableManager {
       try {
         result = await this.db.transaction(async (tx) => {
           yielded.length = 0;
-          const now = this.clock.now();
           const t = await this.lockTable(tx, tableId);
+          const now = this.clock.now();
           if (t.source !== 'house') {
             throw new BaccaratTableError('table_closed', 'only house tables are open in v1', 409);
           }
@@ -1003,15 +1046,37 @@ export class BaccaratTableManager {
    * real seat and no pending bet left, a `betting` table goes `idle`.
    */
   async leaveTable(tableId: string, subject: BaccaratTableSubject): Promise<LeaveTableResult> {
+    return this.leaveTableInternal(tableId, subject, { refuseIfPending: false });
+  }
+
+  /**
+   * `refuseIfPending`: the autonomous re-seat (spec 6.3) leaves only a table that holds
+   * NO pending bet of this avatar (checked under the table lock, so it never cancels the
+   * owner's REST bet); otherwise it throws 409 `already_seated_elsewhere` (+ `tableId`).
+   */
+  private async leaveTableInternal(
+    tableId: string,
+    subject: BaccaratTableSubject,
+    opts: { refuseIfPending: boolean },
+  ): Promise<LeaveTableResult> {
     return this.withTableLock(tableId, async () =>
       this.db.transaction(async (tx) => {
-        const now = this.clock.now();
         const t = await this.lockTable(tx, tableId, { allowClosed: true });
+        // Read the clock only once the table row lock is held.
+        const now = this.clock.now();
         const seat = await this.mySeatTx(tx, tableId, subject.avatarId);
         if (!seat) throw new BaccaratTableError('not_seated', 'subject is not seated here', 409);
 
         const mine = await this.myPendingBetsTx(tx, tableId, subject.avatarId);
-        const locked = this.isRoundLocked(t, now);
+        if (opts.refuseIfPending && mine.length > 0) {
+          throw new BaccaratTableError(
+            'already_seated_elsewhere',
+            'seated at a table that holds a pending bet of this avatar; it can not move now',
+            409,
+            { tableId },
+          );
+        }
+        const locked = await this.roundLockedTx(tx, t);
         let lockedBet: LeaveTableResult['lockedBet'] = null;
         for (const b of mine) {
           if (b.roundSeq === t.roundSeq && locked) {
@@ -1125,9 +1190,11 @@ export class BaccaratTableManager {
     }
 
     return this.db.transaction(async (tx) => {
-      const now = this.clock.now();
       // 1. Table row lock (serializes with the settle tx and every other write).
       const t = await this.lockTable(tx, tableId);
+      // Read the clock only once the lock is held: a request that waited behind the
+      // lock must not decide "window open" from the time it arrived.
+      const now = this.clock.now();
       const rs = t.roundSeq;
       const ends = toMs(t.phaseEndsAt);
 
@@ -1146,10 +1213,14 @@ export class BaccaratTableManager {
           throw new BaccaratTableError('betting_closed', `betting window closed (phase=${t.roundPhase})`, 409, details);
         }
         target = rs;
-      } else if (t.roundPhase === 'betting' && ends !== null && ends - now >= BACCARAT_AUTONOMOUS_MIN_WINDOW_LEFT_MS) {
-        target = rs;
       } else if (t.roundPhase === 'betting' || t.roundPhase === 'dealing') {
-        target = rs + 1;
+        // This round only with >= 1 s left on the app clock AND an open window on the DB clock.
+        const roomThisRound =
+          t.roundPhase === 'betting' &&
+          ends !== null &&
+          ends - now >= BACCARAT_AUTONOMOUS_MIN_WINDOW_LEFT_MS &&
+          (await this.dbWindowOpenTx(tx, tableId, rs));
+        target = roomThisRound ? rs : rs + 1;
       } else if (t.roundPhase === 'reveal') {
         // The settle already advanced round_seq; the next window plays round_seq.
         target = rs;
@@ -1175,6 +1246,15 @@ export class BaccaratTableManager {
         );
       }
 
+      // 5a. Autonomous only: the daily-cap advisory lock BEFORE any avatar row lock. Same
+      // key AND same hash function (`hashtextextended(key, 0)`) as slots and blackjack,
+      // so all three serialize; same order as blackjack (advisory -> avatar) = no deadlock.
+      if (mode.kind === 'autonomous') {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${autonomousCoveDailyAdvisoryKey(subject.avatarId)}, 0))`,
+        );
+      }
+
       // 5. Pre-flight funds (UX; the settle re-checks under the avatar lock).
       const [av] = await tx
         .select({ clawTokens: avatars.clawTokens })
@@ -1197,11 +1277,9 @@ export class BaccaratTableManager {
         );
       }
 
-      // 6. Autonomous daily cap: settled autonomous debits today + pending autonomous stakes.
+      // 6. Autonomous daily cap (lock held since 5a): settled autonomous debits today +
+      // pending autonomous stakes.
       if (mode.kind === 'autonomous') {
-        await tx.execute(
-          sql`SELECT pg_advisory_xact_lock(hashtext(${autonomousCoveDailyAdvisoryKey(subject.avatarId)}))`,
-        );
         const usage = parseAutonomousCoveDailyUsage(
           (await tx.execute<{ used_vclaw: string }>(
             autonomousCoveDailyUsageQuery(subject.avatarId),
@@ -1213,6 +1291,14 @@ export class BaccaratTableManager {
         const capMessage = autonomousCoveDailyCapMessage(usage + pendingAuto, stake);
         if (capMessage) {
           throw new BaccaratTableError('agent_cove_daily_wager_cap_exceeded', capMessage, 409);
+        }
+      }
+
+      // 6b. Re-check the open window right before the mutation (the advisory wait above
+      // can be long): a fresh app-clock read AND the DB clock on the locked row.
+      if (target === rs && t.roundPhase === 'betting') {
+        if ((ends !== null && this.clock.now() >= ends) || !(await this.dbWindowOpenTx(tx, tableId, rs))) {
+          throw new BaccaratTableError('betting_closed', 'betting window closed', 409);
         }
       }
 
@@ -1254,6 +1340,14 @@ export class BaccaratTableManager {
         return row;
       };
       const replace = async (row: BaccaratTableBet): Promise<void> => {
+        // A hosted agent never overwrites the owner's own REST bet on the shared avatar.
+        if (mode.kind === 'autonomous' && row.origin === 'rest') {
+          throw new BaccaratTableError(
+            'bet_conflict',
+            'this seat already holds the owner REST bet for this round; the autonomous bet is refused',
+            409,
+          );
+        }
         const updated = await tx
           .update(baccaratTableBets)
           .set(values)
@@ -1314,14 +1408,16 @@ export class BaccaratTableManager {
   async cancelBet(tableId: string, subject: BaccaratTableSubject): Promise<{ cancelled: boolean }> {
     return this.withTableLock(tableId, async () =>
       this.db.transaction(async (tx) => {
-        const now = this.clock.now();
         const t = await this.lockTable(tx, tableId);
+        // Read the clock only once the table row lock is held.
+        const now = this.clock.now();
         const seat = await this.mySeatTx(tx, tableId, subject.avatarId);
         if (!seat) throw new BaccaratTableError('not_seated', 'subject is not seated here', 409);
-        const locked = this.isRoundLocked(t, now);
+        const mine = await this.myPendingBetsTx(tx, tableId, subject.avatarId);
+        const locked = await this.roundLockedTx(tx, t);
         let cancelled = 0;
         let blocked = false;
-        for (const b of await this.myPendingBetsTx(tx, tableId, subject.avatarId)) {
+        for (const b of mine) {
           if (b.roundSeq === t.roundSeq && locked) {
             blocked = true;
             continue;
@@ -1343,6 +1439,9 @@ export class BaccaratTableManager {
    * the lowest-tier open house table whose bounds admit `wager` (the table where the
    * avatar already sits wins), sits if needed (bots yield), then places an
    * `origin='autonomous'` bet that plays this round or, with < 1 s left, the next.
+   * Seated at a table that does not admit `wager`: leaves it when it holds no pending
+   * bet of this avatar, else 409 `already_seated_elsewhere`. Never replaces the owner's
+   * REST bet (409 `bet_conflict`). A failed bet after a NEW sit frees that seat.
    */
   async placeAutonomousBet(input: PlaceAutonomousBetInput): Promise<PlaceAutonomousBetResult> {
     if (!isBetSide(input.bet)) {
@@ -1397,24 +1496,29 @@ export class BaccaratTableManager {
       .limit(1);
     if (current) {
       const t = await this.getTable(current.tableId);
-      if (
-        !t ||
-        t.status !== 'open' ||
-        t.source !== 'house' ||
-        wager < t.minBetCt ||
-        wager > t.maxBetCt
-      ) {
-        throw new BaccaratTableError(
-          'already_seated_elsewhere',
-          'seated at a table whose bounds do not admit this wager; leave it first',
-          409,
-          { tableId: current.tableId },
+      if (t && t.status === 'open' && t.source === 'house' && wager >= t.minBetCt && wager <= t.maxBetCt) {
+        const res = await this.withTableLock(t.id, () =>
+          this.placeBetTx(t.id, subject, input.bet, wager, { kind: 'autonomous' }),
         );
+        return { tableId: t.id, roundSeq: res.roundSeq, seatIndex: res.seatIndex, seated: false };
       }
-      const res = await this.withTableLock(t.id, () =>
-        this.placeBetTx(t.id, subject, input.bet, wager, { kind: 'autonomous' }),
-      );
-      return { tableId: t.id, roundSeq: res.roundSeq, seatIndex: res.seatIndex, seated: false };
+      // The current table does not admit this wager. A hosted agent can not call the
+      // REST leave, so move it, but ONLY when that table holds no pending bet of this
+      // avatar (checked under that table's lock); else keep the refusal.
+      try {
+        await this.leaveTableInternal(current.tableId, subject, { refuseIfPending: true });
+      } catch (err) {
+        if (!(err instanceof BaccaratTableError)) throw err;
+        if (err.code !== 'not_seated') {
+          throw new BaccaratTableError(
+            'already_seated_elsewhere',
+            'seated at a table whose bounds do not admit this wager and that holds a pending bet; it can not move now',
+            409,
+            { tableId: current.tableId },
+          );
+        }
+        // not_seated: the seat is already gone (idle sweep or a REST leave). Go on.
+      }
     }
 
     const candidates = await this.db
@@ -1443,9 +1547,21 @@ export class BaccaratTableManager {
         }
         throw err;
       }
-      const res = await this.withTableLock(t.id, () =>
-        this.placeBetTx(t.id, subject, input.bet, wager, { kind: 'autonomous' }),
-      );
+      let res: PlaceBetResult;
+      try {
+        res = await this.withTableLock(t.id, () =>
+          this.placeBetTx(t.id, subject, input.bet, wager, { kind: 'autonomous' }),
+        );
+      } catch (err) {
+        // A NEW seat with no bet would hold the seat for 10 min and keep an idle table
+        // opening windows: free it. Outside the bet's table lock (it is not re-entrant).
+        if (!sat.alreadySeated) {
+          await this.leaveTable(t.id, subject).catch((leaveErr: unknown) => {
+            console.error('[baccarat-manager] freeing the seat after a failed autonomous bet failed:', leaveErr);
+          });
+        }
+        throw err;
+      }
       return { tableId: t.id, roundSeq: res.roundSeq, seatIndex: res.seatIndex, seated: !sat.alreadySeated };
     }
     throw new BaccaratTableError('table_full', 'every table that admits this wager is full', 409);
@@ -1515,7 +1631,7 @@ export class BaccaratTableManager {
       return this.handleSettleFailure(tableId, roundSeq, expectedAttempts, err);
     }
     // After commit only.
-    if (outcome.kind === 'settled' || outcome.kind === 'all_void') {
+    if (outcome.kind === 'settled' || outcome.kind === 'all_void' || outcome.kind === 'idle_gate') {
       for (const a of outcome.alerts) this.fireAlert(a);
     }
     if (outcome.kind === 'settled' && outcome.events.length > 0) {
@@ -1546,14 +1662,6 @@ export class BaccaratTableManager {
       `[baccarat-manager] settle failed for table ${tableId} round ${roundSeq} (attempt ${attempt}):`,
       err,
     );
-    if (err instanceof BaccaratTableError && err.code === 'seeded_seat_cannot_bet') {
-      this.fireAlert({
-        severity: 'critical',
-        source: 'baccarat-table-settle',
-        message: `seeded bot bet refused at settle (table ${tableId}, round ${roundSeq})`,
-        context: { tableId, roundSeq, lastError },
-      });
-    }
     if (attempt >= BACCARAT_MAX_SETTLE_ATTEMPTS) {
       const voided = await this.voidRoundAfterFailures(tableId, roundSeq, expectedAttempts);
       if (voided === null) return 'skipped';
@@ -1592,8 +1700,8 @@ export class BaccaratTableManager {
     expectedAttempts: number,
   ): Promise<number | null> {
     return this.db.transaction(async (tx) => {
-      const now = this.clock.now();
       const t = await this.lockTable(tx, tableId, { allowClosed: true });
+      const now = this.clock.now();
       if (t.roundPhase !== 'dealing' || t.roundSeq !== roundSeq || t.settleAttempts !== expectedAttempts) {
         return null;
       }
@@ -1658,8 +1766,8 @@ export class BaccaratTableManager {
 
   private async endReveal(tableId: string, roundSeq: number): Promise<void> {
     await this.db.transaction(async (tx) => {
-      const now = this.clock.now();
       const t = await this.lockTable(tx, tableId, { allowClosed: true });
+      const now = this.clock.now();
       const ends = toMs(t.phaseEndsAt);
       if (t.roundPhase !== 'reveal' || t.roundSeq !== roundSeq || (ends !== null && ends > now)) return;
       const real = await this.countRealSeats(tx, tableId);
@@ -1676,7 +1784,9 @@ export class BaccaratTableManager {
 
   /**
    * THE settle tx (spec 5.3). Lock order: table row -> shoe row -> bet rows ->
-   * avatar rows (id asc) -> advisory daily-cap locks (avatar id asc). Any throw rolls
+   * advisory daily-cap locks (`hashtextextended(key, 0)`, avatars of the autonomous
+   * pending bets, id asc) -> avatar rows FOR UPDATE (id asc). The advisory-before-avatar
+   * order matches blackjack and slots, so the three can not deadlock. Any throw rolls
    * the whole tx back.
    */
   private async settleRound(
@@ -1709,7 +1819,17 @@ export class BaccaratTableManager {
       // 2. Shoe row lock; open / roll a broken or exhausted shoe inside this tx.
       let shoe = await this.lockShoeTx(tx, t.activeShoeId);
       if (!shoe || shoe.status !== 'open' || shoe.dealtCount >= RESHUFFLE_CARD_THRESHOLD) {
+        // FALLBACK only (the normal roll runs right after the coup that crosses 312):
+        // this new seed is picked after the round's bets are in, so make it visible.
+        const why = !shoe ? 'missing' : shoe.status !== 'open' ? 'closed' : `exhausted (dealt ${shoe.dealtCount})`;
+        const oldShoeId = shoe?.id ?? null;
         shoe = await this.rollShoeTx(tx, t, shoe, now);
+        alerts.push({
+          severity: 'critical',
+          source: 'baccarat-table-settle',
+          message: `baccarat table ${tableId} round ${roundSeq}: active shoe ${why} at settle start; fallback shoe roll picked a new seed after the bets were placed`,
+          context: { tableId, roundSeq, reason: why, oldShoeId, newShoeId: shoe.id },
+        });
       }
 
       // 3. This round's pending bets, re-read under lock (D1).
@@ -1729,10 +1849,12 @@ export class BaccaratTableManager {
       // 4. IDLE GATE: nothing to deal; the shoe is untouched.
       if (pending.length === 0) {
         await this.advanceRoundTx(tx, t, now);
-        return { kind: 'idle_gate' };
+        return { kind: 'idle_gate', alerts };
       }
 
-      // 5. Bot guard (third barrier): a pool bot or a seeded seat holder never bets.
+      // 5. Bot guard (third barrier): a pool bot or a seeded seat holder never bets. Its
+      // bet is void (no vCLAW, no event) with a critical alert; the real bets settle.
+      const voids: Array<{ bet: BaccaratTableBet; reason: BaccaratTableVoidReason }> = [];
       const seededHere = new Set(
         (
           await tx
@@ -1741,31 +1863,47 @@ export class BaccaratTableManager {
             .where(and(eq(baccaratTableSeats.tableId, tableId), eq(baccaratTableSeats.isSeeded, true)))
         ).map((r) => r.avatarId),
       );
+      const live: BaccaratTableBet[] = [];
       for (const b of pending) {
         if (seededHere.has(b.avatarId) || this.botPool?.isBot(b.avatarId)) {
-          throw new BaccaratTableError(
-            'seeded_seat_cannot_bet',
-            `pending bet ${b.id} belongs to a seeded bot avatar ${b.avatarId}`,
-            500,
-          );
+          voids.push({ bet: b, reason: 'bot_bet_refused' });
+          alerts.push({
+            severity: 'critical',
+            source: 'baccarat-table-settle',
+            message: `seeded bot bet refused at settle (table ${tableId}, round ${roundSeq}, bet ${b.id}); voided, real bets settle`,
+            context: { tableId, roundSeq, betId: b.id, avatarId: b.avatarId },
+          });
+          continue;
         }
         if (!isBetSide(b.bet)) {
           throw new BaccaratTableError('bet_state_conflict', `bet ${b.id} has an invalid side`, 500);
         }
+        live.push(b);
       }
 
-      // 6. Avatar rows FOR UPDATE in id order, then the affordability split (D7).
-      const avatarIds = [...new Set(pending.map((b) => b.avatarId))].sort();
-      const avRows = await tx
-        .select({ id: avatars.id, userId: avatars.userId, clawTokens: avatars.clawTokens })
-        .from(avatars)
-        .where(inArray(avatars.id, avatarIds))
-        .orderBy(asc(avatars.id))
-        .for('update');
+      // 6a. Daily-cap advisory locks for the avatars of the autonomous bets, id order,
+      // BEFORE the avatar row locks (blackjack/slots take advisory -> avatar too).
+      const autoIds = [...new Set(live.filter((b) => b.origin === 'autonomous').map((b) => b.avatarId))].sort();
+      for (const avatarId of autoIds) {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${autonomousCoveDailyAdvisoryKey(avatarId)}, 0))`,
+        );
+      }
+
+      // 6b. Avatar rows FOR UPDATE in id order, then the affordability split (D7).
+      const avatarIds = [...new Set(live.map((b) => b.avatarId))].sort();
+      const avRows =
+        avatarIds.length === 0
+          ? []
+          : await tx
+              .select({ id: avatars.id, userId: avatars.userId, clawTokens: avatars.clawTokens })
+              .from(avatars)
+              .where(inArray(avatars.id, avatarIds))
+              .orderBy(asc(avatars.id))
+              .for('update');
       const avById = new Map(avRows.map((a) => [a.id, a]));
-      const voids: Array<{ bet: BaccaratTableBet; reason: BaccaratTableVoidReason }> = [];
       let survivors: Array<{ bet: BaccaratTableBet; ownerUserId: string; stake: bigint }> = [];
-      for (const b of pending) {
+      for (const b of live) {
         const stake = BigInt(b.stake);
         if (stake <= 0n || stake > BigInt(Number.MAX_SAFE_INTEGER)) {
           throw new BaccaratTableError('bet_state_conflict', `bet ${b.id} has stake ${b.stake}`, 500);
@@ -1787,14 +1925,8 @@ export class BaccaratTableManager {
         }
         survivors.push({ bet: b, ownerUserId: av.userId, stake });
       }
-      // Autonomous bets: daily-cap locks in avatar id order, then the re-check.
-      const autoIds = [
-        ...new Set(survivors.filter((s) => s.bet.origin === 'autonomous').map((s) => s.bet.avatarId)),
-      ].sort();
+      // 6c. Autonomous bets: the daily-cap re-check under the locks taken in 6a.
       const overCap = new Set<string>();
-      for (const avatarId of autoIds) {
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${autonomousCoveDailyAdvisoryKey(avatarId)}))`);
-      }
       for (const avatarId of autoIds) {
         const usage = parseAutonomousCoveDailyUsage(
           (await tx.execute<{ used_vclaw: string }>(
@@ -1958,23 +2090,29 @@ export class BaccaratTableManager {
         if (flipped.length !== 1) {
           throw new BaccaratTableError('bet_state_conflict', `bet ${s.bet.id} is no longer pending`, 500);
         }
-        await tx.insert(coveGameEvents).values({
-          fixtureRunId: null,
-          userId: s.ownerUserId,
-          guestFpHash: null,
-          gameType: 'baccarat',
-          sessionId: shoe.id,
-          shoeId: shoe.id,
-          betAmount: s.stake.toString(),
-          payout: s.payout.toString(),
-          outcomeJson: s.outcome,
-          serverSeedHash: shoe.serverSeedHash,
-          revealedServerSeed: null,
-          clientSeed: shoe.clientSeed,
-          nonce: c * BACCARAT_TABLE_SEAT_NONCE_STRIDE + s.bet.seatIndex,
-          txSignature: null,
-          engineVersion: `baccarat-engine-${BACCARAT_ENGINE_VERSION}`,
-        });
+        const [historyRow] = await tx
+          .insert(coveGameEvents)
+          .values({
+            fixtureRunId: null,
+            userId: s.ownerUserId,
+            guestFpHash: null,
+            gameType: 'baccarat',
+            sessionId: shoe.id,
+            shoeId: shoe.id,
+            betAmount: s.stake.toString(),
+            payout: s.payout.toString(),
+            outcomeJson: s.outcome,
+            serverSeedHash: shoe.serverSeedHash,
+            revealedServerSeed: null,
+            clientSeed: shoe.clientSeed,
+            nonce: c * BACCARAT_TABLE_SEAT_NONCE_STRIDE + s.bet.seatIndex,
+            txSignature: null,
+            engineVersion: `baccarat-engine-${BACCARAT_ENGINE_VERSION}`,
+          })
+          .returning({ id: coveGameEvents.id });
+        if (!historyRow) {
+          throw new BaccaratTableError('history_insert_failed', `fairness row insert failed for bet ${s.bet.id}`, 500);
+        }
         events.push({
           ownerUserId: s.ownerUserId,
           avatarId: s.bet.avatarId,
@@ -1995,6 +2133,7 @@ export class BaccaratTableManager {
             winner,
             isAgent: actorKind === 'agent',
             origin: s.bet.origin === 'autonomous' ? 'autonomous' : 'rest',
+            historyEventId: historyRow.id,
           },
         });
       }
@@ -2184,8 +2323,8 @@ export class BaccaratTableManager {
   async maintainTable(tableId: string): Promise<{ orphaned: number; freedSeats: number }> {
     return this.withTableLock(tableId, async () => {
       const result = await this.db.transaction(async (tx) => {
-        const now = this.clock.now();
         const t = await this.lockTable(tx, tableId, { allowClosed: true });
+        const now = this.clock.now();
         const orphans = await tx
           .select()
           .from(baccaratTableBets)
@@ -2275,8 +2414,8 @@ export class BaccaratTableManager {
       try {
         return await this.db.transaction(async (tx) => {
           claimed.length = 0;
-          const now = this.clock.now();
           const t = await this.lockTable(tx, tableId, { allowClosed: true });
+          const now = this.clock.now();
           if (t.status !== 'open' || t.source !== 'house' || t.seededAgentSlots <= 0) return 0;
           const seats = await this.seatedSeats(tx, tableId);
           const seeded = seats.filter((s) => s.isSeeded).length;

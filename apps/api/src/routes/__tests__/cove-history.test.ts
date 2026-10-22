@@ -197,6 +197,7 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
   const CLIENT_SEED = 'ab12cd34';
   const SHOE_ID = '00000000-0000-4000-8000-0000000000b1';
   const TABLE_ID = '00000000-0000-4000-8000-0000000000a1';
+  const OWNER_USER_ID = '00000000-0000-4000-8000-0000000000c1';
 
   type Bet = 'player' | 'banker' | 'tie';
   type CoupRow = {
@@ -266,10 +267,26 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
       net: String(payout - stake),
       commission: String(commission),
     };
-    return { rows, outcome };
+    // The settled baccarat_table_bets row the settle tx writes for that seat.
+    const tableBet = {
+      seatIndex: 4,
+      bet: 'banker',
+      stake: String(stake),
+      payout: String(payout),
+      net: String(payout - stake),
+      commission: String(commission),
+      ownerUserId: OWNER_USER_ID,
+    };
+    return { rows, outcome, tableBet };
   }
 
-  function tableEvent(outcomeJson: unknown, betAmount = '20', nonce = 304) {
+  function tableEvent(
+    outcomeJson: unknown,
+    betAmount = '20',
+    nonce = 304,
+    payout = String((outcomeJson as { payout?: unknown } | null)?.payout ?? '0'),
+    userId: string | null = OWNER_USER_ID,
+  ) {
     return {
       sessionId: SHOE_ID,
       nonce,
@@ -277,6 +294,8 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
       clientSeed: CLIENT_SEED,
       outcomeJson,
       betAmount,
+      payout,
+      userId,
     };
   }
 
@@ -286,12 +305,13 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
       '../../services/baccarat/baccarat-table-types'
     );
     expect(BACCARAT_TABLE_SEAT_NONCE_STRIDE).toBe(100);
-    const { rows, outcome } = await tableSeatFixture();
+    const { rows, outcome, tableBet } = await tableSeatFixture();
     const body = verifyBaccaratReplay({
       event: tableEvent(outcome, '20', 3 * BACCARAT_TABLE_SEAT_NONCE_STRIDE + 4),
       shoe: { fixtureInitialDealtCount: 0, tableId: TABLE_ID },
       coupRows: rows,
       hashMatches: true,
+      tableBet,
     });
     expect(body.verified).toBe(true);
     expect('tableSeat' in body ? body.tableSeat : null).toEqual({ coupIndex: 3, seatIndex: 4 });
@@ -302,7 +322,7 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
 
   it('a tampered seat stake verifies false', async () => {
     const { verifyBaccaratReplay } = await import('../cove-history');
-    const { rows, outcome } = await tableSeatFixture();
+    const { rows, outcome, tableBet } = await tableSeatFixture();
     const shoe = { fixtureInitialDealtCount: 0, tableId: TABLE_ID };
 
     // Stake changed in the outcome (payout kept): the replay money differs.
@@ -311,6 +331,7 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
       shoe,
       coupRows: rows,
       hashMatches: true,
+      tableBet,
     });
     expect(tamperedOutcome.verified).toBe(false);
 
@@ -320,6 +341,7 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
       shoe,
       coupRows: rows,
       hashMatches: true,
+      tableBet,
     });
     expect(tamperedColumn.verified).toBe(false);
     expect('reason' in tamperedColumn ? tamperedColumn.reason : null).toBe('seat_stake_mismatch');
@@ -330,6 +352,7 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
       shoe,
       coupRows: rows,
       hashMatches: true,
+      tableBet,
     });
     expect(extraKey.verified).toBe(false);
 
@@ -339,22 +362,128 @@ describe('Cove History verifier: baccarat shared-table seat events (DB-free)', (
       shoe,
       coupRows: rows,
       hashMatches: false,
+      tableBet,
     });
     expect(badHash.verified).toBe(false);
   });
 
   it('a missing prior coup row fails the replay with a reason, not a throw', async () => {
     const { verifyBaccaratReplay } = await import('../cove-history');
-    const { rows, outcome } = await tableSeatFixture();
+    const { rows, outcome, tableBet } = await tableSeatFixture();
     const body = verifyBaccaratReplay({
       event: tableEvent(outcome),
       shoe: { fixtureInitialDealtCount: 0, tableId: TABLE_ID },
       coupRows: rows.filter((r) => r.coupIndex !== 1),
       hashMatches: true,
+      tableBet,
     });
     expect(body.verified).toBe(false);
     expect(body.expected).toBeNull();
     expect('reason' in body ? body.reason : '').toContain('baccarat_coup_missing_for_replay');
+  });
+
+  it('an event whose bet_amount, payout and outcome money were all scaled x10 verifies false', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const eng = await engine();
+    const { rows, outcome, tableBet } = await tableSeatFixture();
+    // A fully self-consistent forgery: the money is recomputed by the engine for
+    // stake 200, so the replay of the EVENT's own claim would match it. Only the
+    // settled bet row (stake 20) exposes it.
+    const stake = 200n;
+    const { payout, commission } = eng.settleBet('banker', stake, outcome.winner as 'player' | 'banker' | 'tie');
+    const forged = {
+      ...outcome,
+      stake: String(stake),
+      payout: String(payout),
+      net: String(payout - stake),
+      commission: String(commission),
+    };
+    const body = verifyBaccaratReplay({
+      event: tableEvent(forged, String(stake), 304, String(payout)),
+      shoe: { fixtureInitialDealtCount: 0, tableId: TABLE_ID },
+      coupRows: rows,
+      hashMatches: true,
+      tableBet,
+    });
+    expect(body.verified).toBe(false);
+    expect('reason' in body ? body.reason : null).toBe('table_bet_mismatch');
+  });
+
+  it('a nonce moved to another seat verifies false', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const { rows, outcome, tableBet } = await tableSeatFixture();
+    const shoe = { fixtureInitialDealtCount: 0, tableId: TABLE_ID };
+    // Seat 5 has no settled bet row for coup 3: the handler passes null.
+    const noRow = verifyBaccaratReplay({
+      event: tableEvent(outcome, '20', 305),
+      shoe,
+      coupRows: rows,
+      hashMatches: true,
+      tableBet: null,
+    });
+    expect(noRow.verified).toBe(false);
+    expect('reason' in noRow ? noRow.reason : null).toBe('table_bet_missing');
+    // A table shoe with no bet row passed at all also fails closed.
+    const omitted = verifyBaccaratReplay({
+      event: tableEvent(outcome, '20', 304),
+      shoe,
+      coupRows: rows,
+      hashMatches: true,
+    });
+    expect(omitted.verified).toBe(false);
+    // A bet row of a different seat never vouches for this one.
+    const otherSeat = verifyBaccaratReplay({
+      event: tableEvent(outcome, '20', 305),
+      shoe,
+      coupRows: rows,
+      hashMatches: true,
+      tableBet,
+    });
+    expect(otherSeat.verified).toBe(false);
+    expect('reason' in otherSeat ? otherSeat.reason : null).toBe('table_bet_mismatch');
+  });
+
+  it('a seat index of 8..99 is refused', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const { rows, outcome, tableBet } = await tableSeatFixture();
+    for (const seat of [8, 50, 99]) {
+      const body = verifyBaccaratReplay({
+        event: tableEvent(outcome, '20', 300 + seat),
+        shoe: { fixtureInitialDealtCount: 0, tableId: TABLE_ID },
+        coupRows: rows,
+        hashMatches: true,
+        tableBet: { ...tableBet, seatIndex: seat },
+      });
+      expect(body.verified).toBe(false);
+      expect('reason' in body ? body.reason : null).toBe('seat_index_out_of_range');
+    }
+  });
+
+  it('a payout column, bet row money or owner mismatch verifies false', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const { rows, outcome, tableBet } = await tableSeatFixture();
+    const shoe = { fixtureInitialDealtCount: 0, tableId: TABLE_ID };
+    const run = (event: ReturnType<typeof tableEvent>, bet = tableBet) =>
+      verifyBaccaratReplay({ event, shoe, coupRows: rows, hashMatches: true, tableBet: bet });
+
+    const payoutCol = run(tableEvent(outcome, '20', 304, '999999'));
+    expect(payoutCol.verified).toBe(false);
+    expect('reason' in payoutCol ? payoutCol.reason : null).toBe('seat_payout_mismatch');
+
+    const rowPayout = run(tableEvent(outcome), { ...tableBet, payout: '1', net: '-19' });
+    expect(rowPayout.verified).toBe(false);
+    expect('reason' in rowPayout ? rowPayout.reason : null).toBe('table_bet_mismatch');
+
+    const otherOwner = run(tableEvent(outcome), {
+      ...tableBet,
+      ownerUserId: '00000000-0000-4000-8000-0000000000c2',
+    });
+    expect(otherOwner.verified).toBe(false);
+    expect('reason' in otherOwner ? otherOwner.reason : null).toBe('seat_owner_mismatch');
+
+    const noUser = run(tableEvent(outcome, '20', 304, undefined, null));
+    expect(noUser.verified).toBe(false);
+    expect('reason' in noUser ? noUser.reason : null).toBe('seat_owner_mismatch');
   });
 
   it('a solo event still verifies (nonce = coupIndex, real per-coup bets)', async () => {

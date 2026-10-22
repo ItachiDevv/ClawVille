@@ -240,15 +240,6 @@ function fail(code: BaccaratTableErrorCode, detail?: string): never {
   throw new HTTPException(status, { message: detail ? `${code}: ${detail}` : code });
 }
 
-/**
- * 400 codes the route needs that `BACCARAT_TABLE_ERROR_STATUS` does not list
- * yet (owned by another file; reported to the lead). Move each one to `fail`
- * once the map carries it.
- */
-function failUnmapped400(code: 'invalid_leave_body' | 'invalid_lobby_query', detail?: string): never {
-  throw new HTTPException(400, { message: detail ? `${code}: ${detail}` : code });
-}
-
 function parseTableId(c: Context<AppContext>): string {
   const parsed = idParamSchema.safeParse({ id: c.req.param('id') });
   if (!parsed.success) fail('invalid_table_id');
@@ -329,7 +320,7 @@ export function mapTableError(c: Context<AppContext>, err: unknown): Response {
 coveBaccaratTableRouter.get('/', async (c) => {
   const parsed = lobbyQuerySchema.safeParse(c.req.query());
   if (!parsed.success) {
-    failUnmapped400('invalid_lobby_query', zodIssues(parsed.error));
+    fail('invalid_lobby_query', zodIssues(parsed.error));
   }
   const tables = await baccaratTableManager.listPublicTables(parsed.data.limit ?? LOBBY_LIMIT_MAX);
   return c.json({ ok: true, serverNow: Date.now(), tables });
@@ -383,7 +374,7 @@ coveBaccaratTableRouter.post('/:id/leave', requireNonGuestUser, async (c) => {
   const tableId = parseTableId(c);
   checkIdempotencyKey(c);
   const parsed = leaveSchema.safeParse(await readOptionalJson(c));
-  if (!parsed.success) failUnmapped400('invalid_leave_body');
+  if (!parsed.success) fail('invalid_leave_body');
   const subject = await resolveSubject(c);
   try {
     const res = await baccaratTableManager.leaveTable(tableId, subject);

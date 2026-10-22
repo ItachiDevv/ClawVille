@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import type {
   BaccaratTablePublicState,
   BaccaratTableRoundResult,
@@ -8,6 +9,7 @@ import {
   bettingMsLeft,
   CLOSE_REFETCH_DELAY_MS,
   handleBaccaratTableVisibility,
+  refreshBaccaratTable,
   SEATED_POLL_MS,
   SHARED_FINAL_REVEAL_STAGE_MS,
   SHARED_REVEAL_STEP_MS,
@@ -129,6 +131,8 @@ interface Harness {
   setTable(table: BaccaratTablePublicState): void;
   setHidden(hidden: boolean): void;
   betImpl: (body: { roundSeq: number; bet: string; stake: number }) => Promise<unknown>;
+  /** Override to control when a GET resolves; default returns the current table. */
+  getImpl: (() => Promise<BaccaratTablePublicState>) | null;
 }
 
 function harness(initial: BaccaratTablePublicState): Harness {
@@ -142,12 +146,14 @@ function harness(initial: BaccaratTablePublicState): Harness {
     setTable: (table) => { current = table; },
     setHidden: (value) => { hidden = value; },
     betImpl: async (body) => ({ ok: true, ...body, seatIndex: 2, bettingClosesAt: current.bettingClosesAt }),
+    getImpl: null,
     deps: undefined as unknown as TableControllerDeps,
   };
   h.deps = {
     api: {
       getTable: async () => {
         h.getCalls.push(clock.t);
+        if (h.getImpl) return { ok: true, table: await h.getImpl() };
         // serverNow follows the fake server clock (local clock + 0 offset by default).
         return { ok: true, table: { ...current } };
       },
@@ -356,6 +362,44 @@ describe('shared baccarat table controller', () => {
     expect(h.betCalls.length).toBe(0);
   });
 
+  test('a GET sent before the bet that resolves after the echo does not hide the bet', async () => {
+    const h = harness(makeTable({ roundSeq: 7, me: seatedMe() }));
+    startBaccaratTablePolling(TABLE_ID, h.deps);
+    await flush();
+    expect(h.getCalls.length).toBe(1);
+
+    // Every later GET waits until the test resolves it.
+    const pending: Array<(table: BaccaratTablePublicState) => void> = [];
+    h.getImpl = () => new Promise<BaccaratTablePublicState>((resolve) => { pending.push(resolve); });
+
+    // GET #2 starts BEFORE the bet and stays in flight.
+    void refreshBaccaratTable();
+    await flush();
+    expect(pending.length).toBe(1);
+
+    await useBaccaratTableController.getState().bet('banker', 20);
+    await flush();
+    const echo = { roundSeq: 7, bet: 'banker' as const, stake: 20 };
+    expect(useBaccaratTableController.getState().table?.me?.currentBet).toEqual(echo);
+    // GET #3 is the one sent after the bet; it is still in flight too.
+    expect(pending.length).toBe(2);
+
+    // GET #2 resolves now with the pre-bet state (no bet on the felt).
+    pending[0]!(makeTable({ roundSeq: 7, me: seatedMe() }));
+    await flush();
+    expect(useBaccaratTableController.getState().table?.me?.currentBet).toEqual(echo);
+
+    // GET #3 carries the server's view of the bet and applies.
+    pending[1]!(makeTable({
+      roundSeq: 7,
+      me: { ...seatedMe(), balance: 480, currentBet: { roundSeq: 7, bet: 'banker', stake: 20 } },
+    }));
+    await flush();
+    const state = useBaccaratTableController.getState();
+    expect(state.table?.me?.currentBet).toEqual(echo);
+    expect(state.table?.me?.balance).toBe(480);
+  });
+
   test('stop drops in-flight responses and clears every timer', async () => {
     const h = harness(makeTable({ phase: 'idle', bettingClosesAt: null }));
     startBaccaratTablePolling(TABLE_ID, h.deps);
@@ -363,5 +407,65 @@ describe('shared baccarat table controller', () => {
     await flush();
     await h.clock.advance(SPECTATOR_POLL_MS * 3);
     expect(h.getCalls.length).toBe(1);
+  });
+});
+
+/*
+ * Layout and contrast guards for the shared HUD + lobby (R4 fix pass). These
+ * read the CSS / TSX as text (same pattern as hud-layout.test.tsx). They pin
+ * the rules; only a browser proves the pixels.
+ */
+const CHAT_BAR_TOP = 'max(70px, env(safe-area-inset-top) + 58px)';
+
+function readSource(relative: string): string {
+  return readFileSync(new URL(relative, import.meta.url), 'utf8');
+}
+
+function cssBlock(css: string, selector: string): { body: string; index: number } {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+  if (!match) throw new Error(`missing CSS block: ${selector}`);
+  return { body: match[1]!, index: match.index };
+}
+
+function cssValue(block: string, property: string): string | null {
+  const match = new RegExp(`(?:^|[;\\s])${property}\\s*:\\s*([^;]+);`).exec(block);
+  return match ? match[1]!.trim() : null;
+}
+
+describe('shared baccarat HUD layout guards', () => {
+  const hudCss = readSource('../../../components/cove/baccarat/SharedBaccaratHud.module.css');
+  const lobbyCss = readSource('../../../components/cove/baccarat/BaccaratTableLobby.module.css');
+  const hudTsx = readSource('../../../components/cove/baccarat/SharedBaccaratHud.tsx');
+
+  test('phone layouts start the ring, hands and seat rail below the table chat bar', () => {
+    expect(cssValue(cssBlock(hudCss, '.phonePortrait .ring').body, 'top'))
+      .toBe(`calc(${CHAT_BAR_TOP} + 52px)`);
+    expect(cssValue(cssBlock(hudCss, '.phonePortrait .hands').body, 'top'))
+      .toBe(`calc(${CHAT_BAR_TOP} + 144px)`);
+    expect(cssValue(cssBlock(hudCss, '.phoneLandscape .seatRail').body, 'top'))
+      .toBe(`calc(${CHAT_BAR_TOP} + 52px)`);
+  });
+
+  test('a disabled primary button keeps light text on a muted background, no opacity', () => {
+    const hudDisabled = cssBlock(hudCss, '.primary:disabled');
+    expect(hudDisabled.index).toBeGreaterThan(cssBlock(hudCss, '.button:disabled,\n.betSpot:disabled,\n.chip:disabled').index);
+    expect(cssValue(hudDisabled.body, 'opacity')).toBe('1');
+    expect(cssValue(hudDisabled.body, 'color')).toBe('#c9bba6');
+    expect(cssValue(hudDisabled.body, 'background')).toBe('#3a2d36');
+
+    const lobbyDisabled = cssBlock(lobbyCss, '.primaryButton:disabled');
+    expect(lobbyDisabled.index).toBeGreaterThan(cssBlock(lobbyCss, '.primaryButton:disabled,\n.secondaryButton:disabled').index);
+    expect(cssValue(lobbyDisabled.body, 'opacity')).toBe('1');
+    expect(cssValue(lobbyDisabled.body, 'color')).toBe('#c9bba6');
+    expect(cssValue(lobbyDisabled.body, 'background')).toBe('#3a2d36');
+  });
+
+  test('the Fairness dialog portals into document.body after mount, above the chat bar', () => {
+    expect(hudTsx).toContain("import { createPortal } from 'react-dom';");
+    expect(hudTsx).toMatch(/fairnessOpen && mounted && createPortal\(/);
+    expect(hudTsx).toMatch(/<\/div>,\s*document\.body,\s*\)\}/);
+    const zIndex = Number(cssValue(cssBlock(hudCss, '.dialogBackdrop').body, 'z-index'));
+    expect(zIndex).toBeGreaterThanOrEqual(80);
   });
 });

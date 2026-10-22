@@ -13,6 +13,7 @@
 
 import Link from 'next/link';
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   BaccaratTableBetSide,
   BaccaratTablePublicState,
@@ -164,6 +165,11 @@ export function SharedBaccaratHud({
   const cancelBet = useBaccaratTableController((s) => s.cancelBet);
   const leave = useBaccaratTableController((s) => s.leave);
   const [fairnessOpen, setFairnessOpen] = useState(false);
+  // The Fairness dialog renders through a portal into document.body, outside
+  // the .hud stacking context (z 50), so it sits above the chat bar (z 70).
+  // Portal only after mount: the server render has no document.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const phase = table?.phase ?? null;
   const now = useNow(phase === 'betting' || phase === 'reveal');
@@ -514,7 +520,7 @@ export function SharedBaccaratHud({
         {controls}
       </div>
 
-      {fairnessOpen && (
+      {fairnessOpen && mounted && createPortal(
         <div className={styles.dialogBackdrop} role="presentation" onClick={() => setFairnessOpen(false)}>
           <div
             className={styles.dialog}
@@ -555,7 +561,8 @@ export function SharedBaccaratHud({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
