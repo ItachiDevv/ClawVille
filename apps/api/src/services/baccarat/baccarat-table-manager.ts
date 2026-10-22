@@ -1555,8 +1555,10 @@ export class BaccaratTableManager {
       } catch (err) {
         // A NEW seat with no bet would hold the seat for 10 min and keep an idle table
         // opening windows: free it. Outside the bet's table lock (it is not re-entrant).
+        // refuseIfPending: the owner may have bet by REST on this seat meanwhile; keep it.
         if (!sat.alreadySeated) {
-          await this.leaveTable(t.id, subject).catch((leaveErr: unknown) => {
+          await this.leaveTableInternal(t.id, subject, { refuseIfPending: true }).catch((leaveErr: unknown) => {
+            if (leaveErr instanceof BaccaratTableError && leaveErr.code === 'already_seated_elsewhere') return;
             console.error('[baccarat-manager] freeing the seat after a failed autonomous bet failed:', leaveErr);
           });
         }

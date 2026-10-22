@@ -360,6 +360,8 @@ class FakeDb {
   hidePendingBetsForUpdateOnce = false;
   /** Runs once when the next `baccarat_tables ... FOR UPDATE` read executes (a lock-wait seam). */
   onTableLockOnce: (() => void) | null = null;
+  /** Runs once before the next top-level tx takes its snapshot (a commit by another process). */
+  beforeTxOnce: (() => void) | null = null;
   /** Row locks (`<table>:<strength>`) and advisory locks (`advisory:<key>`) in execution order. */
   lockTrace: string[] = [];
   /** The raw SQL text of every advisory lock statement. */
@@ -448,6 +450,12 @@ class FakeDb {
     let release!: () => void;
     root.mutex = new Promise<void>((r) => (release = r));
     await prior;
+    if (root.beforeTxOnce) {
+      // Another process commits just before this tx starts (survives this tx's rollback).
+      const fn0 = root.beforeTxOnce;
+      root.beforeTxOnce = null;
+      fn0();
+    }
     const tx = Object.create(root) as FakeDb;
     tx.inTx = true;
     root.txCount++;
@@ -1831,6 +1839,40 @@ describe('BaccaratTableManager: fix pass FX-A (review findings)', () => {
     expect(h.db.rows(baccaratTableSeats).filter((s) => s.avatar_id === 'poor' && s.status === 'seated').length).toBe(0);
     expect(tableRow(h, t.id).round_phase).toBe('idle');
     expect(bets(h).length).toBe(0);
+  });
+
+  it('F4b: the seat cleanup after a failed autonomous bet keeps an owner REST bet placed meanwhile', async () => {
+    const h = makeHarness();
+    const t = await h.mgr.createTable(LOW, null);
+    const x = agent(h, 'x');
+    await h.mgr.sitDown(t.id, x);
+    await h.mgr.placeBet(t.id, x, { roundSeq: 0, bet: 'player', stake: 10 });
+    const template = pending(h)[0]!;
+    const a = agent(h, 'a1');
+    // The owner bets by REST on the seat the agent just took, before the agent's bet runs.
+    const hook = () => {
+      const seat = h.db.rows(baccaratTableSeats).find((s) => s.avatar_id === 'a1' && s.status === 'seated');
+      if (!seat) {
+        h.db.beforeTxOnce = hook;
+        return;
+      }
+      h.db.rows(baccaratTableBets).push({
+        ...template,
+        id: randomUUID(),
+        avatar_id: 'a1',
+        seat_index: seat.seat_index,
+        bet: 'banker',
+        stake: '50',
+        origin: 'rest',
+        actor_kind: 'human',
+      });
+    };
+    h.db.beforeTxOnce = hook;
+    await expectCode(h.mgr.placeAutonomousBet(auto(a, 'tie', 10)), 'bet_conflict', 409);
+    expect(h.db.rows(baccaratTableSeats).filter((s) => s.avatar_id === 'a1' && s.status === 'seated').length).toBe(1);
+    expect(pending(h).filter((b) => b.avatar_id === 'a1').map((b) => [b.bet, b.stake, b.origin])).toEqual([
+      ['banker', '50', 'rest'],
+    ]);
   });
 
   it('F5: an agent seated at another tier with NO pending bet there leaves it and sits at the fitting table', async () => {
