@@ -1084,10 +1084,16 @@
      result is current and the viewer is not acting. While the panel is
      expanded, hide the private card tray (the panel repeats those cards and
      the board) and the action feed (it returns on "Hide" or the next hand),
-     and give the panel the freed height. The action panel stays. Reserve
-     170 px: top 8 + gap 8 + action panel about 120 (padding 14, status row
-     22 to 48, Walk Away 44, legend 12, gaps 12) + bottom 6, with room for one
-     toast. The `.hud` (z 50) stays above the panel (z 47) if it grows. */
+     and give the panel the freed height. The action panel keeps only its
+     status row and toasts: the legend hides, and for a seated viewer
+     (`surfaceSeated`) the Walk Away row hides too (2026-10-22, measured at
+     844x390: the action panel was 268-384, so a 3-seat result needed a
+     scroll). Walk Away stays reachable at the top left (the back button does
+     the same leave). A spectator keeps "Sit down" (and a buy-in confirm in
+     progress). Reserve 70 px seated (top 8 + gap 8 + action panel about 41
+     + bottom 6, plus a few px) and 120 px for a spectator (+ the 44 px Sit
+     down row). The `.hud` (z 50) stays above the panel (z 47) if a toast
+     grows it. */
   .surfaceSettled .result:not(.resultCompact) {
     /* Right of the table chat button (avatar-chat-bar: fixed z 70, left
        max(12px, inset), width min(360px, 100vw - 24px), top 70). Its box
@@ -1095,8 +1101,13 @@
     left: calc(max(12px, env(safe-area-inset-left)) + min(360px, calc(100vw - 24px)) + 8px);
     right: max(14px, env(safe-area-inset-right));
     max-width: 560px;
-    max-height: max(140px, calc(100dvh - 170px));
+    max-height: max(140px, calc(100dvh - 120px));
+  }
+  .surfaceSettled.surfaceSeated .result:not(.resultCompact) {
+    max-height: max(140px, calc(100dvh - 70px));
   }
   .surfaceSettled .result:not(.resultCompact) ~ .feed { display: none; }
-  .surfaceSettled .result:not(.resultCompact) ~ .hud .cardTray { display: none; }
+  .surfaceSettled .result:not(.resultCompact) ~ .hud .cardTray,
+  .surfaceSettled .result:not(.resultCompact) ~ .hud .legendRow,
+  .surfaceSettled.surfaceSeated .result:not(.resultCompact) ~ .hud .actionRow { display: none; }
 }

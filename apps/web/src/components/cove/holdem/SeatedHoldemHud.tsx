@@ -478,7 +478,9 @@ export function CashTableRoomHud({
 
   return (
     <div
-      className={styles.surface + (resultFreesTray ? ' ' + styles.surfaceSettled : '')}
+      className={styles.surface
+        + (resultFreesTray ? ' ' + styles.surfaceSettled : '')
+        + (amSeated ? ' ' + styles.surfaceSeated : '')}
       data-testid="cash-table-room-hud"
     >
       <ParityMirror surface="holdem-tray-3d" instanceId={instanceId} />
@@ -539,7 +541,10 @@ export function CashTableRoomHud({
         </div>
       )}
 
-      {cashedOutCt != null && (
+      {/* While a result panel shows, the cash-out note is a toast in the
+          action panel instead (the floating box sat under the panel on a
+          short landscape screen, 2026-10-22). */}
+      {cashedOutCt != null && !settledSummary && (
         <div className={styles.settlement} data-testid="cash-table-cashed-out">
           <div className={styles.settlementHeadline}>Cashed out</div>
           <div className={styles.settlementDetail}>{cashedOutCt.toLocaleString()} vCLAW returned to your avatar.</div>
@@ -625,6 +630,11 @@ export function CashTableRoomHud({
             </div>
           )}
           {leaveQueued && <div className={styles.toast + ' ' + styles.toastWarn}>Cashing out after this hand…</div>}
+          {cashedOutCt != null && settledSummary && (
+            <div className={styles.toast} role="status" data-testid="cash-table-cashed-out">
+              Cashed out: {cashedOutCt.toLocaleString()} vCLAW returned to your avatar.
+            </div>
+          )}
 
           {freshSelf?.isYourTurn && (
             <div
