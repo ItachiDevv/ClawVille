@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 06:15Z (session roundup). **STAGING API + WEB = `a021925ba` (quests wire, PROTOCOL 98, no migration), verified live** (DEPLOY LOG 2026-10-22 06:15Z): Style Statement, Big Spender, Wallet Aware claimable by a human and a bound agent; Brand Ambassador removed. Founder eyes owed (FOUNDER-REVIEW). **PROD API + WEB = `ae1e1589d`** (promotion #12). SCHEMA: synced.
+Last Audited: 2026-10-22 06:55Z (session roundup). **PROD API + WEB = `26c02e392` (promotion #13, PR #323: quests wire PROTOCOL 98, autonomy talk prompt, AGENTS.md/CLAUDE.md untracked; no migration), verified live** (DEPLOY LOG 2026-10-22 06:55Z). **STAGING API + WEB = `7de0811da`** (same code as prod). SCHEMA: synced. Founder eyes owed (FOUNDER-REVIEW).
+
+Prior - Last Audited: 2026-10-22 06:15Z (session roundup). **STAGING API + WEB = `a021925ba` (quests wire, PROTOCOL 98, no migration), verified live** (DEPLOY LOG 2026-10-22 06:15Z): Style Statement, Big Spender, Wallet Aware claimable by a human and a bound agent; Brand Ambassador removed. Founder eyes owed (FOUNDER-REVIEW). **PROD API + WEB = `ae1e1589d`** (promotion #12). SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-22 05:50Z (session roundup). **Staging is receiving `feat/quests-wire` (PROTOCOL 98, no migration): Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`.** Not yet verified; see the DEPLOY LOG entry of 2026-10-22 05:50Z. **PROD API + WEB = `ae1e1589d`** (promotion #12).
 
@@ -666,6 +668,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-22 06:55Z (session roundup) - promotion #13 on prod: quests wire (`26c02e392`)
+- **What changed:** founder approved the promotion (2026-10-22 "yeah i approve it"). PR #323 (`staging` `7de0811da` to `master`), merged 06:29:49Z, merge `26c02e392`. Range `ae1e1589d..26c02e392`: quests wire (PROTOCOL 98: Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`), session jev's autonomy talk prompt (`8786b615b`), `AGENTS.md`/`CLAUDE.md` untracked (`7de0811da`), docs. No migration.
+- **Deploy:** run 39734290750: 4 gate lanes, `migrate`, `deploy` all success. API `ebnat...-20261022T063338` flipped by 06:44:01Z, web `ds7ho...-20261022T063338` by 06:47:04Z; both `SOURCE_COMMIT` = `26c02e392`; `/health` commit `26c02e392`. Prod disk 70 GB free.
+- **Checks in the prod API container:** `PROTOCOL_VERSION = 98`; the three new verbs are in `hatcher-actions.ts`; `brand-ambassador` appears only in the comment that records its removal; `AGENTS.md` and `CLAUDE.md` are absent from the image.
+- **Browser (headless Chrome, signed out, 1568x772):** `https://clawville.world/game` renders the town behind the guest welcome dialog; no page exceptions and no `ChunkLoadError`.
+- **Not verified on prod:** a signed-in quest claim (no prod test account is used for money paths; the staging E5 run of 06:15Z covers both subjects); the hosted verbs through a real LLM decision; the founder's eyes.
+- **Who it is for:** every player and agent on the quest ladder. SCHEMA: synced.
 
 ### 2026-10-22 06:25Z (session roundup) - AGENTS.md and CLAUDE.md untracked again (config + docs only)
 - **What changed:** founder 2026-10-22: there is ONE governing `AGENTS.md` and `CLAUDE.md` is only the `@AGENTS.md` pointer. That design (founder order 2026-07-24) keeps both files out of this public repo: the private brain copy `~/.clawville-brain/AGENTS.md` is the only source and its sync installs it plus the pointer in every checkout. A `git add -A` in `edc01d19` (2026-09-30) committed both files because the root `*.md` allow-list negated them; the fix `583c4b9e` was written the same day but never pushed, so staging and master carried a second, drifting copy. This push applies `583c4b9e` (drop the two negations, `git rm --cached` both). It also corrects this session's earlier commit `ab6811311`, which copied the newer brain file into the tracked copy on a wrong premise (that untracking would lose the files; the brain sync restores them).
