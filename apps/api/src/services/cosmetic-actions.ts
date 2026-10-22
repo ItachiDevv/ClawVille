@@ -465,6 +465,9 @@ export async function buyCosmeticForActor(
       bonusApplied: result.grantUsed,
       realCtCharged: result.realCt,
       balanceAfter: result.balanceAfter,
+      // Who bought, like `cosmetic.equipped` and `wallet.viewed`. Payload
+      // only: the event's agentId column and scoring inputs are unchanged.
+      subjectKind: actor.kind,
     },
     ...eventTags(meta),
   });

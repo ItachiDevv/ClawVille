@@ -203,7 +203,7 @@ describe('buyCosmeticForActor', () => {
       avatarId: 'avatar-1',
       fpHash: 'fp-1',
       ipPrefixHash: 'ip-1',
-      payload: { skuId: SKU_ID, pricePaid: 300, bonusApplied: 0, realCtCharged: 300, balanceAfter: 700 },
+      payload: { skuId: SKU_ID, pricePaid: 300, bonusApplied: 0, realCtCharged: 300, balanceAfter: 700, subjectKind: 'user' },
     });
   });
 
@@ -213,7 +213,7 @@ describe('buyCosmeticForActor', () => {
     expect(out.ok).toBe(true);
     expect(ledgerCalls[0]!.input).toMatchObject({ avatarId: 'agent-avatar-1', actorKind: 'agent' });
     expect(purchased()).toHaveLength(1);
-    expect(purchased()[0]).toMatchObject({ userId: 'owner-1', avatarId: 'agent-avatar-1', fpHash: null, ipPrefixHash: null });
+    expect(purchased()[0]).toMatchObject({ userId: 'owner-1', avatarId: 'agent-avatar-1', fpHash: null, ipPrefixHash: null, payload: { subjectKind: 'agent' } });
   });
 
   it('a bonus-funded buy debits only the real-CT remainder', async () => {

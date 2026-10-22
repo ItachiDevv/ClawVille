@@ -60,7 +60,7 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'buy_cosmetic',
     syntax: 'buy_cosmetic(skuId=<listed sku id from the Cosmetics block>)',
     whenToUse:
-      'buy one listed cosmetic; your cosmetic credit pays first, then your own vCLAW pays the rest; buying an owned one charges nothing; equip it after with equip_cosmetic',
+      'buy one listed cosmetic; your cosmetic credit pays first, then your own vCLAW pays the rest; buying an owned one charges nothing; at most one buy per 24 hours; equip it after with equip_cosmetic',
   },
   {
     verb: 'chat_nori',

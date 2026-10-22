@@ -95,6 +95,12 @@ import {
   type ResolvedAutonomousCoveAgent,
 } from './autonomous-cove-agent-binding';
 import { HOUSE_REFUSED_AUTONOMY_VERBS } from './house-refused-verbs';
+// Value import is safe: this module imports only @clawville/database and
+// cosmetic-signup-bonus, so it cannot cycle back into npc-simulation.
+import {
+  AUTONOMOUS_COSMETIC_BUY_WINDOW_MS,
+  type AutonomousCosmeticBuyWindow,
+} from './autonomous-cosmetic-targets';
 // Type-only: the runtime modules load lazily inside the test seams.
 import type { CosmeticActor, CosmeticActionFailure } from './cosmetic-actions';
 import type { CustodialBalancesResult } from './wallet-withdraw-executor';
@@ -290,13 +296,26 @@ const AUTONOMOUS_BACCARAT_BET_SIDES: ReadonlySet<string> = new Set<AutonomousBac
 const AUTONOMOUS_LAND_ACTION_INTERVAL_MS = 60_000;
 const AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS = 60_000;
 /**
- * view_wallet / equip_cosmetic / buy_cosmetic reserve each (avatar, verb, sku)
- * intent for 60 seconds (view_wallet: 10 minutes, below), like
- * claim_tutorial_quest. The buy service is already
- * idempotent per (avatar, sku); this damps a burst of identical tags and stops
- * repeated view_wallet tags from fanning out into chain balance reads.
+ * view_wallet / equip_cosmetic reserve each (avatar, verb, sku) intent for 60
+ * seconds (view_wallet: 10 minutes, below), like claim_tutorial_quest. This
+ * damps a burst of identical tags and stops repeated view_wallet tags from
+ * fanning out into chain balance reads. buy_cosmetic has its own per-AVATAR
+ * 24-hour cap instead (AUTONOMOUS_COSMETIC_BUY_WINDOW_MS, below).
  */
 const AUTONOMOUS_COSMETIC_WALLET_INTERVAL_MS = 60_000;
+/**
+ * buy_cosmetic daily cap (2026-10-22). Production: the decide loop bought the
+ * next cheapest emote every ~30 s, because an owned SKU leaves the buy list
+ * and the old per-sku 60 s key never matched the next one. A hosted agent now
+ * completes at most ONE cosmetic purchase per avatar per rolling 24 hours:
+ * a synchronous per-avatar in-flight set closes the in-process race (several
+ * buy tags in one reply, two overlapping settles), a per-avatar time
+ * reservation damps retries after a settle, and the DB window
+ * (`readAutonomousCosmeticBuyWindow`) is the source of truth across restarts.
+ */
+const AUTONOMOUS_COSMETIC_BUY_RESERVATION_MAX = 5_000;
+/** A DB window read that failed refuses the buy and blocks a retry this long. */
+const AUTONOMOUS_COSMETIC_BUY_CHECK_RETRY_MS = 60_000;
 /**
  * view_wallet makes 3 chain balance reads on the Helius account that prod and
  * staging share (it ran out of quota on 2026-10-08), so one avatar may repeat
@@ -337,6 +356,13 @@ export function formatCosmeticBuyResult(
   }
   const credit = typeof result.body.bonusApplied === 'number' ? result.body.bonusApplied : 0;
   return `Shop: bought ${skuId} (cosmetic credit used ${credit}).${balanceText} Wear it with equip_cosmetic.`;
+}
+/** One short line for the agent's next decide prompt about a capped buy_cosmetic. */
+export function formatCosmeticBuyCapRefusal(skuId: string, nextBuyAtMs: number | null): string {
+  if (nextBuyAtMs === null) {
+    return `Shop: buy ${skuId} refused (limit_check_unavailable): the daily buy limit could not be checked; try again later. Equip what you own instead.`;
+  }
+  return `Shop: buy ${skuId} refused (daily_limit): one cosmetic purchase per 24 hours; next buy after ${new Date(nextBuyAtMs).toISOString()}. Equip what you own instead.`;
 }
 const AUTONOMOUS_TRADE_RESERVATION_MS = 30_000;
 // Salvage's real spacing is the 6-hour per-node cooldown; this only damps a
@@ -1160,6 +1186,15 @@ class NpcSimulation {
     // A hosted action has no browser request: no fingerprint or IP to salt.
     return buyCosmeticForActor(actor, { skuId }, { fpHash: null, ipPrefixHash: null });
   };
+  /**
+   * Test seam; the DB source of truth for the buy_cosmetic daily cap (one
+   * vCLAW-shop purchase per avatar per rolling 24 hours). Throws on a DB error;
+   * the caller then refuses the buy (fail closed).
+   */
+  autonomousCosmeticBuyWindow: (avatarId: string) => Promise<AutonomousCosmeticBuyWindow> = async (avatarId) => {
+    const { readAutonomousCosmeticBuyWindow } = await import('./autonomous-cosmetic-targets');
+    return readAutonomousCosmeticBuyWindow(avatarId);
+  };
   /** Test seam; the SAME equip service as POST /api/cosmetics/:skuId/equip. */
   autonomousCosmeticEquip: (
     actor: CosmeticActor,
@@ -1198,6 +1233,21 @@ class NpcSimulation {
   private autonomousLandActionLastAdmittedAt = new Map<string, number>();
   private autonomousQuestClaimLastAdmittedAt = new Map<string, number>();
   private autonomousCosmeticWalletLastAdmittedAt = new Map<string, number>();
+  /**
+   * buy_cosmetic per-avatar reservation: `${avatarId}:buy_cosmetic` → the ms
+   * time the next buy may start. Insertion order is write order (delete, then
+   * set), so the size cap evicts the oldest reservation first; an evicted
+   * entry only loses the in-process damper, the DB window still refuses.
+   */
+  private autonomousCosmeticBuyBlockedUntil = new Map<string, number>();
+  /**
+   * buy_cosmetic settles still running, keyed `${avatarId}:buy_cosmetic`.
+   * Added at step 0, removed in the settle's finally, NEVER evicted: the time
+   * map above may evict under pressure, and without this set a second buy for
+   * the same avatar could pass both DB window reads before the first commits.
+   * Bounded by the number of concurrent settles.
+   */
+  private autonomousCosmeticBuyInFlight = new Set<string>();
   private autonomousSalvageLastAdmittedAt = new Map<string, number>();
   private autonomousTradeLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
@@ -3112,15 +3162,29 @@ class NpcSimulation {
    * claim_tutorial_quest one, applied to all three because each writes a
    * tutorial-quest proof (`wallet.viewed`, `cosmetic.equipped`,
    * `cosmetic.purchased`) and buy_cosmetic spends vCLAW:
+   *   0. buy_cosmetic only: refuse while a buy for this avatar is in flight
+   *      or its time reservation holds; else mark it in flight and reserve 24
+   *      hours, synchronously, before any await (released if a guard drops);
    *   1. refuse a house actor BEFORE any session resolve (fail closed);
    *   2. re-resolve the live connected session for this exact agentId;
    *   3. require a ledger-authorized session;
    *   4. require a bound avatar and owner;
    *   5. require the live binding to equal the captured attribution;
-   *   6. reserve (avatar, verb, sku) for 60 seconds, synchronously, before the
-   *      service await.
+   *   6. view_wallet / equip_cosmetic: reserve (avatar, verb, sku) for 60
+   *      seconds (view_wallet: 10 minutes), synchronously, before the service
+   *      await. buy_cosmetic: read the DB 24-hour window and refuse while it
+   *      is closed or unreadable (fail closed).
    * An unbound or non-ledger agent is DROPPED, never demoted to a guest.
    * The result goes to the hosted driver as one short line for the next decide.
+   *
+   * buy_cosmetic cap semantics: at most ONE buy settle per avatar runs at a
+   * time (the in-flight set, never evicted), at most one COMPLETED purchase per
+   * avatar per 24 hours from this process (the 24-hour reservation is kept only
+   * when the buy service wrote a new skin), and none at all while the avatar
+   * has a `shop_ct` purchase (human or agent) in the last 24 hours. A failed
+   * buy (e.g. insufficient vCLAW) or an `alreadyOwned` replay moves no money
+   * and writes no row, so it only holds a 60-second retry wait, after which the
+   * next try re-reads the DB window (the same window the decide prompt shows).
    */
   private async settleAutonomousCosmeticWalletAction(
     npcId: string,
@@ -3128,13 +3192,42 @@ class NpcSimulation {
     action: { verb: 'view_wallet' } | { verb: 'equip_cosmetic' | 'buy_cosmetic'; skuId: string },
   ): Promise<void> {
     const verb = action.verb;
-    try {
-      if (await this.refusedForHouseActor(verb, attribution.agentId)) return;
-    } catch {
-      console.warn(`[Hatcher] ${verb} dropped — house actor check unavailable`);
-      return;
+    // Step 0. Check-and-set with no await in between, so several buy tags in
+    // one reply, or two overlapping settles, admit at most one. The in-flight
+    // set is the race guard and is never evicted (it is bounded by concurrent
+    // settles); the time map is the after-settle damper and may be evicted.
+    let buyReservationKey: string | null = null;
+    let keepBuyReservation = false;
+    if (action.verb === 'buy_cosmetic') {
+      const now = Date.now();
+      const key = `${attribution.avatarId}:buy_cosmetic`;
+      const blockedUntil = this.autonomousCosmeticBuyBlockedUntil.get(key);
+      const inFlight = this.autonomousCosmeticBuyInFlight.has(key);
+      if (inFlight || (blockedUntil !== undefined && now < blockedUntil)) {
+        const refusedUntil = blockedUntil !== undefined && now < blockedUntil
+          ? blockedUntil
+          : now + AUTONOMOUS_COSMETIC_BUY_WINDOW_MS;
+        console.warn(
+          `[Hatcher] buy_cosmetic dropped — daily limit (${inFlight ? 'a buy is in flight' : `reserved until ${new Date(refusedUntil).toISOString()}`})`,
+        );
+        await this.autonomousActionResult(
+          attribution.agentId,
+          attribution.avatarId,
+          formatCosmeticBuyCapRefusal(action.skuId, refusedUntil),
+        ).catch(() => undefined);
+        return;
+      }
+      buyReservationKey = key;
+      this.autonomousCosmeticBuyInFlight.add(key);
+      this.setAutonomousCosmeticBuyBlockedUntil(key, now + AUTONOMOUS_COSMETIC_BUY_WINDOW_MS, now);
     }
     try {
+      try {
+        if (await this.refusedForHouseActor(verb, attribution.agentId)) return;
+      } catch {
+        console.warn(`[Hatcher] ${verb} dropped — house actor check unavailable`);
+        return;
+      }
       const resolved = await this.autonomousCosmeticAgentResolve(
         attribution.sessionId,
         attribution.agentId,
@@ -3155,28 +3248,42 @@ class NpcSimulation {
         console.warn(`[Hatcher] ${verb} dropped — live agent/avatar binding changed`);
         return;
       }
+      // The guards passed: from here the buy reservation is never released.
+      // The buy branch below may only move it to a time that the DB window, or
+      // a fresh DB read on the next try, still guards. Only this call writes
+      // the key while it is in flight.
+      keepBuyReservation = true;
 
-      const admittedAt = Date.now();
-      if (this.autonomousCosmeticWalletLastAdmittedAt.size > 5_000) {
-        for (const [key, lastAt] of this.autonomousCosmeticWalletLastAdmittedAt) {
-          // The longest window, so an eviction never re-opens view_wallet early.
-          if (admittedAt - lastAt >= AUTONOMOUS_VIEW_WALLET_INTERVAL_MS) {
-            this.autonomousCosmeticWalletLastAdmittedAt.delete(key);
+      if (action.verb !== 'buy_cosmetic') {
+        const admittedAt = Date.now();
+        if (this.autonomousCosmeticWalletLastAdmittedAt.size > 5_000) {
+          for (const [key, lastAt] of this.autonomousCosmeticWalletLastAdmittedAt) {
+            // The longest window, so an eviction never re-opens view_wallet early.
+            if (admittedAt - lastAt >= AUTONOMOUS_VIEW_WALLET_INTERVAL_MS) {
+              this.autonomousCosmeticWalletLastAdmittedAt.delete(key);
+            }
           }
         }
+        const skuId = action.verb === 'view_wallet' ? '' : action.skuId;
+        const intervalMs = action.verb === 'view_wallet'
+          ? AUTONOMOUS_VIEW_WALLET_INTERVAL_MS
+          : AUTONOMOUS_COSMETIC_WALLET_INTERVAL_MS;
+        const reservationKey = `${resolved.avatarId}:${verb}:${skuId}`;
+        const prior = this.autonomousCosmeticWalletLastAdmittedAt.get(reservationKey);
+        if (prior !== undefined && admittedAt - prior < intervalMs) {
+          console.warn(`[Hatcher] ${verb} dropped — duplicate action reserved for ${intervalMs / 1000} seconds`);
+          // Tell the model, or it repeats the same tag (staging 2026-10-22:
+          // view_wallet 16 times in 4 minutes after one real view).
+          const duplicateLine = action.verb === 'view_wallet'
+            ? `Wallet: already checked; next check after ${new Date(prior + intervalMs).toISOString()}. Do something else (a quest, a teacher, equip).`
+            : `Wardrobe: ${action.skuId} was just handled; pick a different action.`;
+          await this.autonomousActionResult(attribution.agentId, attribution.avatarId, duplicateLine)
+            .catch(() => undefined);
+          return;
+        }
+        // Reserve synchronously, before the service await.
+        this.autonomousCosmeticWalletLastAdmittedAt.set(reservationKey, admittedAt);
       }
-      const skuId = action.verb === 'view_wallet' ? '' : action.skuId;
-      const intervalMs = action.verb === 'view_wallet'
-        ? AUTONOMOUS_VIEW_WALLET_INTERVAL_MS
-        : AUTONOMOUS_COSMETIC_WALLET_INTERVAL_MS;
-      const reservationKey = `${resolved.avatarId}:${verb}:${skuId}`;
-      const prior = this.autonomousCosmeticWalletLastAdmittedAt.get(reservationKey);
-      if (prior !== undefined && admittedAt - prior < intervalMs) {
-        console.warn(`[Hatcher] ${verb} dropped — duplicate action reserved for ${intervalMs / 1000} seconds`);
-        return;
-      }
-      // Reserve synchronously, before the service await.
-      this.autonomousCosmeticWalletLastAdmittedAt.set(reservationKey, admittedAt);
 
       const actor: CosmeticActor = {
         kind: 'agent',
@@ -3201,17 +3308,82 @@ class NpcSimulation {
           : `Wardrobe: equip ${action.skuId} refused (${result.code}).`;
         if (!result.ok) console.warn(`[Hatcher] equip_cosmetic not applied — ${result.code}`);
       } else {
-        const result = await this.autonomousCosmeticBuy(actor, action.skuId);
-        resultLine = formatCosmeticBuyResult(action.skuId, result);
-        if (!result.ok) console.warn(`[Hatcher] buy_cosmetic not settled — ${result.code}`);
-        const body = this.npcs.get(npcId);
-        if (result.ok && body) body.intentDescription = `buying cosmetic ${action.skuId}`;
+        // The DB window is the source of truth (it survives restarts and
+        // counts a buy by the human owner too). Fail closed on a read error.
+        let buyWindow: AutonomousCosmeticBuyWindow | null = null;
+        try {
+          buyWindow = await this.autonomousCosmeticBuyWindow(actor.avatarId);
+        } catch (err) {
+          console.warn(
+            `[Hatcher] buy_cosmetic dropped — daily limit check unavailable: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (!buyWindow || !buyWindow.allowed) {
+          const now = Date.now();
+          let nextBuyAtMs: number | null = null;
+          if (buyWindow) {
+            const parsed = buyWindow.nextBuyAt ? Date.parse(buyWindow.nextBuyAt) : Number.NaN;
+            nextBuyAtMs = Number.isFinite(parsed) ? parsed : now + AUTONOMOUS_COSMETIC_BUY_WINDOW_MS;
+          }
+          // Hold the reservation until the DB window opens (after a failed
+          // read: for a short retry wait). Every later buy re-reads the DB.
+          // Never shorter than the retry wait, so a skewed clock cannot spin.
+          const until = Math.max(nextBuyAtMs ?? 0, now + AUTONOMOUS_COSMETIC_BUY_CHECK_RETRY_MS);
+          if (buyWindow) {
+            console.warn(`[Hatcher] buy_cosmetic dropped — daily limit (next buy after ${new Date(until).toISOString()})`);
+          }
+          if (buyReservationKey) this.setAutonomousCosmeticBuyBlockedUntil(buyReservationKey, until, now);
+          resultLine = formatCosmeticBuyCapRefusal(action.skuId, buyWindow ? until : null);
+        } else {
+          const result = await this.autonomousCosmeticBuy(actor, action.skuId);
+          resultLine = formatCosmeticBuyResult(action.skuId, result);
+          if (!result.ok) console.warn(`[Hatcher] buy_cosmetic not settled — ${result.code}`);
+          const body = this.npcs.get(npcId);
+          if (result.ok && body) body.intentDescription = `buying cosmetic ${action.skuId}`;
+          // Keep the 24-hour reservation only for a completed purchase (a new
+          // skin row, which the DB window also sees). A refused buy or an
+          // `alreadyOwned` replay moved no money and wrote no row: hold only
+          // the retry wait, so the next try re-reads the DB window, the same
+          // window the decide prompt shows. A THROWN buy keeps 24 hours
+          // (outcome unknown).
+          const completedPurchase = result.ok && result.body.alreadyOwned !== true;
+          if (!completedPurchase && buyReservationKey) {
+            const now = Date.now();
+            this.setAutonomousCosmeticBuyBlockedUntil(buyReservationKey, now + AUTONOMOUS_COSMETIC_BUY_CHECK_RETRY_MS, now);
+          }
+        }
       }
       await this.autonomousActionResult(attribution.agentId, attribution.avatarId, resultLine);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(`[Hatcher] ${verb} dropped — ${reason}`);
+    } finally {
+      if (buyReservationKey) {
+        // A guard dropped the buy before any money path: free the slot.
+        if (!keepBuyReservation) this.autonomousCosmeticBuyBlockedUntil.delete(buyReservationKey);
+        this.autonomousCosmeticBuyInFlight.delete(buyReservationKey);
+      }
     }
+  }
+
+  /**
+   * Write one buy_cosmetic reservation and keep the map bounded: at the cap,
+   * drop expired entries first, then the oldest writes. Re-setting a key moves
+   * it to the end, so iteration order is write order.
+   */
+  private setAutonomousCosmeticBuyBlockedUntil(key: string, until: number, now: number): void {
+    const map = this.autonomousCosmeticBuyBlockedUntil;
+    map.delete(key);
+    if (map.size >= AUTONOMOUS_COSMETIC_BUY_RESERVATION_MAX) {
+      for (const [entryKey, entryUntil] of map) {
+        if (entryUntil <= now) map.delete(entryKey);
+      }
+      for (const oldestKey of map.keys()) {
+        if (map.size < AUTONOMOUS_COSMETIC_BUY_RESERVATION_MAX) break;
+        map.delete(oldestKey);
+      }
+    }
+    map.set(key, until);
   }
 
   /**

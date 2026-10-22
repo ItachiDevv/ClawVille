@@ -2294,11 +2294,14 @@ class AgentAutonomyDriver {
     // manual names only the four land quests. Server-derived, bounded, and
     // advisory: the executor re-runs the real proof-of-engagement gate, so an
     // unqualified suggestion costs one refused action, never a wrong payout.
+    // Each line carries the exact call, like the cosmetics block: with only a
+    // bare id the hosted model invented verbs (`claim_quest`, `complete_quest`,
+    // dropped as not whitelisted on prod and staging 2026-10-22).
     const questBlock = [
-      'Claimable quests (server-derived; copy questId exactly; unclaimed and live only):',
+      'Claimable quests (server-derived; copy one exact call; unclaimed and live only):',
       ...(questTargets.length > 0
         ? questTargets.map((quest) =>
-            `- ${quest.questId}: "${quest.title}" pays ${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'} — requires: ${quest.requirement}`,
+            `- [ACTION: claim_tutorial_quest(questId=${quest.questId})] "${quest.title}" pays ${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'} — requires: ${quest.requirement}`,
           )
         : ['- none claimable right now']),
     ].join('\n');
@@ -2335,8 +2338,11 @@ class AgentAutonomyDriver {
     // cannot guess, so list the valid ones (owned-but-unworn first, then the
     // cheapest buyable). Server-derived and advisory: the buy service re-runs
     // every check, so a stale row costs one refused action, never a wrong debit.
-    // Omitted when both lists are empty (and always for a house actor, which
-    // never sees these verbs).
+    // Omitted when both lists are empty and no buy lock is set (and always for
+    // a house actor, which never sees these verbs). The daily buy cap (one
+    // purchase per avatar per 24 hours) empties the buy list and says why, so
+    // the model equips instead of guessing a uuid; the executor enforces it.
+    const buyLockedUntil = cosmeticTargets.buyLockedUntil || null;
     const cosmeticBlock = [
       `Cosmetics (server-derived; copy skuId exactly). You hold ${cosmeticTargets.vclawBalance} vCLAW and ${cosmeticTargets.cosmeticCredit} cosmetic credit (credit pays first, then vCLAW):`,
       ...(cosmeticTargets.ownedUnequipped.length > 0
@@ -2355,9 +2361,12 @@ class AgentAutonomyDriver {
             ),
           ]
         : []),
+      ...(buyLockedUntil
+        ? [`This avatar bought a cosmetic in the last 24 hours (one buy per 24 hours); the next buy opens after ${buyLockedUntil}. Equip a cosmetic you own instead.`]
+        : []),
     ].join('\n');
     const showCosmeticBlock = !entry.isHouse
-      && (cosmeticTargets.ownedUnequipped.length > 0 || cosmeticTargets.purchasable.length > 0);
+      && (cosmeticTargets.ownedUnequipped.length > 0 || cosmeticTargets.purchasable.length > 0 || buyLockedUntil !== null);
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.

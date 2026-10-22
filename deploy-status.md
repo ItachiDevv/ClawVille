@@ -14,7 +14,11 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 06:15Z (session roundup). **STAGING API + WEB = `a021925ba` (quests wire, PROTOCOL 98, no migration), verified live** (DEPLOY LOG 2026-10-22 06:15Z): Style Statement, Big Spender, Wallet Aware claimable by a human and a bound agent; Brand Ambassador removed. Founder eyes owed (FOUNDER-REVIEW). **PROD API + WEB = `ae1e1589d`** (promotion #12). SCHEMA: synced.
+Last Audited: 2026-10-22 08:28Z (session roundup). **Staging is receiving `fix/autonomy-cosmetic-cap` (PROTOCOL 99, no migration): a hosted autonomous agent completes at most one `buy_cosmetic` per avatar per 24 hours** (live prod bug, DEPLOY LOG 2026-10-22 08:28Z). Not yet verified on staging. **PROD API + WEB = `26c02e392`** (promotion #13; carries the bug until the next promotion). SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-22 06:55Z (session roundup). **PROD API + WEB = `26c02e392` (promotion #13, PR #323: quests wire PROTOCOL 98, autonomy talk prompt, AGENTS.md/CLAUDE.md untracked; no migration), verified live** (DEPLOY LOG 2026-10-22 06:55Z). **STAGING API + WEB = `7de0811da`** (same code as prod). SCHEMA: synced. Founder eyes owed (FOUNDER-REVIEW).
+
+Prior - Last Audited: 2026-10-22 06:15Z (session roundup). **STAGING API + WEB = `a021925ba` (quests wire, PROTOCOL 98, no migration), verified live** (DEPLOY LOG 2026-10-22 06:15Z): Style Statement, Big Spender, Wallet Aware claimable by a human and a bound agent; Brand Ambassador removed. Founder eyes owed (FOUNDER-REVIEW). **PROD API + WEB = `ae1e1589d`** (promotion #12). SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-22 05:50Z (session roundup). **Staging is receiving `feat/quests-wire` (PROTOCOL 98, no migration): Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`.** Not yet verified; see the DEPLOY LOG entry of 2026-10-22 05:50Z. **PROD API + WEB = `ae1e1589d`** (promotion #12).
 
@@ -666,6 +670,30 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-22 09:10Z (session roundup) - buy cap verified live on staging; two decide-prompt fixes to staging
+- **Live staging result for `92531c187`** (smoke + hosted-skill probe ALL PASS 16; container `PROTOCOL_VERSION = 99`): two hosted agents in Autonomous mode with the same owner directive as the prod test. landtest3 (window open): ONE buy 08:49:39Z (-200 vCLAW, `subjectKind: agent`), equip 08:50:14Z, `wallet.viewed` 08:50:38Z, no second buy in 9 minutes. landtest1 (window closed by a 06:08Z buy): no buy attempt (its prompt listed no buys). Both agents turned off 08:54Z.
+- **Found in the same run, fixed here:** (1) the quest block listed bare quest ids, so the model invented `claim_quest` / `complete_quest` (dropped, not whitelisted; also on prod); each line now carries the exact `[ACTION: claim_tutorial_quest(questId=...)]` call. (2) a duplicate `view_wallet` / `equip_cosmetic` drop sent no result line, so one agent repeated `view_wallet` 16 times in 4 minutes; the drop now tells the model when the next check opens. PROTOCOL stays 99 (served manual unchanged). api tsc 0; cosmetic-wallet-actions 23/0 and 12 agent-autonomy suites pass.
+- SCHEMA: synced.
+
+### 2026-10-22 08:28Z (session roundup) - hosted buy_cosmetic daily cap to staging (PROTOCOL 99, no migration)
+- **What broke (prod `26c02e392`, found by the founder-ordered live test):** the only guard on the hosted `[ACTION: buy_cosmetic]` was a per-sku 60 s key, and an owned sku leaves the decide prompt's buy list, so the agent bought the NEXT emote every decide (~30 s). Real player `qelreth` (Autonomous mode, no directive): 3 emotes 06:44:16-06:45:15Z (300 cosmetic credit + 100 vCLAW), stopped by a low balance. Test account TokenTestBot (owner directive "buy the cheapest cosmetic ..., put it on, check your wallet, claim the quests"): 5 x 200 vCLAW 07:50:19-07:52:14Z, never equipped, autonomy turned off 07:52:26Z. No other prod cosmetic purchase after 07:52Z (checked 08:21Z). Refund for `qelreth`: founder decision owed.
+- **Fix:** one completed autonomous buy per avatar per rolling 24 h: synchronous per-avatar reservation + never-evicted in-flight set + DB window over the avatar's `shop_ct` acquisitions (human or agent), fail closed; a refused or already-owned buy holds 60 s; the decide prompt lists no buys while the window is closed. `cosmetic.purchased` payload gains `subjectKind`. Manual, decide menu, Nori, orientation, Hatcher spec updated; PROTOCOL 98 -> 99. The REST buy route (human and BYO agent) has no cap.
+- **Review:** Codex r1 CHANGES-NEEDED (eviction of an in-flight reservation; failed buys held 24 h while the prompt offered buys), both fixed; Codex r2 VERDICT: APPROVE. Local: api tsc 0; cosmetic-wallet-actions 21/0, autonomous-cosmetic-targets 7/0, cosmetic-actions 19/0, protocol-pin files pass, shared 175/0; coupling gate exit 0.
+- **Who it is for:** every player whose hosted agent runs in Autonomous mode. PARITY: human path: POST /api/cosmetics/:skuId/buy (unchanged); agent path: same REST route (unchanged) or hosted `buy_cosmetic` (capped); settlement binds to the live ledger-capable bound avatar. SCHEMA: synced.
+
+### 2026-10-22 08:16Z (session jev, arena lead) - prior-question talk prompt (`8786b615b`) checked on PROD (promotion #13)
+- **Prod evidence (API `26c02e392`, up since 06:43Z, logs to 08:15Z):** 276 drives, 0 driver errors, 4 talk prefetches used. Lap 1 (06:46-07:32Z): 20 talks, all `prior=0`. Lap 2 (07:48-08:14Z): 16 talks, all `prior=1`, and all 16 questions differ from that agent's lap-1 question at the same teacher (example: API teacher "How do webhooks differ from REST APIs?" then "How does OAuth improve API security?").
+- **Staging:** no two-lap result. Two other-session deploys (06:03Z `a021925b`, 06:33Z `7de0811d`) restarted the API, which clears the in-memory list and returns staging to standby.
+- **Who it is for:** every hosted autonomous agent. Docs only, no deploy. SCHEMA: unchanged.
+
+### 2026-10-22 06:55Z (session roundup) - promotion #13 on prod: quests wire (`26c02e392`)
+- **What changed:** founder approved the promotion (2026-10-22 "yeah i approve it"). PR #323 (`staging` `7de0811da` to `master`), merged 06:29:49Z, merge `26c02e392`. Range `ae1e1589d..26c02e392`: quests wire (PROTOCOL 98: Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`), session jev's autonomy talk prompt (`8786b615b`), `AGENTS.md`/`CLAUDE.md` untracked (`7de0811da`), docs. No migration.
+- **Deploy:** run 39734290750: 4 gate lanes, `migrate`, `deploy` all success. API `ebnat...-20261022T063338` flipped by 06:44:01Z, web `ds7ho...-20261022T063338` by 06:47:04Z; both `SOURCE_COMMIT` = `26c02e392`; `/health` commit `26c02e392`. Prod disk 70 GB free.
+- **Checks in the prod API container:** `PROTOCOL_VERSION = 98`; the three new verbs are in `hatcher-actions.ts`; `brand-ambassador` appears only in the comment that records its removal; `AGENTS.md` and `CLAUDE.md` are absent from the image.
+- **Browser (headless Chrome, signed out, 1568x772):** `https://clawville.world/game` renders the town behind the guest welcome dialog; no page exceptions and no `ChunkLoadError`.
+- **Not verified on prod:** a signed-in quest claim (no prod test account is used for money paths; the staging E5 run of 06:15Z covers both subjects); the hosted verbs through a real LLM decision; the founder's eyes.
+- **Who it is for:** every player and agent on the quest ladder. SCHEMA: synced.
 
 ### 2026-10-22 06:25Z (session roundup) - AGENTS.md and CLAUDE.md untracked again (config + docs only)
 - **What changed:** founder 2026-10-22: there is ONE governing `AGENTS.md` and `CLAUDE.md` is only the `@AGENTS.md` pointer. That design (founder order 2026-07-24) keeps both files out of this public repo: the private brain copy `~/.clawville-brain/AGENTS.md` is the only source and its sync installs it plus the pointer in every checkout. A `git add -A` in `edc01d19` (2026-09-30) committed both files because the root `*.md` allow-list negated them; the fix `583c4b9e` was written the same day but never pushed, so staging and master carried a second, drifting copy. This push applies `583c4b9e` (drop the two negations, `git rm --cached` both). It also corrects this session's earlier commit `ab6811311`, which copied the newer brain file into the tracked copy on a wrong premise (that untracking would lose the files; the brain sync restores them).
