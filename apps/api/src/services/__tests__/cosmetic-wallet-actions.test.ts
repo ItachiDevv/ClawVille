@@ -195,6 +195,41 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
     expect(calls.balances).toEqual([AVATAR]);
   });
 
+  test('a dropped duplicate still tells the model, so it stops repeating the tag', async () => {
+    const results: string[] = [];
+    const originalResult = npcSimulation.autonomousActionResult;
+    npcSimulation.autonomousActionResult = async (agentId, avatarId, text) => {
+      results.push(text);
+      await originalResult(agentId, avatarId, text);
+    };
+    try {
+      dispatch('[ACTION: view_wallet()]');
+      await settle();
+      const viewedAt = sim.autonomousCosmeticWalletLastAdmittedAt.get(`${AVATAR}:view_wallet:`);
+      expect(viewedAt).toBeNumber();
+      results.length = 0;
+      dispatch('[ACTION: view_wallet()]');
+      await settle();
+      expect(calls.balances).toEqual([AVATAR]);
+      const nextCheck = new Date(viewedAt + 10 * 60_000).toISOString();
+      expect(results).toEqual([
+        `Wallet: already checked; next check after ${nextCheck}. Do something else (a quest, a teacher, equip).`,
+      ]);
+      expect(prompt()).toContain(`Wallet: already checked; next check after ${nextCheck}.`);
+
+      dispatch(`[ACTION: equip_cosmetic(skuId=${SKU})]`);
+      await settle();
+      results.length = 0;
+      dispatch(`[ACTION: equip_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.equip).toHaveLength(1);
+      expect(results).toEqual([`Wardrobe: ${SKU} was just handled; pick a different action.`]);
+      expect(prompt()).toContain(`Wardrobe: ${SKU} was just handled; pick a different action.`);
+    } finally {
+      npcSimulation.autonomousActionResult = originalResult;
+    }
+  });
+
   describe('buy_cosmetic daily cap (one purchase per avatar per 24 hours)', () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -423,6 +458,30 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
     expect(build({ ...locked, ownedUnequipped: [] })).toContain('the next buy opens after');
     // House agents never see the block.
     expect(build(locked, true)).not.toContain('Cosmetics (server-derived');
+  });
+});
+
+describe('decide prompt quest block', () => {
+  test('each claimable quest line carries the exact claim_tutorial_quest call, and that call parses', async () => {
+    const perception = npcSimulation.buildPerception(body.id)!;
+    const quests = [{ questId: 'style-statement', title: 'Style Statement', rail: 'vclaw', reward: 30, requirement: 'buy and equip a cosmetic' }];
+    const text = (agentAutonomyDriver.buildDecisionPrompt as any)(
+      perception, driver.userAgents.get(AGENT), [], null, [], undefined, quests,
+    );
+    expect(text).toContain('Claimable quests (server-derived; copy one exact call; unclaimed and live only):');
+    const line = '- [ACTION: claim_tutorial_quest(questId=style-statement)] "Style Statement" pays 30 vCLAW — requires: buy and equip a cosmetic';
+    expect(text).toContain(line);
+    // The printed call reaches the claim settle unchanged.
+    const claimed: string[] = [];
+    const originalClaim = sim.settleAutonomousQuestClaim;
+    sim.settleAutonomousQuestClaim = async (_npcId: string, _attribution: unknown, questId: string) => { claimed.push(questId); };
+    try {
+      dispatch(line);
+      await settle();
+    } finally {
+      sim.settleAutonomousQuestClaim = originalClaim;
+    }
+    expect(claimed).toEqual(['style-statement']);
   });
 });
 

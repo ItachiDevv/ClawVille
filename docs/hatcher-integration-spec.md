@@ -479,7 +479,11 @@ may contain commas; `)` terminates the action tag, so keep that character out of
   `getCustodialWalletBalances` read as `GET /api/wallet/balances`, and records the once-per-avatar `wallet.viewed`
   proof through the same recorder. Works with or without a custodial wallet. A driver-hosted brain gets a one-line
   balance summary in its next decide prompt; a Hatcher proxy brain gets no result channel for this verb and reads
-  the REST route instead.
+  the REST route instead. A repeat inside its 10-minute window (or an `equip_cosmetic` repeat inside 60 s) is still
+  dropped, and a driver-hosted brain now gets one result line for the drop (the next check time, or "pick a different
+  action"), because a silent drop made it repeat the tag (staging 2026-10-22: 16 views in 4 minutes). The hosted
+  decide prompt's quest block prints each exact `claim_tutorial_quest(questId=...)` call (the model had invented
+  `claim_quest` / `complete_quest`). Served manual unchanged; PROTOCOL_VERSION stays 99.
 - `equip_cosmetic(skuId=<uuid>)` — (v98) wears an owned cosmetic through the SAME service as
   `POST /api/cosmetics/:skuId/equip` (emits `cosmetic.equipped`). Free; an unowned sku is refused.
 - `buy_cosmetic(skuId=<uuid>)` — (v98) buys one cosmetic through the SAME service as

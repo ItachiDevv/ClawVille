@@ -2294,11 +2294,14 @@ class AgentAutonomyDriver {
     // manual names only the four land quests. Server-derived, bounded, and
     // advisory: the executor re-runs the real proof-of-engagement gate, so an
     // unqualified suggestion costs one refused action, never a wrong payout.
+    // Each line carries the exact call, like the cosmetics block: with only a
+    // bare id the hosted model invented verbs (`claim_quest`, `complete_quest`,
+    // dropped as not whitelisted on prod and staging 2026-10-22).
     const questBlock = [
-      'Claimable quests (server-derived; copy questId exactly; unclaimed and live only):',
+      'Claimable quests (server-derived; copy one exact call; unclaimed and live only):',
       ...(questTargets.length > 0
         ? questTargets.map((quest) =>
-            `- ${quest.questId}: "${quest.title}" pays ${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'} — requires: ${quest.requirement}`,
+            `- [ACTION: claim_tutorial_quest(questId=${quest.questId})] "${quest.title}" pays ${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'} — requires: ${quest.requirement}`,
           )
         : ['- none claimable right now']),
     ].join('\n');

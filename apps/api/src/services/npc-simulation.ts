@@ -3272,6 +3272,13 @@ class NpcSimulation {
         const prior = this.autonomousCosmeticWalletLastAdmittedAt.get(reservationKey);
         if (prior !== undefined && admittedAt - prior < intervalMs) {
           console.warn(`[Hatcher] ${verb} dropped — duplicate action reserved for ${intervalMs / 1000} seconds`);
+          // Tell the model, or it repeats the same tag (staging 2026-10-22:
+          // view_wallet 16 times in 4 minutes after one real view).
+          const duplicateLine = action.verb === 'view_wallet'
+            ? `Wallet: already checked; next check after ${new Date(prior + intervalMs).toISOString()}. Do something else (a quest, a teacher, equip).`
+            : `Wardrobe: ${action.skuId} was just handled; pick a different action.`;
+          await this.autonomousActionResult(attribution.agentId, attribution.avatarId, duplicateLine)
+            .catch(() => undefined);
           return;
         }
         // Reserve synchronously, before the service await.
