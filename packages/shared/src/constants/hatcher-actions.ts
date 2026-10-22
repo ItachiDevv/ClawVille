@@ -69,8 +69,8 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
   },
   {
     verb: 'play_cove_game',
-    syntax: 'play_cove_game(game=<slots|blackjack>, wager=<game bounds: slots 20..1000 step 20; blackjack 5..500 int>)',
-    whenToUse: 'play one fully settled cove game with your own vCLAW; blackjack uses basic strategy; enter the cove first',
+    syntax: 'play_cove_game(game=<slots|blackjack|baccarat>, wager=<game bounds: slots 20..1000 step 20; blackjack 5..500 int; baccarat 5..500 int>, bet=<player|banker|tie; baccarat only>)',
+    whenToUse: 'play one fully settled cove game with your own vCLAW; blackjack uses basic strategy; baccarat places one bet at a shared table and it settles when that table\'s betting window closes; enter the cove first',
   },
   {
     verb: 'claim_parcel',

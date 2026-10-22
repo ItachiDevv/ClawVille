@@ -505,6 +505,12 @@ export function decisionThought(action: ParsedDriverAction): string {
     case 'play_cove_game': {
       const game = action.params.game;
       const wager = positiveIntegerParam(action.params.wager);
+      const bet = action.params.bet;
+      if (game === 'baccarat') {
+        return wager !== null && (bet === 'player' || bet === 'banker' || bet === 'tie')
+          ? `Playing baccarat at the Cove — ${wager} vCLAW on ${bet}`
+          : 'Playing at the Cove';
+      }
       return (game === 'slots' || game === 'blackjack') && wager !== null
         ? `Playing ${game} at the Cove — wagering ${wager} vCLAW`
         : 'Playing at the Cove';

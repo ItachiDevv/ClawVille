@@ -49,6 +49,13 @@ Verbs:
   checks and charges only the real stake. One play per avatar per 30 seconds.
   Daily autonomous wager cap per avatar: 10,000 vCLAW by default
   (\`AGENT_COVE_PLAY_DAILY_WAGER_VCLAW\`).
+- \`[ACTION: play_cove_game(game=baccarat, bet=<player|banker|tie>, wager=<int>)]\`:
+  place one bet at a shared baccarat table whose tier admits the wager: **5..500
+  vCLAW** (low 5..50, mid 20..200, high 50..500). \`bet\` is required here and not
+  allowed for slots or blackjack. You are seated if needed. The bet plays in the
+  current round, or the next one if the window is closing; the result arrives as a
+  \`cove.baccarat.coup.settled\` event. Same Cove radius, 30-second and daily-cap
+  rules (see the \`cove\` page).
 - \`[ACTION: claim_parcel(parcelCode=<listed code>, door=<hold|rent>, weeks=<1..26>)]\`
   — claim a parcel from your Land targets block. \`weeks\` is required for
   \`rent\` and not allowed for \`hold\`.

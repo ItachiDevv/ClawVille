@@ -184,3 +184,210 @@ describeIfDb('Cove History — subject resolution (agent parity hotfix)', () => 
     expect(ids).not.toContain(agentEventId);
   });
 });
+
+// ─── Baccarat verifier: shared-table strided nonce (DB-free) ────────────────
+//
+// Spec 2026-10-22 section 3.6. Fixtures come from the real engine: a table shoe
+// stores bet-agnostic placeholder coup rows ('player', '1') and one event per
+// seat with nonce = coupIndex * STRIDE + seatIndex, whose outcomeJson is
+// serializeCoupResult(...) with the SEAT's bet/stake/payout/net/commission and
+// no other keys. `verifyBaccaratReplay` is pure, so these run without a DB.
+describe('Cove History verifier: baccarat shared-table seat events (DB-free)', () => {
+  const SERVER_SEED = '3c'.repeat(32);
+  const CLIENT_SEED = 'ab12cd34';
+  const SHOE_ID = '00000000-0000-4000-8000-0000000000b1';
+  const TABLE_ID = '00000000-0000-4000-8000-0000000000a1';
+
+  type Bet = 'player' | 'banker' | 'tie';
+  type CoupRow = {
+    coupIndex: number;
+    bet: string;
+    stake: string;
+    cursorBefore: number;
+    dealtBefore: number;
+  };
+
+  async function engine() {
+    return import('../../services/baccarat-engine');
+  }
+
+  /** Deal coups 0..last on one shoe with the given per-coup bets. */
+  async function dealShoe(bets: Array<{ bet: Bet; stake: bigint }>) {
+    const eng = await engine();
+    let remaining = eng.buildShoe();
+    let cursor = 0;
+    let dealt = 0;
+    const rows: CoupRow[] = [];
+    const results: Array<ReturnType<typeof eng.playCoupWithState>['result']> = [];
+    bets.forEach(({ bet, stake }, n) => {
+      const step = eng.playCoupWithState({
+        serverSeed: SERVER_SEED,
+        clientSeed: CLIENT_SEED,
+        nonce: n,
+        cursor,
+        bet,
+        stake,
+        dealtBefore: dealt,
+        remainingShoe: remaining,
+      });
+      rows.push({
+        coupIndex: n,
+        bet,
+        stake: stake.toString(),
+        cursorBefore: cursor,
+        dealtBefore: dealt,
+      });
+      results.push(step.result);
+      remaining = step.remainingAfter;
+      cursor = step.cursorAfter;
+      dealt = step.dealtAfter;
+    });
+    return { rows, results };
+  }
+
+  /** Coups 0..3 dealt with placeholders; seat 4 bet BANKER 20 on coup 3. The
+   * seat outcome is built exactly as the settle tx writes it (spec 5.3 step 8). */
+  async function tableSeatFixture() {
+    const eng = await engine();
+    const placeholder = { bet: 'player' as const, stake: 1n };
+    const { rows, results } = await dealShoe([placeholder, placeholder, placeholder, placeholder]);
+    const coup = results[3]!;
+    const stake = 20n;
+    const { payout, commission } = eng.settleBet('banker', stake, coup.winner);
+    const outcome: Record<string, unknown> = {
+      ...eng.serializeCoupResult(coup, {
+        cursorBefore: rows[3]!.cursorBefore,
+        dealtBefore: rows[3]!.dealtBefore,
+        nonce: 3,
+      }),
+      bet: 'banker',
+      stake: String(stake),
+      payout: String(payout),
+      net: String(payout - stake),
+      commission: String(commission),
+    };
+    return { rows, outcome };
+  }
+
+  function tableEvent(outcomeJson: unknown, betAmount = '20', nonce = 304) {
+    return {
+      sessionId: SHOE_ID,
+      nonce,
+      revealedServerSeed: SERVER_SEED,
+      clientSeed: CLIENT_SEED,
+      outcomeJson,
+      betAmount,
+    };
+  }
+
+  it('a strided nonce (coup 3, seat 4) verifies true', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const { BACCARAT_TABLE_SEAT_NONCE_STRIDE } = await import(
+      '../../services/baccarat/baccarat-table-types'
+    );
+    expect(BACCARAT_TABLE_SEAT_NONCE_STRIDE).toBe(100);
+    const { rows, outcome } = await tableSeatFixture();
+    const body = verifyBaccaratReplay({
+      event: tableEvent(outcome, '20', 3 * BACCARAT_TABLE_SEAT_NONCE_STRIDE + 4),
+      shoe: { fixtureInitialDealtCount: 0, tableId: TABLE_ID },
+      coupRows: rows,
+      hashMatches: true,
+    });
+    expect(body.verified).toBe(true);
+    expect('tableSeat' in body ? body.tableSeat : null).toEqual({ coupIndex: 3, seatIndex: 4 });
+    expect(body.expected?.bet).toBe('banker');
+    expect(body.expected?.stake).toBe('20');
+    expect(body.expected?.nonce).toBe(3);
+  });
+
+  it('a tampered seat stake verifies false', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const { rows, outcome } = await tableSeatFixture();
+    const shoe = { fixtureInitialDealtCount: 0, tableId: TABLE_ID };
+
+    // Stake changed in the outcome (payout kept): the replay money differs.
+    const tamperedOutcome = verifyBaccaratReplay({
+      event: tableEvent({ ...outcome, stake: '25' }, '25'),
+      shoe,
+      coupRows: rows,
+      hashMatches: true,
+    });
+    expect(tamperedOutcome.verified).toBe(false);
+
+    // Outcome intact, bet_amount column changed: the column cross-check fails.
+    const tamperedColumn = verifyBaccaratReplay({
+      event: tableEvent(outcome, '50'),
+      shoe,
+      coupRows: rows,
+      hashMatches: true,
+    });
+    expect(tamperedColumn.verified).toBe(false);
+    expect('reason' in tamperedColumn ? tamperedColumn.reason : null).toBe('seat_stake_mismatch');
+
+    // Defect D2: an extra key (tableId/seatIndex/avatarId) fails the exact compare.
+    const extraKey = verifyBaccaratReplay({
+      event: tableEvent({ ...outcome, tableId: TABLE_ID }),
+      shoe,
+      coupRows: rows,
+      hashMatches: true,
+    });
+    expect(extraKey.verified).toBe(false);
+
+    // A bad seed hash never verifies.
+    const badHash = verifyBaccaratReplay({
+      event: tableEvent(outcome),
+      shoe,
+      coupRows: rows,
+      hashMatches: false,
+    });
+    expect(badHash.verified).toBe(false);
+  });
+
+  it('a missing prior coup row fails the replay with a reason, not a throw', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const { rows, outcome } = await tableSeatFixture();
+    const body = verifyBaccaratReplay({
+      event: tableEvent(outcome),
+      shoe: { fixtureInitialDealtCount: 0, tableId: TABLE_ID },
+      coupRows: rows.filter((r) => r.coupIndex !== 1),
+      hashMatches: true,
+    });
+    expect(body.verified).toBe(false);
+    expect(body.expected).toBeNull();
+    expect('reason' in body ? body.reason : '').toContain('baccarat_coup_missing_for_replay');
+  });
+
+  it('a solo event still verifies (nonce = coupIndex, real per-coup bets)', async () => {
+    const { verifyBaccaratReplay } = await import('../cove-history');
+    const eng = await engine();
+    const { rows, results } = await dealShoe([
+      { bet: 'tie', stake: 7n },
+      { bet: 'banker', stake: 40n },
+      { bet: 'player', stake: 25n },
+    ]);
+    const stored = eng.serializeCoupResult(results[2]!, {
+      cursorBefore: rows[2]!.cursorBefore,
+      dealtBefore: rows[2]!.dealtBefore,
+      nonce: 2,
+    }) as unknown as Record<string, unknown>;
+    const soloShoe = { fixtureInitialDealtCount: 0, tableId: null };
+
+    const ok = verifyBaccaratReplay({
+      event: tableEvent(stored, '25', 2),
+      shoe: soloShoe,
+      coupRows: rows,
+      hashMatches: true,
+    });
+    expect(ok.verified).toBe(true);
+    expect('tableSeat' in ok).toBe(false);
+
+    const flipped = stored.winner === 'player' ? 'banker' : 'player';
+    const tampered = verifyBaccaratReplay({
+      event: tableEvent({ ...stored, winner: flipped }, '25', 2),
+      shoe: soloShoe,
+      coupRows: rows,
+      hashMatches: true,
+    });
+    expect(tampered.verified).toBe(false);
+  });
+});

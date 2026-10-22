@@ -1,0 +1,250 @@
+/*
+ * Shared baccarat lobby over the 3D room. `.mobile` comes from useIsMobile()
+ * (the touch decision); no media query here decides touch vs desktop.
+ * Light text on dark panels only.
+ */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  padding: 64px 24px 32px;
+  pointer-events: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.panel {
+  width: min(900px, calc(100vw - 40px));
+  max-height: calc(100dvh - 96px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+  color: #f6f0e5;
+  background: linear-gradient(155deg, rgba(24, 18, 32, 0.98), rgba(14, 11, 21, 0.98));
+  border: 1px solid rgba(217, 180, 91, 0.42);
+  border-radius: 18px;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.7);
+}
+
+.header {
+  padding: 22px 24px 14px;
+  border-bottom: 1px solid rgba(217, 180, 91, 0.16);
+}
+
+.eyebrow,
+.title,
+.subtitle,
+.gateLine {
+  margin: 0;
+}
+
+.eyebrow {
+  margin-bottom: 6px;
+  color: #e2b85f;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.21em;
+  text-transform: uppercase;
+}
+
+.title {
+  color: #fff8e8;
+  font-size: clamp(22px, 3vw, 32px);
+  line-height: 1.1;
+}
+
+.subtitle {
+  max-width: 640px;
+  margin-top: 8px;
+  color: #ddd4e2;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.gateLine {
+  margin-top: 8px;
+  color: #ffdca0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+  padding: 16px 24px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.loading {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #ddd4e2;
+  font-size: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid rgba(217, 180, 91, 0.3);
+  border-radius: 12px;
+  background: rgba(36, 26, 44, 0.92);
+  padding: 14px;
+}
+
+.card[data-tier='mid'] {
+  border-color: rgba(98, 188, 231, 0.45);
+}
+
+.card[data-tier='high'] {
+  border-color: rgba(240, 128, 128, 0.5);
+}
+
+.soloCard {
+  border-style: dashed;
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cardTitle {
+  margin: 0;
+  color: #fff3d9;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.bounds {
+  color: #f0c35c;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cardText {
+  margin: 0;
+  color: #e6dac4;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.facts {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.facts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.facts dt {
+  color: #cfc4b2;
+  font-size: 11px;
+}
+
+.facts dd {
+  margin: 0;
+  color: #fff3d9;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.cardActions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.primaryButton,
+.secondaryButton {
+  flex: 1 1 0;
+  min-height: 44px;
+  border-radius: 8px;
+  font: 800 12px/1.1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  cursor: pointer;
+}
+
+.primaryButton {
+  border: 1px solid #e0b04c;
+  background: #c48a2f;
+  color: #1a1018;
+}
+
+.secondaryButton {
+  border: 1px solid rgba(229, 195, 118, 0.45);
+  background: rgba(42, 29, 43, 0.96);
+  color: #f7edd8;
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.notice {
+  margin: 0;
+  padding: 10px 24px 16px;
+  color: #ffd6a0;
+  font-size: 12px;
+}
+
+/* Touch devices: larger tap targets, tighter outer padding. */
+.mobile {
+  padding: max(58px, calc(env(safe-area-inset-top) + 50px)) 10px max(10px, env(safe-area-inset-bottom));
+}
+
+.mobile .panel {
+  width: 100%;
+  max-height: 100%;
+}
+
+.mobile .header {
+  padding: 16px 16px 12px;
+}
+
+.mobile .grid {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  padding: 12px 16px 16px;
+}
+
+.mobile .primaryButton,
+.mobile .secondaryButton {
+  min-height: 48px;
+}
+
+.backButton {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+  z-index: 9;
+  min-height: 44px;
+  padding: 0 15px;
+  border: 1px solid rgba(212, 175, 55, 0.66);
+  border-radius: 10px;
+  background: rgba(26, 18, 28, 0.92);
+  color: #f3ead8;
+  cursor: pointer;
+  pointer-events: auto;
+  font: 800 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.backButton:focus-visible {
+  outline: 2px solid #f3ead8;
+  outline-offset: 2px;
+}

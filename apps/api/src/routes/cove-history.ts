@@ -34,7 +34,10 @@
  *   - 'holdem'   → `playHoldemHand` (per-hand fresh-deck replay from the table's
  *                  recorded human actions + buttonSeat + startingStack)
  *   - 'baccarat' → `replayShoeUpToCoup` (shared-shoe no-replacement replay from the
- *                  shoe's recorded per-coup bet/stake; target coup = event.nonce)
+ *                  shoe's recorded per-coup bet/stake; target coup = event.nonce).
+ *                  Shared-table shoes (`baccarat_shoes.table_id` set) pack the seat
+ *                  into the nonce: coupIndex = floor(nonce / STRIDE), seatIndex =
+ *                  nonce % STRIDE (`verifyBaccaratReplay`).
  *
  * Cursor pagination per plan §3 — base64 of `${createdAt.toISOString()}|${id}`.
  */
@@ -81,6 +84,7 @@ import {
   canonicalJsonEq,
 } from '../services/cove-verify-compat';
 import { blackjackHands, holdemHands, baccaratCoups, pokerCashHands } from '@clawville/database';
+import { BACCARAT_TABLE_SEAT_NONCE_STRIDE } from '../services/baccarat/baccarat-table-types';
 import type { AppContext, AuthenticatedContext } from '../types';
 import type { Context } from 'hono';
 
@@ -341,6 +345,197 @@ coveHistoryRouter.get('/:eventId', noStorePrivate, async (c) => {
   return c.json(serializeEvent(event), 200);
 });
 
+// ─── Baccarat replay (pure; solo shoes + shared-table shoes) ──────────────
+
+/** The settled-coup fields the baccarat replay reads. */
+export interface BaccaratVerifyCoupRow {
+  coupIndex: number;
+  bet: string;
+  stake: string;
+  cursorBefore: number;
+  dealtBefore: number;
+}
+
+/** The shoe fields the baccarat replay reads. `tableId` set = shared-table shoe. */
+export interface BaccaratVerifyShoe {
+  fixtureInitialDealtCount: number;
+  tableId: string | null;
+}
+
+export interface BaccaratVerifyInput {
+  event: {
+    sessionId: string;
+    nonce: number;
+    revealedServerSeed: string;
+    clientSeed: string;
+    outcomeJson: unknown;
+    betAmount: string;
+  };
+  shoe: BaccaratVerifyShoe;
+  /** Settled coups of the shoe (any order). */
+  coupRows: readonly BaccaratVerifyCoupRow[];
+  hashMatches: boolean;
+}
+
+function baccaratReplayFailed(input: BaccaratVerifyInput, err: unknown) {
+  return {
+    verified: false as const,
+    reason: `engine_replay_failed: ${(err as Error).message}`,
+    expected: null,
+    stored: input.event.outcomeJson,
+    hashMatches: input.hashMatches,
+  };
+}
+
+/**
+ * Replay a baccarat event from the revealed seed and compare it to the stored
+ * outcome. Returns the `/verify` response body.
+ *
+ * SOLO shoe (`tableId` null): unchanged from the pre-2026-10-22 inline verifier.
+ * Baccarat draws are no-replacement against a shared 8-deck shoe, so replaying a
+ * single coup requires the shoe state at the start of that coup. We reconstruct
+ * it from every settled coup's recorded (bet, stake) for the shoe and replay
+ * from nonce 0 via `replayShoeUpToCoup`. The target coup is `event.nonce`
+ * (= coupIndex).
+ *
+ * SHARED-TABLE shoe (`tableId` set): one coup per round settles every seat, and
+ * each seat writes its own event row with `nonce = coupIndex * STRIDE + seatIndex`
+ * (the poker cash pattern). The coup row stores the bet-agnostic placeholder
+ * (`'player'`, `'1'`); the seat's real bet and stake live only in the event's
+ * `outcomeJson`. Cards do not depend on the bet, so prior coups replay with the
+ * placeholders and the target coup replays with the seat's own bet + stake.
+ */
+export function verifyBaccaratReplay(input: BaccaratVerifyInput) {
+  if (input.shoe.tableId) return verifyBaccaratTableSeat(input);
+
+  const { event, shoe, coupRows, hashMatches } = input;
+  let expectedSerialized: ReturnType<typeof serializeCoupResult>;
+  try {
+    const coups: Array<{ bet: BaccaratBet; stake: bigint }> = [];
+    for (let n = 0; n <= event.nonce; n++) {
+      const row = coupRows.find((coup) => coup.coupIndex === n);
+      if (!row) {
+        throw new Error(
+          `baccarat_coup_missing_for_replay: shoeId=${event.sessionId} coupIndex=${n}`,
+        );
+      }
+      coups.push({ bet: row.bet as BaccaratBet, stake: BigInt(row.stake) });
+    }
+
+    const replayed = replayShoeUpToCoup({
+      serverSeed: event.revealedServerSeed,
+      clientSeed: event.clientSeed,
+      targetNonce: event.nonce,
+      coups,
+      initialDealtCount: shoe.fixtureInitialDealtCount,
+    });
+    const targetRow = coupRows.find((coup) => coup.coupIndex === event.nonce)!;
+    expectedSerialized = serializeCoupResult(replayed, {
+      cursorBefore: targetRow.cursorBefore,
+      dealtBefore: targetRow.dealtBefore,
+      nonce: event.nonce,
+    });
+  } catch (err) {
+    return baccaratReplayFailed(input, err);
+  }
+
+  const stored = event.outcomeJson as Record<string, unknown>;
+  // Compare the engine-derived outcome to the stored one. cursorBefore/
+  // dealtBefore are persisted-only metadata (excluded). `baccaratOutcomesMatch`
+  // compares every non-monetary field strictly, but accepts the stored
+  // payout/net/commission if they match EITHER the NEW commission-rounding
+  // formula (the replayed `expected`) OR the OLD formula recomputed from the
+  // coup's own bet/stake/winner — so a fair PRE-FIX banker win (which stored
+  // different payout/commission values) isn't falsely reported verified:false
+  // (economy-fix back-compat, 2026-05-29).
+  const verified =
+    hashMatches &&
+    baccaratOutcomesMatch(
+      expectedSerialized as unknown as Record<string, unknown>,
+      stored,
+    );
+
+  return {
+    verified,
+    expected: expectedSerialized,
+    stored,
+    hashMatches,
+  };
+}
+
+function verifyBaccaratTableSeat(input: BaccaratVerifyInput) {
+  const { event, shoe, coupRows, hashMatches } = input;
+  const coupIndex = Math.floor(event.nonce / BACCARAT_TABLE_SEAT_NONCE_STRIDE);
+  const seatIndex = event.nonce % BACCARAT_TABLE_SEAT_NONCE_STRIDE;
+  const where = `shoeId=${event.sessionId} coupIndex=${coupIndex} seatIndex=${seatIndex}`;
+  const stored = (event.outcomeJson ?? {}) as Record<string, unknown>;
+
+  let expectedSerialized: ReturnType<typeof serializeCoupResult>;
+  let seatStake: string;
+  try {
+    const seatBet = stored.bet;
+    if (seatBet !== 'player' && seatBet !== 'banker' && seatBet !== 'tie') {
+      throw new Error(`baccarat_table_seat_bet_invalid: ${where}`);
+    }
+    const rawStake = stored.stake;
+    if (typeof rawStake !== 'string' || !/^[1-9][0-9]*$/.test(rawStake)) {
+      throw new Error(`baccarat_table_seat_stake_invalid: ${where}`);
+    }
+    seatStake = rawStake;
+
+    const coups: Array<{ bet: BaccaratBet; stake: bigint }> = [];
+    for (let n = 0; n < coupIndex; n++) {
+      const row = coupRows.find((coup) => coup.coupIndex === n);
+      if (!row) {
+        throw new Error(
+          `baccarat_coup_missing_for_replay: shoeId=${event.sessionId} coupIndex=${n}`,
+        );
+      }
+      coups.push({ bet: row.bet as BaccaratBet, stake: BigInt(row.stake) });
+    }
+    const targetRow = coupRows.find((coup) => coup.coupIndex === coupIndex);
+    if (!targetRow) {
+      throw new Error(`baccarat_coup_missing_for_replay: ${where}`);
+    }
+    coups.push({ bet: seatBet, stake: BigInt(seatStake) });
+
+    const replayed = replayShoeUpToCoup({
+      serverSeed: event.revealedServerSeed,
+      clientSeed: event.clientSeed,
+      targetNonce: coupIndex,
+      coups,
+      initialDealtCount: shoe.fixtureInitialDealtCount,
+    });
+    expectedSerialized = serializeCoupResult(replayed, {
+      cursorBefore: targetRow.cursorBefore,
+      dealtBefore: targetRow.dealtBefore,
+      nonce: coupIndex,
+    });
+  } catch (err) {
+    return baccaratReplayFailed(input, err);
+  }
+
+  // Table rows are written only by the post-2026-05-29 engine, so the money
+  // fields must equal the replay exactly (no old-formula back-compat), and the
+  // seat stake must equal the event's own `bet_amount` column.
+  const outcomeMatches =
+    baccaratOutcomesMatch(expectedSerialized as unknown as Record<string, unknown>, stored) &&
+    stored.payout === expectedSerialized.payout &&
+    stored.net === expectedSerialized.net &&
+    stored.commission === expectedSerialized.commission;
+  const stakeMatchesColumn = String(event.betAmount) === seatStake;
+  const verified = hashMatches && outcomeMatches && stakeMatchesColumn;
+
+  return {
+    verified,
+    ...(stakeMatchesColumn ? {} : { reason: 'seat_stake_mismatch' }),
+    expected: expectedSerialized,
+    stored,
+    hashMatches,
+    tableSeat: { coupIndex, seatIndex },
+  };
+}
+
 // ─── GET /:eventId/verify ─────────────────────────────────────────────────
 
 coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
@@ -586,52 +781,28 @@ coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
   }
 
   if (event.gameType === 'baccarat') {
-    // Baccarat draws are no-replacement against a shared 8-deck shoe, so replaying
-    // a single coup requires the shoe state at the start of that coup. We
-    // reconstruct it by loading every settled coup's recorded (bet, stake) for the
-    // shoe (sessionId === shoeId) and replaying from nonce 0 via
-    // `replayShoeUpToCoup`. The target coup is `event.nonce` (= coupIndex).
-    let expectedSerialized: ReturnType<typeof serializeCoupResult>;
+    // Load the shoe's settled coups + the shoe row, then replay in the pure
+    // `verifyBaccaratReplay` (DB-free testable). A solo shoe replays exactly as
+    // before; a shared-table shoe (`table_id` set) decodes the strided seat nonce
+    // (spec 2026-10-22 section 3.6).
+    let coupRows: BaccaratVerifyCoupRow[];
+    let shoe: BaccaratVerifyShoe;
     try {
-      const coupRows = await db
+      coupRows = await db
         .select()
         .from(baccaratCoups)
         .where(
           and(eq(baccaratCoups.shoeId, event.sessionId), eq(baccaratCoups.status, 'settled')),
         )
         .orderBy(baccaratCoups.coupIndex);
-      const shoe = await db.query.baccaratShoes.findFirst({
+      const shoeRow = await db.query.baccaratShoes.findFirst({
         where: eq(baccaratShoes.id, event.sessionId),
-        columns: { fixtureInitialDealtCount: true },
+        columns: { fixtureInitialDealtCount: true, tableId: true },
       });
-      if (!shoe) {
+      if (!shoeRow) {
         throw new Error(`baccarat_shoe_missing_for_replay: shoeId=${event.sessionId}`);
       }
-
-      const coups: Array<{ bet: BaccaratBet; stake: bigint }> = [];
-      for (let n = 0; n <= event.nonce; n++) {
-        const row = coupRows.find((coup) => coup.coupIndex === n);
-        if (!row) {
-          throw new Error(
-            `baccarat_coup_missing_for_replay: shoeId=${event.sessionId} coupIndex=${n}`,
-          );
-        }
-        coups.push({ bet: row.bet as BaccaratBet, stake: BigInt(row.stake) });
-      }
-
-      const replayed = replayShoeUpToCoup({
-        serverSeed: event.revealedServerSeed,
-        clientSeed: event.clientSeed,
-        targetNonce: event.nonce,
-        coups,
-        initialDealtCount: shoe.fixtureInitialDealtCount,
-      });
-      const targetRow = coupRows.find((coup) => coup.coupIndex === event.nonce)!;
-      expectedSerialized = serializeCoupResult(replayed, {
-        cursorBefore: targetRow.cursorBefore,
-        dealtBefore: targetRow.dealtBefore,
-        nonce: event.nonce,
-      });
+      shoe = shoeRow;
     } catch (err) {
       return c.json(
         {
@@ -645,29 +816,20 @@ coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
       );
     }
 
-    const stored = event.outcomeJson as Record<string, unknown>;
-    // Compare the engine-derived outcome to the stored one. cursorBefore/
-    // dealtBefore are persisted-only metadata (excluded). `baccaratOutcomesMatch`
-    // compares every non-monetary field strictly, but accepts the stored
-    // payout/net/commission if they match EITHER the NEW commission-rounding
-    // formula (the replayed `expected`) OR the OLD formula recomputed from the
-    // coup's own bet/stake/winner — so a fair PRE-FIX banker win (which stored
-    // different payout/commission values) isn't falsely reported verified:false
-    // (economy-fix back-compat, 2026-05-29).
-    const verified =
-      hashMatches &&
-      baccaratOutcomesMatch(
-        expectedSerialized as unknown as Record<string, unknown>,
-        stored,
-      );
-
     return c.json(
-      {
-        verified,
-        expected: expectedSerialized,
-        stored,
+      verifyBaccaratReplay({
+        event: {
+          sessionId: event.sessionId,
+          nonce: event.nonce,
+          revealedServerSeed: event.revealedServerSeed,
+          clientSeed: event.clientSeed,
+          outcomeJson: event.outcomeJson,
+          betAmount: event.betAmount,
+        },
+        shoe,
+        coupRows,
         hashMatches,
-      },
+      }),
       200,
     );
   }

@@ -117,6 +117,9 @@ export * from './special-events';
 // cove_game_events row (gameType='baccarat'). ClawTokens tier today; currency
 // seam reserved for the SOL/USDC tier.
 export * from './baccarat';
+// Shared-table (multiplayer) baccarat (2026-10-22, migration 0087): baccarat_tables /
+// _table_seats / _table_bets. Table-owned shoes reuse baccarat_shoes (table_id).
+export * from './baccarat-table';
 // Poker MTT (multi-table Texas Hold'em tournament) — poker_tournaments / _entrants
 // / _tables / _blind_schedules / _hands / _tournament_results. Tournament chips are
 // NOT CT (only buy-in debit + prize credit cross the ledger). Distinct from the

@@ -47,9 +47,20 @@ export const baccaratShoes = pgTable(
     fixtureRunId: uuid('fixture_run_id').references(() => coveTestFixtureRuns.runId, {
       onDelete: 'restrict',
     }),
-    /** Exactly one of (userId, guestFpHash) is set (XOR check below). */
+    /**
+     * Exactly one of (userId, guestFpHash, tableId) is set (num_nonnulls check
+     * below). userId = solo authed-user shoe; guestFpHash = solo guest demo shoe;
+     * tableId = shared-table shoe (migration 0087).
+     */
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     guestFpHash: text('guest_fp_hash'),
+    /**
+     * Shared-table owner (0087). Set only for a table-owned shoe; NULL for solo
+     * shoes. No Drizzle `.references()` here, to avoid a circular import with
+     * `baccarat-table.ts`; the FK `baccarat_shoes_table_id_fkey ->
+     * baccarat_tables(id) ON DELETE CASCADE` lives in the migration SQL.
+     */
+    tableId: uuid('table_id'),
     /** 'clawtoken' today; seam for 'sol' | 'usdc' (SOL/USDC tier, not yet wired). */
     currency: text('currency').notNull().default('clawtoken'),
     /** Secret until shoe close. 64-char hex. */
@@ -88,9 +99,23 @@ export const baccaratShoes = pgTable(
     guestOpenUnique: uniqueIndex('baccarat_shoes_guest_open_unique')
       .on(table.guestFpHash)
       .where(sql`status = 'open' AND guest_fp_hash IS NOT NULL`),
+    // One open shoe per shared table (0087).
+    tableOpenUnique: uniqueIndex('baccarat_shoes_table_open_unique')
+      .on(table.tableId)
+      .where(sql`status = 'open' AND table_id IS NOT NULL`),
+    tableIdx: index('baccarat_shoes_table_idx')
+      .on(table.tableId)
+      .where(sql`table_id IS NOT NULL`),
+    // Exactly one owner: user XOR guest XOR table (0087 replaced the two-way
+    // `(user_id IS NOT NULL) <> (guest_fp_hash IS NOT NULL)` check).
     subjectCheck: check(
       'baccarat_shoes_subject_check',
-      sql`(user_id IS NOT NULL) <> (guest_fp_hash IS NOT NULL)`,
+      sql`num_nonnulls(user_id, guest_fp_hash, table_id) = 1`,
+    ),
+    // BA-2: a table-owned shoe is never a test-fixture shoe.
+    tableNoFixtureCheck: check(
+      'baccarat_shoes_table_no_fixture_check',
+      sql`table_id IS NULL OR (fixture_run_id IS NULL AND fixture_initial_dealt_count = 0)`,
     ),
   }),
 );

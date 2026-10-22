@@ -59,6 +59,7 @@ let cove: typeof import('./cove-interior');
 let baccarat: typeof import('./baccarat-table-room');
 let blackjack: typeof import('./blackjack-table-room');
 let holdem: typeof import('./holdem-table-room');
+let figures: typeof import('./cove-seat-figures');
 // Retries re-request a failed seat model and log again; zero them so each failed URL logs exactly once.
 SEAT_MODEL_RETRY.maxRetries = 0;
 let fallbackModule: typeof import('./local-player-model-fallback');
@@ -149,6 +150,7 @@ beforeAll(async () => {
   baccarat = await import('./baccarat-table-room');
   blackjack = await import('./blackjack-table-room');
   holdem = await import('./holdem-table-room');
+  figures = await import('./cove-seat-figures');
 });
 
 afterAll(async () => {
@@ -308,6 +310,37 @@ function vrmPath(key: string): string {
   return (registry.MODEL_REGISTRY as Record<string, { path: string }>)[key]!.path;
 }
 
+type FeltView = import('./baccarat-table-room').BaccaratFeltView;
+type SeatView = import('@clawville/shared').BaccaratTableSeatView;
+
+/** An idle felt (no coup on the table) in the frozen BaccaratFeltView shape. */
+function idleFeltView(): FeltView {
+  return {
+    coup: null,
+    revealedStep: 0,
+    dealSteps: [],
+    phase: 'idle',
+    betType: 'player',
+    stake: 10,
+    correlation: null,
+    shoeId: null,
+    bannerText: null,
+    betzoneSelected: null,
+  };
+}
+
+function seatView(seatIndex: number, avatarId: string, modelKey: string): SeatView {
+  return {
+    seatIndex,
+    avatarId,
+    name: `Seat ${seatIndex + 1}`,
+    modelKey,
+    subjectType: 'human',
+    isSeeded: false,
+    currentBet: null,
+  };
+}
+
 function expectSceneSurvived(mounted: Mounted): void {
   expect(mounted.outer.map((e) => String((e as Error)?.message ?? e))).toEqual([]);
   expect(reported.every((event) => event.defaultPrevented)).toBe(true);
@@ -317,19 +350,8 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
   test('/cove/baccarat: dealer VRM 404 -> room, table, bet zones and plate render; no dealer; one line', async () => {
     const dealer = vrmPath('milady_official_6');
     replies.set(dealer, 404);
-    const view = {
-      settled: null,
-      restored: null,
-      betzoneSelected: null,
-      betType: 'player',
-      revealedStep: 0,
-      dealSteps: [],
-      phase: 'idle',
-      stake: 10,
-      correlation: null,
-      shoe: null,
-      bannerText: null,
-    } as unknown as Parameters<typeof baccarat.BaccaratTableRoomScene>[0]['view'];
+    const view = idleFeltView();
+    const chairRequestsBefore = requests.get('/models/cove-chair-clean.glb') ?? 0;
     const mounted = await mountScene(
       createElement(baccarat.BaccaratTableRoomScene, { instanceId: 'bac-test', view }),
       (m) => skippedLines(m.logged).length >= 1 && Boolean(m.scene.getObjectByName('baccarat-bet-zones-merged')),
@@ -340,9 +362,78 @@ describe('cove table rooms: a failed figure model removes only that figure', () 
     expect(mounted.scene.getObjectByName(nodeName('/models/cove-table-clean.glb'))).toBeTruthy();
     expect(mounted.scene.getObjectByName('baccarat-bet-zones-merged')).toBeTruthy();
     expect(mounted.scene.getObjectByName('baccarat-room-dealer')).toBeUndefined();
+    // The solo room (no `seats` prop) draws no chairs and requests no chair GLB.
+    expect(mounted.scene.getObjectByName(nodeName('/models/cove-chair-clean.glb'))).toBeUndefined();
+    expect(requests.get('/models/cove-chair-clean.glb') ?? 0).toBe(chairRequestsBefore);
     const skipped = skippedLines(mounted.logged);
     expect(skipped.length).toBe(1);
     expect(skipped[0]).toContain(`baccarat-dealer ${dealer}`);
+    await mounted.unmount();
+  }, TEST_TIMEOUT_MS);
+
+  test('/cove/baccarat shared table: a failed seat VRM shows the placeholder; the room, 5 chairs, the dealer plate and the other seats keep rendering', async () => {
+    // Seat 0 is the viewer (the camera): its model is never requested. Seat 1
+    // and seat 4 are VRMs that 404 (every .vrm 404s by default here); seat 2
+    // is the rigless lobster, which loads; seat 3 holds a key that is not in
+    // the registry; seat 5 is empty (empty chair, no figure).
+    const viewerPath = vrmPath('milady_official_2');
+    const hermes = vrmPath('hermes_female');
+    const helen = vrmPath('helen'); // picker-hidden owned key: still the REAL model
+    const lobster = vrmPath('lobster');
+    const hashedKey = figures.stableAvatarModelKey('avatar-seat-3');
+    // Guard: the hashed key must not equal another seat's or the dealer's
+    // model, or the per-URL request and line counts below would mix seats.
+    expect(['milady_official_2', 'hermes_female', 'lobster', 'helen', 'milady_official_6']).not.toContain(hashedKey);
+    const viewerRequestsBefore = requests.get(viewerPath) ?? 0;
+    const seats = [
+      seatView(0, 'avatar-viewer', 'milady_official_2'),
+      seatView(1, 'avatar-seat-1', 'hermes_female'),
+      seatView(2, 'avatar-seat-2', 'lobster'),
+      seatView(3, 'avatar-seat-3', 'not_a_registry_key'),
+      seatView(4, 'avatar-seat-4', 'helen'),
+    ];
+    const mounted = await mountScene(
+      createElement(baccarat.BaccaratTableRoomScene, {
+        instanceId: 'bac-shared-test',
+        view: idleFeltView(),
+        seats,
+        povSeatIndex: 0,
+      }),
+      (m) => holdemFailedLines(m.logged).some((line) => line.includes(`baccarat-seat:1 ${hermes}`))
+        && holdemFailedLines(m.logged).some((line) => line.includes(`baccarat-seat:4 ${helen}`))
+        && Boolean(m.scene.getObjectByName('holdem-avatar-lobster'))
+        && Boolean(m.scene.getObjectByName('baccarat-bet-zones-merged')),
+      'baccarat shared: seat 1 + seat 4 failed lines, lobster seat, bet zones',
+    );
+    expectSceneSurvived(mounted);
+    expect(mounted.scene.getObjectByName(nodeName('/models/cove-room-only.glb'))).toBeTruthy();
+    expect(mounted.scene.getObjectByName(nodeName('/models/cove-table-clean.glb'))).toBeTruthy();
+    expect(mounted.scene.getObjectByName('baccarat-bet-zones-merged')).toBeTruthy();
+    let chairs = 0;
+    mounted.scene.traverse((object) => {
+      if (object.name === nodeName('/models/cove-chair-clean.glb')) chairs += 1;
+    });
+    expect(chairs).toBe(5);
+    // Figures for the 4 occupied non-POV seats only.
+    for (const seat of [1, 2, 3, 4]) {
+      expect(mounted.scene.getObjectByName(`baccarat-seat-${seat}`)).toBeTruthy();
+    }
+    expect(mounted.scene.getObjectByName('baccarat-seat-0')).toBeUndefined();
+    expect(mounted.scene.getObjectByName('baccarat-seat-5')).toBeUndefined();
+    expect(requests.get(viewerPath) ?? 0).toBe(viewerRequestsBefore);
+    // The failed VRM seats show the placeholder, never an empty chair.
+    expect(mounted.scene.getObjectByName('holdem-placeholder-seat-1')).toBeTruthy();
+    expect(mounted.scene.getObjectByName('holdem-placeholder-seat-4')).toBeTruthy();
+    // The wire modelKey picks the model: seat 2 is the lobster perch, seat 4
+    // requested the picker-hidden `helen` VRM, seat 3 fell back to the hash.
+    expect(mounted.scene.getObjectByName('holdem-avatar-lobster')).toBeTruthy();
+    expect(mounted.scene.getObjectByName(nodeName(lobster))).toBeTruthy();
+    expect(requests.get(helen) ?? 0).toBeGreaterThanOrEqual(1);
+    expect(requests.get(vrmPath(hashedKey)) ?? 0).toBeGreaterThanOrEqual(1);
+    const failed = holdemFailedLines(mounted.logged);
+    expect(failed.filter((line) => line.includes(`baccarat-seat:1 ${hermes}`)).length).toBe(1);
+    expect(failed.filter((line) => line.includes(`baccarat-seat:4 ${helen}`)).length).toBe(1);
+    expect(failed.some((line) => line.includes('baccarat-seat:2'))).toBe(false);
     await mounted.unmount();
   }, TEST_TIMEOUT_MS);
 
@@ -635,4 +726,92 @@ describe('cove interior: local player + seated bust', () => {
     expect(skipped[0]).toContain(`cove-seat:1 ${path}`);
     await mounted.unmount();
   }, TEST_TIMEOUT_MS);
+});
+
+describe('/cove/baccarat felt view + shared seat mapping (pure)', () => {
+  type RoomState = import('../cove/baccarat-room-controller').BaccaratRoomState;
+  const settledCoup = { winner: 'banker', tag: 'settled' };
+  const restoredCoup = { winner: 'player', tag: 'restored' };
+  const dealSteps = [{ side: 'player', handCardIndex: 0, token: 'p0' }] as const;
+
+  function soloState(overrides: Partial<Record<keyof RoomState, unknown>>): RoomState {
+    return {
+      settled: { outcome: settledCoup },
+      restored: { outcome: restoredCoup },
+      shoe: { id: 'shoe-1' },
+      revealedStep: 3,
+      dealSteps,
+      phase: 'revealing',
+      betType: 'banker',
+      stake: 25,
+      correlation: { hand: 'shoe-1:4' },
+      bannerText: 'BANKER WINS',
+      betzoneSelected: 'tie',
+      ...overrides,
+    } as unknown as RoomState;
+  }
+
+  test('soloFeltView maps the solo controller state 1:1', () => {
+    const view = baccarat.soloFeltView(soloState({}));
+    expect(view).toEqual({
+      coup: settledCoup,
+      revealedStep: 3,
+      dealSteps,
+      phase: 'revealing',
+      betType: 'banker',
+      stake: 25,
+      correlation: { hand: 'shoe-1:4' },
+      shoeId: 'shoe-1',
+      bannerText: 'BANKER WINS',
+      betzoneSelected: 'tie',
+    } as unknown as FeltView);
+    expect(view.dealSteps).toBe(dealSteps);
+    expect(Object.keys(view).sort()).toEqual([
+      'bannerText', 'betType', 'betzoneSelected', 'correlation', 'coup',
+      'dealSteps', 'phase', 'revealedStep', 'shoeId', 'stake',
+    ]);
+  });
+
+  test('soloFeltView: coup = settled ?? restored ?? null; no shoe -> shoeId null', () => {
+    expect(baccarat.soloFeltView(soloState({ settled: null })).coup).toEqual(restoredCoup as never);
+    expect(baccarat.soloFeltView(soloState({ settled: null, restored: null })).coup).toBeNull();
+    const empty = baccarat.soloFeltView(soloState({
+      settled: null, restored: null, shoe: null, correlation: null, bannerText: null, betzoneSelected: null,
+    }));
+    expect(empty.shoeId).toBeNull();
+    expect(empty.correlation).toBeNull();
+    expect(empty.bannerText).toBeNull();
+    expect(empty.betzoneSelected).toBeNull();
+  });
+
+  test('POV seat: own seat when seated; lowest free seat for a spectator; seat 0 at a full table', () => {
+    const seats = (indices: number[]) => indices.map((seatIndex) => ({ seatIndex }));
+    expect(baccarat.resolveBaccaratPovSeat(seats([0, 1, 4]), 4)).toBe(4);
+    expect(baccarat.resolveBaccaratPovSeat(seats([0, 1, 4]), null)).toBe(2);
+    expect(baccarat.resolveBaccaratPovSeat(seats([0, 1, 4]), undefined)).toBe(2);
+    expect(baccarat.resolveBaccaratPovSeat(seats([]), null)).toBe(0);
+    expect(baccarat.resolveBaccaratPovSeat(seats([0, 1, 2, 3, 4, 5]), null)).toBe(0);
+    // Out-of-range or non-integer input is treated as a spectator.
+    expect(baccarat.resolveBaccaratPovSeat(seats([0]), 7)).toBe(1);
+    expect(baccarat.resolveBaccaratPovSeat(seats([0]), 1.5)).toBe(1);
+  });
+
+  test('room seats: the 5 drawn slots run clockwise from the POV and never include it', () => {
+    for (let pov = 0; pov < baccarat.BACCARAT_SHARED_SEAT_COUNT; pov += 1) {
+      const engine = baccarat.baccaratRoomSeats(pov).map((seat) => seat.engineSeatIndex);
+      expect(engine.length).toBe(5);
+      expect(engine).not.toContain(pov);
+      expect(engine).toEqual([1, 2, 3, 4, 5].map((step) => (pov + step) % 6));
+    }
+  });
+
+  test('seat model: the real wire key when it is a registry key (picker-hidden included), else the stable hash', () => {
+    expect(baccarat.baccaratSeatModelKey({ modelKey: 'hermes_female', avatarId: 'a' })).toBe('hermes_female' as never);
+    expect(baccarat.baccaratSeatModelKey({ modelKey: 'helen', avatarId: 'a' })).toBe('helen' as never);
+    expect(baccarat.baccaratSeatModelKey({ modelKey: 'not_a_registry_key', avatarId: 'avatar-x' }))
+      .toBe(figures.stableAvatarModelKey('avatar-x'));
+    // A prototype name is not a registry key.
+    expect(baccarat.baccaratSeatModelKey({ modelKey: 'constructor', avatarId: 'avatar-x' }))
+      .toBe(figures.stableAvatarModelKey('avatar-x'));
+  });
 });

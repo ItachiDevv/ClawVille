@@ -13,7 +13,8 @@ export function routeForScenario(
     return '/cove?table=baccarat';
   }
   if (scenario.game === 'blackjack') return '/cove/blackjack';
-  if (scenario.game === 'baccarat') return '/cove/baccarat';
+  // /cove/baccarat is the shared-table lobby since 2026-10-22; the solo room is ?mode=solo.
+  if (scenario.game === 'baccarat') return '/cove/baccarat?mode=solo';
   return `/cove/table${cashTableId
     ? `?tableId=${encodeURIComponent(cashTableId)}`
     : ''}`;

@@ -22,6 +22,8 @@ import {
   COVE_SLOTS_BET_STEP,
   COVE_SLOTS_MIN_BET,
   COVE_SLOTS_MAX_BET,
+  COVE_BACCARAT_MIN_BET,
+  COVE_BACCARAT_MAX_BET,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
   type AgentSubstrateRegistration,
@@ -275,6 +277,13 @@ interface AgentActionAttribution {
 }
 
 const AUTONOMOUS_COVE_PLAY_INTERVAL_MS = 30_000;
+/** The bet sides `play_cove_game(game=baccarat, bet=...)` accepts. */
+type AutonomousBaccaratBetSide = 'player' | 'banker' | 'tie';
+const AUTONOMOUS_BACCARAT_BET_SIDES: ReadonlySet<string> = new Set<AutonomousBaccaratBetSide>([
+  'player',
+  'banker',
+  'tie',
+]);
 const AUTONOMOUS_LAND_ACTION_INTERVAL_MS = 60_000;
 const AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS = 60_000;
 const AUTONOMOUS_TRADE_RESERVATION_MS = 30_000;
@@ -748,6 +757,23 @@ class NpcSimulation {
   }) => Promise<unknown> = async (input) => {
     const { playAutonomousCoveBlackjack } = await import('../routes/cove-blackjack');
     return playAutonomousCoveBlackjack(input);
+  };
+  /**
+   * Test seam; production lazily loads the shared-table baccarat manager
+   * singleton. One call places ONE bet at a house table (seating the avatar if
+   * needed); the manager settles it later in the table's round and delivers the
+   * result as a `cove.baccarat.coup.settled` event.
+   */
+  autonomousCoveBaccaratBet: (input: {
+    agentSessionId: string;
+    expectedAgentId: string;
+    expectedAvatarId: string;
+    expectedUserId: string;
+    bet: AutonomousBaccaratBetSide;
+    wager: number;
+  }) => Promise<unknown> = async (input) => {
+    const { baccaratTableManager } = await import('./baccarat/baccarat-table-manager-singleton');
+    return baccaratTableManager.placeAutonomousBet(input);
   };
   /** Test seam; production re-resolves the live settlement binding. */
   autonomousCoveAgentResolve: (
@@ -2510,7 +2536,9 @@ class NpcSimulation {
    *   emote(name in {wave,dance,think,scan,work,celebrate,alert}) -> setNpcActivity
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
    *   enter_cove()                                        -> walk to the Cove
-   *   play_cove_game(game=slots|blackjack, wager=game bounds) -> one settled game
+   *   play_cove_game(game=slots|blackjack|baccarat, wager=game bounds,
+   *                  bet=player|banker|tie; baccarat only)  -> one settled game,
+   *                  or one bet at a shared baccarat table (settles in its round)
    *   claim_parcel(parcelCode, door=hold|rent, weeks?)    -> shared tenure claim
    *   prepay_rent(parcelCode, weeks)                      -> shared rent prepay
    *   release_parcel(parcelCode)                          -> shared tenure release
@@ -2741,9 +2769,29 @@ class NpcSimulation {
   private async settleAutonomousCoveGame(
     npcId: string,
     attribution: AgentActionAttribution,
-    game: 'slots' | 'blackjack',
+    game: 'slots' | 'blackjack' | 'baccarat',
     wager: number,
+    bet: AutonomousBaccaratBetSide | null = null,
   ): Promise<void> {
+    if (game === 'baccarat') {
+      if (bet === null) {
+        console.warn('[Hatcher] play_cove_game dropped — baccarat needs bet=player|banker|tie');
+        return;
+      }
+      // Shared baccarat tables must have no house bettor. The cove resolver
+      // below lets a house agent through (the house is a slots/blackjack
+      // counterparty), so refuse the house actor HERE, before any resolve and
+      // before the 30 s reservation. Fail closed when the check is unavailable.
+      try {
+        if (await this.autonomousHouseActorCheck(attribution.agentId)) {
+          console.warn('[Hatcher] play_cove_game dropped — house actor cannot bet at a shared baccarat table');
+          return;
+        }
+      } catch {
+        console.warn('[Hatcher] play_cove_game dropped — house actor check unavailable');
+        return;
+      }
+    }
     const resolved = await this.autonomousCoveAgentResolve(
       attribution.sessionId,
       attribution.agentId,
@@ -2794,7 +2842,7 @@ class NpcSimulation {
           actionId,
           wager,
         });
-      } else {
+      } else if (game === 'blackjack') {
         await this.autonomousCoveBlackjackPlay({
           agentSessionId: attribution.sessionId,
           expectedAgentId: resolved.agentId,
@@ -2802,12 +2850,25 @@ class NpcSimulation {
           actionId,
           wager,
         });
+      } else {
+        // Unreachable with a null bet (refused at the top); kept for the type.
+        if (bet === null) return;
+        await this.autonomousCoveBaccaratBet({
+          agentSessionId: attribution.sessionId,
+          expectedAgentId: resolved.agentId,
+          expectedAvatarId: resolved.avatarId,
+          expectedUserId: resolved.userId,
+          bet,
+          wager,
+        });
       }
       const body = this.npcs.get(npcId);
       if (body) {
         this.setNpcActivity(npcId, 'trading', '🎰');
         body.destinationBuildingId = 'cove';
-        body.intentDescription = `playing ${game} at the cove (${wager} vCLAW)`;
+        body.intentDescription = game === 'baccarat'
+          ? `betting ${wager} vCLAW on ${bet} at a shared baccarat table`
+          : `playing ${game} at the cove (${wager} vCLAW)`;
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -3382,12 +3443,24 @@ class NpcSimulation {
       }
       case 'play_cove_game': {
         const keys = Object.keys(params);
-        if (keys.some((key) => key !== 'game' && key !== 'wager')) {
+        if (keys.some((key) => key !== 'game' && key !== 'wager' && key !== 'bet')) {
           console.warn('[Hatcher] play_cove_game dropped — unknown parameter');
           return;
         }
-        if (params.game !== 'slots' && params.game !== 'blackjack') {
+        if (params.game !== 'slots' && params.game !== 'blackjack' && params.game !== 'baccarat') {
           console.warn(`[Hatcher] play_cove_game dropped — unsupported game "${params.game}"`);
+          return;
+        }
+        // `bet` is required for baccarat and is an unknown parameter for the others.
+        let baccaratBet: AutonomousBaccaratBetSide | null = null;
+        if (params.game === 'baccarat') {
+          if (!AUTONOMOUS_BACCARAT_BET_SIDES.has(params.bet ?? '')) {
+            console.warn(`[Hatcher] play_cove_game dropped — baccarat needs bet=player|banker|tie (got "${params.bet}")`);
+            return;
+          }
+          baccaratBet = params.bet as AutonomousBaccaratBetSide;
+        } else if (keys.includes('bet')) {
+          console.warn('[Hatcher] play_cove_game dropped — unknown parameter');
           return;
         }
         if (!/^\d+$/.test(params.wager ?? '')) {
@@ -3419,6 +3492,19 @@ class NpcSimulation {
           );
           return;
         }
+        if (
+          params.game === 'baccarat'
+          && (
+            !Number.isSafeInteger(wager)
+            || wager < COVE_BACCARAT_MIN_BET
+            || wager > COVE_BACCARAT_MAX_BET
+          )
+        ) {
+          console.warn(
+            `[Hatcher] play_cove_game dropped — baccarat wager must be ${COVE_BACCARAT_MIN_BET}..${COVE_BACCARAT_MAX_BET} vCLAW`,
+          );
+          return;
+        }
         if (!COVE_CENTER) {
           console.warn('[Hatcher] play_cove_game dropped — cove location missing from MAP_LOCATIONS');
           return;
@@ -3434,7 +3520,7 @@ class NpcSimulation {
           console.warn('[Hatcher] play_cove_game dropped — no bound agent/avatar attribution');
           return;
         }
-        void this.settleAutonomousCoveGame(npcId, attribution, params.game, wager).catch((err) => {
+        void this.settleAutonomousCoveGame(npcId, attribution, params.game, wager, baccaratBet).catch((err) => {
           const reason = err instanceof Error ? err.message : String(err);
           console.warn(`[Hatcher] play_cove_game dropped — ${reason}`);
         });

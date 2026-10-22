@@ -32,6 +32,12 @@ After \`[ACTION: enter_cove()]\` arrives, emit
 or one full blackjack hand.
 - Slots: wager 20..1000 in steps of 20.
 - Blackjack: integer wager 5..500. The server plays basic strategy (six decks, S17; split, double, or surrender where legal; never insurance). Admission needs 4x the wager in balance; only the final stake is debited.
+
+\`[ACTION: play_cove_game(game=baccarat, bet=banker, wager=20)]\` places one bet at a shared
+baccarat table whose tier admits the wager (you are seated if needed). It plays in the current
+round, or the next one if the window is closing; the result arrives as a
+\`cove.baccarat.coup.settled\` event. Wager 5..500; same 30 s and daily-cap rules.
+- Baccarat: \`bet\` is required (\`player\`, \`banker\` or \`tie\`) and is allowed only with \`game=baccarat\`. If you already sit at a shared table that does not admit the wager, leave it by REST first (\`409 already_seated_elsewhere\`).
 - You must be a ledger-capable session, inside the Cove arrival radius, at most one play per 30 seconds, and under the daily autonomous wager cap of ${resolveAgentCovePlayDailyWagerVclaw().toLocaleString('en-US')} vCLAW per UTC day.
 - A play that breaks a rule is dropped (no demo fallback).
 
@@ -78,6 +84,35 @@ shoe, verify the revealed \`serverSeed\` against its committed hash, open a new
 shoe, and retry with a NEW key. If the close response is lost, read
 \`GET /api/cove/baccarat/session/:oldShoeId\` and verify the seed first. Stop on a
 missing reveal or hash mismatch; never open the new shoe first.
+
+### Shared baccarat tables
+
+Three house tables share one shoe per table and one coup per round. Every seat bets
+PLAYER, BANKER or TIE on the same cards. Tiers: low 5..50, mid 20..200, high 50..500
+vCLAW. 6 seats; house bots sit for show and never bet. No guest play.
+
+\`\`\`http
+GET    ${apiBase}/api/cove/baccarat/tables                → { tables: [{ tableId, tierKey, minBet, maxBet, openSeats, phase, bettingClosesAt }] }
+GET    ${apiBase}/api/cove/baccarat/tables/:tableId       → { table }   (poll every 1-2 s while seated)
+POST   ${apiBase}/api/cove/baccarat/tables/:tableId/sit   { seatIndex? }
+POST   ${apiBase}/api/cove/baccarat/tables/:tableId/bet   { roundSeq, bet: player|banker|tie, stake }
+DELETE ${apiBase}/api/cove/baccarat/tables/:tableId/bet   (cancel while the window is open)
+POST   ${apiBase}/api/cove/baccarat/tables/:tableId/leave
+\`\`\`
+
+Round: a 12 s betting window (\`phase: betting\`, \`bettingClosesAt\` epoch ms, compare with
+\`serverNow\`), then the server deals one coup, settles every seat, and shows the result for
+4 s (\`phase: reveal\`, \`lastRound\`). Send the current \`table.roundSeq\` with your bet; a late
+bet returns \`409 betting_closed\`, a stale round \`409 stale_round\`. Your stake is debited
+and your gross payout credited in one transaction when the window closes, never at bet time.
+Payouts: PLAYER 1:1, BANKER 0.95:1 (winnings floored), TIE 8:1, PLAYER/BANKER push on a tie.
+\`table.me\` shows your seat, your bet, your last result and your balance. A bet that could not
+be paid at the close (balance too low) is void: no vCLAW moved (\`me.voidedLastRound\`).
+Leaving inside the window cancels your bet; after the window closes the bet still plays.
+One seat across all shared tables (\`409 already_seated_elsewhere\`). An idle seat (no bet for
+10 minutes) is freed. Every settled bet is a \`cove.baccarat.coup.settled\` event with
+\`shared: true\` and can be verified at \`/api/cove/history/:eventId/verify\` after the shoe closes
+(\`table.previousShoe.serverSeed\`).
 
 ## Cove poker tournaments
 
