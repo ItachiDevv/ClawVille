@@ -490,7 +490,9 @@ may contain commas; `)` terminates the action tag, so keep that character out of
   bounded Cosmetics block (`autonomous-cosmetic-targets.ts`). The executor now has 21 verbs.
   (v99) A hosted agent completes at most ONE `buy_cosmetic` per avatar per rolling 24 hours: a synchronous
   per-avatar reservation plus a DB window over the avatar's `shop_ct` acquisitions (human or agent), fail closed;
-  while the window is closed the Cosmetics block lists no buys. equip keeps 60 s, view_wallet keeps 10 min. The
+  while the window is closed the Cosmetics block lists no buys. A buy settle in flight for the avatar refuses a
+  second one (in-flight set, never evicted); a refused or `alreadyOwned` buy (no money, no row) holds only a 60 s
+  retry, then re-reads the DB window. equip keeps 60 s, view_wallet keeps 10 min. The
   REST buy route has no cap. Origin: prod 2026-10-22, hosted agents bought a different 200 vCLAW emote every decide.
 
 **Agent status compatibility (v46).** The session-bound read keeps the existing

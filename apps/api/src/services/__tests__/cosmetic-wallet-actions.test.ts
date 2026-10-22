@@ -39,6 +39,7 @@ beforeEach(() => {
   sim.agentBotSessions.set(SESSION, { config: { mode: 'avatar', agentId: AGENT, avatarId: AVATAR, boundUserId: 'owner', ledgerCapable: true } });
   sim.autonomousCosmeticWalletLastAdmittedAt.clear();
   sim.autonomousCosmeticBuyBlockedUntil.clear();
+  sim.autonomousCosmeticBuyInFlight.clear();
   driver.userAgents.set(AGENT, { agentId: AGENT, avatarId: AVATAR, bodyId, lastLesson: null, lastBuildingId: null, isHouse: false });
   resolved = { userId: 'owner', avatarId: AVATAR, agentId: AGENT, ledgerCapable: true };
   balancesResult = {
@@ -221,17 +222,84 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
       expect(text).toContain('Equip what you own instead.');
     });
 
-    test('a failed buy keeps the 24-hour reservation (no retry loop)', async () => {
+    const KEY = `${AVATAR}:buy_cosmetic`;
+    /** Simulate the 60-second retry wait elapsing (61 s later). */
+    const elapseRetryWait = () => sim.autonomousCosmeticBuyBlockedUntil.set(KEY, Date.now() - 1);
+
+    test('an ok new purchase keeps the 24-hour reservation', async () => {
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      expect(sim.autonomousCosmeticBuyBlockedUntil.get(KEY)).toBeGreaterThan(Date.now() + DAY_MS - 60_000);
+      expect(sim.autonomousCosmeticBuyInFlight.has(KEY)).toBe(false);
+    });
+
+    test('insufficient_tokens holds only the 60 s retry; a buy 61 s later re-reads the DB and is admitted', async () => {
       npcSimulation.autonomousCosmeticBuy = async (actor, skuId) => {
         calls.buy.push({ actor, skuId });
         return { ok: false, status: 400, code: 'insufficient_tokens', message: 'Not enough vCLAW. Need 200, have 5.' };
       };
       dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
       await settle();
+      const blockedUntil = sim.autonomousCosmeticBuyBlockedUntil.get(KEY);
+      expect(blockedUntil).toBeLessThanOrEqual(Date.now() + 60_000);
+      expect(blockedUntil).toBeGreaterThan(Date.now() + 50_000);
+      // Inside the retry wait: refused in memory, no DB read, no buy call.
       dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
       await settle();
       expect(calls.buy).toHaveLength(1);
-      expect(prompt()).toContain('refused (daily_limit)');
+      expect(calls.buyWindow).toEqual([AVATAR]);
+      // 61 s later the DB window is open: re-read and admitted.
+      elapseRetryWait();
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU_2})]`);
+      await settle();
+      expect(calls.buyWindow).toEqual([AVATAR, AVATAR]);
+      expect(calls.buy.map((call) => call.skuId)).toEqual([SKU, SKU_2]);
+    });
+
+    test('ok + alreadyOwned (no new row) holds only the 60 s retry', async () => {
+      npcSimulation.autonomousCosmeticBuy = async (actor, skuId) => {
+        calls.buy.push({ actor, skuId });
+        return { ok: true, body: { ok: true, alreadyOwned: true, clawTokens: 940 } };
+      };
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(prompt()).toContain(`Shop: you already own ${SKU}; nothing was charged.`);
+      expect(sim.autonomousCosmeticBuyBlockedUntil.get(KEY)).toBeLessThanOrEqual(Date.now() + 60_000);
+      elapseRetryWait();
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU_2})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(2);
+    });
+
+    test('an in-flight buy still refuses a second buy for the avatar after map pressure evicts its time reservation', async () => {
+      let release: () => void = () => undefined;
+      npcSimulation.autonomousCosmeticBuy = (actor, skuId) => {
+        calls.buy.push({ actor, skuId });
+        return new Promise((resolve) => {
+          release = () => resolve({ ok: true, body: { ok: true, alreadyOwned: false, clawTokens: 740, bonusApplied: 0 } });
+        });
+      };
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      expect(sim.autonomousCosmeticBuyInFlight.has(KEY)).toBe(true);
+      // 5,001 other avatars push the time map past its cap: the oldest write,
+      // the reservation of this avatar, is evicted while its buy still runs.
+      const now = Date.now();
+      for (let i = 0; i <= 5_000; i += 1) {
+        sim.setAutonomousCosmeticBuyBlockedUntil(`pressure-${i}:buy_cosmetic`, now + DAY_MS, now);
+      }
+      expect(sim.autonomousCosmeticBuyBlockedUntil.has(KEY)).toBe(false);
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU_2})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      expect(calls.buyWindow).toEqual([AVATAR]);
+      expect(prompt()).toContain(`Shop: buy ${SKU_2} refused (daily_limit)`);
+      release();
+      await settle();
+      expect(sim.autonomousCosmeticBuyInFlight.has(KEY)).toBe(false);
+      expect(prompt()).toContain(`Shop: bought ${SKU}`);
     });
 
     test('DB window closed: no buy call, a daily_limit line with the DB open time, and the reservation holds until then', async () => {

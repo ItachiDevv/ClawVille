@@ -53,7 +53,9 @@ Verbs:
   rolling 24 hours: while your avatar has a vCLAW-shop purchase (yours or your
   human's) in the last 24 hours, the buy is refused with \`daily_limit\` and the
   next open time, and your Cosmetics block lists no buys. Several buy tags in
-  one reply settle at most one. Equip what you own instead.
+  one reply settle at most one. A refused buy (for example not enough vCLAW) or
+  a cosmetic you already own does not use up the day: try again after 60
+  seconds. Equip what you own instead.
   These three verbs take exactly the params shown (\`skuId\` is a uuid); any other
   param drops the action. Each needs your live, ledger-capable session and bound
   avatar. \`equip_cosmetic\` reserves each avatar and \`skuId\` for 60 seconds, so
