@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 06:55Z (session roundup). **PROD API + WEB = `26c02e392` (promotion #13, PR #323: quests wire PROTOCOL 98, autonomy talk prompt, AGENTS.md/CLAUDE.md untracked; no migration), verified live** (DEPLOY LOG 2026-10-22 06:55Z). **STAGING API + WEB = `7de0811da`** (same code as prod). SCHEMA: synced. Founder eyes owed (FOUNDER-REVIEW).
+Last Audited: 2026-10-22 08:28Z (session roundup). **Staging is receiving `fix/autonomy-cosmetic-cap` (PROTOCOL 99, no migration): a hosted autonomous agent completes at most one `buy_cosmetic` per avatar per 24 hours** (live prod bug, DEPLOY LOG 2026-10-22 08:28Z). Not yet verified on staging. **PROD API + WEB = `26c02e392`** (promotion #13; carries the bug until the next promotion). SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-22 06:55Z (session roundup). **PROD API + WEB = `26c02e392` (promotion #13, PR #323: quests wire PROTOCOL 98, autonomy talk prompt, AGENTS.md/CLAUDE.md untracked; no migration), verified live** (DEPLOY LOG 2026-10-22 06:55Z). **STAGING API + WEB = `7de0811da`** (same code as prod). SCHEMA: synced. Founder eyes owed (FOUNDER-REVIEW).
 
 Prior - Last Audited: 2026-10-22 06:15Z (session roundup). **STAGING API + WEB = `a021925ba` (quests wire, PROTOCOL 98, no migration), verified live** (DEPLOY LOG 2026-10-22 06:15Z): Style Statement, Big Spender, Wallet Aware claimable by a human and a bound agent; Brand Ambassador removed. Founder eyes owed (FOUNDER-REVIEW). **PROD API + WEB = `ae1e1589d`** (promotion #12). SCHEMA: synced.
 
@@ -668,6 +670,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-22 08:28Z (session roundup) - hosted buy_cosmetic daily cap to staging (PROTOCOL 99, no migration)
+- **What broke (prod `26c02e392`, found by the founder-ordered live test):** the only guard on the hosted `[ACTION: buy_cosmetic]` was a per-sku 60 s key, and an owned sku leaves the decide prompt's buy list, so the agent bought the NEXT emote every decide (~30 s). Real player `qelreth` (Autonomous mode, no directive): 3 emotes 06:44:16-06:45:15Z (300 cosmetic credit + 100 vCLAW), stopped by a low balance. Test account TokenTestBot (owner directive "buy the cheapest cosmetic ..., put it on, check your wallet, claim the quests"): 5 x 200 vCLAW 07:50:19-07:52:14Z, never equipped, autonomy turned off 07:52:26Z. No other prod cosmetic purchase after 07:52Z (checked 08:21Z). Refund for `qelreth`: founder decision owed.
+- **Fix:** one completed autonomous buy per avatar per rolling 24 h: synchronous per-avatar reservation + never-evicted in-flight set + DB window over the avatar's `shop_ct` acquisitions (human or agent), fail closed; a refused or already-owned buy holds 60 s; the decide prompt lists no buys while the window is closed. `cosmetic.purchased` payload gains `subjectKind`. Manual, decide menu, Nori, orientation, Hatcher spec updated; PROTOCOL 98 -> 99. The REST buy route (human and BYO agent) has no cap.
+- **Review:** Codex r1 CHANGES-NEEDED (eviction of an in-flight reservation; failed buys held 24 h while the prompt offered buys), both fixed; Codex r2 VERDICT: APPROVE. Local: api tsc 0; cosmetic-wallet-actions 21/0, autonomous-cosmetic-targets 7/0, cosmetic-actions 19/0, protocol-pin files pass, shared 175/0; coupling gate exit 0.
+- **Who it is for:** every player whose hosted agent runs in Autonomous mode. PARITY: human path: POST /api/cosmetics/:skuId/buy (unchanged); agent path: same REST route (unchanged) or hosted `buy_cosmetic` (capped); settlement binds to the live ledger-capable bound avatar. SCHEMA: synced.
 
 ### 2026-10-22 08:16Z (session jev, arena lead) - prior-question talk prompt (`8786b615b`) checked on PROD (promotion #13)
 - **Prod evidence (API `26c02e392`, up since 06:43Z, logs to 08:15Z):** 276 drives, 0 driver errors, 4 talk prefetches used. Lap 1 (06:46-07:32Z): 20 talks, all `prior=0`. Lap 2 (07:48-08:14Z): 16 talks, all `prior=1`, and all 16 questions differ from that agent's lap-1 question at the same teacher (example: API teacher "How do webhooks differ from REST APIs?" then "How does OAuth improve API security?").
