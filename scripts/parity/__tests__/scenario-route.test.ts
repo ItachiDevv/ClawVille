@@ -21,7 +21,7 @@ describe('parity scenario routing', () => {
     expect(routeForScenario({
       game: 'baccarat',
       surface: 'baccarat-3d',
-    }, null)).toBe('/cove/baccarat');
+    }, null)).toBe('/cove/baccarat?mode=solo');
     expect(routeForScenario({
       game: 'holdem',
       surface: 'holdem-tray-3d',

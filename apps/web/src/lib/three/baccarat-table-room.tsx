@@ -5,23 +5,52 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
+import { tagGltfLoadRejection } from '@/lib/three/use-gltf-ktx2';
 import { preloadClips, VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import {
   MODEL_REGISTRY,
+  type ModelKey,
   type ModelRegistryEntry,
 } from '@/lib/three/agent-model-registry';
+import {
+  BACK_CORNER_PERCH_LIFT,
+  CHAIR_CUSHION_Y,
+  FrozenFigure,
+  RiglessPerchFigure,
+  SeatFigureSlot,
+  SeatPlaceholderFigure,
+  seatedFigurePose,
+  stableAvatarModelKey,
+  TABLE_POSE_BY_BOT,
+} from '@/lib/three/cove-seat-figures';
+import {
+  BOT_SEATS,
+  CHAIR_SCALE,
+  type RoomSeat,
+} from '@/lib/three/holdem-table-layout';
 import {
   BaccaratTableCards3D,
   type BaccaratHandLayout,
 } from '@/lib/three/baccarat-table-cards';
-import type { BaccaratRoomState } from '@/lib/cove/baccarat-room-controller';
+import type {
+  BaccaratDealStep,
+  BaccaratRoomPhase,
+  BaccaratRoomState,
+} from '@/lib/cove/baccarat-room-controller';
+import type {
+  BaccaratBet,
+  BaccaratTableSeatView,
+  SerializedBaccaratCoup,
+} from '@clawville/shared';
 import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 
 const ROOM_PATH = '/models/cove-room-only.glb';
 const TABLE_PATH = '/models/cove-table-clean.glb';
+// Shared room only (spec 7.4): the hold'em chair at the same table scale.
+const CHAIR_PATH = '/models/cove-chair-clean.glb';
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
 const DEALER_PATH = (MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry).path;
 const DEALER_POSE_SAMPLE_AT = 0.0001;
@@ -56,6 +85,13 @@ const BASE_LOOK_SIN_PITCH = Math.sin(BASE_LOOK_PITCH);
 const CAMERA_LOOK_TARGET = new THREE.Vector3();
 const ROOM_BACKGROUND = new THREE.Color(0x100b16);
 
+// SHARED TABLE SEATS (spec 2.1 + 7.4): 6 seats, 0..5. The viewer's seat is
+// the camera (CAM_EYE, the 6 o'clock POV); the other 5 seats use the proven
+// hold'em BOT_SEATS layout (same table GLB, same scale), so the room draws at
+// most 5 seat figures + the dealer, the budget hold'em ships on Iris Xe.
+export const BACCARAT_SHARED_SEAT_COUNT = 6;
+const SEATED_POSE_CLIPS = [...TABLE_POSE_BY_BOT, 'sit_idle_m'] as const;
+
 const CARD_LAYOUT = Object.freeze({
   playerCenter: [-52, 20],
   bankerCenter: [52, 20],
@@ -71,6 +107,41 @@ const ZONE_X = Object.freeze({
   banker: 0,
   tie: 66,
 } as const);
+
+/**
+ * What the felt shows: cards, bet zones, banner. One shape for the solo room
+ * (`soloFeltView`) and the shared-table room (built by the shared controller).
+ * Frozen by the shared-table port spec section 7.4.
+ */
+export interface BaccaratFeltView {
+  coup: SerializedBaccaratCoup | null;
+  revealedStep: number;
+  dealSteps: readonly BaccaratDealStep[];
+  phase: BaccaratRoomPhase;
+  betType: BaccaratBet;
+  stake: number;
+  correlation: { hand: string } | null;
+  shoeId: string | null;
+  bannerText: string | null;
+  betzoneSelected: BaccaratBet | null;
+}
+
+/** Maps the solo room controller state 1:1 onto the felt view. */
+export function soloFeltView(state: BaccaratRoomState): BaccaratFeltView {
+  return {
+    coup: state.settled?.outcome ?? state.restored?.outcome ?? null,
+    revealedStep: state.revealedStep,
+    dealSteps: state.dealSteps,
+    phase: state.phase,
+    betType: state.betType,
+    stake: state.stake,
+    correlation: state.correlation,
+    shoeId: state.shoe ? state.shoe.id : null,
+    bannerText: state.bannerText,
+    // The solo controller types this as a string; it only ever holds a bet.
+    betzoneSelected: state.betzoneSelected as BaccaratBet | null,
+  };
+}
 
 function preparedClone(
   source: THREE.Group,
@@ -120,10 +191,12 @@ function DealerFigure({ instanceId }: { instanceId: string }) {
     };
   }, [invalidate, reg.animatorId, vrm]);
 
-  useEffect(
-    () => () => disposeVRMInstance(reg.path, instanceId),
-    [instanceId, reg.path],
-  );
+  useEffect(() => {
+    // Cancel the dispose a StrictMode replay (or a fast remount of the same
+    // instance) scheduled in the cleanup below (vrm-loader retain contract).
+    retainVRMInstance(reg.path, instanceId);
+    return () => disposeVRMInstance(reg.path, instanceId);
+  }, [instanceId, reg.path]);
 
   return (
     <group
@@ -230,7 +303,7 @@ function StagePlanes() {
   return <group ref={groupRef} />;
 }
 
-function BaccaratBetZones({ selected }: { selected: BaccaratRoomState['betType'] }) {
+function BaccaratBetZones({ selected }: { selected: BaccaratBet }) {
   const groupRef = useRef<THREE.Group>(null);
   const chipRef = useRef<THREE.Mesh | null>(null);
   useLayoutEffect(() => {
@@ -396,7 +469,194 @@ function BaccaratLookCamera() {
   return null;
 }
 
-function Precompile() {
+/**
+ * The seat the camera sits in. A seated viewer passes its own seat. A
+ * spectator (null / absent / out of range) takes the lowest free seat; at a
+ * full table it takes seat 0, whose occupant is then not drawn (the camera
+ * sits where that figure would be).
+ */
+export function resolveBaccaratPovSeat(
+  seats: readonly Pick<BaccaratTableSeatView, 'seatIndex'>[],
+  povSeatIndex: number | null | undefined,
+): number {
+  if (
+    typeof povSeatIndex === 'number'
+    && Number.isInteger(povSeatIndex)
+    && povSeatIndex >= 0
+    && povSeatIndex < BACCARAT_SHARED_SEAT_COUNT
+  ) {
+    return povSeatIndex;
+  }
+  for (let seatIndex = 0; seatIndex < BACCARAT_SHARED_SEAT_COUNT; seatIndex += 1) {
+    if (!seats.some((seat) => seat.seatIndex === seatIndex)) return seatIndex;
+  }
+  return 0;
+}
+
+/** The 5 drawn room slots, clockwise from the POV (as hold'em does). */
+export function baccaratRoomSeats(povSeatIndex: number): readonly RoomSeat[] {
+  return BOT_SEATS.map((seat, index) => ({
+    ...seat,
+    engineSeatIndex: (povSeatIndex + index + 1) % BACCARAT_SHARED_SEAT_COUNT,
+  }));
+}
+
+/**
+ * The REAL avatar model when the wire key is a registry key (picker-hidden
+ * owned keys such as `ansem` included); otherwise a stable hashed key.
+ */
+export function baccaratSeatModelKey(
+  seat: Pick<BaccaratTableSeatView, 'modelKey' | 'avatarId'>,
+): ModelKey {
+  return Object.prototype.hasOwnProperty.call(MODEL_REGISTRY, seat.modelKey)
+    ? seat.modelKey as ModelKey
+    : stableAvatarModelKey(seat.avatarId);
+}
+
+/**
+ * The 5 chairs. The chair GLB read is plain drei useGLTF, whose cached
+ * rejection is a raw Error: it is tagged here (the read site) as a
+ * ModelLoadError, so the ModelLoadBoundary around this component catches a
+ * chair 404 / decode error instead of crashing the room.
+ */
+function BaccaratChairs({ roomSeats }: { roomSeats: readonly RoomSeat[] }) {
+  let chairScene: THREE.Group;
+  try {
+    chairScene = useGLTF(CHAIR_PATH).scene;
+  } catch (thrown) {
+    throw tagGltfLoadRejection(thrown, CHAIR_PATH);
+  }
+  const chairs = useMemo(
+    () => BOT_SEATS.map(() => preparedClone(chairScene, CHAIR_SCALE)),
+    [chairScene],
+  );
+  return (
+    <>
+      {/* Chairs are keyed by room slot: a chair object never changes parent. */}
+      {roomSeats.map((seat, index) => (
+        <group
+          key={`baccarat-chair-${index}`}
+          position={[seat.chairX, 0, seat.chairZ]}
+          rotation={[0, seat.faceYaw, 0]}
+        >
+          <primitive object={chairs[index]!} />
+        </group>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Chairs + seated figures of the shared room. Mounted only when the page
+ * passes `seats`, so the solo room never requests the chair GLB.
+ *
+ * - Own Suspense: the page keeps ONE Canvas across lobby -> table, so the
+ *   ring mounts into a live scene; its chair load must not hide the room.
+ *   The ring's own Precompile runs after the chairs are in the scene.
+ * - The chairs sit in a ModelLoadBoundary: a chair GLB that fails removes
+ *   only the chairs. The figures are OUTSIDE it, so they keep rendering.
+ * - Each figure sits in its own SeatFigureSlot: while a model loads, or after
+ *   it fails every retry, the seat shows the placeholder figure.
+ * No useFrame here.
+ */
+function BaccaratSeatRing({
+  instanceId,
+  seats,
+  povSeatIndex,
+}: {
+  instanceId: string;
+  seats: readonly BaccaratTableSeatView[];
+  povSeatIndex: number | null | undefined;
+}) {
+  const pov = resolveBaccaratPovSeat(seats, povSeatIndex);
+  const roomSeats = useMemo(() => baccaratRoomSeats(pov), [pov]);
+  useEffect(() => {
+    preloadClips(SEATED_POSE_CLIPS);
+  }, []);
+
+  return (
+    <Suspense fallback={null}>
+      <ModelLoadBoundary assetUrl={CHAIR_PATH} label="baccarat-chairs" resetKey={CHAIR_PATH}>
+        <BaccaratChairs roomSeats={roomSeats} />
+      </ModelLoadBoundary>
+      <BaccaratSeatFigures instanceId={instanceId} seats={seats} roomSeats={roomSeats} />
+      <Precompile label="baccarat-table-seats" />
+    </Suspense>
+  );
+}
+
+function BaccaratSeatFigures({
+  instanceId,
+  seats,
+  roomSeats,
+}: {
+  instanceId: string;
+  seats: readonly BaccaratTableSeatView[];
+  roomSeats: readonly RoomSeat[];
+}) {
+  return (
+    <>
+      {roomSeats.map((seat, index) => {
+        const occupant = seats.find(
+          (candidate) => candidate.seatIndex === seat.engineSeatIndex,
+        );
+        if (!occupant) return null;
+        const modelKey = baccaratSeatModelKey(occupant);
+        const reg = MODEL_REGISTRY[modelKey] as ModelRegistryEntry;
+        const pose = seatedFigurePose(reg, index, WORLD_AVATAR_HEIGHT);
+        const figureId = `${instanceId}-seat-${seat.engineSeatIndex}-${occupant.avatarId}`;
+        return (
+          // Keyed by seat + avatar: a POV change moves the figure; it does
+          // not reload its model.
+          <group
+            key={`baccarat-seat-${seat.engineSeatIndex}-${occupant.avatarId}`}
+            name={`baccarat-seat-${seat.engineSeatIndex}`}
+          >
+            <SeatFigureSlot
+              key={`${figureId}|${reg.path}`}
+              assetUrl={reg.path}
+              label={`baccarat-seat:${seat.engineSeatIndex}`}
+              // Id AND path: a new model for the same avatar id must retry.
+              resetKey={`${figureId}|${reg.path}`}
+              placeholder={(
+                <SeatPlaceholderFigure
+                  engineSeatIndex={seat.engineSeatIndex}
+                  position={[seat.x, 0, seat.z]}
+                  yaw={seat.faceYaw}
+                />
+              )}
+            >
+              {reg.avatar_type === 'glb' ? (
+                <RiglessPerchFigure
+                  reg={reg}
+                  modelKey={modelKey}
+                  position={[seat.x, 0, seat.z]}
+                  yaw={seat.faceYaw}
+                  lift={index === 1 || index === 3 ? BACK_CORNER_PERCH_LIFT : 0}
+                />
+              ) : (
+                <FrozenFigure
+                  reg={reg}
+                  instanceId={figureId}
+                  pose={pose.pose}
+                  position={[seat.x, 0, seat.z]}
+                  yaw={seat.faceYaw}
+                  targetHeight={pose.targetHeight}
+                  cushionY={CHAIR_CUSHION_Y}
+                  sampleAt={pose.sampleAt}
+                  manualSeat={pose.manualSeat}
+                  relaxManualUpperBody={pose.relaxManualUpperBody}
+                />
+              )}
+            </SeatFigureSlot>
+          </group>
+        );
+      })}
+    </>
+  );
+}
+
+function Precompile({ label }: { label: string }) {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
     // R3-2 arbiter: routed through the boot-compile FIFO + poison registry.
@@ -409,7 +669,7 @@ function Precompile() {
         void chainPostBootCompile({
           gl,
           compile: () => renderer.compileAsync!(scene, camera),
-          label: 'baccarat-table',
+          label,
           isCancelled: () => unmounted,
         });
       }
@@ -418,17 +678,25 @@ function Precompile() {
       unmounted = true;
       cancelAnimationFrame(frame);
     };
-  }, [camera, gl, scene]);
+  }, [camera, gl, label, scene]);
   return null;
+}
+
+export interface BaccaratTableRoomProps {
+  view: BaccaratFeltView;
+  instanceId: string;
+  /** Shared room only: the table's seated players (status 'seated'). */
+  seats?: readonly BaccaratTableSeatView[];
+  /** Shared room only: the viewer's seat; null or absent for a spectator. */
+  povSeatIndex?: number | null;
 }
 
 export function BaccaratTableRoomScene({
   instanceId,
   view,
-}: {
-  instanceId: string;
-  view: BaccaratRoomState;
-}) {
+  seats,
+  povSeatIndex,
+}: BaccaratTableRoomProps) {
   const roomGltf = useGLTF(ROOM_PATH);
   const tableGltf = useGLTF(TABLE_PATH);
   const room = useMemo(
@@ -442,9 +710,8 @@ export function BaccaratTableRoomScene({
     ),
     [tableGltf.scene],
   );
-  const coup = view.settled?.outcome ?? view.restored?.outcome ?? null;
-  const selected = view.betzoneSelected as BaccaratRoomState['betType'] | null
-    ?? view.betType;
+  const coup = view.coup;
+  const selected = view.betzoneSelected ?? view.betType;
 
   return (
     <>
@@ -465,6 +732,13 @@ export function BaccaratTableRoomScene({
         <DealerFigure instanceId={`${instanceId}-baccarat-dealer`} />
       </ModelLoadBoundary>
       <DealerPlate />
+      {seats ? (
+        <BaccaratSeatRing
+          instanceId={instanceId}
+          seats={seats}
+          povSeatIndex={povSeatIndex}
+        />
+      ) : null}
       <BaccaratBetZones selected={selected} />
       <BaccaratTableCards3D
         feltTopY={TABLE_TOP_Y}
@@ -482,13 +756,13 @@ export function BaccaratTableRoomScene({
           correlation: {
             hand: view.correlation?.hand ?? '',
             handNumber: null,
-            ...(view.shoe ? { shoe: view.shoe.id } : {}),
+            ...(view.shoeId !== null ? { shoe: view.shoeId } : {}),
           },
           ...(view.bannerText ? { bannerText: view.bannerText } : {}),
           ...(selected ? { betzoneSelected: selected } : {}),
         }}
       />
-      <Precompile />
+      <Precompile label="baccarat-table" />
     </>
   );
 }
@@ -496,10 +770,9 @@ export function BaccaratTableRoomScene({
 export default function BaccaratTableRoomCanvas({
   view,
   instanceId,
-}: {
-  view: BaccaratRoomState;
-  instanceId: string;
-}) {
+  seats,
+  povSeatIndex,
+}: BaccaratTableRoomProps) {
   return (
     <Canvas
       key="baccarat-table-room"
@@ -518,10 +791,107 @@ export default function BaccaratTableRoomCanvas({
     >
       <KTX2LoaderSetup />
       <Suspense fallback={null}>
-        <BaccaratTableRoomScene instanceId={instanceId} view={view} />
+        <BaccaratTableRoomScene
+          instanceId={instanceId}
+          view={view}
+          seats={seats}
+          povSeatIndex={povSeatIndex}
+        />
       </Suspense>
     </Canvas>
   );
+}
+
+/** Which page the room serves (spec 7.1): the lobby, the solo shoe, or a shared table. */
+export type BaccaratRoomMode = 'lobby' | 'solo' | 'shared';
+
+/** Felt with no cards and no bet zone picked (lobby background). */
+export const BACCARAT_EMPTY_FELT_VIEW: BaccaratFeltView = Object.freeze({
+  coup: null,
+  revealedStep: 0,
+  dealSteps: Object.freeze([]) as readonly BaccaratDealStep[],
+  phase: 'idle',
+  betType: 'player',
+  stake: 0,
+  correlation: null,
+  shoeId: null,
+  bannerText: null,
+  betzoneSelected: null,
+});
+
+const NO_SEATS: readonly BaccaratTableSeatView[] = Object.freeze([]);
+
+/** Everything the page reads from its stores, for every mode at once. */
+export interface BaccaratRoomCanvasInputs {
+  mode: BaccaratRoomMode;
+  /** The solo room controller state (read only in 'solo'). */
+  soloController: BaccaratRoomState;
+  /** The shared-table felt view (read only in 'shared'). */
+  sharedView: BaccaratFeltView;
+  /** The shared table's seats; undefined until the first table poll. */
+  sharedSeats: readonly BaccaratTableSeatView[] | undefined;
+  /** The viewer's own seat at the shared table; null for a spectator. */
+  sharedPovSeatIndex: number | null;
+}
+
+/**
+ * Mode -> room props. Only 'shared' passes `seats` (so only the shared room
+ * mounts the chairs and figures and requests the chair GLB), whatever the
+ * stores hold; 'solo' maps the solo controller 1:1 (`soloFeltView`); the
+ * lobby shows the empty felt.
+ */
+export function baccaratRoomCanvasProps(
+  inputs: BaccaratRoomCanvasInputs,
+): Omit<BaccaratTableRoomProps, 'instanceId'> {
+  switch (inputs.mode) {
+    case 'solo':
+      return { view: soloFeltView(inputs.soloController) };
+    case 'shared':
+      return {
+        view: inputs.sharedView,
+        seats: inputs.sharedSeats ?? NO_SEATS,
+        povSeatIndex: inputs.sharedPovSeatIndex,
+      };
+    case 'lobby':
+      return { view: BACCARAT_EMPTY_FELT_VIEW };
+  }
+}
+
+/**
+ * The page's ONE room canvas for all three modes (lobby, solo, shared). The
+ * page mounts it once at a fixed position, so a mode or table switch only
+ * changes props: the renderer, the uploaded textures and the compiled
+ * pipelines survive (before, each mode mounted its own Canvas). The memo
+ * keeps the old identity rule: a new view only when an input changes.
+ */
+export function BaccaratRoomCanvasHost({
+  instanceId,
+  mode,
+  soloController,
+  sharedView,
+  sharedSeats,
+  sharedPovSeatIndex,
+}: BaccaratRoomCanvasInputs & { instanceId: string }) {
+  const room = useMemo(
+    () => baccaratRoomCanvasProps({
+      mode,
+      soloController,
+      sharedView,
+      sharedSeats,
+      sharedPovSeatIndex,
+    }),
+    // Each mode reads only its own inputs: an idle store of another mode
+    // must not rebuild the view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      mode,
+      mode === 'solo' ? soloController : null,
+      mode === 'shared' ? sharedView : null,
+      mode === 'shared' ? sharedSeats : null,
+      mode === 'shared' ? sharedPovSeatIndex : null,
+    ],
+  );
+  return <BaccaratTableRoomCanvas instanceId={instanceId} {...room} />;
 }
 
 useGLTF.preload(ROOM_PATH);

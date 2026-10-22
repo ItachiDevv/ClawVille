@@ -585,13 +585,16 @@ describe('BA-2 deterministic catalog', () => {
     const historySource = await Bun.file(
       join(import.meta.dir, '..', '..', 'routes', 'cove-history.ts'),
     ).text();
-    const shoeLoad = historySource.indexOf('columns: { fixtureInitialDealtCount: true }');
-    const replay = historySource.indexOf(
-      'initialDealtCount: shoe.fixtureInitialDealtCount',
-      shoeLoad,
+    // The /verify handler loads the shoe's fixture offset (plus `tableId`, which
+    // picks the shared-table branch), and BOTH replays in the pure
+    // `verifyBaccaratReplay` (solo + table seat) pass it to replayShoeUpToCoup.
+    const shoeLoad = historySource.indexOf(
+      'columns: { fixtureInitialDealtCount: true, tableId: true }',
     );
+    const replays = historySource.split('initialDealtCount: shoe.fixtureInitialDealtCount').length - 1;
     expect(shoeLoad).toBeGreaterThan(-1);
-    expect(replay).toBeGreaterThan(shoeLoad);
+    expect(historySource).toContain('shoe = shoeRow;');
+    expect(replays).toBe(2);
   });
 
   it('replays holdem showdown and fold-win scripts', () => {

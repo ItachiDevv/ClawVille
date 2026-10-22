@@ -53,6 +53,8 @@ export * from './types/cove-blackjack';
 export * from './types/cove-holdem';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) shared wire types.
 export * from './types/cove-baccarat';
+// Shared-table (multiplayer) baccarat public wire types (2026-10-22, frozen).
+export * from './types/cove-baccarat-table';
 export * from './constants/orientation-skill';
 export * from './constants/hatcher-actions';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.

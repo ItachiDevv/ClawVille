@@ -149,6 +149,8 @@ import { wirePokerMttToHub } from './services/poker/poker-mtt-ws-bridge';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) AUTHORITATIVE route (8-deck shoe,
 // fixed tableau, commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam 501).
 import { coveBaccaratRouter } from './routes/cove-baccarat';
+// Shared-table baccarat (2026-10-22): lobby, table state, sit/leave/bet (user|agent).
+import { coveBaccaratTableRouter } from './routes/cove-baccarat-tables';
 import { coveTestFixtureRouter } from './routes/cove-test-fixture';
 // Phase 6.7.0 — cove cross-game history + per-event provable-fair verifier.
 import { coveHistoryRouter } from './routes/cove-history';
@@ -475,6 +477,13 @@ app.route('/api/events', specialEventsRouter);
 // Phase 6.6.1 — cove Baccarat (Punto Banco) authoritative engine (8-deck shoe,
 // fixed third-card tableau, commit-reveal provably-fair; ClawToken ledger;
 // SOL/USDC seam returns 501).
+// MOUNT ORDER: register the shared-table router BEFORE the solo
+// `/api/cove/baccarat` router. Hono composes matching handlers in registration
+// order, so with the solo router first its `use('*')` session middleware also
+// runs (an extra Lucia lookup) on every `/api/cove/baccarat/tables/*` request.
+// Both prefixes route correctly in either order on Hono 4.12; the route test
+// (routes/__tests__/cove-baccarat-tables.route.test.ts) pins both facts.
+app.route('/api/cove/baccarat/tables', coveBaccaratTableRouter);
 app.route('/api/cove/baccarat', coveBaccaratRouter);
 app.route('/api/cove/test-fixture', coveTestFixtureRouter);
 // Phase 6.7.0 — cross-game history (owner-only list + owner|admin verify).
@@ -1618,6 +1627,60 @@ process.on('uncaughtException', (err) => {
       console.error('[API] Poker cash-house init failed (non-fatal):', err);
     }
 
+    // Shared-table BACCARAT house tables + visual-only seeded bots (2026-10-22).
+    // Three INDEPENDENT steps, each in its own try so one failure never stops the
+    // others (unlike cash poker, the baccarat tick does not need the bot pool):
+    //   1. `startBaccaratTableTick()` FIRST: it drives the round clock persisted
+    //      on each table row (betting -> CAS deal -> settle -> reveal) and runs
+    //      `maintainTable` (orphan guard + idle sweep). It must run even when the
+    //      seeder fails, or pending bets stay pending and tables stay in
+    //      betting/dealing on this process.
+    //   2. `baccaratHouseSeeder.ensure()` provisions the bot pool (0 vCLAW, never
+    //      bets) and rebuilds the seat reservations from the DB.
+    //   3. `startBaccaratHouseScaler()` keeps BAC_HOUSE_TABLES_LOW|MID|HIGH open
+    //      house tables per tier (gated on BAC_HOUSE_SCALER_ENABLED). Without the
+    //      pool it still creates tables (`created_by` null) and seats no bots.
+    // Non-fatal: each failure logs + alerts; it never blocks the rest of the boot.
+    try {
+      const { startBaccaratTableTick } = await import('./services/baccarat/baccarat-table-tick');
+      startBaccaratTableTick();
+      console.log('[API] Baccarat table tick ready');
+    } catch (err) {
+      console.error('[API] Baccarat table tick init failed (non-fatal):', err);
+      void alertError({
+        severity: 'critical',
+        source: 'baccarat-boot',
+        message: 'Baccarat table tick failed to start: shared-table rounds will not close on this process',
+        context: { error: String(err) },
+      });
+    }
+    try {
+      const { baccaratHouseSeeder } = await import('./services/baccarat/baccarat-house-seeder');
+      await baccaratHouseSeeder.ensure();
+      console.log('[API] Baccarat house seeder ready');
+    } catch (err) {
+      console.error('[API] Baccarat house seeder init failed (non-fatal):', err);
+      void alertError({
+        severity: 'warning',
+        source: 'baccarat-boot',
+        message: 'Baccarat house seeder failed: house tables run without seeded bots',
+        context: { error: String(err) },
+      });
+    }
+    try {
+      const { startBaccaratHouseScaler } = await import('./services/baccarat/baccarat-house-scaler');
+      startBaccaratHouseScaler();
+      console.log('[API] Baccarat house scaler ready');
+    } catch (err) {
+      console.error('[API] Baccarat house scaler init failed (non-fatal):', err);
+      void alertError({
+        severity: 'warning',
+        source: 'baccarat-boot',
+        message: 'Baccarat house scaler failed to start: no new house tables on this process',
+        context: { error: String(err) },
+      });
+    }
+
     // HOUSE TREASURY (Tokenomics T0, 2026-07-07) — the named fee-sink subject.
     // `ensure()` provisions the system user + 0-CT avatar + the
     // `treasury_subjects` ('house-fees') registry row, idempotently, with NO
@@ -1762,6 +1825,15 @@ async function gracefulShutdown(signal: string) {
       const { stopCashTableTick } = await import('./services/poker/cash-table-tick');
       stopCashHouseScaler();
       stopCashTableTick();
+    } catch {
+      // If the modules failed to load earlier, there's nothing to stop.
+    }
+    // Shared-table baccarat intervals (scaler + round tick). Idempotent stops.
+    try {
+      const { stopBaccaratHouseScaler } = await import('./services/baccarat/baccarat-house-scaler');
+      const { stopBaccaratTableTick } = await import('./services/baccarat/baccarat-table-tick');
+      stopBaccaratHouseScaler();
+      stopBaccaratTableTick();
     } catch {
       // If the modules failed to load earlier, there's nothing to stop.
     }
