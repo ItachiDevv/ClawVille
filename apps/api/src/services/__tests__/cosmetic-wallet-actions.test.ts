@@ -9,6 +9,7 @@ const sim = npcSimulation as any;
 const driver = agentAutonomyDriver as any;
 const SKU = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const SKU_2 = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+const SKU_3 = '3b241101-e2bb-4255-8caf-4136c566a962';
 const AGENT = 'cosmetic-test-agent';
 const AVATAR = 'cosmetic-test-avatar';
 const SESSION = 'cosmetic-test-session';
@@ -19,11 +20,12 @@ const originals = {
   balances: npcSimulation.autonomousWalletBalances,
   record: npcSimulation.autonomousWalletViewRecord,
   house: npcSimulation.autonomousHouseActorCheck,
+  buyWindow: npcSimulation.autonomousCosmeticBuyWindow,
 };
 let body: any;
 let resolved: any;
-const calls: { resolve: string[]; buy: any[]; equip: any[]; balances: string[]; record: any[]; house: string[] } = {
-  resolve: [], buy: [], equip: [], balances: [], record: [], house: [],
+const calls: { resolve: string[]; buy: any[]; equip: any[]; balances: string[]; record: any[]; house: string[]; buyWindow: string[] } = {
+  resolve: [], buy: [], equip: [], balances: [], record: [], house: [], buyWindow: [],
 };
 let balancesResult: any;
 
@@ -36,6 +38,7 @@ beforeEach(() => {
   sim.npcOverrides.set(bodyId, SESSION);
   sim.agentBotSessions.set(SESSION, { config: { mode: 'avatar', agentId: AGENT, avatarId: AVATAR, boundUserId: 'owner', ledgerCapable: true } });
   sim.autonomousCosmeticWalletLastAdmittedAt.clear();
+  sim.autonomousCosmeticBuyBlockedUntil.clear();
   driver.userAgents.set(AGENT, { agentId: AGENT, avatarId: AVATAR, bodyId, lastLesson: null, lastBuildingId: null, isHouse: false });
   resolved = { userId: 'owner', avatarId: AVATAR, agentId: AGENT, ledgerCapable: true };
   balancesResult = {
@@ -58,6 +61,7 @@ beforeEach(() => {
   npcSimulation.autonomousCosmeticEquip = async (actor, skuId) => { calls.equip.push({ actor, skuId }); return { ok: true, equipped: true }; };
   npcSimulation.autonomousWalletBalances = async (avatarId) => { calls.balances.push(avatarId); return balancesResult; };
   npcSimulation.autonomousWalletViewRecord = async (actor) => { calls.record.push(actor); };
+  npcSimulation.autonomousCosmeticBuyWindow = async (avatarId) => { calls.buyWindow.push(avatarId); return { allowed: true, nextBuyAt: null }; };
 });
 
 afterEach(() => {
@@ -67,6 +71,7 @@ afterEach(() => {
   npcSimulation.autonomousWalletBalances = originals.balances;
   npcSimulation.autonomousWalletViewRecord = originals.record;
   npcSimulation.autonomousHouseActorCheck = originals.house;
+  npcSimulation.autonomousCosmeticBuyWindow = originals.buyWindow;
   sim.npcs.delete(body.id); sim.npcOverrides.delete(body.id); sim.agentBotSessions.delete(SESSION);
   driver.userAgents.delete(AGENT);
 });
@@ -167,28 +172,125 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
     expect(prompt()).toContain(`Wardrobe: you now wear cosmetic ${SKU}.`);
 
     npcSimulation.autonomousCosmeticBuy = async () => ({ ok: false, status: 400, code: 'insufficient_vclaw', message: 'Not enough vCLAW. Need 200, have 5.' });
+    // A new day: the DB stub allows, and the 24-hour reservation is gone.
+    sim.autonomousCosmeticBuyBlockedUntil.clear();
     dispatch(`[ACTION: buy_cosmetic(skuId=${SKU_2})]`);
     await settle();
     expect(prompt()).toContain(`Shop: buy ${SKU_2} refused (insufficient_vclaw): Not enough vCLAW. Need 200, have 5.`);
   });
 
-  test('reservation: a repeat of the same avatar, verb and sku inside 60 seconds is dropped', async () => {
-    dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})] [ACTION: buy_cosmetic(skuId=${SKU})] [ACTION: buy_cosmetic(skuId=${SKU_2})]`);
+  test('reservation: a repeat of the same avatar, verb and sku inside 60 seconds is dropped (equip, view_wallet)', async () => {
+    dispatch(`[ACTION: equip_cosmetic(skuId=${SKU})] [ACTION: equip_cosmetic(skuId=${SKU})] [ACTION: equip_cosmetic(skuId=${SKU_2})]`);
     await settle();
-    expect(calls.buy.map((call) => call.skuId)).toEqual([SKU, SKU_2]);
-    dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
-    await settle();
-    expect(calls.buy).toHaveLength(2);
+    expect(calls.equip.map((call) => call.skuId)).toEqual([SKU, SKU_2]);
     // The window elapses: the same intent is admitted again.
-    const key = `${AVATAR}:buy_cosmetic:${SKU}`;
-    sim.autonomousCosmeticWalletLastAdmittedAt.set(key, Date.now() - 60_001);
-    dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+    sim.autonomousCosmeticWalletLastAdmittedAt.set(`${AVATAR}:equip_cosmetic:${SKU}`, Date.now() - 60_001);
+    dispatch(`[ACTION: equip_cosmetic(skuId=${SKU})]`);
     await settle();
-    expect(calls.buy).toHaveLength(3);
+    expect(calls.equip).toHaveLength(3);
     // Repeated view_wallet tags fan out into one chain read, not four.
     dispatch('[ACTION: view_wallet()] [ACTION: view_wallet()] [ACTION: view_wallet()] [ACTION: view_wallet()]');
     await settle();
     expect(calls.balances).toEqual([AVATAR]);
+  });
+
+  describe('buy_cosmetic daily cap (one purchase per avatar per 24 hours)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    test('one reply with three different buy tags makes exactly one buy call', async () => {
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})] [ACTION: buy_cosmetic(skuId=${SKU_2})] [ACTION: buy_cosmetic(skuId=${SKU_3})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      expect(calls.buy[0]).toEqual({ actor: expectedActor, skuId: SKU });
+      expect(calls.buyWindow).toEqual([AVATAR]);
+      // The settled buy wrote the last result line, not a refusal.
+      expect(prompt()).toContain(`Shop: bought ${SKU}`);
+      const blockedUntil = sim.autonomousCosmeticBuyBlockedUntil.get(`${AVATAR}:buy_cosmetic`);
+      expect(blockedUntil).toBeGreaterThan(Date.now() + DAY_MS - 60_000);
+    });
+
+    test('a second buy with a different sku after the first is refused with daily_limit', async () => {
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU_2})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      const text = prompt();
+      expect(text).toContain(`Shop: buy ${SKU_2} refused (daily_limit): one cosmetic purchase per 24 hours; next buy after `);
+      expect(text).toContain('Equip what you own instead.');
+    });
+
+    test('a failed buy keeps the 24-hour reservation (no retry loop)', async () => {
+      npcSimulation.autonomousCosmeticBuy = async (actor, skuId) => {
+        calls.buy.push({ actor, skuId });
+        return { ok: false, status: 400, code: 'insufficient_tokens', message: 'Not enough vCLAW. Need 200, have 5.' };
+      };
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      expect(prompt()).toContain('refused (daily_limit)');
+    });
+
+    test('DB window closed: no buy call, a daily_limit line with the DB open time, and the reservation holds until then', async () => {
+      const nextBuyAt = new Date(Date.now() + 5 * 60 * 60 * 1000).toISOString();
+      npcSimulation.autonomousCosmeticBuyWindow = async (avatarId) => { calls.buyWindow.push(avatarId); return { allowed: false, nextBuyAt }; };
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buyWindow).toEqual([AVATAR]);
+      expect(calls.buy).toEqual([]);
+      expect(prompt()).toContain(`Shop: buy ${SKU} refused (daily_limit): one cosmetic purchase per 24 hours; next buy after ${nextBuyAt}.`);
+      expect(sim.autonomousCosmeticBuyBlockedUntil.get(`${AVATAR}:buy_cosmetic`)).toBe(Date.parse(nextBuyAt));
+      // A later tag is refused in memory, without another DB read.
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU_2})]`);
+      await settle();
+      expect(calls.buyWindow).toHaveLength(1);
+      expect(calls.buy).toEqual([]);
+    });
+
+    test('DB window read throws: no buy call (fail closed), and a retry re-reads the DB', async () => {
+      npcSimulation.autonomousCosmeticBuyWindow = async (avatarId) => { calls.buyWindow.push(avatarId); throw new Error('db down'); };
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buy).toEqual([]);
+      expect(prompt()).toContain(`Shop: buy ${SKU} refused (limit_check_unavailable)`);
+      const blockedUntil = sim.autonomousCosmeticBuyBlockedUntil.get(`${AVATAR}:buy_cosmetic`);
+      expect(blockedUntil).toBeLessThanOrEqual(Date.now() + 60_000);
+      // The short retry wait elapses; the DB still fails, so still no buy.
+      sim.autonomousCosmeticBuyBlockedUntil.set(`${AVATAR}:buy_cosmetic`, Date.now() - 1);
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buyWindow).toEqual([AVATAR, AVATAR]);
+      expect(calls.buy).toEqual([]);
+    });
+
+    test('a guard drop releases the reservation; equip still works while buys are capped', async () => {
+      resolved = null;
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(sim.autonomousCosmeticBuyBlockedUntil.has(`${AVATAR}:buy_cosmetic`)).toBe(false);
+      resolved = { userId: 'owner', avatarId: AVATAR, agentId: AGENT, ledgerCapable: true };
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      dispatch(`[ACTION: buy_cosmetic(skuId=${SKU_2})] [ACTION: equip_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.buy).toHaveLength(1);
+      expect(calls.equip).toEqual([{ actor: expectedActor, skuId: SKU }]);
+    });
+
+    test('the reservation map stays bounded', () => {
+      const now = Date.now();
+      for (let i = 0; i < 5_010; i += 1) {
+        sim.setAutonomousCosmeticBuyBlockedUntil(`avatar-${i}:buy_cosmetic`, now + DAY_MS, now);
+      }
+      expect(sim.autonomousCosmeticBuyBlockedUntil.size).toBeLessThanOrEqual(5_000);
+      // The newest write survives; the oldest went first.
+      expect(sim.autonomousCosmeticBuyBlockedUntil.has('avatar-5009:buy_cosmetic')).toBe(true);
+      expect(sim.autonomousCosmeticBuyBlockedUntil.has('avatar-0:buy_cosmetic')).toBe(false);
+    });
   });
 
   test('view_wallet records the view, reads the bound avatar, and the summary reaches the next decision', async () => {
@@ -217,6 +319,7 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
       cosmeticCredit: 500,
       ownedUnequipped: [{ skuId: SKU, displayName: 'Pixel Shades', category: 'glasses' }],
       purchasable: [{ skuId: SKU_2, displayName: 'Kelp Crown', category: 'hat', priceVclaw: 200, creditCovers: true, affordable: true }],
+      buyLockedUntil: null,
     };
     const args = (isHouse: boolean) => [perception, { ...driver.userAgents.get(AGENT), isHouse }, [], null, [], undefined, undefined, undefined, undefined, undefined, targets] as const;
     const userPrompt = (agentAutonomyDriver.buildDecisionPrompt as any)(...args(false));
@@ -226,8 +329,32 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
     const housePrompt = (agentAutonomyDriver.buildDecisionPrompt as any)(...args(true));
     expect(housePrompt).not.toContain('Cosmetics (server-derived');
     expect(housePrompt).not.toContain('buy_cosmetic(');
+    expect(userPrompt).not.toContain('the next buy opens after');
     // Empty targets: no block.
     expect(prompt()).not.toContain('Cosmetics (server-derived');
+  });
+
+  test('decide prompt: a closed buy window lists no buys, names the open time, and keeps the equip lines', () => {
+    const perception = npcSimulation.buildPerception(body.id)!;
+    const lockedUntil = '2026-10-23T06:44:16.000Z';
+    const locked = {
+      vclawBalance: 120,
+      cosmeticCredit: 0,
+      ownedUnequipped: [{ skuId: SKU, displayName: 'Pixel Shades', category: 'glasses' }],
+      purchasable: [],
+      buyLockedUntil: lockedUntil,
+    };
+    const build = (targets: unknown, isHouse = false) => (agentAutonomyDriver.buildDecisionPrompt as any)(
+      perception, { ...driver.userAgents.get(AGENT), isHouse }, [], null, [], undefined, undefined, undefined, undefined, undefined, targets,
+    );
+    const text = build(locked);
+    expect(text).toContain(`the next buy opens after ${lockedUntil}. Equip a cosmetic you own instead.`);
+    expect(text).toContain(`[ACTION: equip_cosmetic(skuId=${SKU})] "Pixel Shades" (glasses)`);
+    expect(text).not.toContain('Buyable (cheapest first)');
+    // Locked with nothing to equip: the block still says why there is no buy.
+    expect(build({ ...locked, ownedUnequipped: [] })).toContain('the next buy opens after');
+    // House agents never see the block.
+    expect(build(locked, true)).not.toContain('Cosmetics (server-derived');
   });
 });
 
