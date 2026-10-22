@@ -1,5 +1,5 @@
 /**
- * Quests tab — dashboard-side surface for the 30 tutorial quests.
+ * Quests tab: dashboard-side surface for the 33 tutorial quests (10 tiers).
  *
  * Renders each tier as its own grouped section with a "live" / "pending"
  * badge so reviewers can see at a glance which quests have a working
@@ -15,6 +15,7 @@ import {
   TUTORIAL_QUEST_TOTAL_REWARD,
   TUTORIAL_QUEST_LIVE_REWARD,
   type TutorialQuestId,
+  type TutorialQuestStatus,
 } from '@clawville/shared';
 
 interface TutorialClaim { questId: string; claimCount: number; totalCt: number }
@@ -104,7 +105,9 @@ export default async function QuestsTab() {
                   const claim = claimsByQuest.get(q.id as TutorialQuestId);
                   const claimCount = claim?.claimCount ?? 0;
                   const totalCt = claim?.totalCt ?? 0;
-                  const isPending = q.status === 'pending';
+                  // Widened: no quest is pending today, so the literal type is only 'live'.
+                  const status = q.status as TutorialQuestStatus;
+                  const isPending = status === 'pending';
                   return (
                     <div
                       key={q.id}

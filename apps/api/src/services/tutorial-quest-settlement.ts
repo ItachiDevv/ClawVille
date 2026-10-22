@@ -42,6 +42,49 @@ import { creditClawTokens } from './claw-token-ledger';
 import { creditMaterials, readMaterialBalance } from './material-ledger';
 
 /**
+ * `big-spender` counts ONLY these `claw_token_transactions.reason` debits: CT
+ * that the payer's own avatar spent on goods or services and that left the
+ * player economy to the house treasury (each one is paired with a
+ * `house_fee_*` treasury credit, or burns when the treasury is unavailable).
+ * None of them has a refund path, and none re-debits money already counted
+ * under another reason. A split-provenance debit writes one row per tag, each
+ * with the same reason, so `SUM(-amount)` recovers the full spend.
+ *
+ *   buy_book               knowledge book (routes/items.ts)
+ *   buy_cosmetic           cosmetic shop, real-CT part only (routes/cosmetics.ts)
+ *   land_kit_piece_fee     yard kit piece on the CT rail (land-kit-settlement.ts)
+ *   land_structure_upgrade structure level-up (routes/land.ts)
+ *   land_parcel_rent       first-week rent, weekly rent, hold upkeep. Rent the
+ *                          sweeper draws from a deposit escrow writes NO tenant
+ *                          row, so escrow-funded rent is never counted twice.
+ *
+ * EXCLUDED ON PURPOSE:
+ *   - Every wager, stake, or buy-in (cove_*, poker_*, special_event_entry). A
+ *     stake can be won back, so counting it would turn a near-free action
+ *     into a 50 vCLAW faucet.
+ *   - land_service_purchase. It is a peer transfer: the seller gets the full
+ *     price back as `land_service_sale` (no rake), so two accounts that buy
+ *     each other's listings keep the vCLAW and both qualify. Same faucet as a
+ *     wager.
+ *   - Refundable escrows and deposits (land_deposit_escrow, land_deposit_topup,
+ *     exchange_escrow_*, bounty_escrow, salvage_bounty_funding), redemptions
+ *     and clawbacks (earned_redemption, earned_clawback), and house rows.
+ *
+ * A positive allowlist also excludes every reason built at runtime
+ * (`cove_blackjack_stake_delta`, `poker_cash_buy_in`, ...) by construction.
+ */
+export const BIG_SPENDER_REASONS = [
+  'buy_book',
+  'buy_cosmetic',
+  'land_kit_piece_fee',
+  'land_structure_upgrade',
+  'land_parcel_rent',
+] as const;
+
+/** vCLAW the avatar must spend on {@link BIG_SPENDER_REASONS} to qualify. */
+export const BIG_SPENDER_THRESHOLD_CT = 200;
+
+/**
  * Per-quest server-side proof-of-engagement check.
  *
  * Returns:
@@ -53,7 +96,7 @@ import { creditMaterials, readMaterialBalance } from './material-ledger';
  * knows to render "coming soon" rather than retry forever) vs the standard
  * `engagement_required` for not-yet-completed live quests.
  *
- * Q3 plan §2.6 + 2026-04-29 redesign — extended for the 30-quest ladder.
+ * Q3 plan §2.6 + 2026-04-29 redesign — extended for the tutorial ladder (33 quests since 2026-10-22).
  */
 export type EngagementResult = { ok: true } | { ok: false; pending: boolean; reason: string };
 
@@ -412,16 +455,43 @@ export async function validateTutorialQuestEngagement(
       return Number(rows[0]?.lvl ?? 0) >= 2 ? ok() : fail('no_structure_at_level_2');
     }
 
-    // Pending quests (style-statement, big-spender, wallet-aware,
-    // brand-ambassador) get short-circuited at the top of the function
-    // to `pending_feature`. They land here only via the type union; we
-    // double-gate as pending so a future un-pending without a case
-    // doesn't accidentally credit.
-    case 'style-statement':
-    case 'big-spender':
+    // ── 2026-10-22 quests wire (founder decision) ──────────────────────
+    case 'style-statement': {
+      // Emitters: cosmetic.purchased (POST /api/cosmetics/:skuId/buy) and
+      // cosmetic.equipped (POST /api/cosmetics/:skuId/equip). Both run under
+      // requireAuthOrAgentSession, so a human and an agent both qualify. A buy
+      // paid fully from the cosmetic-only signup credit counts on purpose:
+      // that is the new player's intended first purchase (Codex review
+      // 2026-10-22, kept; the reward is once per avatar like every quest).
+      const bought = await countEvents(sql`event_type = 'cosmetic.purchased'`);
+      if (bought < 1) return fail('no_cosmetic_purchase');
+      const equippedCount = await countEvents(sql`event_type = 'cosmetic.equipped'`);
+      return equippedCount >= 1 ? ok() : fail('no_cosmetic_equipped');
+    }
+
+    case 'big-spender': {
+      // Ledger state, not events: the debit row is the proof of spend. Keyed
+      // by avatar, which is the settlement subject for both humans and agents.
+      // Compared in SQL: SUM(integer) is bigint, and narrowing it to int would
+      // throw for a lifetime spend above 2^31 instead of qualifying.
+      const rows = await db.execute<{ qualified: boolean }>(sql`
+        SELECT COALESCE(SUM(-amount::bigint), 0) >= ${BIG_SPENDER_THRESHOLD_CT} AS qualified
+        FROM claw_token_transactions
+        WHERE avatar_id = ${avatarId}
+          AND amount < 0
+          AND reason IN (${sql.join(
+            BIG_SPENDER_REASONS.map((reason) => sql`${reason}`),
+            sql`, `,
+          )})
+      `);
+      return rows[0]?.qualified === true ? ok() : fail('insufficient_goods_spend');
+    }
+
     case 'wallet-aware':
-    case 'brand-ambassador':
-      return { ok: false, pending: true, reason: 'feature_not_shipped' };
+      // Emitter: GET /api/wallet/balances, once per avatar.
+      return (await countEvents(sql`event_type = 'wallet.viewed'`)) >= 1
+        ? ok()
+        : fail('no_wallet_view');
   }
 }
 

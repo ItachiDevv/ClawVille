@@ -615,6 +615,70 @@ export function retryUnclaimedRewards(): Promise<void> {
 }
 
 /**
+ * Wait before a claim-after-step attempt and before its one retry. The server
+ * writes the proof (`cosmetic.purchased`, `cosmetic.equipped`,
+ * `wallet.viewed`, the ledger debit) fire-and-forget or in the same request,
+ * so a claim sent at once can arrive before the event row exists.
+ */
+export const QUEST_STEP_CLAIM_DELAY_MS = 2_000;
+
+/** One entry per quest with a claim-after-step run in progress. */
+const stepClaimRuns = new Map<QuestId, { rerun: boolean }>();
+
+/**
+ * Claim-after-step (quests wire 2026-10-22): a `serverOnly` quest has no client
+ * trigger, and the `/game` mount sweep asks once and then skips a refused
+ * quest for TUTORIAL_CLAIM_REFUSAL_COOLDOWN_MS. So a mid-session cosmetic
+ * buy, equip, vCLAW spend or wallet view paid only on a later page load. The
+ * caller of a successful step calls this with the quest ids that step can
+ * complete. For each quest: wait `delayMs`, claim (non-silent: a credit shows
+ * the vCLAW toast, and the refusal cooldown does not apply), and on a refusal
+ * wait and claim one more time. A refusal is still recorded, so the sweep
+ * keeps its cooldown. A quest already claimed, or with no signed-in non-guest
+ * owner stamped on the store, sends nothing. A trigger while the quest's run
+ * is in progress sends no parallel claim; it asks the run for one more round
+ * (attempt + retry) if the current round ends refused.
+ */
+export function claimQuestsAfterStep(
+  questIds: readonly QuestId[],
+  opts?: { delayMs?: number },
+): Promise<void> {
+  const delayMs = opts?.delayMs ?? QUEST_STEP_CLAIM_DELAY_MS;
+  return Promise.all(questIds.map((questId) => runStepClaim(questId, delayMs))).then(
+    () => undefined,
+  );
+}
+
+async function runStepClaim(questId: QuestId, delayMs: number): Promise<void> {
+  const def = QUEST_DEFINITIONS.find((q) => q.id === questId);
+  if (!def) return;
+  const running = stepClaimRuns.get(questId);
+  if (running) {
+    running.rerun = true;
+    return;
+  }
+  const run = { rerun: false };
+  stepClaimRuns.set(questId, run);
+  try {
+    do {
+      run.rerun = false;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await waitForClaimRetry(delayMs);
+        const state = useQuestStore.getState();
+        // The identity watcher stamps only a signed-in non-guest account.
+        if (state.ownerUserId === null || state.serverClaimed[questId]) return;
+        const result = await claimTutorialQuestReward(def);
+        // 'claimed', 'unauthenticated' and 'retryable-failed' end the run;
+        // only a server refusal earns the one retry.
+        if (result !== 'terminal') return;
+      }
+    } while (run.rerun);
+  } finally {
+    stepClaimRuns.delete(questId);
+  }
+}
+
+/**
  * Quest-board restore (2026-07-29): pull the signed-in account's claimed
  * tutorial quests from the server and re-mark them completed locally. The
  * identity sweep deliberately wipes localStorage quest progress on session

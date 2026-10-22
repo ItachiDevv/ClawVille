@@ -3,7 +3,9 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 describe('cosmetic supply rolling-deploy guard', () => {
-  const route = readFileSync(join(import.meta.dir, '..', 'cosmetics.ts'), 'utf8');
+  // grantSkinInTx moved to the context-free service on 2026-10-22 (shared by
+  // the REST buy, the USDC checkout fulfiller, and the hosted-agent verb).
+  const route = readFileSync(join(import.meta.dir, '..', '..', 'services', 'cosmetic-actions.ts'), 'utf8');
   const migration = readFileSync(
     join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'migrations', '0035_cosmetic_sold_count.sql'),
     'utf8',

@@ -1050,7 +1050,8 @@ questRoutes.get('/', async (c) => {
 // Q3 plan §2.6 — Tutorial quest claim (CLIENT-tracked, SERVER-credited)
 // ---------------------------------------------------------------------------
 //
-// The 8+ tutorial quests defined in apps/web/src/lib/quests.ts are tracked
+// The tutorial quests (TUTORIAL_QUESTS in @clawville/shared, paired with client
+// conditions in apps/web/src/lib/quests.ts) are tracked
 // in zustand persist on the client (counters, threshold checks). When the
 // client detects completion, it calls this endpoint to settle the token
 // reward on the authoritative ledger.

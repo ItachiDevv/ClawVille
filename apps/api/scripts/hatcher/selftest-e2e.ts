@@ -1137,6 +1137,10 @@ async function main() {
       talk_to_npc: `[ACTION: talk_to_npc(npcId=${NPC_IDS[1]}, message=parity-probe)]`,
       update_appearance: '[ACTION: update_appearance()]', // Empty edit probes membership without persistence.
       chat_nori: '[ACTION: chat_nori(message=)]', // Empty question probes membership without cognition or rewards.
+      // Invalid grammar probes membership without a session resolve, a chain read, or a debit.
+      view_wallet: '[ACTION: view_wallet(probe=1)]',
+      equip_cosmetic: '[ACTION: equip_cosmetic()]',
+      buy_cosmetic: '[ACTION: buy_cosmetic()]',
     };
     const originalTradeResolve = npcSimulation.autonomousTradeAgentResolve;
     npcSimulation.autonomousTradeAgentResolve = async () => null;

@@ -15,6 +15,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
+import { claimQuestsAfterStep } from '@/stores/quest';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -161,10 +162,14 @@ export function useBuyCosmetic() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (skuId: string) => postBuy(skuId),
-    onSuccess: () => {
+    onSuccess: (data) => {
       // Refetch owned (new row) and avatar (CT balance changed).
       qc.invalidateQueries({ queryKey: ['cosmetics', 'owned'] });
       qc.invalidateQueries({ queryKey: ['avatar'] });
+      // A fresh buy writes `cosmetic.purchased` (style-statement, which also
+      // needs an equip) and, when paid in vCLAW, a big-spender debit. An
+      // alreadyOwned replay writes neither.
+      if (!data.alreadyOwned) void claimQuestsAfterStep(['style-statement', 'big-spender']);
     },
   });
 }
@@ -215,6 +220,8 @@ export function useEquipCosmetic() {
       );
     },
     onSuccess: (_data, vars, context) => {
+      // `cosmetic.equipped` is the second style-statement proof.
+      if (vars.equipped) void claimQuestsAfterStep(['style-statement']);
       // Server confirmed the toggle. Confirmation toast lands ~ when the
       // cosmetic-loader's GLB attach is about to render.
       useGameStore.getState().addToast(

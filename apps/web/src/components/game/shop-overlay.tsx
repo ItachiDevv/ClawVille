@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/lib/api';
 import { useGameStore } from '@/stores/game';
-import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
+import { useQuestStore, triggerQuestCheck, claimQuestsAfterStep } from '@/stores/quest';
 import { useAvatar } from '@/hooks/use-avatar';
 
 export default function ShopOverlay() {
@@ -34,6 +34,8 @@ export default function ShopOverlay() {
       if (res.item.isBook) {
         qs.incrementCounter('booksBought', 1);
         if (currentLocation) qs.recordDistinct('distinctBookBuildings', currentLocation);
+        // A book is a big-spender good (`buy_book` debit).
+        void claimQuestsAfterStep(['big-spender']);
       }
       triggerQuestCheck();
       setBuyingId(null);

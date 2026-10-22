@@ -36,7 +36,7 @@ test('actual parser calls shared service with exact actor and full decision menu
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ actor: { kind: 'agent', sessionId: 'appearance-session', expectedAgentId: 'external-appearance-agent', expectedAvatarId: 'appearance-avatar' }, patch: { color: 'red', gender: 'female' } });
   expect(requests[0].isCurrent()).toBe(true);
-  expect(HATCHER_ACTION_VERBS).toHaveLength(18);
+  expect(HATCHER_ACTION_VERBS).toHaveLength(21);
   const prompt = agentAutonomyDriver.buildDecisionPrompt(npcSimulation.buildPerception(body.id)!, { agentId: session.config.agentId, avatarId: session.config.avatarId, bodyId: body.id, lastLesson: null, lastBuildingId: null } as any);
   for (const verb of HATCHER_ACTION_VERBS) expect(prompt).toContain(`${verb}(`);
   expect(CLAWVILLE_GAME_TOOLS.find((tool) => tool.name === 'clawville_update_appearance')?.description).toContain('PATCH /api/avatars/me/appearance');
@@ -68,7 +68,7 @@ test('decision menu: a house entry omits every house-refused verb; a non-house e
   const housePrompt = agentAutonomyDriver.buildDecisionPrompt(perception, { ...entry, isHouse: true } as any);
   for (const action of HATCHER_ACTION_MENU) expect(userPrompt).toContain(action.syntax);
   for (const line of DECISION_SCOPE) expect(userPrompt).toContain(line);
-  expect(HOUSE_REFUSED_AUTONOMY_VERBS.size).toBe(6);
+  expect(HOUSE_REFUSED_AUTONOMY_VERBS.size).toBe(9);
   for (const action of HATCHER_ACTION_MENU) {
     if (HOUSE_REFUSED_AUTONOMY_VERBS.has(action.verb)) {
       expect(housePrompt).not.toContain(action.syntax);

@@ -1,12 +1,19 @@
 /**
- * Q3 plan §2.6 + 2026-04-29 redesign — 30 tutorial quests across 9 tiers.
+ * Q3 plan §2.6 + 2026-04-29 redesign: 33 tutorial quests across 10 tiers
+ * (29 pay vCLAW in tiers 1-9; the 4 land quests of tier 10 pay materials).
  *
  * Replaces the 10-quest single-condition list with a richer ladder of
- * single → compound → mega-compound capstones that exposes every demo
- * surface (built-or-not). Quests for not-yet-built features ship with
- * `status: 'pending'`; the client renders them as "Coming soon" and the
- * server validator returns `engagement_required: pending_feature` so
- * nobody can claim them until the underlying emitter ships.
+ * single → compound → mega-compound capstones. A quest for a not-yet-built
+ * feature ships with `status: 'pending'`; the client renders it as "soon"
+ * and the server validator returns `engagement_required: pending_feature`
+ * so nobody can claim it until the underlying emitter ships.
+ *
+ * 2026-10-22 (quests wire, founder decision): style-statement, big-spender
+ * and wallet-aware went `live` (server checks: cosmetic.purchased +
+ * cosmetic.equipped events; vCLAW ledger debits on goods and services;
+ * the wallet.viewed event). brand-ambassador was deleted: its Milady
+ * install check could never be verified. No quest is `pending` today; the
+ * status type stays so a future quest can ship gated.
  *
  * Single source of truth: this array. Derived everywhere:
  *  - `apps/web/src/lib/quests.ts` builds QUEST_DEFINITIONS by zipping
@@ -38,7 +45,7 @@ export interface TutorialQuestEntry {
   readonly status: TutorialQuestStatus;
   readonly tier: number;
   /**
-   * Omitted on the 30 legacy quests, which all pay vCLAW. The land quests set
+   * Omitted on the 29 tier 1-9 quests, which all pay vCLAW. The land quests set
    * `'materials'`: land mints NO new vCLAW (builder-economics 0) and land
    * quests award NO leaderboard points (founder ruling Q11).
    */
@@ -66,8 +73,8 @@ export const TUTORIAL_QUESTS = [
   { id: 'inventory-in-action', tier: 4, status: 'live', icon: '🎒', title: 'Inventory in Action', reward: 30, description: 'Buy any item AND use/equip it in game' },
   { id: 'library-card',    tier: 4, status: 'live',    icon: '📚', title: 'Library Card',       reward: 50,  description: 'Buy 3 books from 3 different buildings AND read all 3' },
   { id: 'polymath',        tier: 4, status: 'live',    icon: '🧠', title: 'Polymath',           reward: 75,  description: 'Have your agent learn 10 knowledge topics' },
-  { id: 'style-statement', tier: 4, status: 'pending', icon: '🪩', title: 'Style Statement',    reward: 30,  description: 'Buy a cosmetic AND equip it' },
-  { id: 'big-spender',     tier: 4, status: 'pending', icon: '💸', title: 'Big Spender',        reward: 50,  description: 'Spend 200 vCLAW (any combo)' },
+  { id: 'style-statement', tier: 4, status: 'live',    icon: '🪩', title: 'Style Statement',    reward: 30,  description: 'Buy a cosmetic AND equip it' },
+  { id: 'big-spender',     tier: 4, status: 'live',    icon: '💸', title: 'Big Spender',        reward: 50,  description: 'Spend 200 vCLAW on books, cosmetics or land (bets do not count)' },
 
   // ── TIER 5 — ACTIVITIES ───────────────────────────────────────────────
   { id: 'first-match',     tier: 5, status: 'live',    icon: '⚔️', title: 'First Match',        reward: 15,  description: 'Finish 1 activity match' },
@@ -86,13 +93,12 @@ export const TUTORIAL_QUESTS = [
   { id: 'building-champion', tier: 7, status: 'live',  icon: '👑', title: 'Building Champion',  reward: 100, description: 'Be the top-visited subject for any single building (24h)' },
 
   // ── TIER 8 — CROSS-WORLD (Phase 5.1) ──────────────────────────────────
-  { id: 'wallet-aware',    tier: 8, status: 'pending', icon: '💰', title: 'Wallet Aware',       reward: 15,  description: 'View your avatar wallet for the first time' },
+  { id: 'wallet-aware',    tier: 8, status: 'live',    icon: '💰', title: 'Wallet Aware',       reward: 15,  description: 'View your avatar wallet for the first time' },
   { id: 'crossover',       tier: 8, status: 'live',    icon: '🌉', title: 'Crossover',          reward: 100, description: "Cross via the 'scape portal (or link existing 'scape account)" },
 
   // ── TIER 9 — CAPSTONES ────────────────────────────────────────────────
   { id: 'full-house',      tier: 9, status: 'live',    icon: '🏘️', title: 'Full House',         reward: 200, description: 'All 10 buildings visited + all 10 teachers chatted + 5 books bought + read' },
   { id: 'elite-trainer',   tier: 9, status: 'live',    icon: '🥋', title: 'Elite Trainer',      reward: 300, description: 'Bot connected + 3 match wins + 10 knowledge topics learned + top-100 reached' },
-  { id: 'brand-ambassador', tier: 9, status: 'pending', icon: '🌟', title: 'Brand Ambassador', reward: 500, description: 'Top-10 leaderboard + 2+ bots connected + Milady install verified + scape portal crossed' },
 
   // -- TIER 10 -- HOMESTEAD (land) ---------------------------------------
   // Materials only, no leaderboard points (founder ruling Q11). Their

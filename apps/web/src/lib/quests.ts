@@ -1,6 +1,6 @@
 // Quest/Objective system — types, definitions, and helpers.
 //
-// Q3 plan §2.6 + 2026-04-29 redesign — 30 tutorial quests across 9 tiers.
+// Q3 plan §2.6 + 2026-04-29 redesign: 33 tutorial quests across 10 tiers.
 // Single source of truth: TUTORIAL_QUESTS in @clawville/shared. This file
 // pairs each entry with a `condition` describing how the client tracks
 // progress + an optional list of prerequisites.
@@ -11,7 +11,7 @@
 //   - `distinctSet`    — distinct value count from a Record ≥ threshold
 //   - `openClaw`       — any connected OpenClaw bot in npc store
 //   - `compound`       — every sub-predicate must pass
-//   - `pending`        — feature not built; never auto-completes
+//   - `pending`        — feature not built; never auto-completes (no quest uses it today)
 //   - `serverOnly`     — only the server can verify; client retries claim
 //
 // Server is the source of truth for amounts. The client tracks just enough
@@ -21,6 +21,7 @@
 import {
   TUTORIAL_QUESTS,
   type TutorialQuestId,
+  type TutorialQuestStatus,
 } from '@clawville/shared';
 
 export type QuestId = TutorialQuestId;
@@ -176,16 +177,20 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
     prerequisites: ['library-card'],
   },
   'style-statement': {
-    // Pending: the Wardrobe shop is live, but the server claim check is not
-    // (status `pending` in TUTORIAL_QUESTS; settlement returns pending_feature).
-    hint: 'Not claimable yet. You can already buy and equip cosmetics in the Wardrobe (sidebar Cosmetics).',
-    condition: { type: 'pending' },
+    // serverOnly: the server checks a cosmetic.purchased AND a
+    // cosmetic.equipped event for this avatar. The client `cosmeticsEquipped`
+    // counter is never incremented, so it cannot drive this quest.
+    hint: 'Open the Wardrobe (sidebar Cosmetics), buy a cosmetic, then equip it. Server-validated.',
+    condition: { type: 'serverOnly' },
     prerequisites: [],
   },
   'big-spender': {
-    // Pending: no server-side spend total exists yet (status `pending`).
-    hint: 'Not claimable yet. The server does not track total vCLAW spent yet.',
-    condition: { type: 'pending' },
+    // serverOnly: the server sums this avatar's vCLAW ledger debits with the
+    // BIG_SPENDER_REASONS allowlist (tutorial-quest-settlement.ts): books,
+    // vCLAW cosmetics, rent and hold upkeep, structure upgrades, vCLAW kit
+    // pieces. The client cannot see the ledger.
+    hint: 'Spend 200 vCLAW in total on knowledge books (2 in every building), cosmetics paid in vCLAW (sidebar Cosmetics), or land at the Land Office: rent (the first week, weekly rent, hold upkeep), structure upgrades, and yard kit pieces paid in vCLAW. Bets, game buy-ins, deposits, prepaid rent weeks, land services from other players, the free cosmetic credit and pieces paid with materials do not count. Server-validated.',
+    condition: { type: 'serverOnly' },
     prerequisites: [],
   },
 
@@ -259,9 +264,13 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
 
   // TIER 8
   'wallet-aware': {
-    // Pending: wallet views are not recorded server-side (status `pending`).
-    hint: 'Not claimable yet. Wallet views are not tracked yet.',
-    condition: { type: 'pending' },
+    // serverOnly: the server records one wallet.viewed event per avatar when
+    // GET /api/wallet/balances answers 200 or the no-wallet 404. The web
+    // WalletPanel calls it on every mount (Wallet modal and My Agent modal).
+    // My Agent comes first: the chip and the sidebar Wallet entry are hidden
+    // for an avatar with no custodial wallet.
+    hint: 'Open your wallet once: open My Agent in the sidebar, or tap the wallet chip next to your vCLAW balance, or the sidebar Wallet entry. Server-validated.',
+    condition: { type: 'serverOnly' },
     prerequisites: [],
   },
   crossover: {
@@ -280,13 +289,6 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
     hint: 'Connect a bot, win 3 matches, learn 10 books, hit top-100. Server-validated.',
     condition: { type: 'serverOnly' },
     prerequisites: ['bot-master', 'match-maker', 'polymath', 'top-100'],
-  },
-  'brand-ambassador': {
-    // Pending and unreachable: one of its conditions was the Milady sideload
-    // install, retired 2026-07-23. Removal needs packages/shared + settlement.
-    hint: 'Not claimable. This quest is retired.',
-    condition: { type: 'pending' },
-    prerequisites: [],
   },
 
   // TIER 10 — the four land quests (materials rail).
@@ -322,6 +324,8 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
 
 export const QUEST_DEFINITIONS: QuestDefinition[] = TUTORIAL_QUESTS.map((entry) => {
   const extras = QUEST_EXTRAS[entry.id];
+  // Widened: no quest is `pending` today, so the literal type is only 'live'.
+  const status = entry.status as TutorialQuestStatus;
   return {
     id: entry.id,
     title: entry.title,
@@ -332,7 +336,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = TUTORIAL_QUESTS.map((entry) 
     prerequisites: extras.prerequisites,
     rewardTokens: entry.reward,
     tier: entry.tier,
-    isPending: entry.status === 'pending',
+    isPending: status === 'pending',
   };
 });
 

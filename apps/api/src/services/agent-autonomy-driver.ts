@@ -130,6 +130,13 @@ import {
   readAutonomousQuestTargets,
   type AutonomousQuestTarget,
 } from './autonomous-quest-targets';
+// Bounded server-derived sku ids for equip_cosmetic / buy_cosmetic (same
+// consumption-mandate reason as the quest block above).
+import {
+  EMPTY_AUTONOMOUS_COSMETIC_TARGETS,
+  readAutonomousCosmeticTargets,
+  type AutonomousCosmeticTargets,
+} from './autonomous-cosmetic-targets';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -253,7 +260,7 @@ interface HouseAgentEntry {
 
 /** A single decision generator — real LLM in prod, canned in tests. */
 type DecideFn = (prompt: string) => Promise<string>;
-type TargetReaderName = 'land' | 'quests' | 'salvage' | 'build' | 'trading';
+type TargetReaderName = 'land' | 'quests' | 'salvage' | 'build' | 'trading' | 'cosmetics';
 const TARGET_READ_TIMEOUT_MS = 10_000;
 
 // Cadence + safety constants.
@@ -374,6 +381,10 @@ const TALK_COOLDOWN_MAP_MAX = Math.max(
   1024,
   (MAX_HOUSE_AGENTS + MAX_AUTONOMOUS_USER_AGENTS) * 12,
 );
+// Prior teacher questions per (agent, building) kept for the talk prompt, and
+// the per-question length cap (founder 2026-10-22: no repeated questions).
+const PRIOR_TALK_QUESTIONS_MAX = 4;
+const PRIOR_TALK_QUESTION_MAX_CHARS = 160;
 // Memory read-back bound. P3 slice 3: readRecentLessons now converges onto the
 // agent's OWN ElizaOS runtime (semantic RAG — embed a query + vector search),
 // falling back to the keyword store only when the runtime isn't warm. The RAG
@@ -522,6 +533,12 @@ export function decisionThought(action: ParsedDriverAction): string {
       return 'Claiming a quest reward';
     case 'salvage_node':
       return 'Salvaging materials from a seabed node';
+    case 'view_wallet':
+      return 'Checking my wallet';
+    case 'equip_cosmetic':
+      return 'Putting on a cosmetic';
+    case 'buy_cosmetic':
+      return 'Buying a cosmetic';
     case 'claim_parcel': {
       const parcelCode = nonEmptyParam(action.params.parcelCode);
       const parcel = parcelCode ? ` ${parcelCode}` : '';
@@ -604,6 +621,14 @@ class AgentAutonomyDriver {
   // Slice 4: `${agentId}:${buildingId}` -> epoch-ms until which conducted
   // teacher turns at that building are suppressed (LLM-spend bound).
   private talkCooldownUntil = new Map<string, number>();
+  // Founder 2026-10-22: `${agentId}:${buildingId}` -> the agent's own last
+  // PRIOR_TALK_QUESTIONS_MAX questions to that teacher (newest last), fed into
+  // buildTalkPrompt so it stops asking the same question on every visit.
+  // Driver-level like talkCooldownUntil, so it survives autonomy off/on of the
+  // same agent and is never cleaned per agent (same as talkCooldownUntil).
+  // Bounded by TALK_COOLDOWN_MAP_MAX with oldest-first eviction (see
+  // recordPriorQuestion). Written ONLY at the talk mutation point.
+  private priorTalkQuestions = new Map<string, string[]>();
   // Missing-body watchdog state, keyed by agentId. Kept OFF the entry on purpose:
   // the house self-heal re-registers (replaces) the entry, and the backoff +
   // warn rate-limit must survive that. Cleared on unregister (bounded by the two
@@ -873,6 +898,18 @@ class AgentAutonomyDriver {
     const entry = this.userAgents.get(agentId);
     if (!entry || entry.avatarId !== avatarId) return;
     entry.lastLesson = `Nori: ${reply.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX)}`;
+  }
+
+  /**
+   * A server-written action result (view_wallet balances, a buy_cosmetic or
+   * equip_cosmetic outcome) must reach the next choice. Same slot and fence as
+   * rememberSystemChatReply: user entries only, exact avatar match. The text is
+   * server-built, and tags are stripped anyway, so it can never act.
+   */
+  rememberActionResult(agentId: string, avatarId: string, text: string): void {
+    const entry = this.userAgents.get(agentId);
+    if (!entry || entry.avatarId !== avatarId) return;
+    entry.lastLesson = text.replace(/\[ACTION:[^\]]*\]/gi, '').replace(/\s+/g, ' ').trim().slice(0, LESSON_SNIPPET_MAX) || null;
   }
 
   /** O(1): does this owner currently have a driver-enrolled autonomous agent?
@@ -1230,8 +1267,11 @@ class AgentAutonomyDriver {
    * starts the arrival talk call now and stores the promise on the entry.
    *
    * Why it is the same decision:
-   * - buildTalkPrompt reads only buildingId + the building's static label and
-   *   cryptoFocus, never position, so the prompt built now equals the one the
+   * - buildTalkPrompt reads only buildingId, the building's static label and
+   *   cryptoFocus, and the agent's prior questions to that teacher (a sync
+   *   map read), never position. The prior-question list changes only at the
+   *   talk mutation point in the arrived branch (recordPriorQuestion, after
+   *   this prefetch was consumed), so the prompt built now equals the one the
    *   arrived branch builds. The arrived branch still rebuilds it and uses the
    *   prefetch only on byte equality.
    * - Same model call: runtimeDecideFn, the shape driveAgentNow passes in.
@@ -1266,7 +1306,12 @@ class AgentAutonomyDriver {
     const runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
     if (!runtime) return;
     // Built exactly as the arrived branch builds it.
-    const prompt = this.buildTalkPrompt(buildingId, building.label, building.cryptoFocus);
+    const prompt = this.buildTalkPrompt(
+      buildingId,
+      building.label,
+      building.cryptoFocus,
+      this.getPriorQuestions(entry.agentId, buildingId),
+    );
     const promise = this.runtimeDecideFn(runtime)(prompt);
     // withTimeout never rejects; this keeps a discarded prefetch from ever
     // surfacing as an unhandled rejection.
@@ -1544,7 +1589,14 @@ class AgentAutonomyDriver {
       const building = perception.nearbyBuildings.find(
         (b) => b.buildingId === buildingId,
       );
-      const prompt = this.buildTalkPrompt(buildingId, building?.label, building?.cryptoFocus);
+      const priorQuestions = this.getPriorQuestions(entry.agentId, buildingId);
+      const priorCount = priorQuestions.length;
+      const prompt = this.buildTalkPrompt(
+        buildingId,
+        building?.label,
+        building?.cryptoFocus,
+        priorQuestions,
+      );
       const talkDirectiveRevision = entry.directiveRevision;
       // Talk prefetch (see maybeStartTalkPrefetch): use it only for the same
       // building, the byte-identical prompt and the same directive revision,
@@ -1572,7 +1624,7 @@ class AgentAutonomyDriver {
       // TEMP DEBUG (see above): the RAW talk reply — reveals whether gpt-4o-mini
       // emits a parseable [ACTION: talk_to_npc(...)] tag.
       console.log(
-        `[AutonomyDriver][debug] talk ${sessionDigest(entry.agentId)} replyLen=${reply.length} reply=${JSON.stringify(reply.slice(0, 240))}`,
+        `[AutonomyDriver][debug] talk ${sessionDigest(entry.agentId)} replyLen=${reply.length} prior=${priorCount} reply=${JSON.stringify(reply.slice(0, 240))}`,
       );
       // The agent's OWN visible bubble — the existing [ACTION:] path (the
       // executor's proximity gate re-checks server-side).
@@ -1583,6 +1635,11 @@ class AgentAutonomyDriver {
       // fail-soft on every error, so a failed turn just earns nothing.
       const message = extractTalkMessage(reply);
       if (message) {
+        // Talk mutation point (founder 2026-10-22): the bubble was dispatched,
+        // so the question was asked; record it whether or not the teacher turn
+        // succeeds. This is the ONLY writer of priorTalkQuestions, and it runs
+        // after the prefetch was consumed and after the fence above.
+        this.recordPriorQuestion(entry.agentId, buildingId, message);
         const turn = await this.teacherTurn({
           agentId: entry.agentId,
           bodyId: entry.bodyId,
@@ -1639,7 +1696,7 @@ class AgentAutonomyDriver {
         );
       }
     }
-    const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets, tradingDesk] = await Promise.all([
+    const [lessons, knowledge, landTargets, questTargets, salvageTargets, buildTargets, tradingDesk, cosmeticTargets] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
       this.readTargetBounded(agentId, 'land', () => readAutonomousLandTargets({
@@ -1703,12 +1760,27 @@ class AgentAutonomyDriver {
         );
         return EMPTY_TRADING_DESK;
       })),
+      // House agents are refused all three cosmetic/wallet verbs
+      // (HOUSE_REFUSED_AUTONOMY_VERBS) and their menu omits them, so skip the
+      // read for the fleet, like quests, salvage and build above.
+      entry.isHouse
+        ? Promise.resolve(EMPTY_AUTONOMOUS_COSMETIC_TARGETS)
+        : this.readTargetBounded(agentId, 'cosmetics', () => readAutonomousCosmeticTargets({
+        avatarId: entry.avatarId,
+        userId: entry.houseUserId,
+      }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} cosmetic targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return EMPTY_AUTONOMOUS_COSMETIC_TARGETS;
+      })),
     ]);
     // Target reads can also outlive the owner instruction or enrollment.
     if (entry.directiveRevision !== directiveRevision
       || (this.houseAgents.get(agentId) ?? this.userAgents.get(agentId)) !== entry) return;
     if (landTargets === undefined || questTargets === undefined || salvageTargets === undefined
-      || buildTargets === undefined || tradingDesk === undefined) {
+      || buildTargets === undefined || tradingDesk === undefined || cosmeticTargets === undefined) {
       // Unknown target state cannot become an invented empty world or desk.
       // One immediate follow-up is already bounded by driveAgentNow; unresolved
       // readers stay guarded, then the steady tick retries after they settle.
@@ -1726,6 +1798,7 @@ class AgentAutonomyDriver {
       salvageTargets,
       buildTargets,
       tradingDesk,
+      cosmeticTargets,
     );
     // Directive fast path (founder 2026-10-20: "faster path, same decision").
     // Skips one ~5 s model call ONLY when the decision is already fixed: the
@@ -2125,6 +2198,7 @@ class AgentAutonomyDriver {
     salvageTargets: AutonomousSalvageTargets = EMPTY_SALVAGE_TARGETS,
     buildTargets: AutonomousBuildTargets = EMPTY_AUTONOMOUS_BUILD_TARGETS,
     tradingDesk: AutonomousTradingDesk = EMPTY_TRADING_DESK,
+    cosmeticTargets: AutonomousCosmeticTargets = EMPTY_AUTONOMOUS_COSMETIC_TARGETS,
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -2257,6 +2331,33 @@ class AgentAutonomyDriver {
       ]),
       'If you lack materials for a piece, salvage_node gathers more.',
     ].join('\n');
+    // The cosmetics block. equip_cosmetic / buy_cosmetic take a uuid the model
+    // cannot guess, so list the valid ones (owned-but-unworn first, then the
+    // cheapest buyable). Server-derived and advisory: the buy service re-runs
+    // every check, so a stale row costs one refused action, never a wrong debit.
+    // Omitted when both lists are empty (and always for a house actor, which
+    // never sees these verbs).
+    const cosmeticBlock = [
+      `Cosmetics (server-derived; copy skuId exactly). You hold ${cosmeticTargets.vclawBalance} vCLAW and ${cosmeticTargets.cosmeticCredit} cosmetic credit (credit pays first, then vCLAW):`,
+      ...(cosmeticTargets.ownedUnequipped.length > 0
+        ? [
+            'Owned, not worn (free to wear):',
+            ...cosmeticTargets.ownedUnequipped.map((item) =>
+              `- [ACTION: equip_cosmetic(skuId=${item.skuId})] "${item.displayName}" (${item.category})`,
+            ),
+          ]
+        : []),
+      ...(cosmeticTargets.purchasable.length > 0
+        ? [
+            'Buyable (cheapest first):',
+            ...cosmeticTargets.purchasable.map((item) =>
+              `- [ACTION: buy_cosmetic(skuId=${item.skuId})] "${item.displayName}" (${item.category}) costs ${item.priceVclaw} vCLAW — ${item.creditCovers ? 'your credit covers it' : item.affordable ? 'you can afford it' : 'you cannot afford it yet'}`,
+            ),
+          ]
+        : []),
+    ].join('\n');
+    const showCosmeticBlock = !entry.isHouse
+      && (cosmeticTargets.ownedUnequipped.length > 0 || cosmeticTargets.purchasable.length > 0);
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
@@ -2283,6 +2384,7 @@ class AgentAutonomyDriver {
       landBlock,
       ...(salvageTargets.nodes.length > 0 ? [salvageBlock] : []),
       ...(buildableParcels.length > 0 ? [buildBlock] : []),
+      ...(showCosmeticBlock ? ['', cosmeticBlock] : []),
       '',
       questBlock,
       '',
@@ -2320,6 +2422,37 @@ class AgentAutonomyDriver {
       }
     }
     this.talkCooldownUntil.set(this.cooldownKey(agentId, buildingId), now + TALK_BUILDING_COOLDOWN_MS);
+  }
+
+  /** Sync read of the agent's prior questions to this teacher (oldest first). */
+  private getPriorQuestions(agentId: string, buildingId: string): readonly string[] {
+    return this.priorTalkQuestions.get(this.cooldownKey(agentId, buildingId)) ?? [];
+  }
+
+  /**
+   * Record a question the agent asked this teacher. Called ONLY from the
+   * arrived branch, after extractTalkMessage returned a message (so after the
+   * prefetch was consumed and after the post-await fence). Normalized: all
+   * whitespace collapses to single spaces, trimmed, capped at
+   * PRIOR_TALK_QUESTION_MAX_CHARS. An equal prior entry moves to newest
+   * instead of being stored twice. Bounded like stampTalkCooldown, but there
+   * is no expiry here, so only the oldest-first drop applies.
+   */
+  private recordPriorQuestion(agentId: string, buildingId: string, raw: string): void {
+    const question = raw.replace(/\s+/g, ' ').trim().slice(0, PRIOR_TALK_QUESTION_MAX_CHARS);
+    if (!question) return;
+    const key = this.cooldownKey(agentId, buildingId);
+    const prior = this.priorTalkQuestions.get(key);
+    const next = [...(prior ?? []).filter((q) => q !== question), question].slice(
+      -PRIOR_TALK_QUESTIONS_MAX,
+    );
+    // delete + set keeps Map insertion order oldest-updated first for eviction.
+    this.priorTalkQuestions.delete(key);
+    if (this.priorTalkQuestions.size >= TALK_COOLDOWN_MAP_MAX) {
+      const oldest = this.priorTalkQuestions.keys().next().value;
+      if (oldest !== undefined) this.priorTalkQuestions.delete(oldest);
+    }
+    this.priorTalkQuestions.set(key, next);
   }
 
   /**
@@ -2558,15 +2691,32 @@ class AgentAutonomyDriver {
    * Prompt the agent to converse with the teacher it has arrived at. The
    * message must be a single short clause WITHOUT commas or parentheses — the
    * [ACTION:] param parser splits on `,` and ends the action at `)`.
+   *
+   * `priorQuestions` (founder 2026-10-22) is the agent's own earlier questions
+   * to this teacher (getPriorQuestions, a sync read). When non-empty, a block
+   * listing them and asking for a different part of the topic follows the
+   * "ask ONE focused question" line. When empty, the prompt is byte-identical
+   * to the pre-2026-10-22 prompt. The list changes only at the talk mutation
+   * point (recordPriorQuestion); map eviction can also drop it, and then the
+   * byte-equality check at arrival rejects the prefetch and asks again.
    */
   private buildTalkPrompt(
     buildingId: string,
-    label?: string,
-    cryptoFocus?: string,
+    label: string | undefined,
+    cryptoFocus: string | undefined,
+    priorQuestions: readonly string[],
   ): string {
+    const priorBlock = priorQuestions.length > 0
+      ? [
+        'You already asked this teacher:',
+        ...priorQuestions.map((q) => `- ${q}`),
+        'Ask about a DIFFERENT part of the topic. Do not repeat or rephrase these questions.',
+      ]
+      : [];
     return [
       `You have arrived at "${label ?? buildingId}"${cryptoFocus ? `, which teaches ${cryptoFocus}` : ''}.`,
       'Greet the teacher and ask ONE focused question about their topic.',
+      ...priorBlock,
       'Reply with EXACTLY this action tag (the message must be a single short clause',
       'with NO commas and NO parentheses):',
       `[ACTION: talk_to_npc(buildingId=${buildingId}, message=your short question here)]`,

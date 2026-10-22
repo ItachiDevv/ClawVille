@@ -20,9 +20,16 @@
  *   - records the settlement's usd_basis on the `x402_checkouts` row (the
  *     service does this in the same tx) — the audit trail of the dollars.
  *
- * The skin grant reuses the SHARED helpers extracted from
- * `routes/cosmetics.ts` (`checkSkuPurchasable` / `grantSkinInTx`) so the two
- * rails can never drift on validation or grant semantics.
+ * The skin grant reuses the SHARED helpers in `services/cosmetic-actions.ts`
+ * (`checkSkuPurchasable` / `grantSkinInTx`, the same ones the CT balance-buy
+ * runs) so the two rails can never drift on validation or grant semantics.
+ *
+ * QUEST EVENT (2026-10-22): a FRESH grant also records `cosmetic.purchased`
+ * (`rail: 'usdc'`, `realCtCharged: 0`) so a USDC buy counts for the
+ * `style-statement` tutorial quest like a CT buy. It is written on the settle
+ * tx under a savepoint (`recordUsdcCosmeticPurchaseInTx`): the row commits
+ * only with the grant, a rolled-back attempt that resumes leaves no extra row,
+ * and an events-insert failure never blocks the paid grant.
  *
  * Race handling: the QUOTE resolver + the registered settle PREFLIGHT both
  * reject an already-owned or already-sold-out SKU BEFORE any money moves. If
@@ -43,7 +50,8 @@ import {
   CosmeticSoldOutError,
   findOwnedSkin,
   grantSkinInTx,
-} from '../../routes/cosmetics';
+  recordUsdcCosmeticPurchaseInTx,
+} from '../cosmetic-actions';
 import { enqueueClvBuy } from '../clv-swap-executor';
 
 /** Kind-specific quote refusals the route maps to HTTP statuses. */
@@ -131,6 +139,22 @@ const cosmeticFulfiller: CheckoutFulfiller = async (ctx) => {
     },
     ctx.tx,
   );
+
+  // 3) Quest proof: `cosmetic.purchased` for a FRESH grant only, the same
+  //    rule as the CT buy (an alreadyOwned answer logs nothing). Savepoint on the SAME tx,
+  //    so it commits exactly with the grant; never throws.
+  if (!grant.alreadyOwned) {
+    await recordUsdcCosmeticPurchaseInTx(ctx.tx, {
+      checkoutId: ctx.checkoutId,
+      userId: ctx.subject.userId,
+      avatarId: ctx.subject.avatarId,
+      subjectKind: ctx.subject.kind,
+      skuId: ctx.itemRef,
+      avatarSkinId: grant.avatarSkinId,
+      priceVclaw: ctx.priceVclaw,
+      usdCents: ctx.usdCents,
+    });
+  }
 
   // NO ledger call anywhere above — this fulfiller imports NOTHING from
   // claw-token-ledger. The unit tests assert zero credit/debit/mintEarned.

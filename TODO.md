@@ -346,7 +346,7 @@ Coolify VPS hit 100% disk on 2026-04-16 from accumulated Docker images + build c
 - [ ] Minimap shows player position; add NPC positions (sonar blips with species color).
 - [ ] Personality page UX bug — large empty space between archetype cards and the CREATE button on `/create-agent/personality`; habitat/hobby/greeting selectors not visible without scrolling.
 - [ ] **NPC personalities reseed** (founder ask 2026-07-30, during the Ansem promo-NPC build) — general refresh pass over ALL wanderer/system NPC `personality` seeds in `packages/shared/src/constants/npc-definitions.ts` (and Nori's `knowledge[]` where personality-adjacent). Several read as first-draft filler; the Ansem wanderer (X-API-researched voice seed) is the quality bar. Roster data only, no code change; ships in one diff with a GameFeatures drift note.
-- [ ] Tutorial Quest tracker — 2 quests have `status: 'pending'` (Style Statement, Big Spender) — wire them up when the cosmetic shop has SKUs and a "Big Spender" event aggregator exists.
+- [x] Tutorial Quest tracker: Style Statement, Big Spender and Wallet Aware are `live` with server checks; Brand Ambassador is removed (quests wire, 2026-10-22).
 
 ---
 

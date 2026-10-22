@@ -55,13 +55,14 @@
  * returned). The "secretKey returned exactly once" doctrine is untouched.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
+import { recordFirstWalletView, type WalletViewMeta } from '../services/wallet-view-record';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
 import {
@@ -217,9 +218,32 @@ walletWithdrawRoutes.post(
 // GET /balances — read-only custodial balances (live regardless of the flag)
 // ---------------------------------------------------------------------------
 
+// `wallet.viewed` — the proof the `wallet-aware` tutorial quest reads, logged
+// ONCE per avatar (guests and house agents skipped). The recorder lives in
+// `services/wallet-view-record.ts` so the hosted-agent `view_wallet` verb
+// records the same event; this route passes the request's anti-farm tags.
+function walletViewMeta(c: Context<ActivityAuthContext>): WalletViewMeta {
+  const fpHash: unknown = c.get('fpHash');
+  const ipPrefixHash: unknown = c.get('ipPrefixHash');
+  return {
+    fpHash: typeof fpHash === 'string' ? fpHash : null,
+    ipPrefixHash: typeof ipPrefixHash === 'string' ? ipPrefixHash : null,
+  };
+}
+
 walletWithdrawRoutes.get('/balances', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const identity = c.get('identity');
   const result = await getCustodialWalletBalances(identity.avatarId);
+  // Fire-and-forget, on the 200 AND on the `wallet_missing` 404: a recording
+  // failure never changes the response. The async wrapper turns a synchronous
+  // throw into a caught rejection too. Auth failures never reach this handler.
+  void (async () => {
+    try {
+      await recordFirstWalletView(identity, walletViewMeta(c));
+    } catch {
+      // recordFirstWalletView never throws; nothing may escape to the client.
+    }
+  })();
   if (!result.ok) {
     return c.json({ error: result.code, code: result.code }, 404);
   }

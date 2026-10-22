@@ -10,7 +10,7 @@
  *                          original "is the leaderboard thesis working" view)
  *   ?tab=tokens          — score weights + daily caps + bundle tiers + CLV
  *                          mint info + treasury balances
- *   ?tab=quests          — 10 tutorial quests with claim counts + backend
+ *   ?tab=quests          — the tutorial quest ladder with claim counts + backend
  *                          admin-curated quests
  *   ?tab=cosmetics       — catalog grid w/ thumbnails (or category icon
  *                          fallback), variant counts, license attribution

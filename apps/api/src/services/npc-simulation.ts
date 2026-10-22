@@ -95,6 +95,9 @@ import {
   type ResolvedAutonomousCoveAgent,
 } from './autonomous-cove-agent-binding';
 import { HOUSE_REFUSED_AUTONOMY_VERBS } from './house-refused-verbs';
+// Type-only: the runtime modules load lazily inside the test seams.
+import type { CosmeticActor, CosmeticActionFailure } from './cosmetic-actions';
+import type { CustodialBalancesResult } from './wallet-withdraw-executor';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
@@ -286,6 +289,55 @@ const AUTONOMOUS_BACCARAT_BET_SIDES: ReadonlySet<string> = new Set<AutonomousBac
 ]);
 const AUTONOMOUS_LAND_ACTION_INTERVAL_MS = 60_000;
 const AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS = 60_000;
+/**
+ * view_wallet / equip_cosmetic / buy_cosmetic reserve each (avatar, verb, sku)
+ * intent for 60 seconds (view_wallet: 10 minutes, below), like
+ * claim_tutorial_quest. The buy service is already
+ * idempotent per (avatar, sku); this damps a burst of identical tags and stops
+ * repeated view_wallet tags from fanning out into chain balance reads.
+ */
+const AUTONOMOUS_COSMETIC_WALLET_INTERVAL_MS = 60_000;
+/**
+ * view_wallet makes 3 chain balance reads on the Helius account that prod and
+ * staging share (it ran out of quota on 2026-10-08), so one avatar may repeat
+ * it only every 10 minutes.
+ */
+const AUTONOMOUS_VIEW_WALLET_INTERVAL_MS = 10 * 60_000;
+/** Exact `skuId=<uuid>` grammar for equip_cosmetic and buy_cosmetic. */
+const COSMETIC_SKU_PARAM_RE = /^\s*skuId\s*=\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s*$/;
+const COSMETIC_SKU_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** One short line for the agent's next decide prompt. Numbers only, no pubkey. */
+export function formatWalletViewResult(result: CustodialBalancesResult): string {
+  if (!result.ok) {
+    return 'Wallet: you have no custodial wallet yet, so there are no on-chain balances. Your vCLAW is in-game and unaffected.';
+  }
+  const parts = (['SOL', 'USDC', 'CLV'] as const).map((asset) => {
+    const balance = result.balances[asset];
+    return balance?.available && balance.uiAmount !== null && Number.isFinite(balance.uiAmount)
+      ? `${asset} ${Number(balance.uiAmount.toFixed(6))}`
+      : `${asset} unreadable now`;
+  });
+  return `Wallet: custodial balances ${parts.join(', ')}; withdrawals are ${result.withdrawEnabled ? 'on' : 'off'}.`;
+}
+
+/** One short line for the agent's next decide prompt about a buy_cosmetic result. */
+export function formatCosmeticBuyResult(
+  skuId: string,
+  result: { ok: true; body: Record<string, unknown> } | CosmeticActionFailure,
+): string {
+  if (!result.ok) {
+    const message = result.message.replace(/\s+/g, ' ').slice(0, 160);
+    return `Shop: buy ${skuId} refused (${result.code}): ${message}`;
+  }
+  const balance = typeof result.body.clawTokens === 'number' ? result.body.clawTokens : null;
+  const balanceText = balance === null ? '' : ` Your vCLAW balance is ${balance}.`;
+  if (result.body.alreadyOwned === true) {
+    return `Shop: you already own ${skuId}; nothing was charged.${balanceText} Wear it with equip_cosmetic.`;
+  }
+  const credit = typeof result.body.bonusApplied === 'number' ? result.body.bonusApplied : 0;
+  return `Shop: bought ${skuId} (cosmetic credit used ${credit}).${balanceText} Wear it with equip_cosmetic.`;
+}
 const AUTONOMOUS_TRADE_RESERVATION_MS = 30_000;
 // Salvage's real spacing is the 6-hour per-node cooldown; this only damps a
 // burst of identical tags inside one reply, so it is deliberately short.
@@ -1088,6 +1140,53 @@ class NpcSimulation {
     return updateAvatarAppearance(input);
   };
   private appearanceUpdatesInFlight = new Set<string>();
+  /**
+   * Test seam; re-resolves the live connected-agent session for view_wallet,
+   * equip_cosmetic and buy_cosmetic. The caller refuses a house actor first
+   * (HOUSE_REFUSED_AUTONOMY_VERBS), because this resolve unregisters a house
+   * body that has no bearer session.
+   */
+  autonomousCosmeticAgentResolve: typeof this.autonomousTradeAgentResolve = async (sessionId, expectedAgentId) => {
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    const resolved = await resolveAgentSession(sessionId);
+    return resolved?.agentId === expectedAgentId ? resolved : null;
+  };
+  /** Test seam; the SAME buy service as POST /api/cosmetics/:skuId/buy. */
+  autonomousCosmeticBuy: (
+    actor: CosmeticActor,
+    skuId: string,
+  ) => Promise<{ ok: true; body: Record<string, unknown> } | CosmeticActionFailure> = async (actor, skuId) => {
+    const { buyCosmeticForActor } = await import('./cosmetic-actions');
+    // A hosted action has no browser request: no fingerprint or IP to salt.
+    return buyCosmeticForActor(actor, { skuId }, { fpHash: null, ipPrefixHash: null });
+  };
+  /** Test seam; the SAME equip service as POST /api/cosmetics/:skuId/equip. */
+  autonomousCosmeticEquip: (
+    actor: CosmeticActor,
+    skuId: string,
+  ) => Promise<{ ok: true; equipped: boolean } | CosmeticActionFailure> = async (actor, skuId) => {
+    const { setCosmeticEquippedForActor } = await import('./cosmetic-actions');
+    return setCosmeticEquippedForActor(actor, skuId, true, { fpHash: null, ipPrefixHash: null });
+  };
+  /** Test seam; the SAME read as GET /api/wallet/balances. Read-only. */
+  autonomousWalletBalances: (avatarId: string) => Promise<CustodialBalancesResult> = async (avatarId) => {
+    const { getCustodialWalletBalances } = await import('./wallet-withdraw-executor');
+    return getCustodialWalletBalances(avatarId);
+  };
+  /** Test seam; the SAME once-per-avatar `wallet.viewed` writer as GET /api/wallet/balances. */
+  autonomousWalletViewRecord: (actor: CosmeticActor) => Promise<void> = async (actor) => {
+    const { recordFirstWalletView } = await import('./wallet-view-record');
+    await recordFirstWalletView(actor, { fpHash: null, ipPrefixHash: null });
+  };
+  /**
+   * Test seam; hands a short action result to the hosted autonomy driver, which
+   * shows it in the agent's next decide prompt. Data only: it never re-enters
+   * action dispatch.
+   */
+  autonomousActionResult: (agentId: string, avatarId: string, text: string) => Promise<void> = async (agentId, avatarId, text) => {
+    const { agentAutonomyDriver } = await import('./agent-autonomy-driver');
+    agentAutonomyDriver.rememberActionResult(agentId, avatarId, text);
+  };
   private arenaRound: ArenaRoundState | null = null;
 
   // OpenClaw bot registry
@@ -1098,6 +1197,7 @@ class NpcSimulation {
   private autonomousCovePlayLastAdmittedAt = new Map<string, number>();
   private autonomousLandActionLastAdmittedAt = new Map<string, number>();
   private autonomousQuestClaimLastAdmittedAt = new Map<string, number>();
+  private autonomousCosmeticWalletLastAdmittedAt = new Map<string, number>();
   private autonomousSalvageLastAdmittedAt = new Map<string, number>();
   private autonomousTradeLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
@@ -2648,6 +2748,17 @@ class NpcSimulation {
         });
         if (!valid) continue;
       }
+      // Wallet and cosmetic verbs have a strict grammar too: view_wallet takes
+      // no params; equip/buy take exactly one `skuId=<uuid>`. Anything else
+      // (an extra authority field, a duplicate, a malformed id) drops the tag.
+      if (name === 'view_wallet' && paramStr.length > 0) {
+        console.warn('[Hatcher] view_wallet dropped — it takes no parameters');
+        continue;
+      }
+      if ((name === 'equip_cosmetic' || name === 'buy_cosmetic') && !COSMETIC_SKU_PARAM_RE.test(paramStr)) {
+        console.warn(`[Hatcher] ${name} dropped — expected exactly skuId=<uuid>`);
+        continue;
+      }
       if (paramStr.length > 0) {
         for (const part of paramStr.split(',')) {
           const eq = part.indexOf('=');
@@ -2989,6 +3100,117 @@ class NpcSimulation {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(`[Hatcher] claim_tutorial_quest dropped — ${reason}`);
+    }
+  }
+
+  /**
+   * view_wallet / equip_cosmetic / buy_cosmetic as the bound avatar.
+   *
+   * Each one runs the SAME shared service as its REST route (GET
+   * /api/wallet/balances, POST /api/cosmetics/:skuId/{equip,buy}), so a human
+   * and a hosted agent take one code path. The guard ladder is the
+   * claim_tutorial_quest one, applied to all three because each writes a
+   * tutorial-quest proof (`wallet.viewed`, `cosmetic.equipped`,
+   * `cosmetic.purchased`) and buy_cosmetic spends vCLAW:
+   *   1. refuse a house actor BEFORE any session resolve (fail closed);
+   *   2. re-resolve the live connected session for this exact agentId;
+   *   3. require a ledger-authorized session;
+   *   4. require a bound avatar and owner;
+   *   5. require the live binding to equal the captured attribution;
+   *   6. reserve (avatar, verb, sku) for 60 seconds, synchronously, before the
+   *      service await.
+   * An unbound or non-ledger agent is DROPPED, never demoted to a guest.
+   * The result goes to the hosted driver as one short line for the next decide.
+   */
+  private async settleAutonomousCosmeticWalletAction(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    action: { verb: 'view_wallet' } | { verb: 'equip_cosmetic' | 'buy_cosmetic'; skuId: string },
+  ): Promise<void> {
+    const verb = action.verb;
+    try {
+      if (await this.refusedForHouseActor(verb, attribution.agentId)) return;
+    } catch {
+      console.warn(`[Hatcher] ${verb} dropped — house actor check unavailable`);
+      return;
+    }
+    try {
+      const resolved = await this.autonomousCosmeticAgentResolve(
+        attribution.sessionId,
+        attribution.agentId,
+      );
+      if (!resolved) {
+        console.warn(`[Hatcher] ${verb} dropped — no live connected session`);
+        return;
+      }
+      if (!resolved.ledgerCapable) {
+        console.warn(`[Hatcher] ${verb} dropped — agent session is not ledger-authorized`);
+        return;
+      }
+      if (!resolved.avatarId || !resolved.userId) {
+        console.warn(`[Hatcher] ${verb} dropped — agent has no bound avatar`);
+        return;
+      }
+      if (resolved.avatarId !== attribution.avatarId || resolved.agentId !== attribution.agentId) {
+        console.warn(`[Hatcher] ${verb} dropped — live agent/avatar binding changed`);
+        return;
+      }
+
+      const admittedAt = Date.now();
+      if (this.autonomousCosmeticWalletLastAdmittedAt.size > 5_000) {
+        for (const [key, lastAt] of this.autonomousCosmeticWalletLastAdmittedAt) {
+          // The longest window, so an eviction never re-opens view_wallet early.
+          if (admittedAt - lastAt >= AUTONOMOUS_VIEW_WALLET_INTERVAL_MS) {
+            this.autonomousCosmeticWalletLastAdmittedAt.delete(key);
+          }
+        }
+      }
+      const skuId = action.verb === 'view_wallet' ? '' : action.skuId;
+      const intervalMs = action.verb === 'view_wallet'
+        ? AUTONOMOUS_VIEW_WALLET_INTERVAL_MS
+        : AUTONOMOUS_COSMETIC_WALLET_INTERVAL_MS;
+      const reservationKey = `${resolved.avatarId}:${verb}:${skuId}`;
+      const prior = this.autonomousCosmeticWalletLastAdmittedAt.get(reservationKey);
+      if (prior !== undefined && admittedAt - prior < intervalMs) {
+        console.warn(`[Hatcher] ${verb} dropped — duplicate action reserved for ${intervalMs / 1000} seconds`);
+        return;
+      }
+      // Reserve synchronously, before the service await.
+      this.autonomousCosmeticWalletLastAdmittedAt.set(reservationKey, admittedAt);
+
+      const actor: CosmeticActor = {
+        kind: 'agent',
+        userId: resolved.userId,
+        avatarId: resolved.avatarId,
+        agentId: resolved.agentId,
+        // Proven by guard 3 above; the shared services refuse an agent actor
+        // unless this is exactly true (fail closed).
+        ledgerCapable: true,
+      };
+      let resultLine: string;
+      if (action.verb === 'view_wallet') {
+        // Record the view first and independently: a view counts with OR
+        // without a custodial wallet, exactly like the REST route, and the
+        // recorder never throws.
+        await this.autonomousWalletViewRecord(actor).catch(() => undefined);
+        resultLine = formatWalletViewResult(await this.autonomousWalletBalances(actor.avatarId));
+      } else if (action.verb === 'equip_cosmetic') {
+        const result = await this.autonomousCosmeticEquip(actor, action.skuId);
+        resultLine = result.ok
+          ? `Wardrobe: you now wear cosmetic ${action.skuId}.`
+          : `Wardrobe: equip ${action.skuId} refused (${result.code}).`;
+        if (!result.ok) console.warn(`[Hatcher] equip_cosmetic not applied — ${result.code}`);
+      } else {
+        const result = await this.autonomousCosmeticBuy(actor, action.skuId);
+        resultLine = formatCosmeticBuyResult(action.skuId, result);
+        if (!result.ok) console.warn(`[Hatcher] buy_cosmetic not settled — ${result.code}`);
+        const body = this.npcs.get(npcId);
+        if (result.ok && body) body.intentDescription = `buying cosmetic ${action.skuId}`;
+      }
+      await this.autonomousActionResult(attribution.agentId, attribution.avatarId, resultLine);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[Hatcher] ${verb} dropped — ${reason}`);
     }
   }
 
@@ -3681,6 +3903,34 @@ class NpcSimulation {
           return;
         }
         void this.settleAutonomousQuestClaim(npcId, attribution, params.questId);
+        return;
+      }
+      case 'view_wallet': {
+        if (Object.keys(params).length > 0) {
+          console.warn('[Hatcher] view_wallet dropped — unknown parameter');
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] view_wallet dropped — no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousCosmeticWalletAction(npcId, attribution, { verb: 'view_wallet' });
+        return;
+      }
+      case 'equip_cosmetic':
+      case 'buy_cosmetic': {
+        if (Object.keys(params).some((key) => key !== 'skuId') || !COSMETIC_SKU_ID_RE.test(params.skuId ?? '')) {
+          console.warn(`[Hatcher] ${name} dropped — expected exactly skuId=<uuid>`);
+          return;
+        }
+        if (!attribution) {
+          console.warn(`[Hatcher] ${name} dropped — no bound agent/avatar attribution`);
+          return;
+        }
+        void this.settleAutonomousCosmeticWalletAction(npcId, attribution, {
+          verb: name,
+          skuId: params.skuId.toLowerCase(),
+        });
         return;
       }
       case 'salvage_node': {
