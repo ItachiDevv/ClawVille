@@ -82,6 +82,7 @@ const SEAT_BADGE_GAP_PX = 4;
 const SEPARATION_ORDER: number[] = [];
 const SEPARATION_GROUP: number[] = [];
 const SEPARATION_SHIFT: number[] = [];
+const SEPARATION_RECENTER: number[] = [];
 
 function separationGroupRoot(slot: number): number {
   let root = slot;
@@ -116,24 +117,30 @@ export function separateSeatBadges(
     if (shown[slot]) order.push(slot);
   }
   if (order.length < 2) return;
-  order.sort((a, b) => top[a]! - top[b]! || a - b);
   const overlapsHorizontally = (a: number, b: number) =>
     Math.abs(left[a]! - left[b]!) < (width[a]! + width[b]!) / 2 + gapPx;
   const minDy = (a: number, b: number) => (height[a]! + height[b]!) / 2 + gapPx;
-
-  for (let k = 1; k < order.length; k += 1) {
-    const slot = order[k]!;
-    const before = top[slot]!;
-    for (let m = 0; m < k; m += 1) {
-      const above = order[m]!;
-      if (!overlapsHorizontally(above, slot)) continue;
-      const needed = top[above]! + minDy(above, slot);
-      if (top[slot]! < needed) top[slot] = needed;
+  /** Top to bottom, each badge moves down below every earlier badge it
+   * overlaps. Afterwards no horizontally overlapping pair overlaps vertically. */
+  const sweepDown = (recordShift: boolean) => {
+    order.sort((a, b) => top[a]! - top[b]! || a - b);
+    for (let k = 1; k < order.length; k += 1) {
+      const slot = order[k]!;
+      const before = top[slot]!;
+      for (let m = 0; m < k; m += 1) {
+        const above = order[m]!;
+        if (!overlapsHorizontally(above, slot)) continue;
+        const needed = top[above]! + minDy(above, slot);
+        if (top[slot]! < needed) top[slot] = needed;
+      }
+      if (recordShift) SEPARATION_SHIFT[slot] = top[slot]! - before;
     }
-    SEPARATION_SHIFT[slot] = top[slot]! - before;
-  }
+  };
 
-  // Touching badges form a group; a group moves back up by its mean shift.
+  sweepDown(true);
+
+  // Touching badges form a group; a group moves back up by its mean shift,
+  // so it stays centred on its anchors.
   for (let k = 1; k < order.length; k += 1) {
     for (let m = 0; m < k; m += 1) {
       const a = order[m]!;
@@ -152,6 +159,11 @@ export function separateSeatBadges(
       sum += SEPARATION_SHIFT[other]!;
       count += 1;
     }
-    top[slot] = top[slot]! - sum / count;
+    SEPARATION_RECENTER[slot] = sum / count;
   }
+  for (const slot of order) top[slot] = top[slot]! - SEPARATION_RECENTER[slot]!;
+
+  // A recentred group can move into a neighbour group (Codex review
+  // 2026-10-22); one more downward sweep removes every overlap again.
+  sweepDown(false);
 }

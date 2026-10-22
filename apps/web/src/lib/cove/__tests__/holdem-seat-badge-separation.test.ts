@@ -42,4 +42,20 @@ describe('separateSeatBadges', () => {
     expect(top[2]! - top[1]!).toBeGreaterThanOrEqual(44 - 1e-9);
     expect((top[0]! + top[1]! + top[2]!) / 3).toBeCloseTo(210, 9);
   });
+
+  // Codex review 2026-10-22: recentring each group on its own moved one
+  // group into another (badges 0 and 1 overlapped by 31.25 px).
+  test('no horizontally overlapping pair overlaps vertically after recentring', () => {
+    const left = [120, 120, 180, 240, 120];
+    const top = new Float64Array([129, 184, 235, 243, 263]);
+    const width = [120, 120, 120, 120, 120];
+    const height = [40, 60, 40, 60, 60];
+    separateSeatBadges(left, top, width, height, [1, 1, 1, 1, 1]);
+    for (let a = 0; a < 5; a += 1) {
+      for (let b = a + 1; b < 5; b += 1) {
+        if (Math.abs(left[a]! - left[b]!) >= (width[a]! + width[b]!) / 2 + 4) continue;
+        expect(Math.abs(top[a]! - top[b]!)).toBeGreaterThanOrEqual((height[a]! + height[b]!) / 2 + 4 - 1e-9);
+      }
+    }
+  });
 });
