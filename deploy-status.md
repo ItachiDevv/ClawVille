@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 08:28Z (session roundup). **Staging is receiving `fix/autonomy-cosmetic-cap` (PROTOCOL 99, no migration): a hosted autonomous agent completes at most one `buy_cosmetic` per avatar per 24 hours** (live prod bug, DEPLOY LOG 2026-10-22 08:28Z). Not yet verified on staging. **PROD API + WEB = `26c02e392`** (promotion #13; carries the bug until the next promotion). SCHEMA: synced.
+Last Audited: 2026-10-22 10:16Z (session roundup). **PROD API + WEB = `f271f9f9b` (promotions #14 PR #324 + #15 PR #325: hosted `buy_cosmetic` daily cap PROTOCOL 99, exact quest-claim calls, READY quest marking; no migration), verified live with hosted agents** (DEPLOY LOG 2026-10-22 10:16Z). **STAGING API + WEB = `12b30a337`** (`b3a999484` is a no-change merge of master). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (3 emotes bought by the pre-fix loop).
+
+Prior - Last Audited: 2026-10-22 08:28Z (session roundup). **Staging is receiving `fix/autonomy-cosmetic-cap` (PROTOCOL 99, no migration): a hosted autonomous agent completes at most one `buy_cosmetic` per avatar per 24 hours** (live prod bug, DEPLOY LOG 2026-10-22 08:28Z). Not yet verified on staging. **PROD API + WEB = `26c02e392`** (promotion #13; carries the bug until the next promotion). SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-22 06:55Z (session roundup). **PROD API + WEB = `26c02e392` (promotion #13, PR #323: quests wire PROTOCOL 98, autonomy talk prompt, AGENTS.md/CLAUDE.md untracked; no migration), verified live** (DEPLOY LOG 2026-10-22 06:55Z). **STAGING API + WEB = `7de0811da`** (same code as prod). SCHEMA: synced. Founder eyes owed (FOUNDER-REVIEW).
 
@@ -670,6 +672,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-22 10:16Z (session roundup) - promotions #14 + #15 on prod (`f271f9f9b`), hosted agents verified live
+- **Promotion #14** (PR #324, merge `e5041496`, 09:34Z; flipped ~09:44Z): hosted `buy_cosmetic` daily cap (PROTOCOL 99) + exact quest-claim calls + duplicate-drop feedback. **Promotion #15** (PR #325, merge `f271f9f9b`, 10:05Z; run success 10:09Z, flipped 10:13Z): READY quest marking. The PR was `BEHIND` master (the #324 merge commit); `gh pr update-branch` merged master into staging (`b3a999484`, no file change) before the merge.
+- **Prod checks:** both containers `SOURCE_COMMIT` = `f271f9f9b`; `/health` commit `f271f9f9b`; container `PROTOCOL_VERSION = 99` (checked on #14); 0 error/exception log lines in the 10 min after the flip; `/game` signed out renders the town, no page exceptions. Prod disk 54 GB free.
+- **Prod live test on #14 (owner directive "Buy the cheapest cosmetic you can afford, put it on, then check your wallet balances, then claim the quests you finished"; temporary sessions, deleted after):** `test1` (window open): ONE buy 09:45:05Z (signup credit, vCLAW stays 1000), `wallet.viewed` 09:45:55Z, equip 09:46:26Z, a second buy refused `daily limit`. `TokenTestBot` (window closed by its 07:52Z buy): 0 buys, 5 refused `daily limit`, wallet view, equip of an owned emote, balance unchanged at 900. Then directive "Claim the tutorial quests you have finished": both agents settled `style-statement` +30 and `wallet-aware` +15 via `surface: hosted_action`; repeats refused `already_claimed` (no double pay). Both agents turned off 09:50Z.
+- **Prod human test (same session, before the fix, test9949x):** Brand Ambassador 404; style-statement 400 before the steps, +30 after buy + equip; wallet-aware +15, repeat 409; big-spender refused while the only spend was cosmetic credit, +50 after 280 vCLAW of books.
+- **Not verified on prod:** #15's READY marking with a prod agent (verified on staging `12b30a337`: zero `not_qualified` claims). Still seen with a standing "buy" order and a closed window: the model writes malformed `buy_cosmetic` tags that the parser drops (no money path; wasted decides). FOUNDER DECISION: refund `qelreth` (300 cosmetic credit + 100 vCLAW, 3 emotes bought 06:44-06:45Z by the pre-fix loop)?
+- SCHEMA: synced.
 
 ### 2026-10-22 09:50Z (session roundup) - promotion #14 merged (`e5041496`); quest READY marking to staging
 - **Promotion #14:** PR #324 (`staging` `98e81ba85` to `master`), merged 09:34:39Z, merge `e5041496`: the hosted `buy_cosmetic` daily cap (PROTOCOL 99) + exact quest-claim calls + duplicate-drop feedback. Prod run 39756490360 success; prod verification in the next entry.
