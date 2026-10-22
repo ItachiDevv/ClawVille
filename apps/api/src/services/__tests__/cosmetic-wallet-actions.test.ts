@@ -462,26 +462,41 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
 });
 
 describe('decide prompt quest block', () => {
-  test('each claimable quest line carries the exact claim_tutorial_quest call, and that call parses', async () => {
-    const perception = npcSimulation.buildPerception(body.id)!;
-    const quests = [{ questId: 'style-statement', title: 'Style Statement', rail: 'vclaw', reward: 30, requirement: 'buy and equip a cosmetic' }];
-    const text = (agentAutonomyDriver.buildDecisionPrompt as any)(
-      perception, driver.userAgents.get(AGENT), [], null, [], undefined, quests,
-    );
-    expect(text).toContain('Claimable quests (server-derived; copy one exact call; unclaimed and live only):');
-    const line = '- [ACTION: claim_tutorial_quest(questId=style-statement)] "Style Statement" pays 30 vCLAW — requires: buy and equip a cosmetic';
-    expect(text).toContain(line);
+  const build = (quests: unknown[]) => (agentAutonomyDriver.buildDecisionPrompt as any)(
+    npcSimulation.buildPerception(body.id)!, driver.userAgents.get(AGENT), [], null, [], undefined, quests,
+  );
+
+  test('a READY quest carries the exact call (and it parses); an unfinished one has no call', async () => {
+    const text = build([
+      { questId: 'style-statement', title: 'Style Statement', rail: 'vclaw', reward: 30, requirement: 'buy and equip a cosmetic', ready: true },
+      { questId: 'say-hi-nori', title: 'Say Hi', rail: 'vclaw', reward: 5, requirement: 'chat with Nori once', ready: false },
+    ]);
+    expect(text).toContain('Claimable quests (server-derived; READY ones have their proof; copy one exact call):');
+    const readyLine = '- [ACTION: claim_tutorial_quest(questId=style-statement)] READY "Style Statement" pays 30 vCLAW';
+    expect(text).toContain(readyLine);
+    expect(text).toContain('- say-hi-nori: "Say Hi" pays 5 vCLAW — not done yet: chat with Nori once');
+    expect(text).not.toContain('claim_tutorial_quest(questId=say-hi-nori)');
+    expect(text).not.toContain('none ready yet');
     // The printed call reaches the claim settle unchanged.
     const claimed: string[] = [];
     const originalClaim = sim.settleAutonomousQuestClaim;
     sim.settleAutonomousQuestClaim = async (_npcId: string, _attribution: unknown, questId: string) => { claimed.push(questId); };
     try {
-      dispatch(line);
+      dispatch(readyLine);
       await settle();
     } finally {
       sim.settleAutonomousQuestClaim = originalClaim;
     }
     expect(claimed).toEqual(['style-statement']);
+  });
+
+  test('no READY quest: no call at all, plus the "none ready yet" line', () => {
+    const text = build([
+      { questId: 'say-hi-nori', title: 'Say Hi', rail: 'vclaw', reward: 5, requirement: 'chat with Nori once', ready: false },
+    ]);
+    expect(text).not.toContain('[ACTION: claim_tutorial_quest(questId=');
+    expect(text).toContain('- say-hi-nori: "Say Hi" pays 5 vCLAW — not done yet: chat with Nori once\n- none ready yet; do the step a quest requires first.');
+    expect(build([])).toContain('- none claimable right now');
   });
 });
 

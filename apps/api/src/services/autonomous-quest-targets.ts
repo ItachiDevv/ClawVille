@@ -52,13 +52,14 @@ const HOSTED_ACTIONABLE_QUEST_IDS: ReadonlySet<string> = new Set([
  * 4 alone has six live quests, so "first 6 unclaimed" filled the whole block
  * with tier 4 once tiers 1-3 were claimed, and wallet-aware (tier 8) or the
  * land quests never showed. Now:
- *   1. quests the agent can act on (HOSTED_ACTIONABLE_QUEST_IDS) come first,
- *      then the rest;
+ *   0. READY quests (proof already met, readiness cache below) come first;
+ *   1. then the not-ready quests the agent can act on
+ *      (HOSTED_ACTIONABLE_QUEST_IDS), then the rest;
  *   2. inside each group, round-robin by tier: the first unclaimed quest of
  *      each tier (lowest tier first), then the second of each tier, and so on.
  * So six slots span up to six tiers, and an easy quest in a low tier still
- * comes before a harder one in the same tier. Still one query plus an
- * in-memory sort of 33 rows.
+ * comes before a harder one in the same tier. One claims query, at most one
+ * readiness pass per avatar per 60 s, and an in-memory sort of 33 rows.
  */
 function roundRobinByTier<T extends { tier: number }>(items: readonly T[]): T[] {
   const byTier = new Map<number, T[]>();
@@ -85,34 +86,139 @@ export interface AutonomousQuestTarget {
   reward: number;
   /** What the server still needs to see before it will settle this one. */
   requirement: string;
+  /**
+   * True when the real settlement gate (`validateTutorialQuestEngagement`)
+   * already passes for this avatar, so a claim now should settle. Checked only
+   * for HOSTED_ACTIONABLE_QUEST_IDS; up to 60 s stale (cache below).
+   */
+  ready: boolean;
+}
+
+/** Same shape as `validateTutorialQuestEngagement`; injectable for tests. */
+export type QuestReadinessValidator = (
+  userId: string,
+  avatarId: string,
+  questId: TutorialQuestId,
+) => Promise<{ ok: boolean }>;
+
+/**
+ * READINESS CACHE (2026-10-22). Staging: the hosted model claimed unfinished
+ * quests five times in three minutes (`not_qualified`) while two quests whose
+ * proof it already had sat unclaimed, because this list carried no readiness.
+ * The prompt is rebuilt every decide (~30 s) for each user agent, and one
+ * readiness pass is up to 12 validator calls, so the result is cached per
+ * avatar for 60 s in a bounded Map. A stale READY flag costs one refused claim
+ * (the executor re-runs the same gate); a stale not-ready flag delays a claim
+ * by at most 60 s.
+ */
+const READINESS_TTL_MS = 60_000;
+const READINESS_CACHE_MAX = 500;
+const readinessCache = new Map<string, { userId: string; atMs: number; readyIds: ReadonlySet<string> }>();
+
+/** Test hook: forget every cached readiness result. */
+export function clearAutonomousQuestReadinessCache(): void {
+  readinessCache.clear();
+}
+
+const defaultReadinessValidator: QuestReadinessValidator = async (userId, avatarId, questId) => {
+  // Lazy: the settlement module pulls the ledgers; this reader stays light.
+  const { validateTutorialQuestEngagement } = await import('./tutorial-quest-settlement');
+  return validateTutorialQuestEngagement(userId, avatarId, questId);
+};
+
+/**
+ * The unclaimed hosted-actionable quests whose real gate passes. Fail soft:
+ * a validator error makes that quest not ready and never throws out.
+ */
+async function readQuestReadiness(input: {
+  avatarId: string;
+  userId: string;
+  claimedIds: ReadonlySet<string>;
+  validate: QuestReadinessValidator;
+  nowMs: number;
+}): Promise<ReadonlySet<string>> {
+  const cached = readinessCache.get(input.avatarId);
+  if (cached && cached.userId === input.userId && input.nowMs - cached.atMs < READINESS_TTL_MS) {
+    return cached.readyIds;
+  }
+  const candidates = TUTORIAL_QUESTS.filter(
+    (quest) => quest.status === 'live'
+      && HOSTED_ACTIONABLE_QUEST_IDS.has(quest.id)
+      && !input.claimedIds.has(quest.id),
+  );
+  // SEQUENTIAL on purpose: the DB pool (DB_POOL_MAX=30 on prod) is shared by
+  // everything, and up to 12 user agents can miss the cache in one tick. Twelve
+  // small checks in a row, once per avatar per 60 s, hold one connection at a
+  // time instead of twelve.
+  const ready = new Set<string>();
+  for (const quest of candidates) {
+    try {
+      const result = await input.validate(input.userId, input.avatarId, quest.id as TutorialQuestId);
+      if (result.ok === true) ready.add(quest.id);
+    } catch {
+      // A failed check is "not ready"; never throws out of the reader.
+    }
+  }
+  const readyIds: ReadonlySet<string> = ready;
+  // Bounded: re-set moves the key to the end, so the first key is the oldest.
+  readinessCache.delete(input.avatarId);
+  while (readinessCache.size >= READINESS_CACHE_MAX) {
+    const oldest = readinessCache.keys().next().value;
+    if (oldest === undefined) break;
+    readinessCache.delete(oldest);
+  }
+  readinessCache.set(input.avatarId, { userId: input.userId, atMs: input.nowMs, readyIds });
+  return readyIds;
 }
 
 /**
- * Quests this avatar has NOT claimed, restricted to `status: 'live'`.
+ * Quests this avatar has NOT claimed, restricted to `status: 'live'`, with
+ * READY ones (proof already met) first.
  *
- * Deliberately does NOT run the full engagement validator: that is one query
- * bundle per quest, and the prompt is built every decide cycle. The executor
- * re-runs the real gate at settlement, so an unqualified suggestion is refused
- * server-side — the cost of being permissive here is one wasted action, and the
- * cost of being strict would be a per-tick query storm.
+ * Readiness runs the real engagement validator, but only for the unclaimed
+ * HOSTED_ACTIONABLE_QUEST_IDS (at most 12) and at most once per avatar per
+ * 60 s. The executor still re-runs the gate at settlement. Without a `userId`
+ * no readiness is read and every quest is not ready.
  */
 export async function readAutonomousQuestTargets(input: {
   avatarId: string;
+  userId?: string | null;
+  validate?: QuestReadinessValidator;
+  nowMs?: number;
 }): Promise<AutonomousQuestTarget[]> {
   const claimed = await db.execute<{ quest_id: string }>(
     sql`SELECT quest_id FROM tutorial_quest_claims WHERE avatar_id = ${input.avatarId}`,
   );
-  return selectQuestTargets(new Set(Array.from(claimed).map((row) => row.quest_id)));
+  const claimedIds = new Set(Array.from(claimed).map((row) => row.quest_id));
+  const readyIds = input.userId
+    ? await readQuestReadiness({
+        avatarId: input.avatarId,
+        userId: input.userId,
+        claimedIds,
+        validate: input.validate ?? defaultReadinessValidator,
+        nowMs: input.nowMs ?? Date.now(),
+      }).catch((): ReadonlySet<string> => new Set())
+    : new Set<string>();
+  return selectQuestTargets(claimedIds, readyIds);
 }
 
-/** Pure ordering step of {@link readAutonomousQuestTargets} (rule above). */
-export function selectQuestTargets(claimedIds: ReadonlySet<string>): AutonomousQuestTarget[] {
+/**
+ * Pure ordering step of {@link readAutonomousQuestTargets} (rule above), with
+ * READY quests (in `readyIds`) placed before everything else, round-robin by
+ * tier inside. Default: none ready, which is the old order exactly.
+ */
+export function selectQuestTargets(
+  claimedIds: ReadonlySet<string>,
+  readyIds: ReadonlySet<string> = new Set(),
+): AutonomousQuestTarget[] {
   const open = TUTORIAL_QUESTS.filter(
     (quest) => quest.status === 'live' && !claimedIds.has(quest.id),
   );
+  const notReady = open.filter((quest) => !readyIds.has(quest.id));
   const ordered = [
-    ...roundRobinByTier(open.filter((quest) => HOSTED_ACTIONABLE_QUEST_IDS.has(quest.id))),
-    ...roundRobinByTier(open.filter((quest) => !HOSTED_ACTIONABLE_QUEST_IDS.has(quest.id))),
+    ...roundRobinByTier(open.filter((quest) => readyIds.has(quest.id))),
+    ...roundRobinByTier(notReady.filter((quest) => HOSTED_ACTIONABLE_QUEST_IDS.has(quest.id))),
+    ...roundRobinByTier(notReady.filter((quest) => !HOSTED_ACTIONABLE_QUEST_IDS.has(quest.id))),
   ];
   return ordered.slice(0, TARGET_LIMIT).map((quest) => ({
     questId: quest.id,
@@ -120,5 +226,6 @@ export function selectQuestTargets(claimedIds: ReadonlySet<string>): AutonomousQ
     rail: TUTORIAL_QUEST_RAILS[quest.id as TutorialQuestId],
     reward: quest.reward,
     requirement: quest.description,
+    ready: readyIds.has(quest.id),
   }));
 }
