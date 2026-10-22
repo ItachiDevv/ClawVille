@@ -16,6 +16,8 @@
 
 Last Audited: 2026-10-22 05:10Z (session jev, arena lead). **Staging API is receiving the autonomy "fewer repeated teacher questions" change** (founder 2026-10-22 "yes change the talk prompt"; API only, no route, schema, env or PROTOCOL_VERSION change, protocol stays 97). Web stays `118dc26bd`. **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
 
+Prior - Last Audited: 2026-10-22 04:45Z (session roundup). **PROD API + WEB = `ae1e1589d` (promotion #12, PR #322: shared-table baccarat, PROTOCOL 97, migration 0087), verified live.** Staging API + WEB = `118dc26bd` (docs `dfdf473e2` on top). SCHEMA: synced. Detail in the DEPLOY LOG entry of 2026-10-22 04:45Z. Founder eyes owed (FOUNDER-REVIEW COVE).
+
 Prior - Last Audited: 2026-10-22 03:30Z (session roundup). **STAGING API + WEB = `118dc26bd` (shared-table baccarat, PROTOCOL 97, migration 0087), verified live** (DEPLOY LOG 2026-10-22 03:30Z). Founder eyes owed (FOUNDER-REVIEW COVE). **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
 
 Prior - Last Audited: 2026-10-22 01:30Z (session roundup). **PROD API + WEB = `1c2d4943` (promotion #11, PR #321, merged 01:16Z, flipped 01:24-01:26Z): Hold'em cash table visibility protocols 92-96 + settle retry + connect and autonomy fixes. Staging API + WEB = `2082381c` (code; `9ce577d4` docs on top).** No migration (SCHEMA: synced). Detail in the DEPLOY LOG entry of 2026-10-22 01:30Z.
@@ -664,6 +666,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 - **Why:** prod logs 2026-10-22 01:24-04:26Z: the house agent asked the Memory teacher "How do vector databases enable semantic search?" on 4 visits, and the API teacher the same webhooks question twice.
 - **Checks:** tsc 0; autonomy suites + fast path 277 pass / 0 fail; Codex read-only review VERDICT: APPROVE (wording nits applied). Known limit: an API restart clears the list, so after a deploy each teacher can get one repeat.
 - **Who it is for:** every hosted autonomous agent (house and user) and the humans who watch them. SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql` (unchanged, not mine).
+
+### 2026-10-22 04:45Z (session roundup) - promotion #12 on prod: shared-table baccarat (`ae1e1589d`)
+- **What changed:** founder approved the promotion (2026-10-22). PR #322 (`staging` `dfdf473e2` to `master`), merge `ae1e1589d`. Range content: shared-table baccarat (PROTOCOL 97, migration 0087); see the staging entries of 03:00Z and 03:30Z.
+- **Pre-merge:** coupling gate on `1c2d4943..dfdf473e2` exit 0 (10 of 14 rules triggered, all satisfied, so no waiver needed). PR checks: 4 gate lanes pass. Prod disk 93 GB free.
+- **Deploy:** run 39722994103: 4 gate lanes, `migrate`, `deploy` all success. The flip took about 6 min after the run ended: API `ebnat...-20261022T043710` at 04:40:59Z, web `ds7ho...-20261022T043710` at 04:43:12Z; both `printenv SOURCE_COMMIT` = `ae1e1589d0a2`; `/health` commit `ae1e1589d`.
+- **Migration 0087 on prod (read-only catalog check):** `baccarat_tables`, `baccarat_table_seats`, `baccarat_table_bets` exist; `baccarat_shoes_subject_check` = `num_nonnulls(user_id, guest_fp_hash, table_id) = 1`, plus `baccarat_shoes_table_no_fixture_check`. `GET /api/cove/baccarat/tables` on prod returns the low (5-50), mid (20-200) and high (50-500) tables, 6 seats each, 3 house bots seated.
+- **Browser (headless Chrome, signed out):** `https://clawville.world/cove/baccarat` at 390x844 shows the lobby with the three tables, "Watch" and "Sign in to play". `https://clawville.world/game` renders the town (Town Center, buildings, NPCs) behind the guest welcome dialog; no console exceptions (only the expected signed-out 401 on `/api/auth/me`).
+- **Not verified on prod:** a signed-in bet (no prod test account is used for money paths); the founder's real-device check.
+- **Who it is for:** every human and agent at the Cove. SCHEMA: synced.
 
 ### 2026-10-22 03:30Z (session roundup) - shared-table baccarat VERIFIED on staging (`118dc26bd`)
 - **Deploy:** run 39714494689 green (4 gate lanes, migrate, deploy). API `yvtwz...-20261022T030454` and web `ju0n3...-20261022T030455` both `printenv SOURCE_COMMIT` = `118dc26bd45d`; `/health` commit `118dc26bd`. Boot log: tick, then seeder (12 bot avatars), then scaler, which created 3 house tables.

@@ -3,7 +3,9 @@
 ## Local workspace boundary — founder instruction, 2026-09-22
 
 - Keep ClawVille source, documentation, assets, reports, and local evidence inside this checkout or a registered Git worktree.
-- Create new worktrees under `.worktrees/<task>` inside ClawVille by default. Verify registration with `git worktree list --porcelain`.
+- Create ONE worktree per job under `.worktrees/<job>` inside ClawVille. All teammates and auditors of that job share it; each task names the only files its owner may edit. Never create a worktree per teammate, per task, or per auditor (owner rule 2026-10-05: 42 per-task worktrees filled the desktop's C: drive). Verify registration with `git worktree list --porcelain`.
+- The job's lead removes its worktree right after the merge, or the same day if the job is abandoned (the branch keeps the commits). Safe order: (1) unlink the brain junctions `.claude\{plans,workflows,memory,agents,brand}` with `cmd /c rmdir <link>` (no `/s`; it removes only the link); (2) remove `node_modules` with `cmd /c rmdir /s /q node_modules` (it removes the junctions inside without following them); (3) `git worktree remove <path>`; (4) delete the merged branch. Never use `robocopy /MIR` or `Remove-Item -Recurse` on a worktree: both follow junctions and delete the shared brain.
+- Build and verify inside the job's worktree. Never put `node_modules`, `.next`, `.turbo`, or other build output in a Claude session scratchpad.
 - Do not create unregistered sibling folders for project work. A directory name is not proof of Git registration.
 - Existing registered external worktrees may remain in place. Coordinate with their active owner before relocating them.
 - The founder explicitly classifies `clawville-milady-plugin` and `cv-agentsmd` as unrelated. Do not migrate or include them in ClawVille cleanup.
@@ -69,11 +71,12 @@ Four equal-weight product priorities, each measured against #1:
 |---|---|
 | `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**` | `3dStructure.md` (+ `3da` for non-trivial 3D) |
 | `apps/web/src/components/game/**`, token-economy code, `packages/shared/src/constants/{knowledge-books,avatar-archetypes,map-locations}.ts`, quest/login routes | `GameFeatures.md` |
-| `apps/api/src/routes/portal/*`, `services/cf-secrets-*`, `service-issuer.ts`, `auth-challenge.ts`, `identity-service.ts`, `keypair-vault.ts`, `wallet-service.ts`, `users.identity_*` / `wallets.dek_wrapped` | `ARCHITECTURE.md §7` (Phase 5.1) |
-| `services/wager-program-client.ts`, `routes/wager.ts`, `contracts/wager/**`, `packages/wager-program/**`, `treasury_purpose='wager-settlement-authority'` | `ARCHITECTURE.md` (wager §2/§4 + §13) |
-| `apps/api/src/routes/agent.ts`, agent-connect modal, `/api/agent/*` | `GameFeatures.md §2` + `ARCHITECTURE.md §6` |
+| `apps/api/src/routes/portal.ts`, `infra/cf-secrets-worker/**`, `service-issuer.ts`, `auth-challenge.ts`, `identity-service.ts`, `keypair-vault.ts`, `wallet-service.ts`, `users.identity_*` / `wallets.dek_wrapped` | `ARCHITECTURE.md §7` (Phase 5.1) |
+| `services/wager-program-client.ts`, `routes/wager.ts`, `contracts/programs/clawville-wager/**`, `packages/wager-program/**`, `treasury_purpose='wager-settlement-authority'` | `ARCHITECTURE.md` (wager §2/§4 + §13) |
+| `apps/api/src/routes/agent-*.ts` (`agent-v2`, `agent-registration`, `agent-setup`, `agent-gateway`, `agent-pay`, ...), `apps/web/src/components/game/agent-connect-modal.tsx`, `/api/agent/*` | `GameFeatures.md §2` + `ARCHITECTURE.md §6` |
 | `routes/{partner-hatcher,partner-hatcher-launch,portal,skills}.ts`, `services/{partner-signature,service-issuer,skill-protocol,agent-substrate-client,agent-session-config,hatcher-config,hatcher-session-webhook,reserved-agent-namespaces,agent-session-restore}.ts`, `middleware/require-auth-or-agent.ts`, `packages/shared/src/types/agent-substrate.ts`, `apps/api/scripts/hatcher/*`, `.hatcher-ref/**` | `docs/hatcher-integration-spec.md` §11 (release gates retired 2026-10-20; mandate 5 invariants still hold) |
 | `branding/**`, outward graphics, logos, fonts, marketing copy | `branding/BRAND.md` + `docs/brand-language.md` |
+| `apps/api/src/services/floor-arena/**`, `infra/codex-decider/**`, `routes/floor-arena.ts`, `routes/admin-floor-arena.ts`, `services/clawpump-writer.ts`, `packages/shared/src/constants/floor-arena.ts`, `schema/floor-arena.ts`, `apps/web/src/components/game/trading-floor/arena/**` | `docs/trading-floor-arena.md` + `GameFeatures.md` §17g.3 + `ARCHITECTURE.md` (Trading Floor Arena section) |
 | New Hono route, Drizzle schema, service file, env var, deploy/CI config | `ARCHITECTURE.md` |
 
 **Same-diff rule:** each code change above updates its matching doc in the same diff, with "Last Audited" bumped + a one-line drift note.
@@ -85,8 +88,10 @@ Four equal-weight product priorities, each measured against #1:
 - **PUSH FLOW — staging-first (2026-05-24):** all new work → `git push origin staging` → `deploy-staging.yml` → verify on `https://staging.clawville.world` + `https://api-staging.clawville.world` → `gh pr create --base master --head staging` → merge → `deploy.yml` ships prod. **NEVER push to `master`** unless the user's message contains the literal **`direct to master`** (hotfix only). Each box has its OWN self-hosted Postgres (`clawville-db`; staging since 2026-09-25, prod since 2026-09-28; the old Supabase projects are frozen). Schema reaches prod only via the CI **migration gate** (`migrate` job applies `packages/database/migrations/*.sql`; `deploy` needs it) on promotion. **After every staging push and promotion, update `deploy-status.md` SAME-DIFF:** CURRENT STATE (only if you pushed last; tiebreak `git log -1 origin/staging`) + an honest DEPLOY LOG entry (what changed · what broke + root cause + fix · who it's for) + `SCHEMA:` (`synced` | `prod-migration-pending: <file>`).
 - **Iris Xe GPU:** NO drei `<Text>` / `<Billboard>` in game/world scenes (hard crash). NO `InstancedMesh + ShaderMaterial` (silent WebGPU crash). NO per-frame `new Vector3()` in `useFrame` (GC thrash).
 - **Local testing FIRST (2026-06-01):** iterate with `bun run build && bun run start` (prod bundle, :3000, Iris-Xe-safe) on `localhost`. NEVER `bun run dev` (HMR crashes WebGPU → PC restart). Do not push unfinished features to `staging` (clogs the Coolify build cache); push when ready for sign-off or when a bug cannot reproduce locally.
-- **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first connect; later reads MUST omit it; no recovery path. `ARCHITECTURE.md §7`.
-- **Push-auth fallback chain:** see "No lazy handoffs" below. Never hand the push to the user as the first move.
+- **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first connect; later reads MUST omit it; no recovery path. The served SKILL.md (`skill-protocol.ts`) tells the agent to relay `wallet.secretKey` once to the human and never store it; the separate `identity.secretKey` is the agent's own credential, saved once in its config. `ARCHITECTURE.md §7`.
+- **Verification (restored 2026-09-29):** never claim deployed, fixed, or working without same-response evidence (SOURCE_COMMIT, `/health`, bundle grep, test output, browser check). Full rule: Memory RULE 5 below.
+- **Asset cache-bust:** mutating an asset at an existing hosted path needs a new `?v=N` or filename (Cloudflare 1-week edge cache, no purge). Detail in the animation rule above.
+- **Push-auth fallback chain:** `gh auth status` → `unset GITHUB_TOKEN && gh auth setup-git` → SSH remote → `gh api`; a push that touches `.github/workflows/*` needs the env `GITHUB_TOKEN` (workflow scope). Never hand the push to the user as the first move.
 
 ---
 
@@ -108,7 +113,7 @@ Never remove or stub. Avatar + location chat MUST use the ElizaOS runtime (`@cla
 
 ## MANDATORY: Hatcher `[ACTION:]` whitelist parity
 
-ENFORCEMENT (authoritative): `apps/api/src/services/npc-simulation.ts` `dispatchHatcherActions` / `executeHatcherAction` — only whitelisted verbs execute. DOCUMENTATION: the protocol SKILL.md from `skill-protocol.ts buildProtocolManual` (single source of `PROTOCOL_VERSION`). Any verb/param change in the executor ⇒ update the manual AND bump `PROTOCOL_VERSION`, same diff. Agents re-pull the manual when the version bumps.
+ENFORCEMENT (authoritative): `apps/api/src/services/npc-simulation.ts` `dispatchHatcherActions` / `executeHatcherAction` — only whitelisted verbs execute. Safety lives here and never depends on the SKILL.md. DOCUMENTATION: the protocol SKILL.md from `skill-protocol.ts buildProtocolManual` (single source of `PROTOCOL_VERSION`). Any verb/param change in the executor ⇒ update the manual AND bump `PROTOCOL_VERSION`, same diff. Agents re-pull the manual when the version bumps.
 
 ## Partner surface (Hatcher): release gates RETIRED (founder 2026-10-20)
 
@@ -181,6 +186,8 @@ Two boxes (prod Hillsboro / staging Ashburn), Coolify + Traefik, Cloudflare DNS,
 ## Documentation Update Policy
 
 **Same-diff doc table (MANDATORY):** 3D world → `3dStructure.md` (3da enforces) · gameplay → `GameFeatures.md` · routes, DB, services, data flow → `ARCHITECTURE.md` (env vars §4) · deploy runbook → `docs/DEPLOY-HETZNER.md` · invariants, workflow rules, commands → `AGENTS.md` (`CLAUDE.md` is only the `@AGENTS.md` import) · user overview → `README.md` · brand assets → `branding/BRAND.md` · each staging push / promotion → `deploy-status.md` · founder-eyes items → `FOUNDER-REVIEW.md`. "Update later" is unacceptable; bump "Last Audited"; a memory entry instead of the doc = the same violation. Order: code → doc → optional memory.
+
+**Doc path guard (founder 2026-09-29, CI-enforced):** `scripts/ci/check-doc-paths.ts` (gates coupling job) fails when a canonical doc gains a backticked repo path that git does not track. Deleting or renaming a file = update every doc that names it, same diff. Old drift sits in `scripts/ci/doc-paths-baseline.txt` (may only shrink; tracker `docs/audits/2026-09-29-doc-path-drift.md`, deadline 2026-10-31). `AGENTS.md`/`CLAUDE.md` stay tracked in git (founder 2026-10-22; the 2026-07-24 untrack order is retired); the brain copy `~/.clawville-brain/AGENTS.md` and the tracked copy must match. The public path→doc table also lives in `CONTRIBUTING.md`; change both together.
 
 **FOUNDER-REVIEW.md (2026-08-20):** the founder's standing answer is "push it, I'll test later" — never block a ship on a founder playtest (founder DECISIONS that change what gets built still block). Every push shipping something that needs founder eyes appends an entry to repo-root `FOUNDER-REVIEW.md` in the same push (what to look at · env + exact path · feedback wanted · session + date), by game area. Verdicts get absorbed into the owning docs and the entry deleted.
 
