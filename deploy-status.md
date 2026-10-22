@@ -669,6 +669,11 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-10-22 08:16Z (session jev, arena lead) - prior-question talk prompt (`8786b615b`) checked on PROD (promotion #13)
+- **Prod evidence (API `26c02e392`, up since 06:43Z, logs to 08:15Z):** 276 drives, 0 driver errors, 4 talk prefetches used. Lap 1 (06:46-07:32Z): 20 talks, all `prior=0`. Lap 2 (07:48-08:14Z): 16 talks, all `prior=1`, and all 16 questions differ from that agent's lap-1 question at the same teacher (example: API teacher "How do webhooks differ from REST APIs?" then "How does OAuth improve API security?").
+- **Staging:** no two-lap result. Two other-session deploys (06:03Z `a021925b`, 06:33Z `7de0811d`) restarted the API, which clears the in-memory list and returns staging to standby.
+- **Who it is for:** every hosted autonomous agent. Docs only, no deploy. SCHEMA: unchanged.
+
 ### 2026-10-22 06:55Z (session roundup) - promotion #13 on prod: quests wire (`26c02e392`)
 - **What changed:** founder approved the promotion (2026-10-22 "yeah i approve it"). PR #323 (`staging` `7de0811da` to `master`), merged 06:29:49Z, merge `26c02e392`. Range `ae1e1589d..26c02e392`: quests wire (PROTOCOL 98: Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`), session jev's autonomy talk prompt (`8786b615b`), `AGENTS.md`/`CLAUDE.md` untracked (`7de0811da`), docs. No migration.
 - **Deploy:** run 39734290750: 4 gate lanes, `migrate`, `deploy` all success. API `ebnat...-20261022T063338` flipped by 06:44:01Z, web `ds7ho...-20261022T063338` by 06:47:04Z; both `SOURCE_COMMIT` = `26c02e392`; `/health` commit `26c02e392`. Prod disk 70 GB free.
