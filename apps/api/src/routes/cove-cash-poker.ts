@@ -10,7 +10,7 @@
  *   POST /tables/:id/sit         (user OR agent) — sit down with the table buy-in (CT debit)
  *   POST /tables/:id/leave       (user OR agent) — cash out current stack (CT credit), between hands
  *   POST /tables/:id/action      (user OR agent) — submit ONE betting action
- *   GET  /tables/:id/last-settled (user OR agent) — entitled terminal hand truth
+ *   GET  /tables/:id/last-settled (user OR agent) — terminal hand truth; public table: any signed-in subject, private table: participants only
  *   GET  /tables/:id/state-for-agent (user OR agent) — own view + hole cards (NO leak)
  *   GET  /tables/:id             (public)        — public table state (config + seats + live snapshot)
  *
@@ -406,7 +406,8 @@ coveCashPokerRouter.post('/tables/:id/action', requireNonGuestUser, async (c) =>
   }
 });
 
-// ── GET /tables/:id/last-settled (historical participant only) ─────────────
+// ── GET /tables/:id/last-settled (public table: any signed-in subject;
+//    private table: participants of that hand only) ─────────────────────────
 const lastSettledHandler = createLastSettledHandler({
   resolveRequestSubject: (c) => resolveSubject(c),
   getLastSettledHand: (...args) => cashTableManager.getLastSettledHand(...args),

@@ -35,6 +35,8 @@ const PUBLIC_POLL_MS = 3000;
  *  is missed between polls (2026-10-21 visibility contract). */
 const SEATED_PUBLIC_POLL_MS = 1000;
 const SEATED_SETTLED_POLL_MS = 1000;
+/** Spectators: the 8 s result window still shows at least 6 s of each hand. */
+const SPECTATOR_SETTLED_POLL_MS = 1500;
 const SELF_POLL_MS = 1500;
 
 /** A settled result stays up until the later of the server display window
@@ -186,11 +188,15 @@ function CashTableRoom({ tableId }: { tableId: string }) {
     };
   }, [amSeated, tableId]);
 
+  // Seated players AND spectators read every settled hand (protocol 96: a
+  // public table's result is open to any signed-in viewer). A private table
+  // answers 403 to a spectator; that viewer stops polling it.
   useEffect(() => {
-    if (!amSeated) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollMs = amSeated ? SEATED_SETTLED_POLL_MS : SPECTATOR_SETTLED_POLL_MS;
     const tick = async () => {
+      let forbidden = false;
       try {
         const snapshot = await cashPokerApi.lastSettled(tableId, lastSettledHandRef.current);
         if (!cancelled && snapshot) {
@@ -198,11 +204,12 @@ function CashTableRoom({ tableId }: { tableId: string }) {
           setSettled(Date.now() < settledShowUntilMs(snapshot) ? snapshot : null);
         }
       } catch (error) {
-        if (!cancelled && !(error instanceof CoveApiError && error.status === 403)) {
+        forbidden = error instanceof CoveApiError && error.status === 403;
+        if (!cancelled && !forbidden) {
           setPollNotice(`${describeCashPokerError(error)} Retrying…`);
         }
       } finally {
-        if (!cancelled) timer = setTimeout(tick, SEATED_SETTLED_POLL_MS);
+        if (!cancelled && !(forbidden && !amSeated)) timer = setTimeout(tick, pollMs);
       }
     };
     void tick();

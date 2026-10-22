@@ -137,16 +137,19 @@ streetBetAfter, allIn, timeout, atMs }\`. \`kind\` is \`post-sb\`, \`post-bb\`,
 into the pot. \`streetBetAfter\` is the seat's total on that street (the "bet to"
 or "raise to" amount). \`timeout: true\` means the turn clock acted for the seat
 (auto-check, or auto-fold when it owed chips). The public \`GET /tables/:tableId\`
-carries the same list as \`live.actions\`.
+carries the same list as \`live.actions\`. Its \`seats[]\` (the roster, including
+sitting-out seats) has \`name\` too: the avatar name, or \`Seat N\` when it has none.
 
 Between hands: the next hand deals no sooner than 8 s after the previous hand
 settled, at every cash table. In that window \`state-for-agent\` returns
 \`409 not_seated_or_no_live_hand\`; that is normal. Keep polling every 1-2 s.
 
 \`N\` is a required non-negative integer. Returns the latest settled hand above
-\`N\` if your avatar played in it: \`200 {snapshot}\` (pot awards, board, shown
-hands, per-seat stack math; folded cards stay hidden); \`204\` if none; \`403\` if
-you did not play; \`404\` unknown table. Each snapshot seat has \`name\` and
+\`N\`: \`200 {snapshot}\` (pot awards, board, shown hands, per-seat stack math;
+folded cards stay hidden); \`204\` if none; \`404\` unknown table. On a public
+table any signed-in subject gets the snapshot, also a spectator who never sat.
+On a private table only a seat that played that hand gets it; anyone else gets
+\`403 not_historical_participant\`. Each snapshot seat has \`name\` and
 \`handRank\` (\`{ category, categoryName, bestFive }\`, for example \`two_pair\`, for a seat
 that reached showdown without folding; \`null\` otherwise). \`handRank.bestFive\`
 is the 5 cards that make that hand (\`{ suit, rank }\`, best first, kickers last):

@@ -291,11 +291,23 @@ export function buildCashSettledHandSnapshot(
   };
 }
 
-/** Historical-hand authorization; deliberately independent of current seating. */
+/**
+ * Settled-hand read authorization; deliberately independent of current seating.
+ *
+ * - PUBLIC table: any resolved subject may read (a spectator who never sat
+ *   included). The route has already required a non-guest human or an agent
+ *   session. The snapshot itself only shows what a showdown shows at a real
+ *   table: non-folded hands at showdown; folded cards and the seed stay out.
+ * - PRIVATE table (or any visibility that is not exactly 'public', fail
+ *   closed): only a seat that played the hand, else 403
+ *   `not_historical_participant`.
+ */
 export function assertCashSettledHandEntitlement(
   seats: readonly PersistedCashSettledSeat[],
   requesterAvatarId: string,
+  visibility: string | null | undefined,
 ): void {
+  if (visibility === 'public') return;
   if (!seats.some((seat) => seat.avatarId === requesterAvatarId)) {
     throw new CashTableError(
       'not_historical_participant',
@@ -897,9 +909,11 @@ export class CashTableManager {
   /**
    * Latest durable BA-1 snapshot newer than `afterHandNumber`.
    *
-   * Authorization is intentionally evaluated against the hand's persisted seat
-   * accounting, never live seating: a participant may leave immediately after
-   * settlement and still recover the hand, while a never-seated subject gets 403.
+   * Authorization (`assertCashSettledHandEntitlement`) never reads live seating.
+   * On a public table any resolved subject reads the snapshot, spectators
+   * included. On a private table it checks the hand's persisted seat accounting:
+   * a participant may leave immediately after settlement and still recover the
+   * hand, while a never-seated subject gets 403 `not_historical_participant`.
    */
   async getLastSettledHand(
     tableId: string,
@@ -928,7 +942,7 @@ export class CashTableManager {
 
     if (!row) return null;
     const seats = row.seatResultJson ?? [];
-    assertCashSettledHandEntitlement(seats, requesterAvatarId);
+    assertCashSettledHandEntitlement(seats, requesterAvatarId, table.visibility);
     if (
       !row.settledAt ||
       !row.serverSeedReveal ||
@@ -983,6 +997,30 @@ export class CashTableManager {
       .orderBy(asc(pokerCashSeats.seatIndex));
   }
 
+  /**
+   * Display names for seats: ONE `avatars` query for `avatarIds` (none when the
+   * list is empty). A seat whose avatar has a non-blank `avatars.name` shows that
+   * name; any other seat shows `Seat ${seatIndex + 1}`. Shared by the deal path
+   * (live snapshot names) and `getTableState` (roster names) so both agree.
+   */
+  private async seatNameResolver(
+    avatarIds: readonly string[],
+  ): Promise<(avatarId: string, seatIndex: number) => string> {
+    const nameByAvatar = new Map<string, string>();
+    if (avatarIds.length > 0) {
+      const nameRows = await this.db
+        .select({ id: avatars.id, name: avatars.name })
+        .from(avatars)
+        .where(inArray(avatars.id, [...avatarIds]));
+      for (const row of nameRows) {
+        if (typeof row.name === 'string' && row.name.trim().length > 0) {
+          nameByAvatar.set(row.id, row.name);
+        }
+      }
+    }
+    return (avatarId, seatIndex) => nameByAvatar.get(avatarId) ?? `Seat ${seatIndex + 1}`;
+  }
+
   private async latestLedgerTxnId(
     tableId: string,
     seatId: string,
@@ -1003,12 +1041,17 @@ export class CashTableManager {
     return event?.ledgerTxnId ?? null;
   }
 
-  /** The PUBLIC table state — config + active seats (NO hole cards) + live sim snapshot. */
+  /**
+   * The PUBLIC table state — config + active seats (NO hole cards) + live sim snapshot.
+   * Each roster seat (sitting-out seats included) carries `name`: the avatar
+   * name, else `Seat N` (same rule as the live hand's seat names).
+   */
   async getTableState(tableId: string): Promise<{
     table: PokerCashTable;
     seats: Array<{
       seatIndex: number;
       avatarId: string;
+      name: string;
       subjectType: string;
       isSeeded: boolean;
       stackCt: string;
@@ -1030,12 +1073,14 @@ export class CashTableManager {
     const table = await this.getTable(tableId);
     if (!table) return null;
     const seats = await this.activeSeats(tableId);
+    const seatName = await this.seatNameResolver(seats.map((s) => s.avatarId));
     const live = this.sim.getPublicSnapshot(simTableId(tableId));
     return {
       table,
       seats: seats.map((s) => ({
         seatIndex: s.seatIndex,
         avatarId: s.avatarId,
+        name: seatName(s.avatarId, s.seatIndex),
         subjectType: s.subjectType,
         isSeeded: s.isSeeded === 'true',
         stackCt: s.currentStackCt,
@@ -1806,20 +1851,11 @@ export class CashTableManager {
 
     const handNumber = await this.nextHandNumber(tableId);
     // Display names: ONE query for every sitting-in avatar (avatars.name).
-    const nameRows = await this.db
-      .select({ id: avatars.id, name: avatars.name })
-      .from(avatars)
-      .where(inArray(avatars.id, sittingIn.map((s) => s.avatarId)));
-    const nameByAvatar = new Map<string, string>();
-    for (const row of nameRows) {
-      if (typeof row.name === 'string' && row.name.trim().length > 0) {
-        nameByAvatar.set(row.id, row.name);
-      }
-    }
+    const seatName = await this.seatNameResolver(sittingIn.map((s) => s.avatarId));
     const seatAssignments: SeatAssignment[] = sittingIn.map((s) => ({
       seatIndex: s.seatIndex,
       avatarId: s.avatarId,
-      name: nameByAvatar.get(s.avatarId) ?? `Seat ${s.seatIndex + 1}`,
+      name: seatName(s.avatarId, s.seatIndex),
       subjectType: s.subjectType === 'agent' ? 'agent' : 'human',
       agentId: s.agentId ?? undefined,
       chipStack: Number(s.currentStackCt),

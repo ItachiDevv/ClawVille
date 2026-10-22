@@ -109,10 +109,10 @@ function fixtureState(): PublicTableStateResponse {
   };
 }
 
-async function mountHud(): Promise<HTMLElement> {
+async function mountHud(state: PublicTableStateResponse = fixtureState()): Promise<HTMLElement> {
   const props: HudProps = {
     instanceId: 'cash-badge-slots',
-    state: fixtureState(),
+    state,
     selfView: null,
     settled: null,
     povSeatIndex: POV_SEAT,
@@ -205,5 +205,30 @@ describe('CashTableRoomHud seat-badge registry slots', () => {
     for (let slot = 0; slot < 6; slot += 1) {
       expect(getHoldemSeatBadgeElement(slot)).toBeNull();
     }
+  });
+
+  // Staging 2026-10-21: a bot that sat out was not in the live hand, so its
+  // chair had no badge during a hand and read "SEAT N" between hands. The
+  // roster row now carries the avatar name (protocol 96) and the badge shows
+  // for every seated player, in the hand or not.
+  test('a sitting-out roster seat keeps its badge and its name during a live hand', async () => {
+    const state = fixtureState();
+    state.seats.push({
+      seatIndex: 5,
+      avatarId: 'avatar-5',
+      subjectType: 'agent',
+      isSeeded: true,
+      stackCt: '200',
+      status: 'sitting_out',
+      name: 'Felt-Bot-005',
+    });
+    await mountHud(state);
+    // Chair 1 holds server seat (3 + 1 + 1) % 6 = 5, registry slot 2.
+    const badge = getHoldemSeatBadgeElement(2);
+    expect(badge).not.toBeNull();
+    expect(badge!.querySelector('span')?.textContent).toBe('Felt-Bot-005');
+    expect(badge!.textContent).toContain('200 vCLAW');
+    expect(badge!.textContent).toContain('Sitting out');
+    expect(badge!.textContent).not.toContain('Seat 6');
   });
 });

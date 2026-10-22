@@ -2903,6 +2903,46 @@ describe('CashTableManager — hold\'em visibility: names, hold, settled log, ha
     expect(snap.actions.map((a) => a.kind)).toEqual(['post-sb', 'post-bb']);
   });
 
+  it('getTableState roster seats carry name, sitting-out seats included, with a "Seat N+1" fallback', async () => {
+    const h = makeHoldHarness();
+    const { tableId, aliceSeat, bobSeat } = await seatTwoHumans(h);
+    // Two sitting-out seats that are NOT in the live hand: a named bot and a
+    // blank-named avatar (blank falls back like a missing row).
+    h.db.stores.get(avatars)!.push({ id: 'vis-bot', name: 'Felt-Bot-007' });
+    h.db.stores.get(avatars)!.push({ id: 'vis-blank', name: '   ' });
+    for (const [avatarId, seatIndex] of [['vis-bot', 4], ['vis-blank', 5]] as const) {
+      (h.db.stores.get(pokerCashSeats) as Row[]).push({
+        id: randomUUID(),
+        table_id: tableId,
+        avatar_id: avatarId,
+        agent_id: null,
+        subject_type: 'agent',
+        is_seeded: 'true',
+        seat_index: seatIndex,
+        current_stack_ct: '0',
+        total_bought_in_ct: '0',
+        total_cashed_out_ct: '0',
+        status: 'sitting_out',
+        seated_at: new Date('2026-10-21T00:00:00Z'),
+        updated_at: new Date('2026-10-21T00:00:00Z'),
+      });
+    }
+
+    const state = (await h.mgr.getTableState(tableId))!;
+    const byAvatar = new Map(state.seats.map((s) => [s.avatarId, s]));
+    expect(byAvatar.get('vis-alice')!.name).toBe('Alice');
+    expect(byAvatar.get('vis-bob')!.name).toBe(`Seat ${bobSeat + 1}`);
+    expect(byAvatar.get('vis-bot')!.name).toBe('Felt-Bot-007');
+    expect(byAvatar.get('vis-bot')!.status).toBe('sitting_out');
+    expect(byAvatar.get('vis-blank')!.name).toBe('Seat 6');
+    expect(aliceSeat).not.toBe(bobSeat);
+    // Roster names agree with the live hand's names for the seats in it.
+    const live = new Map(state.live!.seats.map((s) => [s.avatarId, s.name]));
+    expect(live.get('vis-alice')).toBe(byAvatar.get('vis-alice')!.name);
+    expect(live.get('vis-bob')).toBe(byAvatar.get('vis-bob')!.name);
+    expect(live.has('vis-bot')).toBe(false);
+  });
+
   it('holds the next deal for 8 s after settle, then the hold timer deals a no-tick table with no poke', async () => {
     const h = makeHoldHarness(); // the REAL default hold
     const { tableId, sid } = await seatTwoHumans(h);

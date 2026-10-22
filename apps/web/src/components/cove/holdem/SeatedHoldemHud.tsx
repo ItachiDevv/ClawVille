@@ -233,6 +233,12 @@ export function CashTableRoomHud({
   }, [tableId]);
 
   useEffect(() => {
+    for (const seat of state?.seats ?? []) {
+      if (seat.name) seatNameByAvatarRef.current.set(seat.avatarId, seat.name);
+    }
+  }, [state?.seats]);
+
+  useEffect(() => {
     if (!live) return;
     for (const seat of live.seats) {
       seatNameByAvatarRef.current.set(seat.avatarId, seat.name);
@@ -297,8 +303,9 @@ export function CashTableRoomHud({
     const liveSeat = live?.seats.find((seat) => seat.seatIndex === seatIndex);
     if (liveSeat) return liveSeat.name;
     if (settledSeat?.name) return settledSeat.name;
-    const avatarId = settledSeat?.avatarId
-      ?? state?.seats.find((seat) => seat.seatIndex === seatIndex && seat.status !== 'left')?.avatarId;
+    const rosterSeat = state?.seats.find((seat) => seat.seatIndex === seatIndex && seat.status !== 'left');
+    if (rosterSeat?.name) return rosterSeat.name;
+    const avatarId = settledSeat?.avatarId ?? rosterSeat?.avatarId;
     return (avatarId ? seatNameByAvatarRef.current.get(avatarId) : undefined) ?? `Seat ${seatIndex + 1}`;
   }, [feedIsSettledHand, live, settled, state?.seats]);
 
@@ -331,14 +338,17 @@ export function CashTableRoomHud({
         lastAction: liveLastActions.get(serverSeatIndex) ?? null,
       };
     }
-    if (live) return null;
+    // Not in the live hand (sitting out, or between hands): still show the
+    // seated player from the roster, so every chair with a player has a badge.
     const rosterSeat = state?.seats.find(
       (seat) => seat.status !== 'left' && seat.seatIndex === serverSeatIndex,
     );
     if (!rosterSeat) return null;
     return {
       avatarId: rosterSeat.avatarId,
-      name: seatNameByAvatarRef.current.get(rosterSeat.avatarId) ?? `Seat ${serverSeatIndex + 1}`,
+      name: rosterSeat.name
+        ?? seatNameByAvatarRef.current.get(rosterSeat.avatarId)
+        ?? `Seat ${serverSeatIndex + 1}`,
       chipStack: Number(rosterSeat.stackCt),
       status: 'roster',
       rosterLabel: rosterStatusLabel(rosterSeat.status),

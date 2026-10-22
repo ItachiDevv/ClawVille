@@ -644,7 +644,24 @@
   .actionPanel { gap: 6px; padding-block: 7px; }
   .statusRow { min-height: 20px; }
   .legendRow { font-size: 8px; }
-  .settlement { top: 46%; }
+  /* Small badges on a short screen: at 844 x 390 the full badge (154 x 62)
+     covered the next chair's badge. The projector also pushes overlapping
+     badges apart (holdem-table-room `separateSeatBadges`). */
+  .seatBadge {
+    min-width: 0;
+    max-width: 124px;
+    padding: 4px 7px;
+  }
+  .seatBadge .seatAction,
+  .seatBadge .seatLastAction { margin-top: 2px; font-size: 9px; }
+  /* "Waiting for players" sits at the top, clear of the seat badges. */
+  .settlement {
+    top: max(8px, env(safe-area-inset-top));
+    width: min(340px, calc(100vw - 340px));
+    padding: 8px 12px;
+    transform: translateX(-50%);
+  }
+  .settlement .settlementHeadline { font-size: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1024,13 +1041,44 @@
   }
   .feedList,
   .feedMobile .feedList { max-height: max(88px, calc(100dvh - 300px)); }
-  .resultSeat { min-height: 40px; padding-block: 2px; }
-  .resultSeatName {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
+  /* One line per seat (2026-10-21, founder: no scroll on a phone held
+     sideways): name and hand name stacked on the left, then the hole cards,
+     the Best 5 and the net. Cards render at 2/3 size (24 x 35) through
+     `zoom`, which also shrinks their layout box. A 3-seat showdown is about
+     40 px per row, so the panel fits in the 844 x 390 height. */
+  .resultSeat {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "name cards best net"
+      "rank cards best net";
+    row-gap: 0;
+    column-gap: 6px;
+    padding-block: 2px;
   }
-  .resultSeatNameText { max-width: 100%; }
+  .result .resultSeatName {
+    grid-area: name;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+  }
+  .result .resultSeatNameText { max-width: none; }
+  .resultSeatCards { grid-area: cards; gap: 2px; }
+  .resultSeatRank { grid-area: rank; font-size: 10px; }
+  .resultSeatNet { grid-area: net; min-width: 40px; }
+  .resultSeatBestFive {
+    grid-area: best;
+    grid-column: auto;
+    flex-wrap: nowrap;
+    gap: 2px;
+    padding-left: 4px;
+    border-left: 1px solid rgba(226, 193, 90, 0.35);
+  }
+  .resultSeatBestFive > span[aria-hidden] { display: none; }
+  .resultSeatCards > div,
+  .resultSeatBestFive > div { zoom: 0.66; }
+  .resultSeats { margin-top: 5px; gap: 3px; }
+  .resultSummary { margin-top: 3px; }
 
   /* `.surfaceSettled` (CashTableRoomHud, `cashResultFreesTray`): the full
      result is current and the viewer is not acting. While the panel is

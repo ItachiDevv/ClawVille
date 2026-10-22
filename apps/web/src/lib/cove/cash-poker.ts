@@ -268,6 +268,8 @@ export interface CashSeatRow {
   isSeeded: boolean;
   stackCt: string;
   status: string;
+  /** Avatar name, fallback `Seat N` (protocol 96; absent from older APIs). */
+  name?: string;
 }
 
 /** `GET /tables/:id` PUBLIC table state. */

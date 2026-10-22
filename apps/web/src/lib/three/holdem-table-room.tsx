@@ -36,6 +36,7 @@ import {
   getHoldemBadgeRegistryVersion,
   getHoldemSeatBadgeElement,
   getHoldemTableRecenterEpoch,
+  separateSeatBadges,
 } from '@/lib/cove/holdem-table-view';
 import { chainPostBootCompile } from '@/lib/three/boot-core-compile';
 import {
@@ -516,6 +517,12 @@ const SEAT_BADGE_WORLD_ANCHORS: readonly (readonly [number, number, number])[] =
 const CAMERA_LOOK_TARGET = new THREE.Vector3();
 const BADGE_PROJECT_SCRATCH = new THREE.Vector3();
 const BADGE_VIEW_PROJECTION = new THREE.Matrix4();
+const BADGE_SLOT_COUNT = SEAT_BADGE_WORLD_ANCHORS.length;
+const BADGE_LEFT = new Float64Array(BADGE_SLOT_COUNT);
+const BADGE_TOP = new Float64Array(BADGE_SLOT_COUNT);
+const BADGE_WIDTH = new Float64Array(BADGE_SLOT_COUNT);
+const BADGE_HEIGHT = new Float64Array(BADGE_SLOT_COUNT);
+const BADGE_SHOWN = new Uint8Array(BADGE_SLOT_COUNT);
 
 let handCardBackTextureCache: THREE.CanvasTexture | null = null;
 function getHandCardBackTexture(): THREE.CanvasTexture {
@@ -861,7 +868,8 @@ function SeatedLookCamera() {
     camera.updateMatrixWorld();
 
     BADGE_VIEW_PROJECTION.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    for (let seat = 0; seat < SEAT_BADGE_WORLD_ANCHORS.length; seat += 1) {
+    for (let seat = 0; seat < BADGE_SLOT_COUNT; seat += 1) {
+      BADGE_SHOWN[seat] = 0;
       const element = getHoldemSeatBadgeElement(seat);
       if (!element) continue;
       const anchor = SEAT_BADGE_WORLD_ANCHORS[seat]!;
@@ -874,9 +882,19 @@ function SeatedLookCamera() {
         && left < size.width - 58
         && top > 44
         && top < size.height - 84;
-      element.style.left = left + 'px';
-      element.style.top = top + 'px';
+      BADGE_LEFT[seat] = left;
+      BADGE_TOP[seat] = top;
+      BADGE_WIDTH[seat] = element.offsetWidth;
+      BADGE_HEIGHT[seat] = element.offsetHeight;
+      BADGE_SHOWN[seat] = visible ? 1 : 0;
       element.style.setProperty('--seat-visible', visible ? '1' : '0');
+    }
+    separateSeatBadges(BADGE_LEFT, BADGE_TOP, BADGE_WIDTH, BADGE_HEIGHT, BADGE_SHOWN);
+    for (let seat = 0; seat < BADGE_SLOT_COUNT; seat += 1) {
+      const element = getHoldemSeatBadgeElement(seat);
+      if (!element) continue;
+      element.style.left = BADGE_LEFT[seat] + 'px';
+      element.style.top = BADGE_TOP[seat] + 'px';
     }
   });
 
