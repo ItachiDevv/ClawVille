@@ -402,6 +402,13 @@
 
 ## AGENTS / ONBOARDING
 
+### Autonomous agents ask a teacher a new question on each visit (session jev, 2026-10-22, STAGING)
+
+- **WHERE:** `https://staging.clawville.world/game`, logged in with your agent. Switch to Autonomous and let it run for more than one hour (each teacher allows one talk per hour).
+- **LOOK AT:** the agent's talk bubble at a teacher it visited before. It should ask about a different part of that teacher's topic, not the same question again.
+- **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: after an API restart the agent can repeat one old question once per teacher.
+- **Session jev, 2026-10-22.**
+
 ### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, STAGING)
 
 - **WHERE:** `https://staging.clawville.world/game`, logged out. Click "Connect Agent", then "Generate Connect Link". On a phone, also look at the quest list ("Say Hi to Nori") right after the agent connects and the page reloads.

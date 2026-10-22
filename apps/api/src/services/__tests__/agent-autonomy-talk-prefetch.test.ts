@@ -45,13 +45,21 @@ type DriverInternals = {
   warming: Map<string, number>;
   arrivalSettling: Map<string, object>;
   talkCooldownUntil: Map<string, number>;
+  priorTalkQuestions: Map<string, string[]>;
+  getPriorQuestions: (agentId: string, buildingId: string) => readonly string[];
+  recordPriorQuestion: (agentId: string, buildingId: string, raw: string) => void;
   runReconcile: () => Promise<void>;
   readDirectiveBounded: (platformAgentId: string) => Promise<null>;
   readRecentLessons: () => Promise<string[]>;
   readRecentKnowledge: () => Promise<string[]>;
   arrivalSettle: (...args: any[]) => Promise<null>;
   teacherTurn: (...args: any[]) => Promise<unknown>;
-  buildTalkPrompt: (buildingId: string, label?: string, cryptoFocus?: string) => string;
+  buildTalkPrompt: (
+    buildingId: string,
+    label: string | undefined,
+    cryptoFocus: string | undefined,
+    priorQuestions: readonly string[],
+  ) => string;
 };
 
 type SimInternals = {
@@ -241,11 +249,12 @@ function installRuntime(replies: Array<string | Error>): DecideCall[] {
   return calls;
 }
 
-function expectedPrompt(buildingId = BUILDING): string {
+/** The talk prompt for `buildingId` with an explicit prior-question list. */
+function expectedPrompt(buildingId = BUILDING, prior: readonly string[] = []): string {
   const building = npcSimulation.buildPerception(BODY)!.nearbyBuildings.find(
     (b) => b.buildingId === buildingId,
   )!;
-  return driver.buildTalkPrompt(buildingId, building.label, building.cryptoFocus);
+  return driver.buildTalkPrompt(buildingId, building.label, building.cryptoFocus, prior);
 }
 
 let drive: ReturnType<typeof mock>;
@@ -265,6 +274,7 @@ beforeEach(() => {
   driver.warming.clear();
   driver.arrivalSettling.clear();
   driver.talkCooldownUntil.clear();
+  driver.priorTalkQuestions.clear();
   driver.runReconcile = async () => {};
   driver.readDirectiveBounded = async () => null;
   driver.readRecentLessons = async () => [];
@@ -306,6 +316,7 @@ afterEach(() => {
   driver.warming.clear();
   driver.arrivalSettling.clear();
   driver.talkCooldownUntil.clear();
+  driver.priorTalkQuestions.clear();
   for (const id of agentAutonomyDriver.getHouseAgentIds()) {
     agentAutonomyDriver.unregisterHouseAgent(id);
   }
@@ -647,5 +658,181 @@ describe('talk prefetch: discard paths', () => {
     expect(dispatched).toEqual([]);
     expect(entry.phase as DriverEntry['phase']).toBe('talking');
     expect(entry.talkPrefetch).toBeNull();
+  });
+});
+
+// Founder 2026-10-22: the talk prompt lists the agent's own last 4 questions to
+// that teacher so it stops asking the same question on every visit. The list
+// changes only at the talk mutation point (after extractTalkMessage), so a
+// prefetch built during the approach still equals the arrival prompt.
+describe('talk prompt: prior questions to the same teacher', () => {
+  function talkReply(buildingId: string, message: string): string {
+    return `[ACTION: talk_to_npc(buildingId=${buildingId}, message=${message})]`;
+  }
+
+  /** One arrived-branch talk at `buildingId` (no prefetch), via the real drive. */
+  async function talkAt(entry: DriverEntry, buildingId: string, message: string): Promise<DecideCall[]> {
+    driver.talkCooldownUntil.clear();
+    const calls = installRuntime([talkReply(buildingId, message)]);
+    placeAtBuilding(buildingId);
+    entry.phase = 'arrived';
+    entry.targetBuildingId = buildingId;
+    entry.talkPrefetch = null;
+    captureRealDrives();
+    await agentAutonomyDriver.driveAgentNow(AGENT);
+    expect(calls).toHaveLength(1);
+    return calls;
+  }
+
+  function captureLogs(): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    };
+    return { lines, restore: () => { console.log = original; } };
+  }
+
+  it('first visit: the prompt is byte-identical to the pre-2026-10-22 form and logs prior=0', async () => {
+    const entry = registerHouse();
+    const building = npcSimulation.buildPerception(BODY)!.nearbyBuildings.find(
+      (b) => b.buildingId === BUILDING,
+    )!;
+    const legacy = [
+      `You have arrived at "${building.label}"${building.cryptoFocus ? `, which teaches ${building.cryptoFocus}` : ''}.`,
+      'Greet the teacher and ask ONE focused question about their topic.',
+      'Reply with EXACTLY this action tag (the message must be a single short clause',
+      'with NO commas and NO parentheses):',
+      `[ACTION: talk_to_npc(buildingId=${BUILDING}, message=your short question here)]`,
+    ].join('\n');
+    expect(expectedPrompt()).toBe(legacy);
+
+    const logs = captureLogs();
+    let calls: DecideCall[];
+    try {
+      calls = await talkAt(entry, BUILDING, 'what is a vector index');
+    } finally {
+      logs.restore();
+    }
+    expect(calls[0]!.prompt).toBe(legacy);
+    expect(calls[0]!.prompt).not.toContain('You already asked');
+    expect(logs.lines.some((l) => l.includes('[AutonomyDriver][debug] talk ') && l.includes(' prior=0 '))).toBe(true);
+  });
+
+  it('a question asked at X appears in the next prompt at X, not at Y', async () => {
+    const entry = registerHouse();
+    await talkAt(entry, BUILDING, 'what is a vector index');
+
+    const atX = await talkAt(entry, BUILDING, 'how does chunking work');
+    expect(atX[0]!.prompt).toBe(expectedPrompt(BUILDING, ['what is a vector index']));
+    expect(atX[0]!.prompt).toContain(
+      'Greet the teacher and ask ONE focused question about their topic.\n'
+      + 'You already asked this teacher:\n'
+      + '- what is a vector index\n'
+      + 'Ask about a DIFFERENT part of the topic. Do not repeat or rephrase these questions.\n'
+      + 'Reply with EXACTLY this action tag',
+    );
+    expect(atX[0]!.prompt).toContain(
+      `[ACTION: talk_to_npc(buildingId=${BUILDING}, message=your short question here)]`,
+    );
+
+    const atY = await talkAt(entry, OTHER_BUILDING, 'what is an api key');
+    expect(atY[0]!.prompt).toBe(expectedPrompt(OTHER_BUILDING, []));
+    expect(atY[0]!.prompt).not.toContain('vector index');
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([
+      'what is a vector index',
+      'how does chunking work',
+    ]);
+    expect(driver.getPriorQuestions(AGENT, OTHER_BUILDING)).toEqual(['what is an api key']);
+  });
+
+  it('keeps only the last 4 questions (newest last)', async () => {
+    const entry = registerHouse();
+    const asked = ['ask alpha', 'ask bravo', 'ask charlie', 'ask delta', 'ask echo'];
+    for (const q of asked) await talkAt(entry, BUILDING, q);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(asked.slice(1));
+
+    const next = await talkAt(entry, BUILDING, 'ask foxtrot');
+    expect(next[0]!.prompt).toBe(expectedPrompt(BUILDING, asked.slice(1)));
+    expect(next[0]!.prompt).not.toContain('ask alpha');
+  });
+
+  it('normalizes: whitespace collapses, trimmed, capped at 160 chars, empty skipped, repeat moves to newest', () => {
+    driver.recordPriorQuestion(AGENT, BUILDING, '  what is\n\n  a   vector\tindex  ');
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['what is a vector index']);
+
+    driver.recordPriorQuestion(AGENT, BUILDING, ' \n\t ');
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toHaveLength(1);
+
+    const long = 'x'.repeat(300);
+    driver.recordPriorQuestion(AGENT, BUILDING, long);
+    const stored = driver.getPriorQuestions(AGENT, BUILDING);
+    expect(stored).toHaveLength(2);
+    expect(stored[1]).toBe('x'.repeat(160));
+
+    driver.recordPriorQuestion(AGENT, BUILDING, 'what is a vector index');
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['x'.repeat(160), 'what is a vector index']);
+  });
+
+  it('a prefetch built with a non-empty prior list is still used; its question shows only in the NEXT prompt', async () => {
+    const entry = registerHouse();
+    driver.recordPriorQuestion(AGENT, BUILDING, 'what is a vector index');
+    stampApproach(entry, 1_000);
+    const calls = installRuntime([TALK_REPLY]);
+    agentAutonomyDriver.phaseEdgePoll();
+    expect(calls).toHaveLength(1);
+    const prefetchPrompt = expectedPrompt(BUILDING, ['what is a vector index']);
+    expect(calls[0]!.prompt).toBe(prefetchPrompt);
+    expect(entry.talkPrefetch!.prompt).toBe(prefetchPrompt);
+
+    placeAtBuilding();
+    entry.phase = 'arrived';
+    captureRealDrives();
+    const logs = captureLogs();
+    try {
+      await agentAutonomyDriver.driveAgentNow(AGENT);
+    } finally {
+      logs.restore();
+    }
+
+    expect(calls).toHaveLength(1); // the prefetch was the only decide call
+    expect(logs.lines.some((l) => l.includes('talk prefetch used'))).toBe(true);
+    expect(logs.lines.some((l) => l.includes('[AutonomyDriver][debug] talk ') && l.includes(' prior=1 '))).toBe(true);
+    expect(calls[0]!.prompt).not.toContain('how do embeddings rank memories');
+    expect(dispatched).toEqual([TALK_REPLY]);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([
+      'what is a vector index',
+      'how do embeddings rank memories',
+    ]);
+
+    const next = await talkAt(entry, BUILDING, 'how does chunking work');
+    expect(next[0]!.prompt).toBe(
+      expectedPrompt(BUILDING, ['what is a vector index', 'how do embeddings rank memories']),
+    );
+  });
+
+  it('records the question even when the teacher turn returns null (no cooldown stamp)', async () => {
+    const entry = registerHouse();
+    driver.teacherTurn = async (input: { buildingId: string; message: string }) => {
+      teacherCalls.push({ buildingId: input.buildingId, message: input.message });
+      return null;
+    };
+    await talkAt(entry, BUILDING, 'what is a vector index');
+    expect(teacherCalls).toEqual([{ buildingId: BUILDING, message: 'what is a vector index' }]);
+    expect(driver.talkCooldownUntil.has(`${AGENT}:${BUILDING}`)).toBe(false);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['what is a vector index']);
+  });
+
+  it('a reply with no talk tag records nothing', async () => {
+    const entry = registerHouse();
+    const calls = installRuntime(['I will just look around.']);
+    placeAtBuilding();
+    entry.phase = 'arrived';
+    entry.targetBuildingId = BUILDING;
+    captureRealDrives();
+    await agentAutonomyDriver.driveAgentNow(AGENT);
+    expect(calls).toHaveLength(1);
+    expect(teacherCalls).toEqual([]);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
   });
 });

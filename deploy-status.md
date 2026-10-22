@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 03:30Z (session roundup). **STAGING API + WEB = `118dc26bd` (shared-table baccarat, PROTOCOL 97, migration 0087), verified live** (DEPLOY LOG 2026-10-22 03:30Z). Founder eyes owed (FOUNDER-REVIEW COVE). **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
+Last Audited: 2026-10-22 05:10Z (session jev, arena lead). **Staging API is receiving the autonomy "fewer repeated teacher questions" change** (founder 2026-10-22 "yes change the talk prompt"; API only, no route, schema, env or PROTOCOL_VERSION change, protocol stays 97). Web stays `118dc26bd`. **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
+
+Prior - Last Audited: 2026-10-22 03:30Z (session roundup). **STAGING API + WEB = `118dc26bd` (shared-table baccarat, PROTOCOL 97, migration 0087), verified live** (DEPLOY LOG 2026-10-22 03:30Z). Founder eyes owed (FOUNDER-REVIEW COVE). **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
 
 Prior - Last Audited: 2026-10-22 01:30Z (session roundup). **PROD API + WEB = `1c2d4943` (promotion #11, PR #321, merged 01:16Z, flipped 01:24-01:26Z): Hold'em cash table visibility protocols 92-96 + settle retry + connect and autonomy fixes. Staging API + WEB = `2082381c` (code; `9ce577d4` docs on top).** No migration (SCHEMA: synced). Detail in the DEPLOY LOG entry of 2026-10-22 01:30Z.
 
@@ -656,6 +658,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-22 05:10Z (session jev, arena lead) - autonomy talk prompt lists prior questions, to staging
+- **What changed:** `agent-autonomy-driver.ts` keeps each autonomous agent's last 4 questions per teacher (driver-level map, in memory, bounded) and the teacher talk prompt lists them with "ask about a DIFFERENT part of the topic". The first visit gets the old prompt byte for byte. The talk prefetch still matches the arrival prompt (the list changes only after a talk). The talk debug line gains `prior=N`.
+- **Why:** prod logs 2026-10-22 01:24-04:26Z: the house agent asked the Memory teacher "How do vector databases enable semantic search?" on 4 visits, and the API teacher the same webhooks question twice.
+- **Checks:** tsc 0; autonomy suites + fast path 277 pass / 0 fail; Codex read-only review VERDICT: APPROVE (wording nits applied). Known limit: an API restart clears the list, so after a deploy each teacher can get one repeat.
+- **Who it is for:** every hosted autonomous agent (house and user) and the humans who watch them. SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql` (unchanged, not mine).
 
 ### 2026-10-22 03:30Z (session roundup) - shared-table baccarat VERIFIED on staging (`118dc26bd`)
 - **Deploy:** run 39714494689 green (4 gate lanes, migrate, deploy). API `yvtwz...-20261022T030454` and web `ju0n3...-20261022T030455` both `printenv SOURCE_COMMIT` = `118dc26bd45d`; `/health` commit `118dc26bd`. Boot log: tick, then seeder (12 bot avatars), then scaler, which created 3 house tables.
