@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 05:50Z (session roundup). **Staging is receiving `feat/quests-wire` (PROTOCOL 98, no migration): Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`.** Not yet verified; see the DEPLOY LOG entry of 2026-10-22 05:50Z. **PROD API + WEB = `ae1e1589d`** (promotion #12).
+Last Audited: 2026-10-22 06:15Z (session roundup). **STAGING API + WEB = `a021925ba` (quests wire, PROTOCOL 98, no migration), verified live** (DEPLOY LOG 2026-10-22 06:15Z): Style Statement, Big Spender, Wallet Aware claimable by a human and a bound agent; Brand Ambassador removed. Founder eyes owed (FOUNDER-REVIEW). **PROD API + WEB = `ae1e1589d`** (promotion #12). SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-22 05:50Z (session roundup). **Staging is receiving `feat/quests-wire` (PROTOCOL 98, no migration): Style Statement, Big Spender, Wallet Aware claimable; Brand Ambassador removed; hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet`.** Not yet verified; see the DEPLOY LOG entry of 2026-10-22 05:50Z. **PROD API + WEB = `ae1e1589d`** (promotion #12).
 
 Prior - Last Audited: 2026-10-22 05:10Z (session jev, arena lead). **Staging API is receiving the autonomy "fewer repeated teacher questions" change** (founder 2026-10-22 "yes change the talk prompt"; API only, no route, schema, env or PROTOCOL_VERSION change, protocol stays 97). Web stays `118dc26bd`. **PROD API + WEB = `1c2d4943`** (promotion #11). SCHEMA: `prod-migration-pending: 0087_baccarat_shared_tables.sql`.
 
@@ -664,6 +666,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-22 06:15Z (session roundup) - quests wire VERIFIED on staging (`a021925ba`)
+- **Rebase:** session jev pushed `8786b615b` (autonomy talk prompt) at 05:09Z while this job was open; the job was rebased onto it (only doc header and log conflicts, both entries kept); autonomy suites 22 files pass after the rebase.
+- **Deploy:** staging disk 8.5 GB free before the push; `docker builder prune -af` (7.6 GB) + old ClawVille `118dc26bd` images removed, 20 GB free. Run 39730451826: 4 gate lanes, migrate, deploy success. API `yvtwz...-20261022T055611` flipped 06:03:59Z, web `ju0n3...-20261022T055611` by 06:08Z; both `SOURCE_COMMIT` = `a021925ba`; `/health` commit `a021925ba`.
+- **Release gates:** `agent-onboarding-smoke.ts` 14 PASS / 0 fail; `hosted-skill-runtime-probe.ts` ALL PASS (16).
+- **Live E5 (temporary sessions, deleted after):** human landtest2 (cookie) and an agent bound to landtest1's avatar (connect-token, `/api/agent/connect`, protocol 98). Each: style-statement claim BEFORE = 400 `no_cosmetic_purchase`; buy a 200 vCLAW cosmetic 200, equip 200, `GET /api/wallet/balances` 200; the human also bought 2 books (120 + 160). Then style-statement +30, wallet-aware +15, big-spender +50 for BOTH subjects; a second wallet-aware claim = 409 `already_claimed`; `brand-ambassador` claim = 404 `Unknown tutorial quest`. DB: exactly one `wallet.viewed` per avatar (payload `subjectKind` user / agent on the bound avatar), one `cosmetic.purchased` + one `cosmetic.equipped` each, 6 claim rows, ledger rows match (`buy_cosmetic` -200, `buy_book` -120/-160, `tutorial_quest` +30/+15/+50).
+- **Browser (headless Chrome, landtest2 cookie, 1568x772):** the first load right after the web flip hit a `ChunkLoadError` for a chunk of the previous build (the current `/game` HTML does not reference it; 404); a reload loaded clean. The quest tracker reads "5/33"; the page text contains Style Statement, Big Spender and Wallet Aware, and no Brand Ambassador.
+- **Not verified live:** the hosted verbs `buy_cosmetic`, `equip_cosmetic`, `view_wallet` through a real hosted LLM decision (unit tests only: 10/10 + executor suites); the web claim-after-step timing in a browser (store tests only); the founder's eyes.
+- **Who it is for:** every player and agent on the quest ladder. Test agent `E5Quest-0d194072` stays on staging. SCHEMA: synced.
 
 ### 2026-10-22 05:50Z (session roundup) - quests wire to staging (PROTOCOL 98, no migration)
 - **What changed:** founder decision 2026-10-22 ("do whatever you best recommend"). The tutorial quests Style Statement (buy + equip a cosmetic), Big Spender (200 vCLAW of goods debits: `buy_book`, `buy_cosmetic`, `land_kit_piece_fee`, `land_structure_upgrade`, `land_parcel_rent`; never bets, deposits, prepaid rent or peer land services) and Wallet Aware (`wallet.viewed`, once per avatar, from `GET /api/wallet/balances` on the 200 and the no-wallet 404) are claimable. Brand Ambassador is deleted (its Milady check never existed; 0 claim rows on staging and prod). The ladder is 33 quests, 29 pay vCLAW. New hosted-agent verbs `buy_cosmetic(skuId)`, `equip_cosmetic(skuId)`, `view_wallet()` run the same services as the REST routes (`services/cosmetic-actions.ts`, `services/wallet-view-record.ts`); the decide prompt gets a cosmetics block; quest targets put actionable quests first. The USDC cosmetic checkout now logs `cosmetic.purchased`. The web claims a quest right after the step. Tracked `AGENTS.md` synced to the brain copy (founder: keep it tracked).
