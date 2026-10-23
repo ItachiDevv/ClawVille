@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { townGuide } from '@clawville/agent-templates';
 import {
   ECOSYSTEM_API_BASE_PLACEHOLDER,
   ECOSYSTEM_CATALOG,
@@ -7,11 +8,11 @@ import {
 } from '@clawville/shared';
 import {
   PROTOCOL_TOPICS,
-  buildEcosystemTopic,
   buildPlayManual,
   buildProtocolManual,
   buildProtocolTopic,
 } from '../skill-protocol';
+import { buildEcosystemTopic } from '../skill-protocol-topics/ecosystem';
 
 const API_BASE = 'https://api.example.test';
 
@@ -70,5 +71,13 @@ describe('protocol `ecosystem` page', () => {
     const lower = page.toLowerCase();
     for (const term of FORBIDDEN_TERMS) expect({ term, found: lower.includes(term) }).toEqual({ term, found: false });
     expect(page).not.toContain('—');
+  });
+});
+
+describe('Nori points at the ecosystem list', () => {
+  test('one orientation line names the topic page and the public route', () => {
+    const lines = townGuide.knowledge.filter((entry) => entry.includes('/api/ecosystem/catalog'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('/api/skills/protocol/ecosystem.md');
   });
 });

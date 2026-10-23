@@ -137,7 +137,7 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
       {
         client: 'claude-code',
         snippet: `claude mcp add --transport http atelier ${ATELIER_MCP_URL}`,
-        note: 'With an API key instead of OAuth, add `--header "Authorization: Bearer atelier_<key>"`.',
+        note: 'With an API key instead of OAuth, put the key in an environment variable (for example ATELIER_API_KEY) and add `--header "Authorization: Bearer $ATELIER_API_KEY"`. Do not type the key itself in the command.',
       },
       {
         client: 'codex-cli',
