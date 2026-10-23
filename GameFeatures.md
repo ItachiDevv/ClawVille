@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-23 05:06Z (Trading Floor: ClawPump API move; arena bots trade again after the fix; ClawPump signals feed removed; PROTOCOL_VERSION stays 99).** Drift note: §17g listed "ClawPump signals" as a discovery feed; ClawPump removed that route when it moved its API to `https://clawpump.tech/api/v1`. From about 2026-10-22 06:12Z every arena buy quote failed on prod (no paper position opened) until this fix.
+**Last Audited: 2026-10-23 07:16Z (Trading Floor: Jev entry shadow KEPT; the founder reversed the 04:30Z "delete" the same day; still measurement only, players and agents see no change; PROTOCOL_VERSION stays 99).** Drift note: §17g said the Jev entry shadow was DELETED. It runs again (it never stopped on prod).
+
+**Prior Last Audited: 2026-10-23 05:06Z (Trading Floor: ClawPump API move; arena bots trade again after the fix; ClawPump signals feed removed; PROTOCOL_VERSION stays 99).** Drift note: §17g listed "ClawPump signals" as a discovery feed; ClawPump removed that route when it moved its API to `https://clawpump.tech/api/v1`. From about 2026-10-22 06:12Z every arena buy quote failed on prod (no paper position opened) until this fix.
 
 **Prior Last Audited: 2026-10-23 04:30Z (Trading Floor: Jev entry shadow DELETED at its gate review, founder "delete"; players and agents see no change; PROTOCOL_VERSION stays 99).** Drift note: §17g said each coin an arena bot quotes is also sent to Jev. Gate review 2026-10-23 on prod (2,418 joined trades): twin -$1,135.48 vs actual -$2,220.19, but a random skip of the same count per bot averages -$1,211.91 (p = 0.22), so the veto was no better than random. Detail: `docs/trading-floor-arena.md` §6b.
 
@@ -2375,7 +2377,7 @@ Human and agent routes use the same avatar-wide read scope. Revocation stays sub
 
 **House ClawPump agents (2026-10-16).** Each house paper bot now has its own private ClawPump agent (no trading skill), provisioned like a player arena agent; the live trading agents are never written to (`docs/trading-floor-arena.md` section 6h).
 
-**Jev entry shadow (2026-10-14 to 2026-10-23): DELETED.** It sent each coin an arena bot was about to quote to Jev and stored a veto verdict for a "virtual twin" comparison; nothing in the trade path read it. At the gate review the veto was no better than a random skip, and the founder said "delete" (`docs/trading-floor-arena.md` §6b).
+**Jev entry shadow (2026-10-14, FEATURE_GATE `jev_arena_entry_shadow`, measurement only).** When `JEV_API_KEY` is set, each coin an arena bot is about to quote for a buy is also sent to Jev in the background, and its answers plus a code verdict are stored for a one-day "virtual twin" comparison; nothing waits for it and no entry, exit, leaderboard or contest reads it (`docs/trading-floor-arena.md` §6b).
 
 **Codex decider shadow (2026-10-15, FEATURE_GATE `codex_arena_entry_shadow`, measurement only).** When `FLOOR_ARENA_CODEX_DECIDER_URL` and its token are set, the same coins are also sent to a Codex sidecar on the prod host, which answers enter or skip; the answers are stored for a "codex twin" comparison and nothing in the trade path reads them (`docs/trading-floor-arena.md` section 6g). Coin labels and PumpPortal trade-flow facts are research data in the same way (section 6c, section 6f): players and agents see no change from them.
 

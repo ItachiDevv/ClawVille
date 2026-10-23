@@ -180,8 +180,8 @@ export * from './tokenomics-redeem';
 // LEDGER-ONLY: nothing here touches avatars.clawTokens. Migration 0017
 // (idempotent, by hand — NEVER db:push).
 export * from './market';
-// Jev ENTRY SHADOW ledger (2026-10-14, migration 0082). Writer DELETED 2026-10-23 (founder); declared only until a
-// separate DROP migration lands after the prod code flip. NEVER db:push.
+// Jev ENTRY SHADOW for the arena paper bots (2026-10-14): measurement only, no trade reader.
+// Migration 0082 (idempotent, by hand - NEVER db:push). Kept by the founder 2026-10-23.
 export * from './floor-arena-jev';
 export * from './floor-arena-codex'; // Codex decider shadow (2026-10-15), migration 0085, measurement only
 export * from './floor-arena-labels';

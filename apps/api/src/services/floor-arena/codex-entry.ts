@@ -372,7 +372,7 @@ const defaultEntry = createCodexArenaEntry({
   log: { warn: (line) => console.warn(line) },
 });
 
-/** Engine hook (runAgentEntries, right before quoteBuy). Its result never reaches a trade. */
+/** Engine hook (runAgentEntries, right before quoteBuy, next to the Jev shadow). Its result never reaches a trade. */
 export function fireCodexArenaEntry(input: CodexArenaEntryInput): void {
   defaultEntry.fire(input);
 }

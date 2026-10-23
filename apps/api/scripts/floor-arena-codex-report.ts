@@ -6,7 +6,7 @@
  * Run inside the api container (DATABASE_URL already set there):
  *   bun apps/api/scripts/floor-arena-codex-report.ts
  *
- * Join: each `ok` row -> the earliest `floor_arena_positions` row with the same agent_id +
+ * Join (same as the Jev report): each `ok` row -> the earliest `floor_arena_positions` row with the same agent_id +
  * mint and opened_at in [decided_at, decided_at + 30 s], closed with a non-null pnl_usd. ACTUAL = every closed paper
  * trade with pnl since the first Codex row. CODEX TWIN = ACTUAL minus the trades joined to a `skip` row (a trade with
  * no ok Codex answer is kept). CODEX-SKIPPED = the trades the twin removed. SELECT statements only; prints no secrets.
