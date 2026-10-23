@@ -167,7 +167,10 @@ describe('ClawPump ownership proof', () => {
     const options = {
       env: { CLAWPUMP_API_KEY: 'synthetic-test-key' },
       fetchImpl: (async (url: string | URL | Request) => {
-        const path = new URL(String(url)).pathname;
+        const parsed = new URL(String(url));
+        // Strip the ClawPump /api/v1 base; a URL without it keeps its full path and fails the match below.
+        const path = parsed.origin === 'https://clawpump.tech' && parsed.pathname.startsWith('/api/v1/')
+          ? parsed.pathname.slice('/api/v1'.length) : parsed.href;
         paths.push(path);
         return Response.json(path === '/agents' ? [wire] : { ...wire, id: AGENT });
       }) as typeof fetch,

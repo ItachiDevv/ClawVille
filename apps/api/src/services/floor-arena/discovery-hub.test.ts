@@ -2,9 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
-  buildSnapshot, byMint, cleanVendorText, enrichTier, isTradableMint, mergeDiscoveryRow, mergeSightings, orderEnrichment,
-  parseClawpumpRows, parseDexscreenerList, parseGeckoPools, pickBestPairs, runDiscoveryExpiryTick, storeSnapshots,
-  upsertSightings, type Sighting,
+  buildSnapshot, byMint, cleanVendorText, DISCOVERY_SOURCES, enrichTier, isTradableMint, mergeDiscoveryRow, mergeSightings,
+  orderEnrichment, parseClawpumpRows, parseDexscreenerList, parseGeckoPools, pickBestPairs, runDiscoveryExpiryTick,
+  runDiscoveryPoll, storeSnapshots, upsertSightings, type Sighting,
 } from './discovery-hub';
 import { tradeableFirstSeenMs } from './filters';
 
@@ -55,6 +55,51 @@ describe('source parsers', () => {
     expect(isTradableMint(A)).toBe(true);
     expect(isTradableMint(USDC)).toBe(false);
     expect(isTradableMint(WSOL)).toBe(false);
+  });
+});
+
+describe('ClawPump discovery sources (API move 2026-10-23, fake fetch, never the network)', () => {
+  const KEYS = ['CLAWPUMP_API_KEY', 'CLAWPUMP_API_BASE_URL'] as const;
+  function withEnv<T>(vars: Partial<Record<(typeof KEYS)[number], string>>, run: () => Promise<T>): Promise<T> {
+    const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    for (const k of KEYS) {
+      if (vars[k] === undefined) delete process.env[k];
+      else process.env[k] = vars[k];
+    }
+    return run().finally(() => {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    });
+  }
+  function recordingFetch(seen: Array<{ url: string; init: RequestInit }>, body: unknown) {
+    return (async (url: URL | string, init?: RequestInit) => {
+      seen.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as unknown as typeof fetch;
+  }
+  const anomalies = () => DISCOVERY_SOURCES.find((s) => s.id === 'clawpump:anomalies')!;
+
+  test('clawpump:signals is no longer polled (/intelligence/signals is gone)', () => {
+    expect(DISCOVERY_SOURCES.map((s) => s.id)).not.toContain('clawpump:signals');
+    expect(DISCOVERY_SOURCES.map((s) => s.id)).toContain('clawpump:anomalies');
+  });
+
+  test('anomalies call /api/v1/signals/anomalies with the Bearer key', async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const rows = await withEnv({ CLAWPUMP_API_KEY: 'test-key' }, () =>
+      anomalies().fetch(recordingFetch(seen, { count: 1, source: 'x', gems: [{ chain: 'sol', contract: B, symbol: 'POND', name: null }] })));
+    expect(seen.map((c) => c.url)).toEqual(['https://clawpump.tech/api/v1/signals/anomalies']);
+    expect((seen[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer test-key');
+    expect(rows).toEqual([{ mint: B, source: 'clawpump:anomalies', symbol: 'POND', name: null }]);
+  });
+
+  test('no key: the anomalies poll is skipped without any call', async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const result = await withEnv({}, () => runDiscoveryPoll(anomalies(), NOW, recordingFetch(seen, { gems: [] })));
+    expect(result).toEqual({ seen: 0, skipped: true });
+    expect(seen.length).toBe(0);
   });
 });
 

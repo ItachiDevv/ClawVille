@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS, TRADE_MINTS } from '@clawville/shared';
-import { ClawPumpClientError, resolveClawPumpConfig, type ClawPumpClientOptions } from './clawpump-client';
+import { ClawPumpClientError, clawPumpUrl, resolveClawPumpConfig, type ClawPumpClientOptions } from './clawpump-client';
 import { isArenaClawPumpOwnedBy, isArenaUserClawPumpOwnedBy } from './floor-arena/queries';
 
 /**
@@ -318,8 +318,12 @@ async function sendJson(
   } catch (error) {
     throw toWriterError(error);
   }
-  const url = new URL(path, config.origin);
-  if (url.origin !== config.origin) throw new ClawPumpWriterError('invalid_base_url');
+  let url: URL;
+  try {
+    url = clawPumpUrl(config, path);
+  } catch (error) {
+    throw toWriterError(error);
+  }
   if (!takeWriterToken(options.priority ?? 'normal')) throw new ClawPumpWriterError('budget_exhausted');
   let response: Response;
   try {
@@ -831,8 +835,12 @@ async function sendTransferPost(path: string, body: unknown, options: ClawPumpWr
   } catch (error) {
     throw toWriterError(error);
   }
-  const url = new URL(path, config.origin);
-  if (url.origin !== config.origin) throw new ClawPumpWriterError('invalid_base_url');
+  let url: URL;
+  try {
+    url = clawPumpUrl(config, path);
+  } catch (error) {
+    throw toWriterError(error);
+  }
   const requestBody = JSON.stringify(body);
   if (!takeWriterToken('normal')) throw new ClawPumpWriterError('budget_exhausted');
   let response: Response;

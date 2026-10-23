@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { db, sql } from '@clawville/database';
 import { FLOOR_ARENA_PAPER_COSTS, TRADE_MINTS } from '@clawville/shared';
 import {
-  CLAWPUMP_ALLOWED_API_HOSTS, CLAWPUMP_DEFAULT_API_BASE_URL, ClawPumpClientError, resolveClawPumpConfig,
+  CLAWPUMP_ALLOWED_API_HOSTS, CLAWPUMP_API_BASE_PATH, CLAWPUMP_DEFAULT_API_BASE_URL, ClawPumpClientError, clawPumpUrl,
+  resolveClawPumpConfig,
 } from '../clawpump-client';
 import type { FloorArenaSnapshot } from './filters';
 
@@ -87,16 +88,19 @@ export async function arenaFetchJson(
 }
 
 /**
- * The ClawPump backend origin (allowlisted by clawpump-client) and the key when one is configured.
- * Market routes (signals, anomalies) answer without a key; /swap/quote needs it.
+ * The ClawPump backend origin + API base path (allowlisted by clawpump-client) and the key when one is configured.
+ * Build every ClawPump URL with `clawPumpUrl(backend, path)`: `new URL('/x', origin)` drops the base path.
+ * Since the 2026-10-22 API move (clawpump.tech/api/v1) /swap/quote AND /signals/anomalies need the key.
  */
-export function clawpumpBackend(env: Record<string, string | undefined> = process.env): { origin: string; apiKey: string | null; timeoutMs: number } {
+export function clawpumpBackend(env: Record<string, string | undefined> = process.env): {
+  origin: string; basePath: string; apiKey: string | null; timeoutMs: number;
+} {
   try {
     const config = resolveClawPumpConfig(env);
-    return { origin: config.origin, apiKey: config.apiKey, timeoutMs: config.timeoutMs };
+    return { origin: config.origin, basePath: config.basePath, apiKey: config.apiKey, timeoutMs: config.timeoutMs };
   } catch (error) {
     if (error instanceof ClawPumpClientError && error.code === 'not_configured') {
-      return { origin: new URL(CLAWPUMP_DEFAULT_API_BASE_URL).origin, apiKey: null, timeoutMs: 15_000 };
+      return { origin: new URL(CLAWPUMP_DEFAULT_API_BASE_URL).origin, basePath: CLAWPUMP_API_BASE_PATH, apiKey: null, timeoutMs: 15_000 };
     }
     throw error;
   }
@@ -404,8 +408,14 @@ async function postQuote(body: Record<string, unknown>, deps: QuoteDeps): Promis
     return { ok: false, reason: 'not_configured', detail: error instanceof Error ? error.message : 'invalid_base_url' };
   }
   if (!backend.apiKey) return { ok: false, reason: 'not_configured', detail: 'clawpump_not_configured' };
+  let url: URL;
   try {
-    const response = await arenaFetchJson(new URL('/swap/quote', backend.origin), {
+    url = clawPumpUrl(backend, '/swap/quote');
+  } catch (error) {
+    return { ok: false, reason: 'not_configured', detail: error instanceof Error ? error.message : 'invalid_base_url' };
+  }
+  try {
+    const response = await arenaFetchJson(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${backend.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

@@ -1,9 +1,11 @@
 import { describe, expect, mock, spyOn, test } from 'bun:test';
 import genesis from './__fixtures__/clawpump/get-agent-genesis.json';
 import {
+  CLAWPUMP_API_BASE_PATH,
   CLAWPUMP_DEFAULT_API_BASE_URL,
   ClawPumpAgentMismatchError,
   ClawPumpClientError,
+  clawPumpUrl,
   getClawPumpAgent,
   listClawPumpAgents,
   resolveClawPumpConfig,
@@ -39,13 +41,20 @@ describe('ClawPump read-only client', () => {
   });
 
   test.each([
-    'http://ai-agents-production-6ca0.up.railway.app',
-    'https://example.com',
-    'https://user:pw@ai-agents-production-6ca0.up.railway.app',
-    `${CLAWPUMP_DEFAULT_API_BASE_URL}:8443`,
-    `${CLAWPUMP_DEFAULT_API_BASE_URL}?key=${KEY}`,
-    `${CLAWPUMP_DEFAULT_API_BASE_URL}/api`,
-    `${CLAWPUMP_DEFAULT_API_BASE_URL}#fragment`,
+    'https://ai-agents-production-6ca0.up.railway.app',
+    'https://ai-agents-production-6ca0.up.railway.app/api/v1',
+    'https://agents.clawpump.tech/api/v1',
+    'https://clawpump.tech',
+    'https://clawpump.tech/',
+    'https://clawpump.tech/api/v2',
+    'https://clawpump.tech/api/v1/x',
+    'https://clawpump.tech/api/v1//',
+    'http://clawpump.tech/api/v1',
+    'https://example.com/api/v1',
+    'https://user:pw@clawpump.tech/api/v1',
+    'https://clawpump.tech:8443/api/v1',
+    `https://clawpump.tech/api/v1?key=${KEY}`,
+    'https://clawpump.tech/api/v1#fragment',
     'not a URL',
   ])('refuses unsafe origin case %# before fetch', async (baseUrl) => {
     const stub = fetchStub(() => Response.json([]));
@@ -55,6 +64,37 @@ describe('ClawPump read-only client', () => {
     expect(stub.calls).not.toHaveBeenCalled();
   });
 
+  test('the default base resolves to the clawpump.tech origin and the /api/v1 base path', () => {
+    expect(CLAWPUMP_DEFAULT_API_BASE_URL).toBe('https://clawpump.tech/api/v1');
+    expect(CLAWPUMP_API_BASE_PATH).toBe('/api/v1');
+    expect(resolveClawPumpConfig(env)).toMatchObject({ origin: 'https://clawpump.tech', basePath: '/api/v1', apiKey: KEY });
+  });
+
+  test.each(['https://clawpump.tech/api/v1', 'https://clawpump.tech/api/v1/', ' https://CLAWPUMP.tech/api/v1/ '])(
+    'accepts the env base %p', (baseUrl) => {
+      expect(resolveClawPumpConfig({ ...env, CLAWPUMP_API_BASE_URL: baseUrl })).toMatchObject({
+        origin: 'https://clawpump.tech', basePath: '/api/v1',
+      });
+    },
+  );
+
+  test('clawPumpUrl keeps the base path and the query string', () => {
+    const config = resolveClawPumpConfig(env);
+    expect(clawPumpUrl(config, '/agents').href).toBe('https://clawpump.tech/api/v1/agents');
+    expect(clawPumpUrl(config, `/agents/${AGENT_ID}`).href).toBe(`https://clawpump.tech/api/v1/agents/${AGENT_ID}`);
+    expect(clawPumpUrl(config, '/wallets/x/history?limit=5').href).toBe('https://clawpump.tech/api/v1/wallets/x/history?limit=5');
+    expect(clawPumpUrl(config, '/swap/quote').href).toBe('https://clawpump.tech/api/v1/swap/quote');
+  });
+
+  test.each(['', 'agents', '//evil.com/x', '/../x', '/a/../../x', '/a/..', '/%2e%2e/x', '/.%2E/x', '/x\\y', '\\evil.com'])(
+    'clawPumpUrl refuses path %p', (path) => {
+      let caught: unknown;
+      try { clawPumpUrl(resolveClawPumpConfig(env), path); } catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(ClawPumpClientError);
+      expect((caught as ClawPumpClientError).code).toBe('invalid_base_url');
+    },
+  );
+
   test('uses only GET with bearer auth, redirect refusal, and timeout on exact read URLs', async () => {
     let requestCount = 0;
     const stub = fetchStub(() => Response.json(++requestCount === 1 ? [genesis] : genesis));
@@ -62,7 +102,7 @@ describe('ClawPump read-only client', () => {
     await getClawPumpAgent(AGENT_ID, { env, fetchImpl: stub.fetchImpl });
     expect(stub.calls).toHaveBeenCalledTimes(2);
     for (const [index, [url, init]] of stub.calls.mock.calls.entries()) {
-      expect(String(url)).toBe(`${CLAWPUMP_DEFAULT_API_BASE_URL}/agents${index === 0 ? '' : `/${AGENT_ID}`}`);
+      expect(String(url)).toBe(`https://clawpump.tech/api/v1/agents${index === 0 ? '' : `/${AGENT_ID}`}`);
       expect(init?.method).toBe('GET');
       expect(init?.headers).toEqual({ Authorization: `Bearer ${KEY}`, Accept: 'application/json' });
       expect(init?.redirect).toBe('error');
