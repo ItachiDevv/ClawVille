@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-23 03:50Z (session jev, arena lead). **STAGING API = `ddaa2bfc9` (durable prior-teacher-question list), VERIFIED across a manual API restart** (DEPLOY LOG 2026-10-23 03:50Z). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`**; `ddaa2bfc9` waits for a founder promotion go. SCHEMA: synced.
+Last Audited: 2026-10-23 04:40Z (session jev2, arena lead). **PROD API = `af9659135` (promotion #16, PR #326: durable prior-teacher-question list `ddaa2bfc9`; no migration), flipped 04:37Z; prod web stays `f271f9f9b` (no web change).** **Staging is receiving `7fcd91d49`: Jev arena entry shadow DELETED (founder "delete") + migration `0088_jev_decide_shadow_drop.sql` (founder "yes")** (DEPLOY LOG 2026-10-23 04:40Z). SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (reaches prod with the next promotion, which needs a founder go).
+
+Prior - Last Audited: 2026-10-23 03:50Z (session jev, arena lead). **STAGING API = `ddaa2bfc9` (durable prior-teacher-question list), VERIFIED across a manual API restart** (DEPLOY LOG 2026-10-23 03:50Z). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`**; `ddaa2bfc9` waits for a founder promotion go. SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-23 02:57Z (session jev, arena lead). **Staging API is receiving the durable prior-teacher-question list** (founder 2026-10-22 "make it so it survives a restart"; API only; no schema, migration, env or PROTOCOL_VERSION change, protocol stays 99). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`** (promotions #14 + #15). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (from roundup's entry below).
 
@@ -676,6 +678,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-23 04:40Z (session jev2, arena lead) - promotion #16 ON PROD; Jev arena entry shadow deletion + jev_decide_shadow DROP to staging
+- **Promotion #16 (founder "yes" to promote `ddaa2bfc9`, 2026-10-23 ~04:10Z):** PR #326 (staging `51502a651` -> master), 4 PR checks green, merged 04:28Z with `[skip-nori-update]` as merge commit `af9659135`. Prod run 39900434452: 4 gate lanes, migrate, deploy all success (04:32Z). Prod API `ebnatux...-20261023T043150` `SOURCE_COMMIT` = `af9659135`, `/health` ok from 04:37Z. Web not rebuilt (no web change), stays `f271f9f9b`. Session roundup2 was told by message before the merge.
+- **Prod check after the flip:** first talk 04:37:56Z (user agent `ffaac96a`, memory-rag, `prior=0`, first visit). The row `platform_agents 67f64b1c-...` now holds `config.priorTalkQuestions` (byBuilding memory-rag). 0 `persist failed`, 0 driver errors. No `prior questions hydrated` line yet: correct, prod had no stored list before this deploy. The reload after a restart is checked at the next prod API restart.
+- **Jev arena entry shadow gate review (deadline 2026-10-23):** prod 10-14 09:53Z to 10-23 04:04Z, 2,418 joined closed paper trades: actual -$2,220.19, twin -$1,135.48, but a stratified random skip of the same count per bot averages -$1,211.91 (20,000 runs, one-sided p = 0.22). Founder: "delete". `7fcd91d49` removes `floor-arena/jev-entry.ts`, its test, the engine hook and the report script; `floor_arena_jev_entry` stays declared, unwritten, until a later DROP after the prod flip.
+- **jev_decide_shadow DROP (founder "yes"):** migration `0088_jev_decide_shadow_drop.sql` (`DROP TABLE IF EXISTS`, no CASCADE). Writer gone since 2026-10-20; last prod row 2026-10-22 01:24:58Z, staging 2026-10-20 05:20Z; no view or FK (staging catalog). Rows archived to CSV first in the untracked `ops/house-traders/archive/` (prod 3,382, staging 184). Drizzle mirror `jev-shadow.ts` removed; `migrate-ci.ts` records the second sanctioned DROP.
+- **Checks before push:** api tsc 0; 11 floor-arena test files 230 pass / 0 fail (per file); database script tests 16/16; doc path check passed; coupling gates exit 0 (1 rule triggered, satisfied); Codex read-only review of `7fcd91d49`: VERDICT: APPROVE. Staging `docker builder prune -af` run first (25 GB free).
+- **Not yet verified:** the staging deploy and the 0088 migration on staging (next entry). `JEV_API_KEY` is now unused; it is still set in Coolify on prod and staging.
+- **Who it is for:** the founder (gate decision carried out) and the arena paper bots (no behavior change). PARITY: not a user-facing feature (no route, UI, verb or settlement). SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql`.
 
 ### 2026-10-23 03:58Z (session roundup) - docs only: FOUNDER-REVIEW quests entry ON PROD (`a672d0b7a`)
 - **What changed:** docs only, no deploy. The FOUNDER-REVIEW quests entry said STAGING; it now says ON PROD (quests wire promotion #13, hosted buy cap + READY quest marking #14 and #15, prod `f271f9f9b`). It also names the one-buy-per-24-hours hosted cap and the qelreth refund decision. CURRENT STATE above stays correct (no code moved).
