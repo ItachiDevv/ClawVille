@@ -492,7 +492,8 @@ may contain commas; `)` terminates the action tag, so keep that character out of
   verb ("`<verb>` is not an action ..."; prod logs showed about 100 such drops in 6 h, mostly `complete_quest` and
   `chat_with_teacher`), or a grammar drop of `buy_cosmetic`, `equip_cosmetic`, `view_wallet` or
   `update_appearance` (a malformed buy line says no buy is open when the Cosmetics list shows none). One line per
-  reply (the driver keeps one result slot); a body with no agent attribution gets none. Nothing executes and no
+  reply (the driver keeps one result slot); a body with no agent attribution gets none, and a house-fleet agent gets
+  none (`rememberActionResult` writes only user entries; the 10-22 duplicate-drop line has the same limit). Nothing executes and no
   money moves. The served `actions` page now says a hosted brain gets that line (it said "dropped silently");
   PROTOCOL_VERSION 99 -> 100.
 - `equip_cosmetic(skuId=<uuid>)` — (v98) wears an owned cosmetic through the SAME service as
