@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-23 11:14Z (session mcp2). **STAGING API + WEB = `0801c533e`, VERIFIED: MCP ecosystem catalog, hub step 1 (PROTOCOL_VERSION 100 -> 101)** (manual topic `ecosystem`, public `GET /api/ecosystem/catalog`, Nori line; read-only, no money; no schema or env change; DEPLOY LOG 2026-10-23 11:14Z). It carries roundup2's `87e8621fd` (dropped-tag result lines, PROTOCOL 100) and jev2's `aa2bbd473`. **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
+Last Audited: 2026-10-23 21:46Z (session mcp2 / claw-2.0). **STAGING API + WEB = `c34039c2a`, VERIFIED: ecosystem catalog adds Shinjuku StAItion and Pay.sh rows, SAID planned (PROTOCOL_VERSION 101 -> 103; 102 reserved for jev2's next push, which takes 104)** (read-only knowledge; no route, schema, env or money change; DEPLOY LOG 2026-10-23 21:46Z). It carries mcp2's `0801c533e`, roundup2's `87e8621fd` and jev2's `aa2bbd473`. **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
+
+Prior - Last Audited: 2026-10-23 11:14Z (session mcp2). **STAGING API + WEB = `0801c533e`, VERIFIED: MCP ecosystem catalog, hub step 1 (PROTOCOL_VERSION 100 -> 101)** (manual topic `ecosystem`, public `GET /api/ecosystem/catalog`, Nori line; read-only, no money; no schema or env change; DEPLOY LOG 2026-10-23 11:14Z). It carries roundup2's `87e8621fd` (dropped-tag result lines, PROTOCOL 100) and jev2's `aa2bbd473`. **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
 
 Prior - Last Audited: 2026-10-23 10:40Z (session roundup2). **Staging is receiving `87e8621fd`: a hosted agent's dropped `[ACTION:]` tag now sends a result line** (API only; PROTOCOL_VERSION 99 -> 100, the served `actions` page no longer says drops are silent; no schema or env change; DEPLOY LOG 2026-10-23 10:40Z). It sits on top of jev2's `aa2bbd473` (Jev arena entry shadow restore, VERIFIED 07:32Z). **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** qelreth refund applied on prod 10:31Z (founder yes). SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
 
@@ -686,6 +688,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-23 21:46Z (session mcp2 / claw-2.0) - ecosystem catalog rows VERIFIED on staging (`c34039c2a`, PROTOCOL 103)
+- **What changed:** `ECOSYSTEM_CATALOG` serves 5 rows (clawville, studios, atelier, shinjuku, paysh); `said` is a planned, unserved row. Pay.sh is the first stdio row (a `Command:` line and a `command`/`args` JSON block). `65e368fa4` rewords the `agent-mcp.ts` header comment only.
+- **Verify:** CI 40026707953 green (gates, migrate, deploy); both containers `SOURCE_COMMIT` = `c34039c2a` at 21:42:50Z; `/health` commit matches; `GET /api/ecosystem/catalog` = protocol 103 with the 5 rows and no planned row; MCP `clawville_docs` topic `ecosystem` lists the 5 rows, `pay mcp` present, no `undefined`; `agent-onboarding-smoke.ts` 14 PASS; `hosted-skill-runtime-probe.ts` ALL PASS (134) from `/app`; `/game` renders, 0 console errors. Codex review: APPROVED.
+- **What broke:** nothing. 102 is skipped on purpose (held by jev2 unpushed; jev2 takes 104).
+- **Who it is for:** users and agents that add ecosystem MCP servers to their own client. SCHEMA: unchanged.
 
 ### 2026-10-23 21:08Z (session mcp2) - docs-only wording cleanup (no deploy)
 - **What changed:** wording in `deploy-status.md`, `docs/video-production.md` and the 2026-09-30 brag brief and handoff no longer names other projects on the shared box or in the video notes. No code, no deploy, no gates. Running containers stay `0801c533e`. SCHEMA: unchanged.
