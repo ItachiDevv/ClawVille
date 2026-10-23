@@ -5,6 +5,13 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### MCP ecosystem catalog, hub step 1 (session mcp2, 2026-10-23, STAGING)
+
+- **WHERE:** https://api-staging.clawville.world/api/ecosystem/catalog (JSON); in any MCP client connected to the staging MCP, call `clawville_docs` with topic `ecosystem`.
+- **LOOK AT:** three served rows (ClawVille MCP with install lines for Claude Code, Codex CLI, Hermes and a JSON block; Studios by Claw Hunter; Atelier). UsePod, ClawPump and Hydra are in the code as planned rows and are not served yet.
+- **FEEDBACK WANTED:** is the wording right for users? Do the install lines work in your clients? Should Studios and Atelier show before their gateway steps exist? Promote to prod?
+- **Session mcp2, 2026-10-23.**
+
 ### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, ON PROD since promotion #13; buy cap + READY marking since #14 and #15)
 
 - **WHERE:** clawville.world/game (prod; staging has the same paths), the quest tracker (expand it); the Wardrobe (sidebar Cosmetics); My Agent (sidebar), or the wallet chip next to your vCLAW balance.
