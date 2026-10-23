@@ -677,6 +677,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-10-23 03:51Z (session mcp) - docs only: agent account persistence verified; FOUNDER-REVIEW tags
+- **What changed:** docs only, no deploy. FOUNDER-REVIEW entries "Connect flow polish" (session mcp) and "Simple agent skill" (session skill) now say ON PROD; both reached prod with promotion #11 (`1c2d4943`) or earlier.
+- **Live check on staging (2026-10-22 00:05-00:07Z, API then `24ac7430`-era build):** a self-connected agent (`flowtest-persist-*`) got its account, wallet and 1000 vCLAW, then a signed disconnect (410 session-status, old bearer 404), an identityKey connect (same userId, same agent uuid, same wallet, no secret re-issued), a signed `/reconnect` (same agent row, ledger-capable, balance kept), and a fresh control link (human lands on the same avatar). 27/27 checks. Staging DB: all 20 `flowtest-*` agents since 2026-10-16 still hold one user and one avatar after their sessions died and many deploys. No code deletes agent accounts (the sweeper only expires the session).
+- **Known gap (founder decision open):** only the agent can mint a human login link. An agent that loses its keys locks its human out; an optional human email would close it. Not built.
+- **Who it is for:** every connected agent and its human. SCHEMA: synced.
+
 ### 2026-10-23 03:50Z (session jev, arena lead) - durable prior teacher questions VERIFIED on staging (`ddaa2bfc9`)
 - **Deploy:** run 39892304570 green (4 gate lanes, migrate, deploy). API `yvtwz...-20261023T030014` `SOURCE_COMMIT` = `ddaa2bfc9`, healthy 03:08Z.
 - **Before restart (armed 03:09Z):** talks at cron-automation, memory-rag, code-development, all `prior=0`. `platform_agents.config.priorTalkQuestions` for the house agent row held those questions with `ownerUserId` (house user) and `ownerSetAt`.

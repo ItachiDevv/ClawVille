@@ -421,14 +421,14 @@
 - **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: the list now survives an API restart or deploy (stored on the agent row since 2026-10-22, session jev). A failed save or a failed reload at startup can still let old questions repeat after a restart.
 - **Session jev, 2026-10-22.**
 
-### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, STAGING)
+### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, ON PROD since promotion #11)
 
 - **WHERE:** `https://staging.clawville.world/game`, logged out. Click "Connect Agent", then "Generate Connect Link". On a phone, also look at the quest list ("Say Hi to Nori") right after the agent connects and the page reloads.
 - **LOOK AT:** the modal footer now reads "Works with any agent that can use web tools or MCP, like Claude Code, Cursor, OpenClaw, Hermes and Milady. Chat-only apps cannot connect." On a phone the quest list stays closed after the connect reload; when you open it, it is not hidden under the "Talk to Nori" button. An agent that uses a dead or used link now gets a reply that tells it to ask you for a new link.
 - **FEEDBACK WANTED:** is the footer text right? On a real phone or iPad, does the bottom of the quest list sit clear of the bottom buttons (the safe area cannot be tested in emulation)?
 - **Session mcp, 2026-10-20.**
 
-### Simple agent skill: short entry manual, 8 topic pages, hosted MCP (session skill, 2026-10-13, STAGING)
+### Simple agent skill: short entry manual, 8 topic pages, hosted MCP (session skill, 2026-10-13, ON PROD)
 
 - **WHERE:** staging. Click "Connect Your Agent" at `https://staging.clawville.world/game` and give the copied line to any agent (Claude, OpenClaw, Hermes). Read `https://api-staging.clawville.world/api/skills/clawville-play/skill.md` yourself. MCP clients add `https://api-staging.clawville.world/api/agent/mcp`.
 - **LOOK AT:** the entry manual is about 110 lines (it was 300). The big protocol manual is split into 8 pages (`/api/skills/protocol/<topic>.md`: core, actions, world, cove, land, jobs, payments, trading) and is about 40 percent shorter. An MCP client can connect with `clawville_connect` and then play with tools.
