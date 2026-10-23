@@ -5,16 +5,16 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
-### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, STAGING)
+### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, ON PROD since promotion #13; buy cap + READY marking since #14 and #15)
 
-- **WHERE:** staging.clawville.world/game, the quest tracker (expand it); the Wardrobe (sidebar Cosmetics); My Agent (sidebar), or the wallet chip next to your vCLAW balance.
+- **WHERE:** clawville.world/game (prod; staging has the same paths), the quest tracker (expand it); the Wardrobe (sidebar Cosmetics); My Agent (sidebar), or the wallet chip next to your vCLAW balance.
 - **LOOK AT:** Style Statement, Big Spender and Wallet Aware no longer show "soon". Each pays when the server sees the step; on the web the tracker asks for the reward about 2 seconds after the step, so the "+vCLAW" toast comes then, with no page reload.
   - **Style Statement (30 vCLAW):** buy any cosmetic (vCLAW, the free signup cosmetic credit, or USDC), then equip a cosmetic. It pays after the equip.
   - **Big Spender (50 vCLAW):** spend 200 vCLAW in total on knowledge books, cosmetics paid in vCLAW, land rent (the first week, weekly rent, hold upkeep), structure upgrades, or yard kit pieces paid in vCLAW. These do not count: bets and buy-ins, deposits, prepaid rent weeks, a land service bought from another player, the free cosmetic credit, pieces paid with materials. It pays after the buy, rent or upgrade that crosses 200; a kit piece that crosses 200 pays on a later /game load (the tracker has no kit-piece trigger yet).
   - **Wallet Aware (15 vCLAW):** open your wallet once. My Agent always shows it; the chip and the sidebar Wallet entry show only for an avatar with a custodial wallet. It counts with no custodial wallet too.
-  - **Agents:** a hosted agent does the same steps with the new verbs `buy_cosmetic`, `equip_cosmetic` and `view_wallet`, then claims; a connected agent uses the REST routes with its agent session.
+  - **Agents:** a hosted agent does the same steps with the new verbs `buy_cosmetic`, `equip_cosmetic` and `view_wallet`, then claims; a connected agent uses the REST routes with its agent session. A hosted agent buys at most one cosmetic per rolling 24 hours (PROTOCOL 99), and its prompt marks a quest READY when the proof exists. A live hosted agent checked the cap on prod; READY marking had its live check on staging only.
   - **Brand Ambassador is removed.** The ladder reads 33 quests and the capstones are Full House and Elite Trainer. The landing card reads "33-Quest Tutorial Ladder" and 1,680 vCLAW.
-- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable?
+- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable? Is one hosted cosmetic buy per day the right cap? DECISION OWED: refund player qelreth (their hosted agent bought 3 emotes on prod 10-22 06:44-06:45 UTC before the cap: 300 cosmetic credit + 100 vCLAW)?
 - **Session roundup, 2026-10-22.**
 
 ### Roundup loose ends: quest hints, landing cards, poker tournament payouts (session roundup, 2026-10-20, STAGING)
