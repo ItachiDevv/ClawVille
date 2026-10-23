@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-23 02:57Z (session jev, arena lead). **Staging API is receiving the durable prior-teacher-question list** (founder 2026-10-22 "make it so it survives a restart"; API only; no schema, migration, env or PROTOCOL_VERSION change, protocol stays 99). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`** (promotions #14 + #15). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (from roundup's entry below).
+Last Audited: 2026-10-23 03:50Z (session jev, arena lead). **STAGING API = `ddaa2bfc9` (durable prior-teacher-question list), VERIFIED across a manual API restart** (DEPLOY LOG 2026-10-23 03:50Z). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`**; `ddaa2bfc9` waits for a founder promotion go. SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-23 02:57Z (session jev, arena lead). **Staging API is receiving the durable prior-teacher-question list** (founder 2026-10-22 "make it so it survives a restart"; API only; no schema, migration, env or PROTOCOL_VERSION change, protocol stays 99). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`** (promotions #14 + #15). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (from roundup's entry below).
 
 Prior - Last Audited: 2026-10-22 10:16Z (session roundup). **PROD API + WEB = `f271f9f9b` (promotions #14 PR #324 + #15 PR #325: hosted `buy_cosmetic` daily cap PROTOCOL 99, exact quest-claim calls, READY quest marking; no migration), verified live with hosted agents** (DEPLOY LOG 2026-10-22 10:16Z). **STAGING API + WEB = `12b30a337`** (`b3a999484` is a no-change merge of master). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (3 emotes bought by the pre-fix loop).
 
@@ -674,6 +676,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-23 03:50Z (session jev, arena lead) - durable prior teacher questions VERIFIED on staging (`ddaa2bfc9`)
+- **Deploy:** run 39892304570 green (4 gate lanes, migrate, deploy). API `yvtwz...-20261023T030014` `SOURCE_COMMIT` = `ddaa2bfc9`, healthy 03:08Z.
+- **Before restart (armed 03:09Z):** talks at cron-automation, memory-rag, code-development, all `prior=0`. `platform_agents.config.priorTalkQuestions` for the house agent row held those questions with `ownerUserId` (house user) and `ownerSetAt`.
+- **Manual restart 03:21:04Z (`docker restart` of the staging API, same image), re-armed:** 03:21:37Z `prior questions hydrated ... buildings=3`. First talks after the restart: cron-automation 03:22Z `prior=1` ("How do workflow orchestration tools manage complex dependency chains?" after "How do cron jobs differ from task queues?"), memory-rag 03:39Z `prior=1` (chunking strategy after vector databases), code-development 03:42Z `prior=1` (debugging after containers). New teachers `prior=0`. 0 driver errors, 0 persist failures. The stored row now holds 10 teachers; `ownerSetAt` moved up (same owner, merge keeps the larger stamp).
+- **Not verified live:** the owner-change and clock-rollback paths (unit tests only).
+- **Who it is for:** every hosted autonomous agent. SCHEMA: synced.
 
 ### 2026-10-23 02:57Z (session jev, arena lead) - prior teacher questions survive a restart, to staging
 - **What changed:** `agent-autonomy-state.ts` stores each hosted autonomous agent's last 4 questions per teacher in `platform_agents.config.priorTalkQuestions` = `{ownerUserId, ownerSetAt, byBuilding}` (one atomic jsonb UPDATE after each talk: same owner merges, newer owner stamp replaces, a delayed write from an older owner is skipped). The driver reloads it once per agent in the first deciding drive (bounded, late result dropped, fills only missing keys), so the talk prefetch still matches the arrival prompt byte for byte. In-memory owner scope: a new owner never sees the old owner's questions; `registerUserAgent` re-seats on an owner change and drops the old owner's index entry. `routes/openclaw.ts` existing-row reconnect now MERGES `config` (the old wholesale replace erased `autonomyCursor`, `currentDirective`, `lastActedDirectiveSha`; pre-existing bug).
