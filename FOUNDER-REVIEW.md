@@ -5,16 +5,16 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
-### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, STAGING)
+### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, ON PROD since promotion #13; buy cap + READY marking since #14 and #15)
 
-- **WHERE:** staging.clawville.world/game, the quest tracker (expand it); the Wardrobe (sidebar Cosmetics); My Agent (sidebar), or the wallet chip next to your vCLAW balance.
+- **WHERE:** clawville.world/game (prod; staging has the same paths), the quest tracker (expand it); the Wardrobe (sidebar Cosmetics); My Agent (sidebar), or the wallet chip next to your vCLAW balance.
 - **LOOK AT:** Style Statement, Big Spender and Wallet Aware no longer show "soon". Each pays when the server sees the step; on the web the tracker asks for the reward about 2 seconds after the step, so the "+vCLAW" toast comes then, with no page reload.
   - **Style Statement (30 vCLAW):** buy any cosmetic (vCLAW, the free signup cosmetic credit, or USDC), then equip a cosmetic. It pays after the equip.
   - **Big Spender (50 vCLAW):** spend 200 vCLAW in total on knowledge books, cosmetics paid in vCLAW, land rent (the first week, weekly rent, hold upkeep), structure upgrades, or yard kit pieces paid in vCLAW. These do not count: bets and buy-ins, deposits, prepaid rent weeks, a land service bought from another player, the free cosmetic credit, pieces paid with materials. It pays after the buy, rent or upgrade that crosses 200; a kit piece that crosses 200 pays on a later /game load (the tracker has no kit-piece trigger yet).
   - **Wallet Aware (15 vCLAW):** open your wallet once. My Agent always shows it; the chip and the sidebar Wallet entry show only for an avatar with a custodial wallet. It counts with no custodial wallet too.
-  - **Agents:** a hosted agent does the same steps with the new verbs `buy_cosmetic`, `equip_cosmetic` and `view_wallet`, then claims; a connected agent uses the REST routes with its agent session.
+  - **Agents:** a hosted agent does the same steps with the new verbs `buy_cosmetic`, `equip_cosmetic` and `view_wallet`, then claims; a connected agent uses the REST routes with its agent session. A hosted agent buys at most one cosmetic per rolling 24 hours (PROTOCOL 99), and its prompt marks a quest READY when the proof exists. A live hosted agent checked the cap on prod; READY marking had its live check on staging only.
   - **Brand Ambassador is removed.** The ladder reads 33 quests and the capstones are Full House and Elite Trainer. The landing card reads "33-Quest Tutorial Ladder" and 1,680 vCLAW.
-- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable?
+- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable? Is one hosted cosmetic buy per day the right cap? DECISION OWED: refund player qelreth (their hosted agent bought 3 emotes on prod 10-22 06:44-06:45 UTC before the cap: 300 cosmetic credit + 100 vCLAW)?
 - **Session roundup, 2026-10-22.**
 
 ### Roundup loose ends: quest hints, landing cards, poker tournament payouts (session roundup, 2026-10-20, STAGING)
@@ -418,17 +418,17 @@
 
 - **WHERE:** `https://clawville.world/game` (or staging), logged in with your agent. Switch to Autonomous and let it run for more than one hour (each teacher allows one talk per hour).
 - **LOOK AT:** the agent's talk bubble at a teacher it visited before. It should ask about a different part of that teacher's topic, not the same question again.
-- **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: after an API restart the agent can repeat one old question once per teacher.
+- **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: the list now survives an API restart or deploy (stored on the agent row since 2026-10-22, session jev). A failed save or a failed reload at startup can still let old questions repeat after a restart.
 - **Session jev, 2026-10-22.**
 
-### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, STAGING)
+### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, ON PROD since promotion #11)
 
 - **WHERE:** `https://staging.clawville.world/game`, logged out. Click "Connect Agent", then "Generate Connect Link". On a phone, also look at the quest list ("Say Hi to Nori") right after the agent connects and the page reloads.
 - **LOOK AT:** the modal footer now reads "Works with any agent that can use web tools or MCP, like Claude Code, Cursor, OpenClaw, Hermes and Milady. Chat-only apps cannot connect." On a phone the quest list stays closed after the connect reload; when you open it, it is not hidden under the "Talk to Nori" button. An agent that uses a dead or used link now gets a reply that tells it to ask you for a new link.
 - **FEEDBACK WANTED:** is the footer text right? On a real phone or iPad, does the bottom of the quest list sit clear of the bottom buttons (the safe area cannot be tested in emulation)?
 - **Session mcp, 2026-10-20.**
 
-### Simple agent skill: short entry manual, 8 topic pages, hosted MCP (session skill, 2026-10-13, STAGING)
+### Simple agent skill: short entry manual, 8 topic pages, hosted MCP (session skill, 2026-10-13, ON PROD)
 
 - **WHERE:** staging. Click "Connect Your Agent" at `https://staging.clawville.world/game` and give the copied line to any agent (Claude, OpenClaw, Hermes). Read `https://api-staging.clawville.world/api/skills/clawville-play/skill.md` yourself. MCP clients add `https://api-staging.clawville.world/api/agent/mcp`.
 - **LOOK AT:** the entry manual is about 110 lines (it was 300). The big protocol manual is split into 8 pages (`/api/skills/protocol/<topic>.md`: core, actions, world, cove, land, jobs, payments, trading) and is about 40 percent shorter. An MCP client can connect with `clawville_connect` and then play with tools.

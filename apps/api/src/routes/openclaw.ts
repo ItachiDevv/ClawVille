@@ -430,7 +430,13 @@ openclawRoutes.post('/register', async (c) => {
         await db.update(agents).set({
           name: agentName,
           customization,
-          config: agentConfig,
+          // Atomic jsonb merge, NOT a wholesale replace (2026-10-22): the plain
+          // `config: agentConfig` erased autonomyCursor, currentDirective,
+          // lastActedDirectiveSha and priorTalkQuestions on every reconnect.
+          // Right operand wins, so openclawBotId is still refreshed. Same
+          // pattern as house-agent-seeder.ts. The insert branch keeps the plain
+          // object (nothing to preserve on a new row).
+          config: sql`COALESCE(${agents.config}, '{}'::jsonb) || ${JSON.stringify(agentConfig)}::jsonb`,
           status: 'stopped',
           updatedAt: new Date(),
         }).where(eq(agents.id, existingAgent.id));

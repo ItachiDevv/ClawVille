@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
 import { BUILDING_INTERACTION_RADIUS, NPC_BUILDING_CENTERS } from '@clawville/shared';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
+import { decidePriorTalkQuestionsWrite, type PriorTalkQuestionsSnapshot } from '../agent-autonomy-state';
 import { agentOrchestrator } from '../agent-orchestrator';
 import { armAutonomy, autonomyStandbyTestSeams } from '../autonomy-standby';
 import { isCollisionFreeWorld } from '../pathfinding';
@@ -32,6 +33,7 @@ type DriverEntry = {
   walkReplans: number;
   lastRemainingWu: number | null;
   cursorSeeded: boolean;
+  priorQuestionsHydrated: boolean;
   directivePending: boolean;
   directiveRevision: number;
   edgeDecideAt: number;
@@ -46,8 +48,19 @@ type DriverInternals = {
   arrivalSettling: Map<string, object>;
   talkCooldownUntil: Map<string, number>;
   priorTalkQuestions: Map<string, string[]>;
+  priorQuestionsOwner: Map<string, { owner: string | null; setAt: number }>;
+  lastPriorQuestionsOwnerStamp: number;
   getPriorQuestions: (agentId: string, buildingId: string) => readonly string[];
   recordPriorQuestion: (agentId: string, buildingId: string, raw: string) => void;
+  hydratePriorQuestionsOnce: (entry: DriverEntry) => Promise<void>;
+  priorQuestionsRead: (platformAgentId: string, ownerUserId: string | null) => Promise<PriorTalkQuestionsSnapshot>;
+  priorQuestionsWrite: (
+    platformAgentId: string,
+    ownerUserId: string | null,
+    buildingId: string,
+    questions: readonly string[],
+    ownerSetAt: number,
+  ) => Promise<void>;
   runReconcile: () => Promise<void>;
   readDirectiveBounded: (platformAgentId: string) => Promise<null>;
   readRecentLessons: () => Promise<string[]>;
@@ -88,6 +101,8 @@ const originalLessonRead = driver.readRecentLessons;
 const originalKnowledgeRead = driver.readRecentKnowledge;
 const originalArrivalSettle = driver.arrivalSettle;
 const originalTeacherTurn = driver.teacherTurn;
+const originalPriorRead = driver.priorQuestionsRead;
+const originalPriorWrite = driver.priorQuestionsWrite;
 const originalCovenantRecord = agentAutonomyDriver.covenantRecord;
 const originalGetRuntime = agentOrchestrator.getRunningAgentRuntime;
 const originalEnsureRuntime = agentOrchestrator.ensureAgentRuntime;
@@ -260,6 +275,10 @@ function expectedPrompt(buildingId = BUILDING, prior: readonly string[] = []): s
 let drive: ReturnType<typeof mock>;
 let dispatched: string[];
 let teacherCalls: Array<{ buildingId: string; message: string }>;
+type PriorWrite = { platformAgentId: string; ownerUserId: string | null; buildingId: string; questions: string[] };
+let priorWrites: PriorWrite[];
+let priorWriteStamps: number[];
+let priorReads: Array<{ platformAgentId: string; ownerUserId: string | null }>;
 
 beforeEach(() => {
   npcSimulation.stop();
@@ -275,6 +294,8 @@ beforeEach(() => {
   driver.arrivalSettling.clear();
   driver.talkCooldownUntil.clear();
   driver.priorTalkQuestions.clear();
+  driver.priorQuestionsOwner.clear();
+  driver.lastPriorQuestionsOwnerStamp = 0;
   driver.runReconcile = async () => {};
   driver.readDirectiveBounded = async () => null;
   driver.readRecentLessons = async () => [];
@@ -284,6 +305,17 @@ beforeEach(() => {
   driver.teacherTurn = async (input: { buildingId: string; message: string }) => {
     teacherCalls.push({ buildingId: input.buildingId, message: input.message });
     return { reply: 'Embeddings rank by cosine similarity.', teacherName: 'Teacher' };
+  };
+  priorWrites = [];
+  priorWriteStamps = [];
+  priorReads = [];
+  driver.priorQuestionsRead = async (platformAgentId, ownerUserId) => {
+    priorReads.push({ platformAgentId, ownerUserId });
+    return { questions: new Map(), present: false, storedOwnerUserId: null, storedOwnerSetAt: null };
+  };
+  driver.priorQuestionsWrite = async (platformAgentId, ownerUserId, buildingId, questions, ownerSetAt) => {
+    priorWrites.push({ platformAgentId, ownerUserId, buildingId, questions: [...questions] });
+    priorWriteStamps.push(ownerSetAt);
   };
   dispatched = [];
   npcSimulation.dispatchHatcherActions = ((_bodyId: string, reply: string) => {
@@ -307,6 +339,8 @@ afterEach(() => {
   driver.readRecentKnowledge = originalKnowledgeRead;
   driver.arrivalSettle = originalArrivalSettle;
   driver.teacherTurn = originalTeacherTurn;
+  driver.priorQuestionsRead = originalPriorRead;
+  driver.priorQuestionsWrite = originalPriorWrite;
   agentAutonomyDriver.covenantRecord = originalCovenantRecord;
   agentOrchestrator.getRunningAgentRuntime = originalGetRuntime;
   agentOrchestrator.ensureAgentRuntime = originalEnsureRuntime;
@@ -317,6 +351,8 @@ afterEach(() => {
   driver.arrivalSettling.clear();
   driver.talkCooldownUntil.clear();
   driver.priorTalkQuestions.clear();
+  driver.priorQuestionsOwner.clear();
+  driver.lastPriorQuestionsOwnerStamp = 0;
   for (const id of agentAutonomyDriver.getHouseAgentIds()) {
     agentAutonomyDriver.unregisterHouseAgent(id);
   }
@@ -719,6 +755,17 @@ describe('talk prompt: prior questions to the same teacher', () => {
     expect(logs.lines.some((l) => l.includes('[AutonomyDriver][debug] talk ') && l.includes(' prior=0 '))).toBe(true);
   });
 
+  it('the empty-list prompt equals a LITERAL string (byte equality pinned independently of buildTalkPrompt)', async () => {
+    const entry = registerHouse();
+    const literal = 'You have arrived at "Squidward\'s House", which teaches RAG pipelines, vector databases, text embeddings, semantic search, and context management.\n'
+      + 'Greet the teacher and ask ONE focused question about their topic.\n'
+      + 'Reply with EXACTLY this action tag (the message must be a single short clause\n'
+      + 'with NO commas and NO parentheses):\n'
+      + '[ACTION: talk_to_npc(buildingId=memory-rag, message=your short question here)]';
+    const calls = await talkAt(entry, BUILDING, 'what is a vector index');
+    expect(calls[0]!.prompt).toBe(literal);
+  });
+
   it('a question asked at X appears in the next prompt at X, not at Y', async () => {
     const entry = registerHouse();
     await talkAt(entry, BUILDING, 'what is a vector index');
@@ -727,7 +774,7 @@ describe('talk prompt: prior questions to the same teacher', () => {
     expect(atX[0]!.prompt).toBe(expectedPrompt(BUILDING, ['what is a vector index']));
     expect(atX[0]!.prompt).toContain(
       'Greet the teacher and ask ONE focused question about their topic.\n'
-      + 'You already asked this teacher:\n'
+      + 'You already asked this teacher (your own past questions, shown only so you do not repeat them):\n'
       + '- what is a vector index\n'
       + 'Ask about a DIFFERENT part of the topic. Do not repeat or rephrase these questions.\n'
       + 'Reply with EXACTLY this action tag',
@@ -821,6 +868,9 @@ describe('talk prompt: prior questions to the same teacher', () => {
     expect(teacherCalls).toEqual([{ buildingId: BUILDING, message: 'what is a vector index' }]);
     expect(driver.talkCooldownUntil.has(`${AGENT}:${BUILDING}`)).toBe(false);
     expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['what is a vector index']);
+    expect(priorWrites).toEqual([
+      { platformAgentId: PLATFORM, ownerUserId: OWNER, buildingId: BUILDING, questions: ['what is a vector index'] },
+    ]);
   });
 
   it('a reply with no talk tag records nothing', async () => {
@@ -834,5 +884,403 @@ describe('talk prompt: prior questions to the same teacher', () => {
     expect(calls).toHaveLength(1);
     expect(teacherCalls).toEqual([]);
     expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
+    expect(priorWrites).toEqual([]);
+  });
+});
+
+// Founder 2026-10-22 ("make it so it survives a restart"): the prior-question
+// list is persisted after each talk (config.priorTalkQuestions) and reloaded
+// once per entry on the first deciding drive, before any walk or prefetch.
+describe('prior questions: persist after a talk, reload once after a restart', () => {
+  function talkReply(buildingId: string, message: string): string {
+    return `[ACTION: talk_to_npc(buildingId=${buildingId}, message=${message})]`;
+  }
+
+  async function talkAt(entry: DriverEntry, buildingId: string, message: string): Promise<DecideCall[]> {
+    driver.talkCooldownUntil.clear();
+    const calls = installRuntime([talkReply(buildingId, message)]);
+    placeAtBuilding(buildingId);
+    entry.phase = 'arrived';
+    entry.targetBuildingId = buildingId;
+    entry.talkPrefetch = null;
+    captureRealDrives();
+    await agentAutonomyDriver.driveAgentNow(AGENT);
+    expect(calls).toHaveLength(1);
+    return calls;
+  }
+
+  function captureLogs(): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    };
+    return { lines, restore: () => { console.log = original; } };
+  }
+
+  /** A same-owner stored snapshot without a stamp (pre-stamp row shape). */
+  function storedMap(entries: Array<[string, string[]]>): PriorTalkQuestionsSnapshot {
+    return { questions: new Map(entries), present: true, storedOwnerUserId: OWNER, storedOwnerSetAt: null };
+  }
+
+  it('each talk writes the full normalized list once, keyed by platform agent + owner + building', async () => {
+    const entry = registerHouse();
+    await talkAt(entry, BUILDING, 'what is a vector index');
+    await talkAt(entry, BUILDING, 'how does chunking work');
+    await talkAt(entry, OTHER_BUILDING, 'what is an api key');
+    expect(priorWrites).toEqual([
+      { platformAgentId: PLATFORM, ownerUserId: OWNER, buildingId: BUILDING, questions: ['what is a vector index'] },
+      {
+        platformAgentId: PLATFORM,
+        ownerUserId: OWNER,
+        buildingId: BUILDING,
+        questions: ['what is a vector index', 'how does chunking work'],
+      },
+      { platformAgentId: PLATFORM, ownerUserId: OWNER, buildingId: OTHER_BUILDING, questions: ['what is an api key'] },
+    ]);
+  });
+
+  it('a failed write is fail-soft: the talk completes, the in-memory list stays, the warn is digest-only', async () => {
+    const entry = registerHouse();
+    driver.priorQuestionsWrite = async () => {
+      throw new Error('db down');
+    };
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(' '));
+    };
+    try {
+      await talkAt(entry, BUILDING, 'what is a vector index');
+      await flushMicrotasks();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(entry.phase as DriverEntry['phase']).toBe('talking');
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['what is a vector index']);
+    const persistWarns = warns.filter((w) => w.includes('prior questions persist failed'));
+    expect(persistWarns).toHaveLength(1);
+    expect(persistWarns[0]).not.toContain(AGENT);
+    expect(persistWarns[0]).not.toContain('vector index');
+    expect(persistWarns[0]).not.toContain('db down');
+  });
+
+  it('hydrate fills only keys missing in memory (in-memory wins)', async () => {
+    const entry = registerHouse();
+    driver.recordPriorQuestion(AGENT, BUILDING, 'question from memory');
+    driver.priorQuestionsRead = async (platformAgentId, ownerUserId) => {
+      priorReads.push({ platformAgentId, ownerUserId });
+      return storedMap([
+        [BUILDING, ['stored question here']],
+        [OTHER_BUILDING, ['stored other question']],
+      ]);
+    };
+    const logs = captureLogs();
+    try {
+      await driver.hydratePriorQuestionsOnce(entry);
+    } finally {
+      logs.restore();
+    }
+    expect(priorReads).toEqual([{ platformAgentId: PLATFORM, ownerUserId: OWNER }]);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['question from memory']);
+    expect(driver.getPriorQuestions(AGENT, OTHER_BUILDING)).toEqual(['stored other question']);
+    expect(entry.priorQuestionsHydrated).toBe(true);
+    expect(logs.lines.some((l) => l.includes('prior questions hydrated') && l.includes('buildings=1'))).toBe(true);
+    expect(logs.lines.some((l) => l.includes(AGENT))).toBe(false);
+  });
+
+  it('the first deciding drive hydrates once per entry; a hydrated question shows in the first talk prompt with prior=1', async () => {
+    const entry = registerHouse();
+    expect(entry.priorQuestionsHydrated).toBe(false);
+    driver.priorQuestionsRead = async (platformAgentId, ownerUserId) => {
+      priorReads.push({ platformAgentId, ownerUserId });
+      return storedMap([[BUILDING, ['what is a vector index']]]);
+    };
+    installRuntime(['']);
+    captureRealDrives();
+    await agentAutonomyDriver.driveAgentNow(AGENT);
+    expect(entry.phase as DriverEntry['phase']).toBe('deciding');
+    expect(priorReads).toEqual([{ platformAgentId: PLATFORM, ownerUserId: OWNER }]);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['what is a vector index']);
+
+    // A second deciding drive does not read again.
+    entry.edgeDecideAt = 0;
+    await agentAutonomyDriver.driveAgentNow(AGENT);
+    expect(priorReads).toHaveLength(1);
+
+    const logs = captureLogs();
+    let calls: DecideCall[];
+    try {
+      calls = await talkAt(entry, BUILDING, 'how does chunking work');
+    } finally {
+      logs.restore();
+    }
+    expect(calls[0]!.prompt).toBe(expectedPrompt(BUILDING, ['what is a vector index']));
+    expect(logs.lines.some((l) => l.includes('[AutonomyDriver][debug] talk ') && l.includes(' prior=1 '))).toBe(true);
+    expect(priorWrites.at(-1)!.questions).toEqual(['what is a vector index', 'how does chunking work']);
+  });
+
+  it('a hydrate result that arrives after the timeout is never applied', async () => {
+    const entry = registerHouse();
+    let release!: (value: PriorTalkQuestionsSnapshot) => void;
+    driver.priorQuestionsRead = (platformAgentId, ownerUserId) => {
+      priorReads.push({ platformAgentId, ownerUserId });
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    };
+    const stampBefore = driver.priorQuestionsOwner.get(AGENT)!.setAt;
+    const startedAt = Date.now();
+    const logs = captureLogs();
+    try {
+      await driver.hydratePriorQuestionsOnce(entry);
+    } finally {
+      logs.restore();
+    }
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_400);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
+    expect(logs.lines.some((l) => l.includes('prior questions reload unavailable') && l.includes('stamp not reconciled'))).toBe(true);
+    expect(logs.lines.some((l) => l.includes(AGENT))).toBe(false);
+
+    // A late snapshot with a far-future stored stamp changes neither the
+    // questions nor the stamp.
+    release({
+      questions: new Map([[BUILDING, ['late stored question']]]),
+      present: true,
+      storedOwnerUserId: 'some-other-owner',
+      storedOwnerSetAt: Date.now() + 600_000,
+    });
+    await flushMicrotasks();
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
+    expect(driver.priorQuestionsOwner.get(AGENT)!.setAt).toBe(stampBefore);
+    // The guard was set before the read: no second attempt.
+    await driver.hydratePriorQuestionsOnce(entry);
+    expect(priorReads).toHaveLength(1);
+  });
+
+  it('a failed hydrate read is fail-soft (empty) and is not retried', async () => {
+    const entry = registerHouse();
+    driver.priorQuestionsRead = async (platformAgentId, ownerUserId) => {
+      priorReads.push({ platformAgentId, ownerUserId });
+      throw new Error('db down');
+    };
+    await driver.hydratePriorQuestionsOnce(entry);
+    await driver.hydratePriorQuestionsOnce(entry);
+    expect(priorReads).toHaveLength(1);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
+  });
+
+  it('questions recorded under owner A are not in the prompt nor the write after a re-register under owner B', async () => {
+    const OWNER_B = 'talk-prefetch-owner-b';
+    const entry = registerHouse();
+    await talkAt(entry, BUILDING, 'question from owner a');
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['question from owner a']);
+
+    // Same owner re-register keeps the list (survives off/on) and the stamp.
+    const same = registerHouse();
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual(['question from owner a']);
+    expect(same).not.toBe(entry);
+    await talkAt(same, OTHER_BUILDING, 'second question from owner a');
+    expect(priorWriteStamps).toHaveLength(2);
+    expect(Number.isSafeInteger(priorWriteStamps[0])).toBe(true);
+    expect(priorWriteStamps[1]).toBe(priorWriteStamps[0]);
+    const stampA = priorWriteStamps[0]!;
+
+    sim.npcs.set(BODY, makeBody(BODY));
+    expect(agentAutonomyDriver.registerHouseAgent({
+      agentId: AGENT,
+      bodyId: BODY,
+      platformAgentId: PLATFORM,
+      systemUserId: `system-${OWNER_B}`,
+      houseUserId: OWNER_B,
+      avatarId: `avatar-${AGENT}`,
+    })).toBe(true);
+    const entryB = driver.houseAgents.get(AGENT)!;
+    entryB.cursorSeeded = true;
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
+
+    priorWrites = [];
+    priorWriteStamps = [];
+    const calls = await talkAt(entryB, BUILDING, 'question from owner b');
+    expect(calls[0]!.prompt).toBe(expectedPrompt(BUILDING, []));
+    expect(calls[0]!.prompt).not.toContain('owner a');
+    expect(priorWrites).toEqual([
+      { platformAgentId: PLATFORM, ownerUserId: OWNER_B, buildingId: BUILDING, questions: ['question from owner b'] },
+    ]);
+    // The new owner generation carries a strictly larger stamp.
+    expect(priorWriteStamps).toHaveLength(1);
+    expect(priorWriteStamps[0]!).toBeGreaterThan(stampA);
+  });
+
+  it('a user re-enroll with the same body and avatar but a new owner re-seats and drops the old questions', () => {
+    const user = registerUser();
+    driver.recordPriorQuestion(USER_AGENT, BUILDING, 'user owner a question');
+    const sizeBefore = agentAutonomyDriver.getUserAgentIds().length;
+    // Same-owner keepalive: reused, live entry untouched, list kept.
+    expect(agentAutonomyDriver.registerUserAgent({
+      agentId: USER_AGENT,
+      bodyId: USER_BODY,
+      platformAgentId: USER_PLATFORM,
+      systemUserId: USER_OWNER,
+      houseUserId: USER_OWNER,
+      avatarId: `avatar-${USER_AGENT}`,
+    })).toEqual({ ok: true, reused: true });
+    expect(driver.userAgents.get(USER_AGENT)).toBe(user);
+    expect(driver.getPriorQuestions(USER_AGENT, BUILDING)).toEqual(['user owner a question']);
+
+    expect(agentAutonomyDriver.registerUserAgent({
+      agentId: USER_AGENT,
+      bodyId: USER_BODY,
+      platformAgentId: USER_PLATFORM,
+      systemUserId: 'talk-prefetch-user-owner-b',
+      houseUserId: 'talk-prefetch-user-owner-b',
+      avatarId: `avatar-${USER_AGENT}`,
+    })).toEqual({ ok: true, reused: true });
+    const reseated = driver.userAgents.get(USER_AGENT)!;
+    expect(reseated).not.toBe(user);
+    expect(driver.getPriorQuestions(USER_AGENT, BUILDING)).toEqual([]);
+    expect(agentAutonomyDriver.isOwnerEnrolled(USER_OWNER)).toBe(false);
+    expect(agentAutonomyDriver.isOwnerEnrolled('talk-prefetch-user-owner-b')).toBe(true);
+    expect(agentAutonomyDriver.getUserAgentIds()).toHaveLength(sizeBefore);
+  });
+
+  it('a hydrate result for an entry re-seated during the read is not applied', async () => {
+    const entry = registerHouse();
+    let release!: (value: PriorTalkQuestionsSnapshot) => void;
+    driver.priorQuestionsRead = () => new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = driver.hydratePriorQuestionsOnce(entry);
+    await flushMicrotasks(); // the read starts on a microtask
+    expect(typeof release).toBe('function');
+    sim.npcs.set(BODY, makeBody(BODY));
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: AGENT,
+      bodyId: BODY,
+      platformAgentId: PLATFORM,
+      systemUserId: 'system-other',
+      houseUserId: 'talk-prefetch-owner-b',
+      avatarId: `avatar-${AGENT}`,
+    });
+    release(storedMap([[BUILDING, ['owner a stored question']]]));
+    await pending;
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
+  });
+
+  // Codex r2 P2: a clock rollback across a restart must not leave the driver
+  // below the stored stamp (the write CASE would skip its writes forever).
+  it('restart with a rolled-back clock: owner B after hydrate writes above the stored owner-A stamp (replace); a delayed A write is skipped', async () => {
+    const OWNER_A = 'talk-prefetch-owner-a';
+    const storedStamp = Date.now() + 600_000; // written by a process with a fast clock
+    // This process saw owner A first, then the agent moved to OWNER (B).
+    sim.npcs.set(BODY, makeBody(BODY));
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: AGENT,
+      bodyId: BODY,
+      platformAgentId: PLATFORM,
+      systemUserId: `system-${OWNER_A}`,
+      houseUserId: OWNER_A,
+      avatarId: `avatar-${AGENT}`,
+    });
+    const stampAThisProcess = driver.priorQuestionsOwner.get(AGENT)!.setAt;
+    const entry = registerHouse(); // owner B = OWNER
+    expect(driver.priorQuestionsOwner.get(AGENT)!.setAt).toBeLessThan(storedStamp);
+
+    const storedObject = { ownerUserId: OWNER_A, ownerSetAt: storedStamp, byBuilding: { [BUILDING]: ['owner a question'] } };
+    driver.priorQuestionsRead = async () => ({
+      questions: new Map(), // owner mismatch: no questions for B
+      present: true,
+      storedOwnerUserId: OWNER_A,
+      storedOwnerSetAt: storedStamp,
+    });
+    await driver.hydratePriorQuestionsOnce(entry);
+    expect(driver.getPriorQuestions(AGENT, BUILDING)).toEqual([]);
+    expect(driver.priorQuestionsOwner.get(AGENT)!.setAt).toBe(storedStamp + 1);
+
+    await talkAt(entry, BUILDING, 'question from owner b');
+    const stampB = priorWriteStamps.at(-1)!;
+    expect(stampB).toBeGreaterThan(storedStamp);
+    expect(decidePriorTalkQuestionsWrite(storedObject, OWNER, stampB)).toBe('replace');
+
+    // After B's write, a delayed owner-A write from this process is skipped.
+    const afterB = { ownerUserId: OWNER, ownerSetAt: stampB, byBuilding: { [BUILDING]: ['question from owner b'] } };
+    expect(stampAThisProcess).toBeLessThan(stampB);
+    expect(decidePriorTalkQuestionsWrite(afterB, OWNER_A, stampAThisProcess)).toBe('skip');
+
+    // Later owner changes in this process get even larger stamps.
+    sim.npcs.set(BODY, makeBody(BODY));
+    agentAutonomyDriver.registerHouseAgent({
+      agentId: AGENT,
+      bodyId: BODY,
+      platformAgentId: PLATFORM,
+      systemUserId: 'system-owner-c',
+      houseUserId: 'talk-prefetch-owner-c',
+      avatarId: `avatar-${AGENT}`,
+    });
+    expect(driver.priorQuestionsOwner.get(AGENT)!.setAt).toBeGreaterThan(stampB);
+  });
+
+  it('restart with a rolled-back clock, same owner: the stamp is raised to the stored value (merge)', async () => {
+    const storedStamp = Date.now() + 600_000;
+    const entry = registerHouse();
+    driver.priorQuestionsRead = async () => ({
+      questions: new Map([[BUILDING, ['what is a vector index']]]),
+      present: true,
+      storedOwnerUserId: OWNER,
+      storedOwnerSetAt: storedStamp,
+    });
+    await driver.hydratePriorQuestionsOnce(entry);
+    expect(driver.priorQuestionsOwner.get(AGENT)!.setAt).toBe(storedStamp);
+    await talkAt(entry, BUILDING, 'how does chunking work');
+    expect(priorWriteStamps).toEqual([storedStamp]);
+    const storedObject = { ownerUserId: OWNER, ownerSetAt: storedStamp, byBuilding: { [BUILDING]: ['what is a vector index'] } };
+    expect(decidePriorTalkQuestionsWrite(storedObject, OWNER, storedStamp)).toBe('merge');
+  });
+
+  it('a stored stamp below the in-memory stamp is never used to lower it', async () => {
+    const entry = registerHouse();
+    const before = driver.priorQuestionsOwner.get(AGENT)!.setAt;
+    driver.priorQuestionsRead = async () => ({
+      questions: new Map(),
+      present: true,
+      storedOwnerUserId: 'talk-prefetch-owner-a',
+      storedOwnerSetAt: before - 10_000,
+    });
+    await driver.hydratePriorQuestionsOnce(entry);
+    expect(driver.priorQuestionsOwner.get(AGENT)!.setAt).toBe(before);
+  });
+
+  it('a talk prefetch built from a hydrated list is still used at arrival', async () => {
+    const entry = registerHouse();
+    driver.priorQuestionsRead = async () => storedMap([[BUILDING, ['what is a vector index']]]);
+    await driver.hydratePriorQuestionsOnce(entry);
+
+    stampApproach(entry, 1_000);
+    const calls = installRuntime([TALK_REPLY]);
+    agentAutonomyDriver.phaseEdgePoll();
+    expect(calls).toHaveLength(1);
+    expect(entry.talkPrefetch!.prompt).toBe(expectedPrompt(BUILDING, ['what is a vector index']));
+
+    placeAtBuilding();
+    entry.phase = 'arrived';
+    captureRealDrives();
+    const logs = captureLogs();
+    try {
+      await agentAutonomyDriver.driveAgentNow(AGENT);
+    } finally {
+      logs.restore();
+    }
+    expect(calls).toHaveLength(1);
+    expect(logs.lines.some((l) => l.includes('talk prefetch used'))).toBe(true);
+    expect(logs.lines.some((l) => l.includes('[AutonomyDriver][debug] talk ') && l.includes(' prior=1 '))).toBe(true);
+    expect(dispatched).toEqual([TALK_REPLY]);
+    expect(priorWrites).toEqual([
+      {
+        platformAgentId: PLATFORM,
+        ownerUserId: OWNER,
+        buildingId: BUILDING,
+        questions: ['what is a vector index', 'how do embeddings rank memories'],
+      },
+    ]);
   });
 });
