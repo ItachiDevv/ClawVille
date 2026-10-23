@@ -18,7 +18,6 @@ import {
   markFallbackProceeds, quoteBuy, quoteSell, type BuyQuoteResult, type PaperCosts, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
 import { entryVerdictStatus, type EntryVerdict } from './chain-checks';
-import { fireJevArenaEntry } from './jev-entry';
 import { fireCodexArenaEntry } from './codex-entry';
 import { pumpFlowForMint } from './pumpportal-feed';
 import {
@@ -880,12 +879,7 @@ async function runAgentEntries(
     const refusalKey = `${agent.id}|${c.mint}`;
     if ((entryRefusalUntil.get(refusalKey) ?? 0) > nowMs) continue;
     attempts += 1;
-    // FEATURE_GATE jev_arena_entry_shadow: fire-and-forget measurement, NOT awaited; nothing below reads it.
-    fireJevArenaEntry({
-      bot: { agentId: agent.id, strategy: agent.templateId || agent.name, positionUsd: ARENA_POSITION_USD, exits: params.exits },
-      coin: { mint: c.mint, source: c.source, features: c.features, verdict: c.verdict },
-    });
-    // FEATURE_GATE codex_arena_entry_shadow: same contract (fire-and-forget, never read by the trade path).
+    // FEATURE_GATE codex_arena_entry_shadow: fire-and-forget measurement, NOT awaited; never read by the trade path.
     fireCodexArenaEntry({
       bot: { agentId: agent.id, strategy: agent.templateId || agent.name, positionUsd: ARENA_POSITION_USD, exits: params.exits },
       coin: { mint: c.mint, source: c.source, features: c.features, verdict: c.verdict, firstSeenAtMs: c.firstSeenAtMs },

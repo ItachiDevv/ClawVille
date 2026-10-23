@@ -1,10 +1,10 @@
 /**
  * Jev ENTRY SHADOW ledger for the Trading Floor arena paper bots (founder 2026-10-14; migration 0082).
  *
- * One row per Jev call (or cap refusal) made by `apps/api/src/services/floor-arena/jev-entry.ts` for a coin that
- * reached the buy-quote step. SHADOW ONLY: no trade path reads this table; the report
- * `apps/api/scripts/floor-arena-jev-report.ts` joins it to `floor_arena_positions`. `usd` is both the spend record
- * and the spend-cap ledger. No prompt text is stored. No FK (agent rows may be deleted; the ledger must stay).
+ * One row per Jev call (or cap refusal) for a coin that reached the buy-quote step. SHADOW ONLY: no trade path read
+ * this table. The writer (floor-arena/jev-entry.ts) and its report were DELETED 2026-10-23 (founder: delete at the
+ * gate review; the v0 veto was no better than a random skip of the same count per bot, p=0.22). The table stays
+ * declared only until a separate DROP migration lands after the prod code flip. No FK.
  */
 
 import {
