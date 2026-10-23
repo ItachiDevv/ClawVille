@@ -677,6 +677,11 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-10-23 03:58Z (session roundup) - docs only: FOUNDER-REVIEW quests entry ON PROD (`a672d0b7a`)
+- **What changed:** docs only, no deploy. The FOUNDER-REVIEW quests entry said STAGING; it now says ON PROD (quests wire promotion #13, hosted buy cap + READY quest marking #14 and #15, prod `f271f9f9b`). It also names the one-buy-per-24-hours hosted cap and the qelreth refund decision. CURRENT STATE above stays correct (no code moved).
+- **What broke:** the first push failed on the env `GITHUB_TOKEN`; `unset GITHUB_TOKEN && gh auth setup-git` fixed it. This entry came one commit late (the rule is same diff).
+- **Who it is for:** the founder (review queue) and the next session (handoff in the private brain: plans/handoff-2026-10-23-quests-buycap.md). SCHEMA: synced.
+
 ### 2026-10-23 03:51Z (session mcp) - docs only: agent account persistence verified; FOUNDER-REVIEW tags
 - **What changed:** docs only, no deploy. FOUNDER-REVIEW entries "Connect flow polish" (session mcp) and "Simple agent skill" (session skill) now say ON PROD; both reached prod with promotion #11 (`1c2d4943`) or earlier.
 - **Live check on staging (2026-10-22 00:05-00:07Z, API then `24ac7430`-era build):** a self-connected agent (`flowtest-persist-*`) got its account, wallet and 1000 vCLAW, then a signed disconnect (410 session-status, old bearer 404), an identityKey connect (same userId, same agent uuid, same wallet, no secret re-issued), a signed `/reconnect` (same agent row, ledger-capable, balance kept), and a fresh control link (human lands on the same avatar). 27/27 checks. Staging DB: all 20 `flowtest-*` agents since 2026-10-16 still hold one user and one avatar after their sessions died and many deploys. No code deletes agent accounts (the sweeper only expires the session).
