@@ -8,8 +8,7 @@ Final-submission demo video for the ClawPump hackathon (AnsemHack / Clawrena). O
 how anyone can set up an agent that trades on it from one of the house agents' strategies (the tradeDeskMain end goal).
 Final deadline from clawpump.tech/ansemhack: 1 October 2026, 24:00 EST = **2026-10-02 05:00Z**. Process: user skill
 `demo-director` (canonical kit `~/Documents/Crypto/skills-plugins/demo-director`, read its `LESSONS.md` and Step 0) +
-sub-agent `demo-qc` for the cold review of every render. carbon-road's `docs/video-production.md` (read with
-`git show origin/main:docs/video-production.md`) is the pattern, not the rules.
+sub-agent `demo-qc` for the cold review of every render. `docs/video-production.md` is the pattern, not the rules.
 
 ## 2. Owner rules (quote them; they bind)
 - "your job for now is just observing ... don't start any actual recording or anything right now" (2026-09-30). On
@@ -20,7 +19,7 @@ sub-agent `demo-qc` for the cold review of every render. carbon-road's `docs/vid
 - Voice and words: `branding/BRAND.md` + `docs/brand-language.md`: Register B type, no em dashes, never "casino", vCLAW vs
   $CLAWVILLE, official links only, no boast words about traders (state the figure; a loss keeps its minus sign). Say
   "trading agents", not "AI traders"; say "paper" wherever a trade figure shows.
-- Music: the owner sends the ClawVille track. Yami-ichi is Shinjuku's theme, not ours. Run `music-map.py` on it.
+- Music: the owner sends the ClawVille track. Use no other project's theme. Run `music-map.py` on it.
 - Real only: every frame is a real recording; every claim has a checked source (BRIEF §3).
 - Capture: WebGPU client, record the real headed Chrome window with ffmpeg `gfxcapture` (MCP screenshots cannot see the
   WebGPU canvas); never `bun run dev`; long rigs through the managed launcher (a hook blocks detached shells).
