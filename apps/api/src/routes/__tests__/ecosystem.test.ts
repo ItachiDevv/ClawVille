@@ -17,7 +17,11 @@ describe('GET /api/ecosystem/catalog', () => {
     expect(Object.keys(body).sort()).toEqual(['entries', 'protocolVersion']);
     expect(body.protocolVersion).toBe(PROTOCOL_VERSION);
     expect(body.entries).toEqual(JSON.parse(JSON.stringify(servedEcosystemCatalog(resolveApiBase()))));
-    expect(body.entries.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'atelier']);
+    expect(body.entries.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'atelier', 'shinjuku', 'paysh']);
+    const bodyText = JSON.stringify(body).toLowerCase();
+    for (const term of ['said', 'trader' + ' ralph', 'penguin' + 'xbt', 'hot' + ' bot', 'hot' + 'bot']) {
+      expect({ term, found: bodyText.includes(term) }).toEqual({ term, found: false });
+    }
     for (const entry of body.entries) expect(entry.status).toBe('available');
     for (const planned of ECOSYSTEM_CATALOG.filter((entry) => entry.status === 'planned')) {
       expect(body.entries.some((entry) => entry.id === planned.id)).toBe(false);

@@ -17,6 +17,10 @@
  * - Every install line was checked against the real CLI help
  *   (`claude mcp add --help`, `codex mcp add --help` for codex-cli 0.162.1,
  *   `hermes mcp add --help`). Re-check it there before you change one.
+ *   The stdio forms (`claude mcp add <name> -- <command>`,
+ *   `codex mcp add <name> -- <command>`,
+ *   `hermes mcp add <name> --command <command> --args <args>`) were checked
+ *   there too (2026-10-23).
  */
 
 /** Literal token for the API base. `servedEcosystemCatalog(apiBase)` replaces it. */
@@ -58,6 +62,8 @@ export interface EcosystemCatalogEntry {
   readonly auth: string;
   readonly mcpUrl?: string;
   readonly transport?: EcosystemTransport;
+  /** stdio rows only: the command line the client starts on the user's computer. */
+  readonly command?: string;
   readonly homepage?: string;
   readonly installs?: readonly EcosystemInstallSnippet[];
   readonly notes?: readonly string[];
@@ -73,10 +79,16 @@ export const ECOSYSTEM_GENERAL_NOTES: readonly string[] = [
 const CLAWVILLE_MCP_URL = `${ECOSYSTEM_API_BASE_PLACEHOLDER}/api/agent/mcp`;
 const STUDIOS_MCP_URL = 'https://mcp.mystudios.fun/mcp';
 const ATELIER_MCP_URL = 'https://app.useatelier.ai/mcp';
+const SHINJUKU_MCP_URL = 'https://shinjukustaition.com/api/shielded/mcp';
 
 /** The `mcpServers` JSON shape the entry manual already serves for ClawVille. */
 function mcpServersJson(name: string, url: string): string {
   return `{ "mcpServers": { "${name}": { "type": "http", "url": "${url}" } } }`;
+}
+
+/** The `mcpServers` JSON shape for a stdio server that the client starts as a local command. */
+function mcpServersStdioJson(name: string, command: string, args: readonly string[]): string {
+  return `{ "mcpServers": { "${name}": { "command": ${JSON.stringify(command)}, "args": ${JSON.stringify(args)} } } }`;
 }
 
 export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
@@ -149,6 +161,49 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     ],
   },
   {
+    id: 'shinjuku',
+    name: 'Shinjuku StAItion',
+    summary: 'An agent market game on Solana with its own x402 facilitator. This row is its read-only MCP: facilitator facts, a seller search and setup help.',
+    bucket: 'installer',
+    status: 'available',
+    auth: 'No sign-in. The server is read-only and holds no funds.',
+    mcpUrl: SHINJUKU_MCP_URL,
+    transport: 'http',
+    homepage: 'https://shinjukustaition.com',
+    installs: [
+      { client: 'claude-code', snippet: `claude mcp add --transport http shinjuku ${SHINJUKU_MCP_URL}` },
+      { client: 'codex-cli', snippet: `codex mcp add shinjuku --url ${SHINJUKU_MCP_URL}` },
+      { client: 'hermes', snippet: `hermes mcp add shinjuku --url ${SHINJUKU_MCP_URL}` },
+      { client: 'generic-json', snippet: mcpServersJson('shinjuku', SHINJUKU_MCP_URL) },
+    ],
+    notes: [
+      'Its play server and its wallet server need their own setup. Read its agent manual first: https://shinjukustaition.com/skill.md',
+      'Its wallet server can spend USDC and has no spending limit unless you set one.',
+    ],
+  },
+  {
+    id: 'paysh',
+    name: 'Pay.sh',
+    summary: 'A command-line tool that pays for x402 APIs from a local wallet on Solana. Its MCP server runs on your own computer.',
+    bucket: 'installer',
+    status: 'available',
+    auth: 'No sign-in to the server. Your operating system asks you to approve each payment from the local wallet.',
+    transport: 'stdio',
+    command: 'pay mcp',
+    homepage: 'https://pay.sh',
+    installs: [
+      { client: 'claude-code', snippet: 'claude mcp add pay -- pay mcp' },
+      { client: 'codex-cli', snippet: 'codex mcp add pay -- pay mcp' },
+      { client: 'hermes', snippet: 'hermes mcp add pay --command pay --args mcp' },
+      { client: 'generic-json', snippet: mcpServersStdioJson('pay', 'pay', ['mcp']) },
+    ],
+    notes: [
+      'Install the pay CLI first. On macOS: `brew install pay`. Other ways: https://pay.sh/docs/toolchain/install/index.md',
+      '`pay setup` makes the local wallet and can write the MCP config for Claude Code and Codex itself.',
+      "`pay mcp` has no spending limit by default. Its own docs show a guard, for example `pay mcp --max-payment '$1.00'`.",
+    ],
+  },
+  {
     id: 'usepod',
     name: 'UsePod',
     summary: 'An inference marketplace. Planned: a paid inference tier that the agent pays from its own wallet.',
@@ -173,6 +228,15 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     status: 'planned',
     auth: 'Not available yet.',
     homepage: 'https://www.hydraswarm.io',
+  },
+  {
+    id: 'said',
+    name: 'SAID Protocol',
+    summary: 'Agent identity and reputation on Solana. Planned: a trust check on another agent\'s wallet, paid by x402 from the agent\'s own wallet.',
+    bucket: 'gateway',
+    status: 'planned',
+    auth: 'Not available yet.',
+    homepage: 'https://www.saidprotocol.com',
   },
 ];
 

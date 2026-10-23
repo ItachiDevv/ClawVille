@@ -13,7 +13,7 @@ const API_BASE = 'https://api.example.test';
 
 // Names that must never appear in the catalog. Built from pieces so this
 // test file itself does not carry them.
-const ECOSYSTEM_FORBIDDEN_TERMS = ['hot' + ' bot', 'hot' + 'bot', 'shin' + 'juku'];
+const ECOSYSTEM_FORBIDDEN_TERMS = ['hot' + ' bot', 'hot' + 'bot', 'trader' + ' ralph', 'penguin' + 'xbt', 'penguin' + ' xbt'];
 
 describe('ECOSYSTEM_CATALOG', () => {
   test('ids are unique and ClawVille is row 1', () => {
@@ -26,18 +26,54 @@ describe('ECOSYSTEM_CATALOG', () => {
     const served = servedEcosystemCatalog(API_BASE);
     const planned = ECOSYSTEM_CATALOG.filter((entry) => entry.status === 'planned').map((entry) => entry.id);
     expect(planned.length).toBeGreaterThan(0);
-    expect(served.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'atelier']);
+    expect(served.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'atelier', 'shinjuku', 'paysh']);
+    expect(planned).toEqual(['usepod', 'clawpump', 'hydra', 'said']);
     for (const id of planned) expect(served.some((entry) => entry.id === id)).toBe(false);
     for (const entry of served) expect(entry.status).toBe('available');
   });
 
-  test('every served row has an MCP URL, auth text and install lines', () => {
+  test('every served row has an MCP URL (http) or a command (stdio), auth text and install lines', () => {
     for (const entry of servedEcosystemCatalog(API_BASE)) {
-      expect(entry.mcpUrl).toMatch(/^https?:\/\//);
+      if (entry.transport === 'stdio') {
+        expect(entry.mcpUrl).toBeUndefined();
+        expect(entry.command?.trim().length ?? 0).toBeGreaterThan(0);
+      } else {
+        expect(entry.transport).toBe('http');
+        expect(entry.mcpUrl).toMatch(/^https?:\/\//);
+        expect(entry.command).toBeUndefined();
+      }
       expect(entry.auth.trim().length).toBeGreaterThan(0);
-      expect(entry.transport).toBe('http');
       expect(entry.installs?.map((install) => install.client)).toEqual(['claude-code', 'codex-cli', 'hermes', 'generic-json']);
     }
+  });
+
+  test('the Pay.sh row is stdio and its generic block parses as a command block', () => {
+    const paysh = servedEcosystemCatalog(API_BASE).find((entry) => entry.id === 'paysh')!;
+    expect(paysh.transport).toBe('stdio');
+    expect(paysh.command).toBe('pay mcp');
+    expect(paysh.installs).toEqual([
+      { client: 'claude-code', snippet: 'claude mcp add pay -- pay mcp' },
+      { client: 'codex-cli', snippet: 'codex mcp add pay -- pay mcp' },
+      { client: 'hermes', snippet: 'hermes mcp add pay --command pay --args mcp' },
+      { client: 'generic-json', snippet: '{ "mcpServers": { "pay": { "command": "pay", "args": ["mcp"] } } }' },
+    ]);
+    const generic = JSON.parse(paysh.installs!.find((install) => install.client === 'generic-json')!.snippet) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    expect(generic).toEqual({ mcpServers: { pay: { command: 'pay', args: ['mcp'] } } });
+  });
+
+  test('the Shinjuku StAItion row is a read-only http row without the partner word', () => {
+    const shinjuku = servedEcosystemCatalog(API_BASE).find((entry) => entry.id === 'shinjuku')!;
+    const url = 'https://shinjukustaition.com/api/shielded/mcp';
+    expect(shinjuku.mcpUrl).toBe(url);
+    expect(shinjuku.installs).toEqual([
+      { client: 'claude-code', snippet: `claude mcp add --transport http shinjuku ${url}` },
+      { client: 'codex-cli', snippet: `codex mcp add shinjuku --url ${url}` },
+      { client: 'hermes', snippet: `hermes mcp add shinjuku --url ${url}` },
+      { client: 'generic-json', snippet: `{ "mcpServers": { "shinjuku": { "type": "http", "url": "${url}" } } }` },
+    ]);
+    expect(JSON.stringify(shinjuku).toLowerCase()).not.toContain('partner');
   });
 
   test('planned rows serve no URL and no install line', () => {
@@ -69,6 +105,8 @@ describe('ECOSYSTEM_CATALOG', () => {
       expect({ term, inSource: source.includes(term) }).toEqual({ term, inSource: false });
       expect({ term, inServed: served.includes(term) }).toEqual({ term, inServed: false });
     }
+    // The planned SAID row lives in the source but is never served.
+    expect(served).not.toContain('said');
     expect(JSON.stringify(ECOSYSTEM_CATALOG)).not.toContain('—');
   });
 });

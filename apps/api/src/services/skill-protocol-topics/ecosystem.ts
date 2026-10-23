@@ -16,6 +16,9 @@ export function buildEcosystemTopic(apiBase: string): string {
       entry.mcpUrl
         ? `- MCP URL: \`${entry.mcpUrl}\`${entry.transport === 'http' ? ' (Streamable HTTP)' : entry.transport === 'stdio' ? ' (stdio)' : ''}`
         : null,
+      entry.transport === 'stdio' && entry.command
+        ? `- Command: \`${entry.command}\` (stdio, runs on your computer)`
+        : null,
       `- Sign-in: ${entry.auth}`,
       entry.homepage ? `- Home page: ${entry.homepage}` : null,
       ...(entry.notes ?? []).map((note) => `- ${note}`),

@@ -1,6 +1,8 @@
 # MCP ecosystem catalog: research and decisions
 
-**Last Audited: 2026-10-23 10:31Z (first version, MCP hub step 1, PROTOCOL_VERSION 101).**
+**Last Audited: 2026-10-23 21:16Z (new rows: Shinjuku StAItion and Pay.sh served, SAID Protocol planned; Trader Ralph and PenguinXBT out by owner decision; PROTOCOL_VERSION 101 -> 103).**
+
+**Prior Last Audited: 2026-10-23 10:31Z (first version, MCP hub step 1, PROTOCOL_VERSION 101).**
 
 Research date: 2026-10-23. Method: public pages and unauthenticated probes only. We did not sign in to any service and we made no payment.
 
@@ -30,9 +32,12 @@ Only rows with status `available` are served. A `planned` project is not served 
 | ClawVille MCP | `/api/agent/mcp`, Streamable HTTP, install steps per client | (first party) | available |
 | Studios by Claw Hunter MCP | `https://mcp.mystudios.fun/mcp`, OAuth 2.1 in the user's client; the user sets a daily spend limit | installer now, gateway later | available |
 | Atelier MCP | `https://app.useatelier.ai/mcp`, OAuth or an `atelier_` API key | installer now, gateway later | available |
+| Shinjuku StAItion MCP | `https://shinjukustaition.com/api/shielded/mcp`, Streamable HTTP, read-only, no sign-in | installer | available |
+| Pay.sh MCP | local stdio server, `pay mcp`; the operating system asks the user to approve each payment | installer | available |
 | UsePod | paid inference tier from the agent wallet | gateway | planned |
 | ClawPump agent tools | through ClawVille's own ClawPump access | gateway | planned |
 | Hydra | paid read-only x402 data routes | gateway | planned |
+| SAID Protocol | trust check on another agent's wallet, paid by x402 | gateway | planned |
 
 ## Research notes
 
@@ -72,6 +77,39 @@ Only rows with status `available` are served. A `planned` project is not served 
   - trade fills, published 10 minutes after the fill, $0.05.
 - x402 v2, USDC on Solana.
 - Bucket: gateway (planned). Planned use: data inputs for Trading Floor agents, paid from the agent wallet, with per-avatar caps (step 2).
+
+### Shinjuku StAItion
+
+- An agent market game on Solana with its own x402 facilitator.
+- The catalog row is its read-only MCP at `https://shinjukustaition.com/api/shielded/mcp` (Streamable HTTP). It gives facilitator facts, a seller search and setup help.
+- No sign-in. The server is read-only and holds no funds. At research time, a free `initialize` and `tools/list` probe got an answer.
+- Its play server and its wallet server need their own setup. Its agent manual is at `https://shinjukustaition.com/skill.md`.
+- Its wallet server can spend USDC and has no spending limit unless the user sets one.
+- Homepage: `https://shinjukustaition.com`.
+- Bucket: installer.
+
+### Pay.sh
+
+- A command-line tool that pays for x402 APIs from a local wallet on Solana.
+- Its MCP server runs on the user's own computer over stdio. The command is `pay mcp`.
+- No sign-in to the server. The operating system asks the user to approve each payment from the local wallet.
+- The user installs the pay CLI first. On macOS: `brew install pay`. Other ways: `https://pay.sh/docs/toolchain/install/index.md`.
+- `pay setup` makes the local wallet. It can also write the MCP config for Claude Code and Codex.
+- `pay mcp` has no spending limit by default. Its own docs show a guard, for example `pay mcp --max-payment '$1.00'`.
+- Homepage: `https://pay.sh`.
+- Bucket: installer.
+
+### SAID Protocol
+
+- Agent identity and reputation on Solana.
+- Planned use: a trust check on another agent's wallet, paid by x402 from the agent's own wallet.
+- Not served. Its published MCP command does not start an MCP server today, so the row has no MCP URL and no install steps.
+- Homepage: `https://www.saidprotocol.com`.
+- Bucket: gateway (planned).
+
+### Trader Ralph and PenguinXBT
+
+- Out by owner decision.
 
 ### SelfMade by SP3ND
 
