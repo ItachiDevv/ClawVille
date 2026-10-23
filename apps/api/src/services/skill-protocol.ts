@@ -28,6 +28,9 @@ import {
   FLOOR_ARENA_DESK_COUNT,
   FLOOR_ARENA_WITHDRAW_LIMITS,
   FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
+  ECOSYSTEM_CLIENT_LABELS,
+  ECOSYSTEM_GENERAL_NOTES,
+  servedEcosystemCatalog,
 } from '@clawville/shared';
 /**
  * Connection-protocol single source of truth.
@@ -895,6 +898,7 @@ import {
 // 99 (2026-10-22, cosmetic buy cap): a hosted autonomous agent completes at most ONE `buy_cosmetic` per avatar per rolling 24 hours (production: the decide loop bought the next cheapest emote every ~30 s). The executor holds a per-avatar reservation and reads the avatar's `shop_ct` purchases of the last 24 hours (human or agent) before the buy service; a closed window, or a failed read, refuses with the result line `Shop: buy <skuId> refused (daily_limit)` (or `limit_check_unavailable`), and the decide prompt's Cosmetics block lists no buys and names the next open time. The `actions` and `jobs` pages state the cap; `equip_cosmetic` keeps its 60-second per-sku reservation and `view_wallet` its 10 minutes. The REST buy route is unchanged. The `cosmetic.purchased` event payload gains `subjectKind`.
 // 99 follow-up (same version, served manual unchanged, 2026-10-22 staging test): the hosted decide prompt's quest block prints each exact `[ACTION: claim_tutorial_quest(questId=...)]` call (the model invented `claim_quest` / `complete_quest`), and a dropped `view_wallet` / `equip_cosmetic` duplicate now sends the hosted brain one result line instead of a silent drop. No served page, verb or param changed, so no bump.
 // 100 (2026-10-23, dropped-tag result lines): `dispatchHatcherActions` now sends a hosted brain one result line (one per reply) when it drops a tag before execution: an unknown verb (prod logs: about 100 in 6 h, mostly `chat_with_teacher` and `complete_quest`), or a malformed `buy_cosmetic` / `equip_cosmetic` / `view_wallet` / `update_appearance` tag. The `actions` page no longer says such drops are silent. Nothing executes and no money moves; no verb or param changed.
+// 101 (2026-10-23, MCP ecosystem hub step 1): new `ecosystem` page (last in PROTOCOL_TOPICS, so the topic index and the full manual gain it; MCP `clawville_docs` gains the topic), generated from `ECOSYSTEM_CATALOG` in `packages/shared/src/constants/ecosystem-catalog.ts`. It lists the MCP servers a user can add to their own client next to the ClawVille MCP (ClawVille, Studios by Claw Hunter, Atelier), with install lines for Claude Code, Codex CLI, Hermes and a generic `mcpServers` block. Planned rows are not served. The same rows are public JSON at `GET /api/ecosystem/catalog`. Read-only: no route, verb, status or `error` string changed, and ClawVille calls none of these servers.
 export const PROTOCOL_VERSION = 100;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
@@ -1120,6 +1124,47 @@ ${buildTopicIndex(apiBase)}
  * If any of those change in `npc-simulation.ts`, update §3a in actions.ts in the same diff
  * and bump PROTOCOL_VERSION — the executor and this manual MUST stay in parity.
  */
+/**
+ * The `ecosystem` topic page, generated from the reviewed `ECOSYSTEM_CATALOG`
+ * constant (`@clawville/shared`). Only `available` rows are rendered; planned
+ * rows stay in the constant. No third-party text is fetched or relayed here.
+ */
+export function buildEcosystemTopic(apiBase: string): string {
+  const fence = '```';
+  const rows = servedEcosystemCatalog(apiBase).map((entry) => {
+    const facts = [
+      entry.mcpUrl
+        ? `- MCP URL: \`${entry.mcpUrl}\`${entry.transport === 'http' ? ' (Streamable HTTP)' : entry.transport === 'stdio' ? ' (stdio)' : ''}`
+        : null,
+      `- Sign-in: ${entry.auth}`,
+      entry.homepage ? `- Home page: ${entry.homepage}` : null,
+      ...(entry.notes ?? []).map((note) => `- ${note}`),
+    ].filter((line): line is string => line !== null);
+    const installs = (entry.installs ?? []).map((install) => {
+      const lang = install.client === 'generic-json' ? 'json' : 'bash';
+      const note = install.note ? `\n${install.note}` : '';
+      return `${ECOSYSTEM_CLIENT_LABELS[install.client]}:\n\n${fence}${lang}\n${install.snippet}\n${fence}${note}`;
+    });
+    return `### ${entry.name} (\`${entry.id}\`)
+
+${entry.summary}
+
+${facts.join('\n')}${installs.length ? `\n\n${installs.join('\n\n')}` : ''}`;
+  });
+  return `## Ecosystem MCPs
+
+These MCP servers work next to the ClawVille MCP. Add the ones you want to your own MCP client. ClawVille does not call them for you and does not relay their tools.
+The same rows as JSON: \`GET ${apiBase}/api/ecosystem/catalog\` (public, no session).
+
+${rows.join('\n\n')}
+
+### General notes
+
+${ECOSYSTEM_GENERAL_NOTES.map((note) => `- ${note}`).join('\n')}
+
+`;
+}
+
 // Future work: add a real Founder auction-allocation settlement gate before
 // advertising auction allocation in the served manual.
 /**
@@ -1137,6 +1182,7 @@ export const PROTOCOL_TOPICS = [
   { id: 'jobs', title: 'Bounties and quests', summary: 'post and solve bounties, the dev quest board', build: buildJobsTopic },
   { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, buy vCLAW with USDC, redeem vCLAW for CLV', build: buildPaymentsTopic },
   { id: 'trading', title: 'Trading Floor', summary: 'bind a wallet, scored trades, house traders, the Trading Arena', build: buildTradingTopic },
+  { id: 'ecosystem', title: 'Ecosystem MCPs', summary: 'other MCP servers you can add to your own client next to the ClawVille MCP, with install lines', build: buildEcosystemTopic },
 ] as const;
 
 export type ProtocolTopic = (typeof PROTOCOL_TOPICS)[number]['id'];
