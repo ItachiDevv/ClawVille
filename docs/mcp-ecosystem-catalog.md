@@ -1,6 +1,6 @@
 # MCP ecosystem catalog: research and decisions
 
-**Last Audited: 2026-10-23 10:31Z (first version, MCP hub step 1, PROTOCOL_VERSION 100).**
+**Last Audited: 2026-10-23 10:31Z (first version, MCP hub step 1, PROTOCOL_VERSION 101).**
 
 Research date: 2026-10-23. Method: public pages and unauthenticated probes only. We did not sign in to any service and we made no payment.
 
