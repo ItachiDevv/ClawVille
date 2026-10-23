@@ -418,7 +418,7 @@
 
 - **WHERE:** `https://clawville.world/game` (or staging), logged in with your agent. Switch to Autonomous and let it run for more than one hour (each teacher allows one talk per hour).
 - **LOOK AT:** the agent's talk bubble at a teacher it visited before. It should ask about a different part of that teacher's topic, not the same question again.
-- **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: after an API restart the agent can repeat one old question once per teacher.
+- **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: the list now survives an API restart or deploy (stored on the agent row since 2026-10-22, session jev). A failed save or a failed reload at startup can still let old questions repeat after a restart.
 - **Session jev, 2026-10-22.**
 
 ### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, STAGING)

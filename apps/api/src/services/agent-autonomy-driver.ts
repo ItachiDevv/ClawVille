@@ -80,6 +80,10 @@ import {
   getAgentDirectiveState,
   getAutonomyCursor,
   setAutonomyCursor,
+  getPriorTalkQuestions,
+  setPriorTalkQuestionsForBuilding,
+  normalizePriorTalkQuestions,
+  type PriorTalkQuestionsSnapshot,
   formatDirectiveContext,
   summarizeAutonomyEvents,
   type AgentDirectiveState,
@@ -216,6 +220,13 @@ interface HouseAgentEntry {
    * it runs exactly once per process lifetime, not every tick.
    */
   cursorSeeded: boolean;
+  /**
+   * Founder 2026-10-22 (survive a restart): one-time guard for reloading the
+   * stored prior teacher questions (config.priorTalkQuestions). Set true before
+   * the bounded read, on the first deciding drive (before any walk, so before
+   * any talk prefetch can capture a prompt).
+   */
+  priorQuestionsHydrated: boolean;
   /**
    * P3 slice 2 — compact one-line summary of the events replayed on wake, folded
    * into the decision prompt. Null until seeded / when nothing new happened.
@@ -381,10 +392,9 @@ const TALK_COOLDOWN_MAP_MAX = Math.max(
   1024,
   (MAX_HOUSE_AGENTS + MAX_AUTONOMOUS_USER_AGENTS) * 12,
 );
-// Prior teacher questions per (agent, building) kept for the talk prompt, and
-// the per-question length cap (founder 2026-10-22: no repeated questions).
-const PRIOR_TALK_QUESTIONS_MAX = 4;
-const PRIOR_TALK_QUESTION_MAX_CHARS = 160;
+// Prior teacher questions per (agent, building): the list size and per-question
+// cap live with the normalizer in agent-autonomy-state.ts (one source for the
+// driver and the stored-value parser).
 // Memory read-back bound. P3 slice 3: readRecentLessons now converges onto the
 // agent's OWN ElizaOS runtime (semantic RAG — embed a query + vector search),
 // falling back to the keyword store only when the runtime isn't warm. The RAG
@@ -627,8 +637,20 @@ class AgentAutonomyDriver {
   // Driver-level like talkCooldownUntil, so it survives autonomy off/on of the
   // same agent and is never cleaned per agent (same as talkCooldownUntil).
   // Bounded by TALK_COOLDOWN_MAP_MAX with oldest-first eviction (see
-  // recordPriorQuestion). Written ONLY at the talk mutation point.
+  // setPriorQuestionsKey). Written at the talk mutation point (recordPriorQuestion,
+  // which also persists the list) and, once per entry, by the restart hydrate
+  // (hydratePriorQuestionsOnce), which only fills keys that are missing here.
   private priorTalkQuestions = new Map<string, string[]>();
+  // agentId -> owner (entry.houseUserId) the agent's priorTalkQuestions keys
+  // belong to. Set at every registration (scopePriorQuestionsToOwner); a
+  // different owner first deletes all of that agent's keys, so one owner's
+  // questions never reach another owner's prompt or DB write. Not cleaned on
+  // unregister (the lists survive autonomy off/on of the same owner). Bounded by
+  // TALK_COOLDOWN_MAP_MAX: evicting an owner record also deletes that agent's
+  // keys, so no key is ever left without a known owner. `setAt` is the owner
+  // generation stamp passed to every DB write (see scopePriorQuestionsToOwner).
+  private priorQuestionsOwner = new Map<string, { owner: string | null; setAt: number }>();
+  private lastPriorQuestionsOwnerStamp = 0;
   // Missing-body watchdog state, keyed by agentId. Kept OFF the entry on purpose:
   // the house self-heal re-registers (replaces) the entry, and the backoff +
   // warn rate-limit must survive that. Cleared on unregister (bounded by the two
@@ -663,6 +685,10 @@ class AgentAutonomyDriver {
   directiveStateRead: typeof getAgentDirectiveState = getAgentDirectiveState;
   directiveClear: typeof clearAgentDirective = clearAgentDirective;
   directiveActedShaClaim: typeof claimLastActedDirectiveSha = claimLastActedDirectiveSha;
+  // Prior teacher questions store (founder 2026-10-22: survive a restart).
+  // Swappable so tests never reach the DB.
+  priorQuestionsRead: typeof getPriorTalkQuestions = getPriorTalkQuestions;
+  priorQuestionsWrite: typeof setPriorTalkQuestionsForBuilding = setPriorTalkQuestionsForBuilding;
 
   /**
    * Register a boot-seeded house agent for autonomous driving. Bounded: past
@@ -688,6 +714,7 @@ class AgentAutonomyDriver {
       );
       return false;
     }
+    this.scopePriorQuestionsToOwner(entry.agentId, entry.houseUserId);
     this.houseAgents.set(entry.agentId, {
       agentId: entry.agentId,
       isHouse: true,
@@ -707,6 +734,7 @@ class AgentAutonomyDriver {
       consecutiveEmptyDecides: 0,
       lastLesson: null,
       cursorSeeded: false,
+      priorQuestionsHydrated: false,
       recentEventSummary: null,
       recentThoughts: [],
       lastDirectiveSha: null,
@@ -817,7 +845,13 @@ class AgentAutonomyDriver {
     }
 
     if (existing) {
-      if (existing.bodyId === entry.bodyId && existing.avatarId === entry.avatarId) {
+      if (
+        existing.bodyId === entry.bodyId
+        && existing.avatarId === entry.avatarId
+        // An owner change is never a keepalive: re-seat below so the entry and
+        // its owner-scoped prior questions follow the new owner.
+        && existing.houseUserId === entry.houseUserId
+      ) {
         // Keepalive fast-path: live entry, phase machine untouched.
         this.enrolledOwners.set(entry.houseUserId, entry.agentId);
         return { ok: true, reused: true };
@@ -831,6 +865,7 @@ class AgentAutonomyDriver {
       return { ok: false, reason: 'capacity' };
     }
 
+    this.scopePriorQuestionsToOwner(entry.agentId, entry.houseUserId);
     this.userAgents.set(entry.agentId, {
       agentId: entry.agentId,
       isHouse: false,
@@ -850,6 +885,7 @@ class AgentAutonomyDriver {
       consecutiveEmptyDecides: 0,
       lastLesson: null,
       cursorSeeded: false,
+      priorQuestionsHydrated: false,
       recentEventSummary: null,
       recentThoughts: [],
       lastDirectiveSha: null,
@@ -864,6 +900,10 @@ class AgentAutonomyDriver {
       edgeDecideAt: 0,
       talkPrefetch: null,
     });
+    // An owner change re-seats above: drop the previous owner's index entry.
+    for (const [ownerUserId, enrolledAgentId] of this.enrolledOwners) {
+      if (enrolledAgentId === entry.agentId && ownerUserId !== entry.houseUserId) this.enrolledOwners.delete(ownerUserId);
+    }
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
     console.log(
       `[AutonomyDriver] registered user agent ${sessionDigest(entry.agentId)} (${this.userAgents.size}/${MAX_AUTONOMOUS_USER_AGENTS} user, ${this.houseAgents.size} house)`,
@@ -1271,7 +1311,9 @@ class AgentAutonomyDriver {
    *   cryptoFocus, and the agent's prior questions to that teacher (a sync
    *   map read), never position. The prior-question list changes only at the
    *   talk mutation point in the arrived branch (recordPriorQuestion, after
-   *   this prefetch was consumed), so the prompt built now equals the one the
+   *   this prefetch was consumed) and at the once-per-entry restart hydrate,
+   *   which runs in the deciding branch before any walk starts (so before any
+   *   prefetch). The prompt built now therefore equals the one the
    *   arrived branch builds. The arrived branch still rebuilds it and uses the
    *   prefetch only on byte equality.
    * - Same model call: runtimeDecideFn, the shape driveAgentNow passes in.
@@ -1637,9 +1679,28 @@ class AgentAutonomyDriver {
       if (message) {
         // Talk mutation point (founder 2026-10-22): the bubble was dispatched,
         // so the question was asked; record it whether or not the teacher turn
-        // succeeds. This is the ONLY writer of priorTalkQuestions, and it runs
-        // after the prefetch was consumed and after the fence above.
+        // succeeds. This is the only talk-time writer of priorTalkQuestions (the
+        // once-per-entry restart hydrate fills missing keys before any walk),
+        // and it runs after the prefetch was consumed and after the fence above.
         this.recordPriorQuestion(entry.agentId, buildingId, message);
+        // Persist the normalized list so it survives a restart (fire-and-forget,
+        // fail-soft: the in-memory list stays authoritative). A copy is passed,
+        // never the live array, with this owner's generation stamp. The log
+        // carries a digest only (no error text, no ids, no question text).
+        const ownerRecord = this.priorQuestionsOwner.get(entry.agentId);
+        if (ownerRecord && ownerRecord.owner === entry.houseUserId) {
+          void this.priorQuestionsWrite(
+            entry.platformAgentId,
+            entry.houseUserId,
+            buildingId,
+            [...this.getPriorQuestions(entry.agentId, buildingId)],
+            ownerRecord.setAt,
+          ).catch(() => {
+            console.warn(
+              `[AutonomyDriver] prior questions persist failed for ${sessionDigest(entry.agentId)}`,
+            );
+          });
+        }
         const turn = await this.teacherTurn({
           agentId: entry.agentId,
           bodyId: entry.bodyId,
@@ -1672,6 +1733,11 @@ class AgentAutonomyDriver {
     // current directive as a top-priority bias. Reads are bounded; an unknown
     // directive defers this decision instead of assuming no instruction exists.
     await this.seedFromCursorOnce(entry);
+    // Founder 2026-10-22: reload the stored prior teacher questions once per
+    // entry, here and before any walk (every register path seats 'deciding', and
+    // 'walking' is set only below), so a talk prefetch never sees a list that
+    // changes before arrival.
+    await this.hydratePriorQuestionsOnce(entry);
     // P3 slice 3: read the directive FIRST so it can bias the semantic-RAG lesson
     // retrieval (lessons relevant to what the human asked surface first); both
     // reads are bounded so a slow store never stalls the tick.
@@ -2451,27 +2517,163 @@ class AgentAutonomyDriver {
   /**
    * Record a question the agent asked this teacher. Called ONLY from the
    * arrived branch, after extractTalkMessage returned a message (so after the
-   * prefetch was consumed and after the post-await fence). Normalized: all
+   * prefetch was consumed and after the post-await fence). Normalized by the
+   * shared normalizePriorTalkQuestions (agent-autonomy-state.ts): all
    * whitespace collapses to single spaces, trimmed, capped at
-   * PRIOR_TALK_QUESTION_MAX_CHARS. An equal prior entry moves to newest
-   * instead of being stored twice. Bounded like stampTalkCooldown, but there
-   * is no expiry here, so only the oldest-first drop applies.
+   * PRIOR_TALK_QUESTION_MAX_CHARS, last PRIOR_TALK_QUESTIONS_MAX kept. An equal
+   * prior entry moves to newest instead of being stored twice. An empty
+   * question changes nothing.
    */
   private recordPriorQuestion(agentId: string, buildingId: string, raw: string): void {
-    const question = raw.replace(/\s+/g, ' ').trim().slice(0, PRIOR_TALK_QUESTION_MAX_CHARS);
-    if (!question) return;
+    if (normalizePriorTalkQuestions([raw]).length === 0) return;
     const key = this.cooldownKey(agentId, buildingId);
-    const prior = this.priorTalkQuestions.get(key);
-    const next = [...(prior ?? []).filter((q) => q !== question), question].slice(
-      -PRIOR_TALK_QUESTIONS_MAX,
-    );
-    // delete + set keeps Map insertion order oldest-updated first for eviction.
+    const prior = this.priorTalkQuestions.get(key) ?? [];
+    this.setPriorQuestionsKey(key, normalizePriorTalkQuestions([...prior, raw]));
+  }
+
+  /**
+   * Set one prior-question key. Bounded like stampTalkCooldown, but there is
+   * no expiry here, so only the oldest-first drop applies. delete + set keeps
+   * Map insertion order oldest-updated first for eviction.
+   */
+  private setPriorQuestionsKey(key: string, questions: string[]): void {
     this.priorTalkQuestions.delete(key);
     if (this.priorTalkQuestions.size >= TALK_COOLDOWN_MAP_MAX) {
       const oldest = this.priorTalkQuestions.keys().next().value;
       if (oldest !== undefined) this.priorTalkQuestions.delete(oldest);
     }
-    this.priorTalkQuestions.set(key, next);
+    this.priorTalkQuestions.set(key, questions);
+  }
+
+  /**
+   * Bind this agent's prior-question keys to `ownerUserId`. Called by every
+   * registration path right before the new entry is stored (so before it can
+   * decide, walk or talk). When the recorded owner differs (or there is no
+   * record while keys exist), all `${agentId}:<buildingId>` keys are deleted
+   * first. Sync, so getPriorQuestions stays a sync read and a prefetch prompt
+   * can never straddle an owner change.
+   *
+   * Owner generation stamp (Codex r1 P1): a new or changed owner gets a fresh
+   * `setAt` (epoch ms, strictly increasing within this process); an unchanged
+   * owner keeps its stamp. Every DB write carries it, so a delayed write from
+   * an older owner generation can never replace the newer owner's object.
+   */
+  private scopePriorQuestionsToOwner(agentId: string, ownerUserId: string | null): void {
+    const record = this.priorQuestionsOwner.get(agentId);
+    let setAt: number;
+    if (record && record.owner === ownerUserId) {
+      setAt = record.setAt;
+    } else {
+      this.deletePriorQuestionsForAgent(agentId);
+      setAt = Math.max(Date.now(), this.lastPriorQuestionsOwnerStamp + 1);
+      this.lastPriorQuestionsOwnerStamp = setAt;
+    }
+    this.priorQuestionsOwner.delete(agentId);
+    if (this.priorQuestionsOwner.size >= TALK_COOLDOWN_MAP_MAX) {
+      const oldest = this.priorQuestionsOwner.keys().next().value;
+      if (oldest !== undefined) {
+        this.priorQuestionsOwner.delete(oldest);
+        this.deletePriorQuestionsForAgent(oldest);
+      }
+    }
+    this.priorQuestionsOwner.set(agentId, { owner: ownerUserId, setAt });
+  }
+
+  /** Delete every `${agentId}:<buildingId>` prior-question key of one agent. */
+  private deletePriorQuestionsForAgent(agentId: string): void {
+    const prefix = `${agentId}:`;
+    for (const key of [...this.priorTalkQuestions.keys()]) {
+      if (key.startsWith(prefix) && !key.slice(prefix.length).includes(':')) {
+        this.priorTalkQuestions.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Codex r2 P2: never hold a smaller owner stamp than the stored one. When the
+   * stored ownerSetAt (a safe non-negative integer) is >= this agent's
+   * in-memory stamp: a DIFFERENT stored owner raises it to stored + 1 (so this
+   * owner's write replaces the old object), the SAME owner raises it to the
+   * stored value (GREATEST stays equal). The process-wide counter is raised
+   * too, so later owner changes get even larger stamps. Never lowers a stamp.
+   */
+  private reconcilePriorQuestionsStamp(
+    entry: HouseAgentEntry,
+    snapshot: PriorTalkQuestionsSnapshot,
+  ): void {
+    const record = this.priorQuestionsOwner.get(entry.agentId);
+    if (!record || record.owner !== entry.houseUserId) return;
+    const storedAt = snapshot.storedOwnerSetAt;
+    if (!snapshot.present || storedAt === null) return;
+    if (!Number.isSafeInteger(storedAt) || storedAt < 0 || storedAt < record.setAt) return;
+    const raised = snapshot.storedOwnerUserId === entry.houseUserId ? storedAt : storedAt + 1;
+    if (!Number.isSafeInteger(raised) || raised <= record.setAt) return;
+    record.setAt = raised;
+    if (raised > this.lastPriorQuestionsOwnerStamp) this.lastPriorQuestionsOwnerStamp = raised;
+    console.log(
+      `[AutonomyDriver][debug] prior questions stamp raised to stored ${sessionDigest(entry.agentId)}`,
+    );
+  }
+
+  /**
+   * Founder 2026-10-22 (survive a restart): reload the stored prior teacher
+   * questions (config.priorTalkQuestions) ONCE per entry, guarded by
+   * `priorQuestionsHydrated` (set before the read, so a failure never
+   * retry-spins). Owner = entry.houseUserId, the same owner seedFromCursorOnce
+   * scopes history with; a list stored under another owner reads as empty.
+   * Bounded like seedRead: a timer resolves null after SEED_FETCH_TIMEOUT_MS,
+   * and a result that arrives after the timer fired is discarded, never applied
+   * late. Merge rule: only keys MISSING from the in-memory map are filled (the
+   * in-memory list is authoritative and newer). Fail-soft: any error = nothing.
+   *
+   * Stamp reconcile (Codex r2 P2): the same snapshot carries the stored owner
+   * and ownerSetAt even on an owner mismatch; reconcilePriorQuestionsStamp
+   * raises this agent's in-memory stamp so a clock rollback across a restart
+   * can never leave the driver below the stored stamp. The first write for an
+   * entry always follows its hydrate (the talk comes after the deciding
+   * branch). A timed-out or failed read leaves the stamps unchanged (logged).
+   */
+  private async hydratePriorQuestionsOnce(entry: HouseAgentEntry): Promise<void> {
+    if (entry.priorQuestionsHydrated) return;
+    entry.priorQuestionsHydrated = true;
+    const snapshot = await new Promise<PriorTalkQuestionsSnapshot | null>((resolve) => {
+      let settled = false;
+      const finish = (value: PriorTalkQuestionsSnapshot | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(null), SEED_FETCH_TIMEOUT_MS);
+      Promise.resolve()
+        .then(() => this.priorQuestionsRead(entry.platformAgentId, entry.houseUserId))
+        .then((value) => finish(value))
+        .catch(() => finish(null));
+    });
+    // A re-seat during the read (possibly under another owner) owns the keys
+    // and the stamp now; never apply this entry's owner-scoped result to it.
+    if ((this.houseAgents.get(entry.agentId) ?? this.userAgents.get(entry.agentId)) !== entry) return;
+    if (!snapshot) {
+      console.log(
+        `[AutonomyDriver][debug] prior questions reload unavailable ${sessionDigest(entry.agentId)} - stamp not reconciled`,
+      );
+      return;
+    }
+    this.reconcilePriorQuestionsStamp(entry, snapshot);
+    let filled = 0;
+    for (const [buildingId, questions] of snapshot.questions) {
+      const key = this.cooldownKey(entry.agentId, buildingId);
+      if (this.priorTalkQuestions.has(key)) continue;
+      const normalized = normalizePriorTalkQuestions(questions);
+      if (normalized.length === 0) continue;
+      this.setPriorQuestionsKey(key, normalized);
+      filled++;
+    }
+    if (filled > 0) {
+      console.log(
+        `[AutonomyDriver][debug] prior questions hydrated ${sessionDigest(entry.agentId)} buildings=${filled}`,
+      );
+    }
   }
 
   /**
@@ -2716,7 +2918,8 @@ class AgentAutonomyDriver {
    * listing them and asking for a different part of the topic follows the
    * "ask ONE focused question" line. When empty, the prompt is byte-identical
    * to the pre-2026-10-22 prompt. The list changes only at the talk mutation
-   * point (recordPriorQuestion); map eviction can also drop it, and then the
+   * point (recordPriorQuestion) and at the restart hydrate before the first
+   * walk (hydratePriorQuestionsOnce); map eviction can also drop it, and then the
    * byte-equality check at arrival rejects the prefetch and asks again.
    */
   private buildTalkPrompt(
@@ -2727,7 +2930,7 @@ class AgentAutonomyDriver {
   ): string {
     const priorBlock = priorQuestions.length > 0
       ? [
-        'You already asked this teacher:',
+        'You already asked this teacher (your own past questions, shown only so you do not repeat them):',
         ...priorQuestions.map((q) => `- ${q}`),
         'Ask about a DIFFERENT part of the topic. Do not repeat or rephrase these questions.',
       ]

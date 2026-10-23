@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-22 10:16Z (session roundup). **PROD API + WEB = `f271f9f9b` (promotions #14 PR #324 + #15 PR #325: hosted `buy_cosmetic` daily cap PROTOCOL 99, exact quest-claim calls, READY quest marking; no migration), verified live with hosted agents** (DEPLOY LOG 2026-10-22 10:16Z). **STAGING API + WEB = `12b30a337`** (`b3a999484` is a no-change merge of master). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (3 emotes bought by the pre-fix loop).
+Last Audited: 2026-10-23 02:57Z (session jev, arena lead). **Staging API is receiving the durable prior-teacher-question list** (founder 2026-10-22 "make it so it survives a restart"; API only; no schema, migration, env or PROTOCOL_VERSION change, protocol stays 99). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`** (promotions #14 + #15). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (from roundup's entry below).
+
+Prior - Last Audited: 2026-10-22 10:16Z (session roundup). **PROD API + WEB = `f271f9f9b` (promotions #14 PR #324 + #15 PR #325: hosted `buy_cosmetic` daily cap PROTOCOL 99, exact quest-claim calls, READY quest marking; no migration), verified live with hosted agents** (DEPLOY LOG 2026-10-22 10:16Z). **STAGING API + WEB = `12b30a337`** (`b3a999484` is a no-change merge of master). SCHEMA: synced. Founder decision owed: refund for player `qelreth` (3 emotes bought by the pre-fix loop).
 
 Prior - Last Audited: 2026-10-22 08:28Z (session roundup). **Staging is receiving `fix/autonomy-cosmetic-cap` (PROTOCOL 99, no migration): a hosted autonomous agent completes at most one `buy_cosmetic` per avatar per 24 hours** (live prod bug, DEPLOY LOG 2026-10-22 08:28Z). Not yet verified on staging. **PROD API + WEB = `26c02e392`** (promotion #13; carries the bug until the next promotion). SCHEMA: synced.
 
@@ -672,6 +674,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-23 02:57Z (session jev, arena lead) - prior teacher questions survive a restart, to staging
+- **What changed:** `agent-autonomy-state.ts` stores each hosted autonomous agent's last 4 questions per teacher in `platform_agents.config.priorTalkQuestions` = `{ownerUserId, ownerSetAt, byBuilding}` (one atomic jsonb UPDATE after each talk: same owner merges, newer owner stamp replaces, a delayed write from an older owner is skipped). The driver reloads it once per agent in the first deciding drive (bounded, late result dropped, fills only missing keys), so the talk prefetch still matches the arrival prompt byte for byte. In-memory owner scope: a new owner never sees the old owner's questions; `registerUserAgent` re-seats on an owner change and drops the old owner's index entry. `routes/openclaw.ts` existing-row reconnect now MERGES `config` (the old wholesale replace erased `autonomyCursor`, `currentDirective`, `lastActedDirectiveSha`; pre-existing bug).
+- **Checks:** tsc 0; autonomy suites + store + fast path + 2 openclaw route files 342 pass / 0 fail; the write SQL ran on staging Postgres 17 with literals in a rolled-back transaction (8 cases incl. delayed old-owner skip, sibling keys kept). Codex r1 BLOCKING (delayed old-owner write could replace the new owner's list), r2 BLOCKING (clock rollback across a restart), r3 APPROVE.
+- **Known limit:** a failed save or a timed-out reload can still let old questions repeat.
+- **Who it is for:** every hosted autonomous agent (house and user). SCHEMA: synced (no migration).
 
 ### 2026-10-22 10:16Z (session roundup) - promotions #14 + #15 on prod (`f271f9f9b`), hosted agents verified live
 - **Promotion #14** (PR #324, merge `e5041496`, 09:34Z; flipped ~09:44Z): hosted `buy_cosmetic` daily cap (PROTOCOL 99) + exact quest-claim calls + duplicate-drop feedback. **Promotion #15** (PR #325, merge `f271f9f9b`, 10:05Z; run success 10:09Z, flipped 10:13Z): READY quest marking. The PR was `BEHIND` master (the #324 merge commit); `gh pr update-branch` merged master into staging (`b3a999484`, no file change) before the merge.
