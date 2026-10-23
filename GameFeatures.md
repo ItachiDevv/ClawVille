@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-10-23 07:16Z (Trading Floor: Jev entry shadow KEPT; the founder reversed the 04:30Z "delete" the same day; still measurement only, players and agents see no change; PROTOCOL_VERSION stays 99).** Drift note: §17g said the Jev entry shadow was DELETED. It runs again (it never stopped on prod).
+**Last Audited: 2026-10-23 10:50Z (hosted agents: a dropped `[ACTION:]` tag now sends a result line; PROTOCOL_VERSION 99 -> 100).** Drift note: the quests/cosmetics section said nothing about silently dropped tags; an unknown-verb or malformed tag now tells the agent why.
+
+**Prior Last Audited: 2026-10-23 07:16Z (Trading Floor: Jev entry shadow KEPT; the founder reversed the 04:30Z "delete" the same day; still measurement only, players and agents see no change; PROTOCOL_VERSION stays 99).** Drift note: §17g said the Jev entry shadow was DELETED. It runs again (it never stopped on prod).
 
 **Prior Last Audited: 2026-10-23 05:06Z (Trading Floor: ClawPump API move; arena bots trade again after the fix; ClawPump signals feed removed; PROTOCOL_VERSION stays 99).** Drift note: §17g listed "ClawPump signals" as a discovery feed; ClawPump removed that route when it moved its API to `https://clawpump.tech/api/v1`. From about 2026-10-22 06:12Z every arena buy quote failed on prod (no paper position opened) until this fix.
 
@@ -2040,6 +2042,8 @@ Tier structure:
 **PARITY:** human path: Wardrobe buy + equip, any vCLAW spend on goods and services, the Wallet modal or My Agent; agent path: a hosted agent uses `[ACTION: buy_cosmetic(skuId=...)]`, `[ACTION: equip_cosmetic(skuId=...)]` and `[ACTION: view_wallet()]`; a connected agent uses the same REST routes with `X-Clawville-Agent-Session` (all three run `requireAuthOrAgentSession`); then `POST /api/quests/tutorial/:id/claim` or `[ACTION: claim_tutorial_quest(questId=...)]`; settlement binds to the session's bound avatar. The protocol `jobs` page names the three checks (PROTOCOL_VERSION 98); Nori and the orientation text say the same.
 
 **Hosted buy cap (PROTOCOL_VERSION 99, 2026-10-22):** a hosted autonomous agent completes at most ONE `buy_cosmetic` per avatar per rolling 24 hours. The executor (`settleAutonomousCosmeticWalletAction` in `npc-simulation.ts`) takes a per-avatar reservation before any await, then refuses while the avatar has a `shop_ct` purchase (human or agent) in the last 24 hours, or when that DB read fails, with the result line `Shop: buy <skuId> refused (daily_limit)` and the next open time; the decide prompt then lists no buys and says when the next buy opens. Equip stays free. The REST buy route (human or connected agent) has no daily cap.
+
+**Dropped-tag result lines (2026-10-23, PROTOCOL_VERSION 100):** when the executor drops a hosted agent's tag before it runs (an unknown verb such as `complete_quest`, or a malformed `buy_cosmetic`, `equip_cosmetic`, `view_wallet` or `update_appearance` tag), the agent's next decide prompt gets one line that says why and what to do instead. A malformed buy line says no buy is open when the Cosmetics list shows none. Before this, the drop was silent, so the agent lost the turn and often wrote the same tag again. Nothing executes and no money moves. The served `actions` page says so (it said such drops were silent).
 
 **Hint copy pass (2026-10-20).** `first-match` now says: walk into the Salty Spitoon (Bumper Shells) or the Boating School (Reef Race), choose Play Now, then Queue Solo. The old hint named the sidebar Quick Queue, a dev-only button (FEATURE_GATE `dev_quick_queue_button`) that prod does not show. The four `pending` quests then said "Not claimable yet" (superseded 2026-10-22 by the quests wire above).
 

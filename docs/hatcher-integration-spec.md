@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-10-22 08:17Z (autonomous cosmetic buy cap, PROTOCOL_VERSION 98 -> 99).** Drift note: `buy_cosmetic` (§5) now completes at most one buy per avatar per rolling 24 hours for a hosted agent (per-avatar reservation + DB window over `shop_ct` acquisitions, fail closed); the decide menu and the `actions`/`jobs` pages state the cap. No Hatcher route, signing, session bearer or wire change.
+**Last Audited: 2026-10-23 10:50Z (dropped-tag result lines for driver-hosted brains; PROTOCOL_VERSION 99 -> 100).** Drift note: §5 said only a duplicate drop sends a result line; an unknown-verb or grammar drop now sends one too, and the served `actions` page no longer says drops are silent (the executor-change coupling gate requires the bump). No verb, param, Hatcher route, signing, session bearer or wire change.
+
+**Prior Last Audited: 2026-10-22 08:17Z (autonomous cosmetic buy cap, PROTOCOL_VERSION 98 -> 99).** Drift note: `buy_cosmetic` (§5) now completes at most one buy per avatar per rolling 24 hours for a hosted agent (per-avatar reservation + DB window over `shop_ct` acquisitions, fail closed); the decide menu and the `actions`/`jobs` pages state the cap. No Hatcher route, signing, session bearer or wire change.
 
 **Prior Last Audited: 2026-10-22 05:43Z (quests wire, PROTOCOL_VERSION 97 -> 98, shared with the quest changes of the same version).** Drift note: the `[ACTION:]` executor gains three verbs, `view_wallet()`, `equip_cosmetic(skuId)` and `buy_cosmetic(skuId)` (21 verbs; §5), each on the same service as its REST route; all three are house-refused (`house-refused-verbs.ts`) and the `actions` page documents them. No Hatcher route, signing, session bearer/TTL, SSRF, cognition body or `hatcher:` namespace change; the Hatcher release gates are retired (founder 2026-10-20), so none are owed.
 
@@ -484,6 +486,13 @@ may contain commas; `)` terminates the action tag, so keep that character out of
   action"), because a silent drop made it repeat the tag (staging 2026-10-22: 16 views in 4 minutes). The hosted
   decide prompt's quest block prints each exact `claim_tutorial_quest(questId=...)` call (the model had invented
   `claim_quest` / `complete_quest`). Served manual unchanged; PROTOCOL_VERSION stays 99.
+  (2026-10-23) A tag dropped before execution now also sends a driver-hosted brain one result line: an unknown
+  verb ("`<verb>` is not an action ..."; prod logs showed about 100 such drops in 6 h, mostly `complete_quest` and
+  `chat_with_teacher`), or a grammar drop of `buy_cosmetic`, `equip_cosmetic`, `view_wallet` or
+  `update_appearance` (a malformed buy line says no buy is open when the Cosmetics list shows none). One line per
+  reply (the driver keeps one result slot); a body with no agent attribution gets none. Nothing executes and no
+  money moves. The served `actions` page now says a hosted brain gets that line (it said "dropped silently");
+  PROTOCOL_VERSION 99 -> 100.
 - `equip_cosmetic(skuId=<uuid>)` — (v98) wears an owned cosmetic through the SAME service as
   `POST /api/cosmetics/:skuId/equip` (emits `cosmetic.equipped`). Free; an unowned sku is refused.
 - `buy_cosmetic(skuId=<uuid>)` — (v98) buys one cosmetic through the SAME service as

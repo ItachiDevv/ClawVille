@@ -115,6 +115,102 @@ describe('view_wallet / equip_cosmetic / buy_cosmetic hosted actions', () => {
     expect(calls.balances).toEqual([]);
   });
 
+  test('a grammar or unknown-verb drop tells the model why (one line per reply), and moves nothing', async () => {
+    const results: string[] = [];
+    const originalResult = npcSimulation.autonomousActionResult;
+    npcSimulation.autonomousActionResult = async (agentId, avatarId, text) => {
+      results.push(text);
+      await originalResult(agentId, avatarId, text);
+    };
+    const shopLine = 'Shop: that buy_cosmetic tag was not valid, so nothing was bought. Copy skuId=<id> exactly from the Cosmetics list. If the list shows nothing to buy, no buy is open now; pick a different action.';
+    const cases: Array<[string, string]> = [
+      ['[ACTION: buy_cosmetic(skuId=emote-wave)]', shopLine],
+      [`[ACTION: buy_cosmetic(skuId=${SKU}, userId=other)]`, shopLine],
+      ['[ACTION: equip_cosmetic(sku=x)]', 'Wardrobe: that equip_cosmetic tag was not valid, so nothing changed. Copy skuId=<id> exactly from the cosmetics you own.'],
+      ['[ACTION: view_wallet(x=1)]', 'Wallet: view_wallet takes no parameters, so nothing happened. Write it with empty parentheses.'],
+      ['[ACTION: update_appearance(color=red, color=blue)]', 'Appearance: that update_appearance tag was not valid, so nothing changed. Use only modelKey, color and gender, each once.'],
+      ['[ACTION: complete_quest(questId=style-statement)]', '"complete_quest" is not an action; nothing happened. Use only verbs from your action list. To claim a quest, copy a call from the Claimable quests list.'],
+    ];
+    try {
+      for (const [tag, line] of cases) {
+        results.length = 0;
+        expect(dispatch(tag)).toBe('');
+        await settle();
+        expect(results).toEqual([line]);
+        // The driver's 200-char slot keeps the whole line.
+        expect(prompt()).toContain(`- (latest) ${line}`);
+      }
+      // Several drops in one reply send ONE line (the driver keeps one slot).
+      results.length = 0;
+      dispatch('[ACTION: claim_quest(questId=a)] [ACTION: buy_cosmetic(skuId=bad)] [ACTION: chat_with_teacher()]');
+      await settle();
+      expect(results).toEqual(['"claim_quest" is not an action; nothing happened. Use only verbs from your action list. To claim a quest, copy a call from the Claimable quests list.']);
+      // A valid tag sends no drop line of its own kind.
+      results.length = 0;
+      dispatch('[ACTION: emote(name=wave)]');
+      await settle();
+      expect(results).toEqual([]);
+    } finally {
+      npcSimulation.autonomousActionResult = originalResult;
+    }
+    expect(calls.house).toEqual([]);
+    expect(calls.resolve).toEqual([]);
+    expect(calls.buy).toEqual([]);
+    expect(calls.equip).toEqual([]);
+    expect(calls.balances).toEqual([]);
+  });
+
+  test('unknown verbs still use slots of the 4-action cap, so a later buy tag is not run', async () => {
+    const results: string[] = [];
+    const originalResult = npcSimulation.autonomousActionResult;
+    npcSimulation.autonomousActionResult = async (_agentId, _avatarId, text) => { results.push(text); };
+    try {
+      dispatch(`[ACTION: a()] [ACTION: b()] [ACTION: c()] [ACTION: d()] [ACTION: buy_cosmetic(skuId=${SKU})]`);
+      await settle();
+      expect(calls.resolve).toEqual([]);
+      expect(calls.buy).toEqual([]);
+      expect(results).toEqual(['"a" is not an action; nothing happened. Use only verbs from your action list. To claim a quest, copy a call from the Claimable quests list.']);
+    } finally {
+      npcSimulation.autonomousActionResult = originalResult;
+    }
+  });
+
+  test('a human-controlled or quarantined body runs nothing and gets no drop line', async () => {
+    const results: string[] = [];
+    const originalResult = npcSimulation.autonomousActionResult;
+    const originalHuman = sim.isHumanControlledOpenClawNpc;
+    const originalQuarantine = sim.isQuarantinedAgentNpc;
+    npcSimulation.autonomousActionResult = async (_agentId, _avatarId, text) => { results.push(text); };
+    try {
+      sim.isHumanControlledOpenClawNpc = () => true;
+      expect(dispatch('[ACTION: complete_quest(questId=x)] [ACTION: buy_cosmetic(skuId=bad)]')).toBe('');
+      sim.isHumanControlledOpenClawNpc = originalHuman;
+      sim.isQuarantinedAgentNpc = () => true;
+      expect(dispatch('[ACTION: complete_quest(questId=x)] [ACTION: buy_cosmetic(skuId=bad)]')).toBe('');
+      await settle();
+      expect(results).toEqual([]);
+      expect(calls.resolve).toEqual([]);
+    } finally {
+      npcSimulation.autonomousActionResult = originalResult;
+      sim.isHumanControlledOpenClawNpc = originalHuman;
+      sim.isQuarantinedAgentNpc = originalQuarantine;
+    }
+  });
+
+  test('a drop with no agent attribution sends no result line', async () => {
+    const results: string[] = [];
+    const originalResult = npcSimulation.autonomousActionResult;
+    npcSimulation.autonomousActionResult = async (_agentId, _avatarId, text) => { results.push(text); };
+    sim.npcOverrides.delete(body.id);
+    try {
+      dispatch('[ACTION: complete_quest(questId=x)] [ACTION: buy_cosmetic(skuId=bad)]');
+      await settle();
+      expect(results).toEqual([]);
+    } finally {
+      npcSimulation.autonomousActionResult = originalResult;
+    }
+  });
+
   test('a house actor is refused before any session resolve; a failed house check fails closed', async () => {
     npcSimulation.autonomousHouseActorCheck = async (agentId) => { calls.house.push(agentId); return true; };
     dispatch(`[ACTION: view_wallet()] [ACTION: equip_cosmetic(skuId=${SKU})] [ACTION: buy_cosmetic(skuId=${SKU})]`);

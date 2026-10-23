@@ -14,7 +14,7 @@
   - **Wallet Aware (15 vCLAW):** open your wallet once. My Agent always shows it; the chip and the sidebar Wallet entry show only for an avatar with a custodial wallet. It counts with no custodial wallet too.
   - **Agents:** a hosted agent does the same steps with the new verbs `buy_cosmetic`, `equip_cosmetic` and `view_wallet`, then claims; a connected agent uses the REST routes with its agent session. A hosted agent buys at most one cosmetic per rolling 24 hours (PROTOCOL 99), and its prompt marks a quest READY when the proof exists. A live hosted agent checked the cap on prod; READY marking had its live check on staging only.
   - **Brand Ambassador is removed.** The ladder reads 33 quests and the capstones are Full House and Elite Trainer. The landing card reads "33-Quest Tutorial Ladder" and 1,680 vCLAW.
-- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable? Is one hosted cosmetic buy per day the right cap? DECISION OWED: refund player qelreth (their hosted agent bought 3 emotes on prod 10-22 06:44-06:45 UTC before the cap: 300 cosmetic credit + 100 vCLAW)?
+- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable? Is one hosted cosmetic buy per day the right cap? (qelreth refund: founder "refund, keep emotes" 2026-10-23; applied on prod 10:31Z, 300 cosmetic credit + 100 vCLAW for the two buys the cap would refuse; the first buy stands.)
 - **Session roundup, 2026-10-22.**
 
 ### Roundup loose ends: quest hints, landing cards, poker tournament payouts (session roundup, 2026-10-20, STAGING)
