@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-23 04:40Z (session jev2, arena lead). **PROD API = `af9659135` (promotion #16, PR #326: durable prior-teacher-question list `ddaa2bfc9`; no migration), flipped 04:37Z; prod web stays `f271f9f9b` (no web change).** **Staging is receiving `7fcd91d49`: Jev arena entry shadow DELETED (founder "delete") + migration `0088_jev_decide_shadow_drop.sql` (founder "yes")** (DEPLOY LOG 2026-10-23 04:40Z). SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (reaches prod with the next promotion, which needs a founder go).
+Last Audited: 2026-10-23 05:09Z (session jev2, arena lead). **PROD API = `af9659135` (promotion #16), web `f271f9f9b`. INCIDENT: ClawPump moved its REST API to `https://clawpump.tech/api/v1`; on prod every arena buy quote fails since 2026-10-22 06:12Z and no paper position opened (fix not on prod yet).** **Staging is receiving `5d5140fdb` + docs (ClawPump base-path fix) on top of `064637948` (Jev arena shadow deleted, migration 0088 applied on staging 04:42Z, VERIFIED: table gone, API flipped 04:52Z).** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql`. Promotion needs the founder's go.
+
+Prior - Last Audited: 2026-10-23 04:40Z (session jev2, arena lead). **PROD API = `af9659135` (promotion #16, PR #326: durable prior-teacher-question list `ddaa2bfc9`; no migration), flipped 04:37Z; prod web stays `f271f9f9b` (no web change).** **Staging is receiving `7fcd91d49`: Jev arena entry shadow DELETED (founder "delete") + migration `0088_jev_decide_shadow_drop.sql` (founder "yes")** (DEPLOY LOG 2026-10-23 04:40Z). SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (reaches prod with the next promotion, which needs a founder go).
 
 Prior - Last Audited: 2026-10-23 03:50Z (session jev, arena lead). **STAGING API = `ddaa2bfc9` (durable prior-teacher-question list), VERIFIED across a manual API restart** (DEPLOY LOG 2026-10-23 03:50Z). Web stays `12b30a337`. **PROD API + WEB = `f271f9f9b`**; `ddaa2bfc9` waits for a founder promotion go. SCHEMA: synced.
 
@@ -678,6 +680,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-23 05:09Z (session jev2, arena lead) - INCIDENT: ClawPump REST base moved; fix to staging (`5d5140fdb`)
+- **Found:** prod opened no arena paper position since 2026-10-22 06:01Z (last per source: pumpportal:new 06:01Z, ds:token-profiles 05:56Z, clawpump:signals 05:46Z). From 06:12Z every buy quote failed (`quote_failed` 697, then `quote_breaker` 3,205) and exits stopped 06:09Z. Root cause: ClawPump's old REST host `https://ai-agents-production-6ca0.up.railway.app` returns 404 on every path, `/health` included. `agents.clawpump.tech` 308s to `clawpump.tech`. The new base `https://clawpump.tech/api/v1` answers with our key: `/agents` and `/agents/<id>` (same shape), `POST /swap/quote` (same body), `/signals/anomalies` (now keyed). Gone there (404): `/intelligence/signals`, `/wallets/summary`, `/wallets/<id>/history`.
+- **Blast radius:** arena paper entries and exits (prod, ~23 h), the clawpump:signals and anomalies discovery feeds, house x402 removal (staging log `clawpump_not_found_404`), arena-agent provisioning, wallet balances and withdrawals. No real money moved: prod `floor_arena_withdrawals` has 0 rows ever; last provisioning 2026-10-18.
+- **Fix `5d5140fdb` (workers W1 + W2, lead review):** `clawpump-client` default `https://clawpump.tech/api/v1`, allowlist `clawpump.tech`, path exactly `/api/v1`, new `clawPumpUrl` builder used by the client, writer, arena pricing and discovery (the old `new URL('/x', origin)` would drop the prefix). `clawpump:signals` source removed; anomalies skip with no key. Wallet routes stay failed closed until ClawPump names the new paths.
+- **Env:** staging Coolify api app 3 `CLAWPUMP_API_BASE_URL` (both rows) changed from the Railway URL to `https://clawpump.tech/api/v1` via the model setter (applies at this deploy). Prod: unset (code default).
+- **Checks:** api tsc 0; 12 touched test files 385 pass / 0 fail (per file); doc paths pass; coupling gates exit 0; Codex read-only review VERDICT: APPROVE (one doc nit, fixed in `d98c7c8e7`). Staging `docker builder prune -af` before the push.
+- **Not yet verified:** staging flip, positions opening on staging, quote errors stopping. Prod gets the fix only with a promotion (founder go).
+- **Who it is for:** every arena paper bot and arena player (Trading Floor). PARITY: no capability change for humans or agents. SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql`.
 
 ### 2026-10-23 04:40Z (session jev2, arena lead) - promotion #16 ON PROD; Jev arena entry shadow deletion + jev_decide_shadow DROP to staging
 - **Promotion #16 (founder "yes" to promote `ddaa2bfc9`, 2026-10-23 ~04:10Z):** PR #326 (staging `51502a651` -> master), 4 PR checks green, merged 04:28Z with `[skip-nori-update]` as merge commit `af9659135`. Prod run 39900434452: 4 gate lanes, migrate, deploy all success (04:32Z). Prod API `ebnatux...-20261023T043150` `SOURCE_COMMIT` = `af9659135`, `/health` ok from 04:37Z. Web not rebuilt (no web change), stays `f271f9f9b`. Session roundup2 was told by message before the merge.
