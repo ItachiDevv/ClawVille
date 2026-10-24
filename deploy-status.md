@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-23 21:46Z (session mcp2 / claw-2.0). **STAGING API + WEB = `c34039c2a`, VERIFIED: ecosystem catalog adds Shinjuku StAItion and Pay.sh rows, SAID planned (PROTOCOL_VERSION 101 -> 103; 102 reserved for jev2's next push, which takes 104)** (read-only knowledge; no route, schema, env or money change; DEPLOY LOG 2026-10-23 21:46Z). It carries mcp2's `0801c533e`, roundup2's `87e8621fd` and jev2's `aa2bbd473`. **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
+Last Audited: 2026-10-24 06:34Z (session jev2, arena lead). **PROD API + WEB = `6161679b1` (promotion #17, PR #327: ClawPump REST base fix, migration 0088, Jev arena shadow restore, dropped-tag result lines PROTOCOL 100, MCP ecosystem catalog PROTOCOL 101/103), VERIFIED 06:31-06:33Z; the prod arena quote incident (since 2026-10-22 06:12Z) is closed: 4 paper entries at 06:31:43Z, 0 quote failures after the flip.** **STAGING API + WEB = `c34039c2a`** (same code as prod; docs on top). SCHEMA: synced. Next on staging: jev2's PROTOCOL 104 (Genesis Jev gate + Codex shadow deletion, waits for the founder), then claw-2.0's 105. DEPLOY LOG 2026-10-24 06:34Z.
+
+Prior - Last Audited: 2026-10-23 21:46Z (session mcp2 / claw-2.0). **STAGING API + WEB = `c34039c2a`, VERIFIED: ecosystem catalog adds Shinjuku StAItion and Pay.sh rows, SAID planned (PROTOCOL_VERSION 101 -> 103; 102 reserved for jev2's next push, which takes 104)** (read-only knowledge; no route, schema, env or money change; DEPLOY LOG 2026-10-23 21:46Z). It carries mcp2's `0801c533e`, roundup2's `87e8621fd` and jev2's `aa2bbd473`. **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
 
 Prior - Last Audited: 2026-10-23 11:14Z (session mcp2). **STAGING API + WEB = `0801c533e`, VERIFIED: MCP ecosystem catalog, hub step 1 (PROTOCOL_VERSION 100 -> 101)** (manual topic `ecosystem`, public `GET /api/ecosystem/catalog`, Nori line; read-only, no money; no schema or env change; DEPLOY LOG 2026-10-23 11:14Z). It carries roundup2's `87e8621fd` (dropped-tag result lines, PROTOCOL 100) and jev2's `aa2bbd473`. **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
 
@@ -688,6 +690,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-24 06:34Z (session jev2, arena lead) - promotion #17 ON PROD (`6161679b1`); prod arena quote incident closed
+- **Founder go:** 2026-10-24 ~06:10Z "yeah you can promote it". Sessions roundup2 and claw-2.0 were told before the PR and both agreed to hold staging pushes.
+- **PR #327** (staging `8562c6511` -> master): 4 PR checks green; merged 06:22Z with `[skip-nori-update]` in the merge body as `6161679b1`. Prod run 40069931563: 4 gate lanes, migrate, deploy all success.
+- **What reached prod:** ClawPump REST base `https://clawpump.tech/api/v1` (`5d5140fdb`); migration `0088_jev_decide_shadow_drop.sql`; Jev arena entry shadow kept (`7fcd91d49` + revert `aa2bbd473`); dropped-tag result lines (`87e8621fd`, PROTOCOL 100); MCP ecosystem catalog (`b60e4d001`..`c34039c2a`, PROTOCOL 101 then 103).
+- **Prod VERIFIED:** API `ebnatux...-20261024T062547` and web `ds7hoho...-20261024T062547` `SOURCE_COMMIT` = `6161679b1`; `/health` commit matches from 06:31:13Z. DB: `jev_decide_shadow` gone, `floor_arena_jev_entry` kept. Arena: 4 paper entries 06:31:43-45Z (house genesis, late-bloomer, midcap-climber, dip-hunter; sources pumpportal:new, pumpportal:migration, ds:token-profiles), 0 `quote_failed` / `quote_breaker` after the flip (100 in the 30 min before it), 4 Jev shadow rows `ok`. `GET /api/ecosystem/catalog` reports protocol 103. Browser: `https://clawville.world/game` loads (town, avatar, panels), no console errors. The only 404 lines in the API log are an outside agent polling an old `ag-` session id after the restart.
+- **Still open:** the PumpPortal key is set on prod and its wallet holds 0.009985 SOL (below the 0.02 SOL minimum, so trade windows stay null). PumpPortal meters trade messages at 0.01 SOL per 10,000 and the feed has no spend cap in code; prod saw 24,396 new pump.fun mints in 24 h. Fund only after a cap in code and a founder cap.
+- **Who it is for:** every arena paper bot and arena player (quotes work again), hosted agents (dropped-tag lines), MCP users (catalog). PARITY: see PR #327. SCHEMA: synced.
 
 ### 2026-10-23 21:46Z (session mcp2 / claw-2.0) - ecosystem catalog rows VERIFIED on staging (`c34039c2a`, PROTOCOL 103)
 - **What changed:** `ECOSYSTEM_CATALOG` serves 5 rows (clawville, studios, atelier, shinjuku, paysh); `said` is a planned, unserved row. Pay.sh is the first stdio row (a `Command:` line and a `command`/`args` JSON block). `65e368fa4` rewords the `agent-mcp.ts` header comment only.
