@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-24 06:34Z (session jev2, arena lead). **PROD API + WEB = `6161679b1` (promotion #17, PR #327: ClawPump REST base fix, migration 0088, Jev arena shadow restore, dropped-tag result lines PROTOCOL 100, MCP ecosystem catalog PROTOCOL 101/103), VERIFIED 06:31-06:33Z; the prod arena quote incident (since 2026-10-22 06:12Z) is closed: 4 paper entries at 06:31:43Z, 0 quote failures after the flip.** **STAGING API + WEB = `c34039c2a`** (same code as prod; docs on top). SCHEMA: synced. Next on staging: jev2's PROTOCOL 104 (Genesis Jev gate + Codex shadow deletion, waits for the founder), then claw-2.0's 105. DEPLOY LOG 2026-10-24 06:34Z.
+Last Audited: 2026-10-24 06:56Z (session claw-2.0). **STAGING API + WEB = `c2666fe41`, VERIFIED: the ecosystem catalog `shinjuku` row moves to the npm wallet package (a local stdio MCP or a command-line tool, pinned to 0.3.95); new optional row field `cli` (shinjuku, paysh); PROTOCOL_VERSION 103 -> 104** (read-only knowledge; no route, schema, env or money change; DEPLOY LOG 2026-10-24 06:56Z). **PROD API + WEB = `6161679b1` (promotion #17)**, so prod still serves the old shinjuku row at protocol 103. SCHEMA: synced. Next on staging: jev2's branch, now PROTOCOL 105 (waits for the founder). Promotion of `c2666fe41` needs the founder's go.
+
+Prior - Last Audited: 2026-10-24 06:34Z (session jev2, arena lead). **PROD API + WEB = `6161679b1` (promotion #17, PR #327: ClawPump REST base fix, migration 0088, Jev arena shadow restore, dropped-tag result lines PROTOCOL 100, MCP ecosystem catalog PROTOCOL 101/103), VERIFIED 06:31-06:33Z; the prod arena quote incident (since 2026-10-22 06:12Z) is closed: 4 paper entries at 06:31:43Z, 0 quote failures after the flip.** **STAGING API + WEB = `c34039c2a`** (same code as prod; docs on top). SCHEMA: synced. Next on staging: jev2's PROTOCOL 104 (Genesis Jev gate + Codex shadow deletion, waits for the founder), then claw-2.0's 105. DEPLOY LOG 2026-10-24 06:34Z.
 
 Prior - Last Audited: 2026-10-23 21:46Z (session mcp2 / claw-2.0). **STAGING API + WEB = `c34039c2a`, VERIFIED: ecosystem catalog adds Shinjuku StAItion and Pay.sh rows, SAID planned (PROTOCOL_VERSION 101 -> 103; 102 reserved for jev2's next push, which takes 104)** (read-only knowledge; no route, schema, env or money change; DEPLOY LOG 2026-10-23 21:46Z). It carries mcp2's `0801c533e`, roundup2's `87e8621fd` and jev2's `aa2bbd473`. **PROD API = `af9659135` (promotion #16), web `f271f9f9b`.** SCHEMA: `prod-migration-pending: 0088_jev_decide_shadow_drop.sql` (jev2). Promotion needs the founder's go.
 
@@ -690,6 +692,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-24 06:56Z (session claw-2.0) - ecosystem catalog shinjuku row on staging (`c2666fe41`, PROTOCOL 104), VERIFIED
+- **What changed:** the `shinjuku` row in `ECOSYSTEM_CATALOG` no longer points at the hosted HTTP MCP. It now gives the npm wallet package at one pinned version (0.3.95, the newest on npm on 2026-10-24; the `latest` tag was 0.3.86): a local stdio MCP server (`npx -y --no-audit --no-fund shinjuku-shield@0.3.95 mcp`) or a command-line tool (`npm install -g shinjuku@0.3.95`). New optional row field `cli`, set on shinjuku and paysh and rendered on the `ecosystem` page as a command-line block. PROTOCOL_VERSION 103 -> 104 (jev2 gave 104 to this push and moved its branch to 105).
+- **Evidence:** CI run 40070817512 green (4 gate jobs, migrate, deploy). API container `c2666fe41` at 06:49Z, web container `c2666fe41` at 06:52Z; `/health` commit matches. `GET /api/ecosystem/catalog` returns protocolVersion 104 and the rows clawville, studios, atelier, shinjuku, paysh; the shinjuku JSON block parses. MCP `clawville_docs` topic `ecosystem` has the 5 row headings and 2 command-line blocks, no "undefined". Onboarding smoke 14/14 (a third back-to-back run got HTTP 429, a rate limit). Hosted probe ALL PASS (134). `/game` renders, 0 console errors. Local: 94/94 tests, api and shared tsc 0, coupling gates and doc-path check pass; Codex VERDICT: APPROVED.
+- **What broke:** nothing on staging. The first push failed on git auth (an invalid env `GITHUB_TOKEN`); `unset GITHUB_TOKEN && gh auth setup-git` fixed it. The staging disk reached 90% during the build (86% after); `docker builder prune -af` ran before the push.
+- **Who it is for:** users who add the Shinjuku StAItion wallet to their own MCP client. Founder eyes: the FOUNDER-REVIEW ecosystem catalog entry.
+- SCHEMA: synced.
 
 ### 2026-10-24 06:34Z (session jev2, arena lead) - promotion #17 ON PROD (`6161679b1`); prod arena quote incident closed
 - **Founder go:** 2026-10-24 ~06:10Z "yeah you can promote it". Sessions roundup2 and claw-2.0 were told before the PR and both agreed to hold staging pushes.
