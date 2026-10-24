@@ -200,9 +200,9 @@ describe('boot-critical warm reads match the production render reads', () => {
 
       const paths = [...renderedPaths()].sort();
       expect(paths.length).toBe(12);
-      expect(paths).toContain('/models/guide-rigged.glb');
+      expect(paths).toContain('/models/guide-rigged.glb?v=2');
       // The 11 buildings read their versioned BUILDING_MODELS paths.
-      expect(paths.filter((p) => p !== '/models/guide-rigged.glb').length).toBe(11);
+      expect(paths.filter((p) => p !== '/models/guide-rigged.glb?v=2').length).toBe(11);
 
       const problems: string[] = [];
       for (const path of paths) {
