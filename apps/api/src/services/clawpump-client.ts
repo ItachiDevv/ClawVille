@@ -1,8 +1,11 @@
 import { z } from 'zod';
 
 /** Read-only ClawPump REST client. It has NO write or swap method, and it never logs. */
-export const CLAWPUMP_DEFAULT_API_BASE_URL = 'https://ai-agents-production-6ca0.up.railway.app';
-export const CLAWPUMP_ALLOWED_API_HOSTS: ReadonlySet<string> = new Set(['ai-agents-production-6ca0.up.railway.app']);
+// ClawPump moved its REST API to clawpump.tech under /api/v1 (2026-10-23). The old Railway host
+// returns 404 on every path. agents.clawpump.tech only redirects here, so it is NOT an allowed host.
+export const CLAWPUMP_DEFAULT_API_BASE_URL = 'https://clawpump.tech/api/v1';
+export const CLAWPUMP_ALLOWED_API_HOSTS: ReadonlySet<string> = new Set(['clawpump.tech']);
+export const CLAWPUMP_API_BASE_PATH = '/api/v1';
 export const CLAWPUMP_DEFAULT_TIMEOUT_MS = 15_000;
 const CLAWPUMP_MIN_TIMEOUT_MS = 1_000;
 const CLAWPUMP_MAX_TIMEOUT_MS = 30_000;
@@ -61,7 +64,7 @@ const wrappedAgentWire = z.object({ agent: agentWire }).passthrough();
 const agentIdSchema = z.string().uuid();
 
 export function resolveClawPumpConfig(env: Record<string, string | undefined> = process.env): {
-  origin: string; apiKey: string; timeoutMs: number;
+  origin: string; basePath: string; apiKey: string; timeoutMs: number;
 } {
   const apiKey = env.CLAWPUMP_API_KEY?.trim();
   if (!apiKey) throw new ClawPumpClientError('not_configured');
@@ -71,8 +74,10 @@ export function resolveClawPumpConfig(env: Record<string, string | undefined> = 
   } catch {
     throw new ClawPumpClientError('invalid_base_url');
   }
+  // One trailing slash is allowed; the path must then be exactly the API base path.
+  const basePath = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
   if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash
-    || (url.pathname !== '/' && url.pathname !== '')
+    || basePath !== CLAWPUMP_API_BASE_PATH
     || !CLAWPUMP_ALLOWED_API_HOSTS.has(url.hostname.toLowerCase())) {
     throw new ClawPumpClientError('invalid_base_url');
   }
@@ -80,13 +85,35 @@ export function resolveClawPumpConfig(env: Record<string, string | undefined> = 
   const timeoutMs = Number.isFinite(raw)
     ? Math.min(CLAWPUMP_MAX_TIMEOUT_MS, Math.max(CLAWPUMP_MIN_TIMEOUT_MS, Math.floor(raw)))
     : CLAWPUMP_DEFAULT_TIMEOUT_MS;
-  return { origin: url.origin, apiKey, timeoutMs };
+  return { origin: url.origin, basePath, apiKey, timeoutMs };
+}
+
+/**
+ * The one ClawPump URL builder. `path` is relative to the API base path and starts with exactly
+ * one '/' (a query string is kept). A path that could leave the base path throws invalid_base_url.
+ * Never `new URL('/x', origin)`: an absolute path drops the /api/v1 prefix.
+ */
+export function clawPumpUrl(config: { origin: string; basePath: string }, path: string): URL {
+  const pathOnly = path.split(/[?#]/, 1)[0] ?? '';
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')
+    || pathOnly.split('/').some((segment) => /^(\.|%2e){2}$/i.test(segment))) {
+    throw new ClawPumpClientError('invalid_base_url');
+  }
+  let url: URL;
+  try {
+    url = new URL(config.origin + config.basePath + path);
+  } catch {
+    throw new ClawPumpClientError('invalid_base_url');
+  }
+  if (url.origin !== config.origin || !url.pathname.startsWith(`${config.basePath}/`)) {
+    throw new ClawPumpClientError('invalid_base_url');
+  }
+  return url;
 }
 
 async function getJson(path: string, options: ClawPumpClientOptions): Promise<unknown> {
   const config = resolveClawPumpConfig(options.env ?? process.env);
-  const url = new URL(path, config.origin);
-  if (url.origin !== config.origin) throw new ClawPumpClientError('invalid_base_url');
+  const url = clawPumpUrl(config, path);
   let response: Response;
   try {
     response = await (options.fetchImpl ?? fetch)(url, {

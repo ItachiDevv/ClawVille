@@ -37,6 +37,10 @@
  *       archived first, and it touches NO Eliza table. A new DROP still needs the
  *       same bar: founder order, archived rows, zero readers proven, and an
  *       explicit note here.
+ *       SECOND SANCTIONED EXCEPTION: `0088_jev_decide_shadow_drop.sql`
+ *       (founder order 2026-10-23) drops the Jev decide shadow ledger after its
+ *       writer was deleted (2026-10-20) and the code flip reached prod; rows
+ *       archived to CSV first; no view, FK, or code reader.
  *
  * IMMUTABLE MIGRATIONS
  * --------------------

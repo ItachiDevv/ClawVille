@@ -60,6 +60,7 @@ import { buildLandTopic } from './skill-protocol-topics/land';
 import { buildJobsTopic } from './skill-protocol-topics/jobs';
 import { buildPaymentsTopic } from './skill-protocol-topics/payments';
 import { buildTradingTopic } from './skill-protocol-topics/trading';
+import { buildEcosystemTopic } from './skill-protocol-topics/ecosystem';
 import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
@@ -894,7 +895,10 @@ import {
 // 98 follow-up (same version, before the push): three new hosted `[ACTION:]` verbs, `buy_cosmetic(skuId=...)`, `equip_cosmetic(skuId=...)` and `view_wallet()`, give a hosted agent the three steps (the `actions` and `jobs` pages list them; connected agents keep the REST routes). `wallet.viewed` is recorded on the 200 AND on the no-wallet 404 `wallet_missing`, so an avatar with no custodial wallet can complete wallet-aware. The `jobs` page states the exact big-spender allowlist (books, vCLAW cosmetics, rent and hold upkeep, structure upgrades, vCLAW kit pieces; not prepaid rent weeks, peer land services, bets, deposits or escrows) and tells the agent to claim after the step and retry once after a short wait on `engagement_required`.
 // 99 (2026-10-22, cosmetic buy cap): a hosted autonomous agent completes at most ONE `buy_cosmetic` per avatar per rolling 24 hours (production: the decide loop bought the next cheapest emote every ~30 s). The executor holds a per-avatar reservation and reads the avatar's `shop_ct` purchases of the last 24 hours (human or agent) before the buy service; a closed window, or a failed read, refuses with the result line `Shop: buy <skuId> refused (daily_limit)` (or `limit_check_unavailable`), and the decide prompt's Cosmetics block lists no buys and names the next open time. The `actions` and `jobs` pages state the cap; `equip_cosmetic` keeps its 60-second per-sku reservation and `view_wallet` its 10 minutes. The REST buy route is unchanged. The `cosmetic.purchased` event payload gains `subjectKind`.
 // 99 follow-up (same version, served manual unchanged, 2026-10-22 staging test): the hosted decide prompt's quest block prints each exact `[ACTION: claim_tutorial_quest(questId=...)]` call (the model invented `claim_quest` / `complete_quest`), and a dropped `view_wallet` / `equip_cosmetic` duplicate now sends the hosted brain one result line instead of a silent drop. No served page, verb or param changed, so no bump.
-export const PROTOCOL_VERSION = 99;
+// 100 (2026-10-23, dropped-tag result lines): `dispatchHatcherActions` now sends a hosted brain one result line (one per reply) when it drops a tag before execution: an unknown verb (prod logs: about 100 in 6 h, mostly `chat_with_teacher` and `complete_quest`), or a malformed `buy_cosmetic` / `equip_cosmetic` / `view_wallet` / `update_appearance` tag. The `actions` page no longer says such drops are silent. Nothing executes and no money moves; no verb or param changed.
+// 101 (2026-10-23, MCP ecosystem hub step 1): new `ecosystem` page (last in PROTOCOL_TOPICS, so the topic index and the full manual gain it; MCP `clawville_docs` gains the topic), generated from `ECOSYSTEM_CATALOG` in `packages/shared/src/constants/ecosystem-catalog.ts`. It lists the MCP servers a user can add to their own client next to the ClawVille MCP (ClawVille, Studios by Claw Hunter, Atelier), with install lines for Claude Code, Codex CLI, Hermes and a generic `mcpServers` block. Planned rows are not served. The same rows are public JSON at `GET /api/ecosystem/catalog`. Read-only: no route, verb, status or `error` string changed, and ClawVille calls none of these servers.
+// 103 (2026-10-23, ecosystem catalog rows; 102 is reserved): two more install rows on the `ecosystem` page and `GET /api/ecosystem/catalog` (Shinjuku StAItion read-only MCP over HTTP, Pay.sh over stdio with a `Command:` line in place of the MCP URL) + one planned row (SAID, not served). Read-only: no route, verb, status or `error` string changed, and ClawVille calls none of these servers.
+export const PROTOCOL_VERSION = 103;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1136,6 +1140,7 @@ export const PROTOCOL_TOPICS = [
   { id: 'jobs', title: 'Bounties and quests', summary: 'post and solve bounties, the dev quest board', build: buildJobsTopic },
   { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, buy vCLAW with USDC, redeem vCLAW for CLV', build: buildPaymentsTopic },
   { id: 'trading', title: 'Trading Floor', summary: 'bind a wallet, scored trades, house traders, the Trading Arena', build: buildTradingTopic },
+  { id: 'ecosystem', title: 'Ecosystem MCPs', summary: 'other MCP servers you can add to your own client next to the ClawVille MCP, with install lines', build: buildEcosystemTopic },
 ] as const;
 
 export type ProtocolTopic = (typeof PROTOCOL_TOPICS)[number]['id'];

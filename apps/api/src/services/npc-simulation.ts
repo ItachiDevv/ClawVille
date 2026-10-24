@@ -2768,6 +2768,19 @@ class NpcSimulation {
       void this.settleAutonomousTrade(npcId, attribution, tag.parsed);
     }
 
+    // A dropped tag must still tell the model why, or its turn is lost and it
+    // writes the same tag again (prod 2026-10-23: ~100 unknown-verb drops such
+    // as complete_quest / chat_with_teacher in 6 h; malformed buy_cosmetic
+    // tags while the buy window was closed). One line per reply: the driver
+    // keeps one result slot. The driver strips `[ACTION:...]` from result
+    // text, so these lines name the verb without the bracket form.
+    let dropNoted = false;
+    const noteDrop = (line: string) => {
+      if (dropNoted || !attribution) return;
+      dropNoted = true;
+      void this.autonomousActionResult(attribution.agentId, attribution.avatarId, line).catch(() => undefined);
+    };
+
     let match: RegExpExecArray | null;
     HATCHER_ACTION_REGEX.lastIndex = 0; // regex has /g state — reset per call
     while ((match = HATCHER_ACTION_REGEX.exec(replyText)) !== null) {
@@ -2786,6 +2799,14 @@ class NpcSimulation {
       const name = match[1];
       const paramStr = match[2].trim();
       const params: Record<string, string> = {};
+      if (!isHatcherActionVerb(name)) {
+        // Same cap accounting as before this pre-check: an in-world body's
+        // unknown verb used a slot when it reached executeHatcherAction.
+        if (npc) executed++;
+        console.warn(`[Hatcher] action dropped — not in whitelist: "${name}"`);
+        noteDrop(`"${name.slice(0, 40)}" is not an action; nothing happened. Use only verbs from your action list. To claim a quest, copy a call from the Claimable quests list.`);
+        continue;
+      }
       // Cosmetic edits have a strict grammar. Never silently discard authority
       // fields, malformed pairs, or duplicate keys before shared validation.
       if (name === 'update_appearance') {
@@ -2796,17 +2817,24 @@ class NpcSimulation {
           seen.add(pair[1]!);
           return true;
         });
-        if (!valid) continue;
+        if (!valid) {
+          noteDrop('Appearance: that update_appearance tag was not valid, so nothing changed. Use only modelKey, color and gender, each once.');
+          continue;
+        }
       }
       // Wallet and cosmetic verbs have a strict grammar too: view_wallet takes
       // no params; equip/buy take exactly one `skuId=<uuid>`. Anything else
       // (an extra authority field, a duplicate, a malformed id) drops the tag.
       if (name === 'view_wallet' && paramStr.length > 0) {
         console.warn('[Hatcher] view_wallet dropped — it takes no parameters');
+        noteDrop('Wallet: view_wallet takes no parameters, so nothing happened. Write it with empty parentheses.');
         continue;
       }
       if ((name === 'equip_cosmetic' || name === 'buy_cosmetic') && !COSMETIC_SKU_PARAM_RE.test(paramStr)) {
         console.warn(`[Hatcher] ${name} dropped — expected exactly skuId=<uuid>`);
+        noteDrop(name === 'buy_cosmetic'
+          ? 'Shop: that buy_cosmetic tag was not valid, so nothing was bought. Copy skuId=<id> exactly from the Cosmetics list. If the list shows nothing to buy, no buy is open now; pick a different action.'
+          : 'Wardrobe: that equip_cosmetic tag was not valid, so nothing changed. Copy skuId=<id> exactly from the cosmetics you own.');
         continue;
       }
       if (paramStr.length > 0) {

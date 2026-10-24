@@ -193,9 +193,31 @@ describe('ClawPump calls (fake fetch, never the network)', () => {
     const seen: Array<{ url: string; init: RequestInit }> = [];
     const r = await quoteBuy(MINT, 20, 0.00002, { fetchImpl: fakeFetch([buyQuote()], seen), env: ENV, nowMs: 1_000 });
     expect(r.ok).toBe(true);
-    expect(seen[0]!.url).toBe('https://ai-agents-production-6ca0.up.railway.app/swap/quote');
+    expect(seen[0]!.url).toBe('https://clawpump.tech/api/v1/swap/quote');
     expect(JSON.parse(String(seen[0]!.init.body))).toEqual({ input_mint: USDC_MINT, output_mint: MINT, amount: '20000000', slippage_bps: 300 });
     expect((seen[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer test-key');
+  });
+
+  // 2026-10-23: the API moved to clawpump.tech/api/v1; new URL('/swap/quote', origin) would drop /api/v1.
+  test('quote URL keeps the /api/v1 base path: explicit CLAWPUMP_API_BASE_URL', async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const env = { ...ENV, CLAWPUMP_API_BASE_URL: 'https://clawpump.tech/api/v1' };
+    const r = await quoteBuy(MINT, 20, 0.00002, { fetchImpl: fakeFetch([buyQuote()], seen), env, nowMs: 1_000 });
+    expect(r.ok).toBe(true);
+    expect(seen.map((c) => c.url)).toEqual(['https://clawpump.tech/api/v1/swap/quote']);
+  });
+
+  test('quote URL keeps the /api/v1 base path: no base env (default)', async () => {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const r = await quoteSell(MINT, 975_000, 5, { markPriceUsd: 0.00002, referencePriceUsd: null }, {
+      fetchImpl: fakeFetch([{
+        status: 'quoted', input: { mint: MINT, amount: '975000', rawAmount: '97500000000', decimals: 5 },
+        output: { mint: USDC_MINT, amount: '21', rawAmount: '21000000', decimals: 6 }, slippageBps: 300, priceImpactPct: '0.01',
+      }], seen),
+      env: { CLAWPUMP_API_KEY: 'test-key' },
+    });
+    expect(r).toMatchObject({ ok: true });
+    expect(seen.map((c) => c.url)).toEqual(['https://clawpump.tech/api/v1/swap/quote']);
   });
 
   test('the same $20 quote is shared for 10 s', async () => {

@@ -7,6 +7,7 @@ import {
   ArenaHttpError, arenaFetchJson, clawpumpBackend, dexscreenerBudgetLeft, noteDexscreenerCall,
   noteDexscreenerRateLimited, rememberSolPrice, USDC_MINT, WSOL_MINT, type ArenaFetch,
 } from './pricing';
+import { clawPumpUrl } from '../clawpump-client';
 
 /**
  * Shared discovery for the Trading Floor Arena (docs/trading-floor-arena.md D2): ONE poller per free source,
@@ -42,6 +43,8 @@ export interface DiscoverySource {
   intervalMs: number;
   /** Counts against the DexScreener budget. */
   dexscreener: boolean;
+  /** False = skip this poll quietly (no call), e.g. a keyed route with no key configured. Absent = always on. */
+  enabled?(): boolean;
   fetch(fetchImpl?: ArenaFetch): Promise<Sighting[]>;
 }
 
@@ -134,7 +137,7 @@ async function dexscreenerGet(path: string, fetchImpl?: ArenaFetch): Promise<unk
 
 async function clawpumpGet(path: string, fetchImpl?: ArenaFetch): Promise<unknown> {
   const backend = clawpumpBackend();
-  return arenaFetchJson(new URL(path, backend.origin), {
+  return arenaFetchJson(clawPumpUrl(backend, path), {
     headers: backend.apiKey ? { Authorization: `Bearer ${backend.apiKey}` } : {},
     timeoutMs: Math.min(backend.timeoutMs, 15_000),
   }, fetchImpl);
@@ -147,10 +150,10 @@ export const DISCOVERY_SOURCES: readonly DiscoverySource[] = [
     fetch: async (f) => parseDexscreenerList(await dexscreenerGet('/token-boosts/latest/v1', f), 'ds:token-boosts-latest') },
   { id: 'ds:token-boosts-top', intervalMs: 30_000, dexscreener: true,
     fetch: async (f) => parseDexscreenerList(await dexscreenerGet('/token-boosts/top/v1', f), 'ds:token-boosts-top') },
-  // The signals set turns over ~1 mint per 15 min (R2 research): never poll faster than 60 s.
-  { id: 'clawpump:signals', intervalMs: 60_000, dexscreener: false,
-    fetch: async (f) => parseClawpumpRows(await clawpumpGet('/intelligence/signals?chain=sol&limit=50', f), 'signals', 'clawpump:signals') },
+  // 'clawpump:signals' removed 2026-10-23: the ClawPump API move (clawpump.tech/api/v1) dropped /intelligence/signals (404).
+  // /signals/anomalies now needs the key: with no key runDiscoveryPoll skips the poll (enabled() is false), no call.
   { id: 'clawpump:anomalies', intervalMs: 60_000, dexscreener: false,
+    enabled: () => clawpumpBackend().apiKey !== null,
     fetch: async (f) => parseClawpumpRows(await clawpumpGet('/signals/anomalies', f), 'gems', 'clawpump:anomalies') },
   // GeckoTerminal keyless limit is 30/min; the two gecko pollers use 2/min (lead cap: <= 20/min).
   { id: 'gecko:new-pools', intervalMs: 60_000, dexscreener: false,
@@ -287,6 +290,7 @@ export async function runDiscoveryPoll(source: DiscoverySource, now: Date = new 
   if (source.dexscreener && dexscreenerBudgetLeft(now.getTime()) <= 0) {
     return { seen: 0, skipped: true };
   }
+  if (source.enabled && !source.enabled()) return { seen: 0, skipped: true };
   const merged = mergeSightings(await source.fetch(fetchImpl));
   await upsertSightings(merged, now);
   return { seen: merged.length, skipped: false };

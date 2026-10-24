@@ -1,8 +1,12 @@
 // FEATURE_GATE: jev_arena_entry_shadow
-// Status: shadow + virtual twin (no trade effect)
-// Metric to graduate: virtual-twin net pnl beats actual across bots after >=1 day, founder go
-// Current reading: prod 2026-10-20 03:28Z (6 days, 2012 ok rows, 1727 joined trades): actual -$1692.63, twin -$854.59 (954 trades), vetoed -$838.03 (773, 45%); mean pnl/trade -$0.98 actual vs -$0.90 twin, so most of the gap is fewer trades; twin still loses; $0.115 of the $0.90 cap
-// Review deadline: 2026-10-23 (renewed 2026-10-16: founder "see what it learns"; one day is too small)
+// Status: shadow + virtual twin (no trade effect). KEPT by the founder at the 2026-10-23 review ("Jev is clearly better
+//   at ruling out coins, keep it"); next step = an outlier-win study, then a founder decision on enforcing the veto
+//   on the paper bots
+// Metric to graduate: virtual-twin net pnl beats actual across bots, founder go to enforce
+// Current reading: prod 2026-10-14 09:53Z..2026-10-23 04:04Z (5049 ok rows, 2418 joined trades): actual -$2220.19,
+//   twin -$1135.48, vetoed -$1084.71; a random skip of the same count per bot averages -$1211.91 (one-sided p=0.22);
+//   twin still loses; $0.29 of the $0.90 cap
+// Review deadline: 2026-10-30 (renewed 2026-10-23 by the founder; date proposed, founder to confirm)
 // On deadline: delete, or enforce the gate on paper twins (founder decision)
 // Reference: docs/trading-floor-arena.md
 

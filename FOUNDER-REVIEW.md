@@ -5,6 +5,13 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### MCP ecosystem catalog, hub step 1 (session mcp2, 2026-10-23, STAGING)
+
+- **WHERE:** https://api-staging.clawville.world/api/ecosystem/catalog (JSON); in any MCP client connected to the staging MCP, call `clawville_docs` with topic `ecosystem`.
+- **LOOK AT:** five served rows since protocol 103: ClawVille MCP (install lines for Claude Code, Codex CLI, Hermes and a JSON block), Studios by Claw Hunter, Atelier, Shinjuku StAItion (its read-only MCP) and Pay.sh (a local `pay mcp` server, the first stdio row). UsePod, ClawPump, Hydra and SAID Protocol are planned rows and are not served yet.
+- **FEEDBACK WANTED:** is the wording right for users? Do the install lines work in your clients (the Pay.sh lines need the pay CLI installed first)? Promote to prod?
+- **Session mcp2 / claw-2.0, 2026-10-23 (rows added 21:30Z).**
+
 ### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, ON PROD since promotion #13; buy cap + READY marking since #14 and #15)
 
 - **WHERE:** clawville.world/game (prod; staging has the same paths), the quest tracker (expand it); the Wardrobe (sidebar Cosmetics); My Agent (sidebar), or the wallet chip next to your vCLAW balance.
@@ -14,7 +21,7 @@
   - **Wallet Aware (15 vCLAW):** open your wallet once. My Agent always shows it; the chip and the sidebar Wallet entry show only for an avatar with a custodial wallet. It counts with no custodial wallet too.
   - **Agents:** a hosted agent does the same steps with the new verbs `buy_cosmetic`, `equip_cosmetic` and `view_wallet`, then claims; a connected agent uses the REST routes with its agent session. A hosted agent buys at most one cosmetic per rolling 24 hours (PROTOCOL 99), and its prompt marks a quest READY when the proof exists. A live hosted agent checked the cap on prod; READY marking had its live check on staging only.
   - **Brand Ambassador is removed.** The ladder reads 33 quests and the capstones are Full House and Elite Trainer. The landing card reads "33-Quest Tutorial Ladder" and 1,680 vCLAW.
-- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable? Is one hosted cosmetic buy per day the right cap? DECISION OWED: refund player qelreth (their hosted agent bought 3 emotes on prod 10-22 06:44-06:45 UTC before the cap: 300 cosmetic credit + 100 vCLAW)?
+- **FEEDBACK WANTED:** do the three hints say clearly what to do and where? Is 200 vCLAW the right Big Spender target? Is a 2 second wait before the reward toast acceptable? Is one hosted cosmetic buy per day the right cap? (qelreth refund: founder "refund, keep emotes" 2026-10-23; applied on prod 10:31Z, 300 cosmetic credit + 100 vCLAW for the two buys the cap would refuse; the first buy stands.)
 - **Session roundup, 2026-10-22.**
 
 ### Roundup loose ends: quest hints, landing cards, poker tournament payouts (session roundup, 2026-10-20, STAGING)
@@ -414,11 +421,11 @@
 
 ## AGENTS / ONBOARDING
 
-### Autonomous agents ask a teacher a new question on each visit (session jev, 2026-10-22, ON PROD since promotion #13)
+### Autonomous agents ask a teacher a new question on each visit (session jev, 2026-10-22, ON PROD since promotion #13; restart-safe list ON PROD since promotion #16)
 
 - **WHERE:** `https://clawville.world/game` (or staging), logged in with your agent. Switch to Autonomous and let it run for more than one hour (each teacher allows one talk per hour).
 - **LOOK AT:** the agent's talk bubble at a teacher it visited before. It should ask about a different part of that teacher's topic, not the same question again.
-- **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: the list now survives an API restart or deploy (stored on the agent row since 2026-10-22, session jev). A failed save or a failed reload at startup can still let old questions repeat after a restart.
+- **FEEDBACK WANTED:** are the second and third questions at the same teacher new enough? Note: the list now survives an API restart or deploy (stored on the agent row; on prod since promotion #16, 2026-10-23). A failed save or a failed reload at startup can still let old questions repeat after a restart.
 - **Session jev, 2026-10-22.**
 
 ### Connect flow polish: dead-link guidance, new modal footer, phone quest list (session mcp, 2026-10-20, ON PROD since promotion #11)

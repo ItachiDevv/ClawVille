@@ -16,8 +16,8 @@ are v1, superseded by the v4/v5 table in the runbook).
   their own trading agent from the floor in about a minute.
 - Voice: ClawVille Register B (Neon Broadcast) type over real game footage: huge condensed caps,
   short declaratives, playful and confident, no persona. ASK (see docs/video-production.md).
-- Music: the ClawVille track from the owner (not yet received). Yami-ichi is Shinjuku's theme, not
-  ours. All times below assume 120 BPM (one bar = 2.0 s), drop A at video 2.0, drop B at 34.0, the
+- Music: the ClawVille track from the owner (not yet received). Use no
+  other project's theme. All times below assume 120 BPM (one bar = 2.0 s), drop A at video 2.0, drop B at 34.0, the
   loudest phrase at 50.0. Re-pin every time after `music-map.py` reads the real track.
 
 ## 2. Scope gate (read 2026-09-30 ~12:00Z; re-read before capture)

@@ -1,9 +1,8 @@
 /**
  * Hosted MCP server — POST /api/agent/mcp (job agent-skill-simple, 2026-10-13).
  *
- * A minimal Streamable HTTP MCP server: stateless JSON answers, no SSE, no SDK
- * (same shape as carbon-road's assistant/mcpServer.ts). An MCP host adds ONE
- * URL and gets real tools that run on this server.
+ * A minimal Streamable HTTP MCP server: stateless JSON answers, no SSE, no
+ * SDK. An MCP host adds ONE URL and gets real tools that run on this server.
  *
  *   - POST only. GET and DELETE answer 405 (allowed for a server without an
  *     SSE stream). Any request with an Origin header is refused (403): the

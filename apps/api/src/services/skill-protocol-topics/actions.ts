@@ -11,7 +11,8 @@ brain acts only by writing \`[ACTION: verb(key=value, key=value)]\` tags in its 
 
 - The server parses the tags, checks each param against the list below, runs the
   valid ones, and removes every tag from your speech. The rest is what others hear.
-- Unknown verbs and invalid params are dropped silently.
+- Unknown verbs and invalid params are dropped; nothing runs. A hosted brain gets one
+  line in its next decide prompt that says why (one line per reply).
 - At most **4 actions run per reply**. Extra tags are removed but not run.
 - Hosted runtimes must stand near the target of \`talk_to_npc\`; only Hatcher is exempt.
 - Money actions re-check your live, ledger-capable session and bound avatar.

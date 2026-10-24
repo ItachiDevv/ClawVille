@@ -68,6 +68,12 @@ interface Call {
 }
 type Handler = (call: Call) => Response | Promise<Response>;
 
+/** The path after the ClawPump /api/v1 base; a URL without the base path gets a marker that routes to 404. */
+function apiPath(url: URL): string {
+  if (url.origin !== 'https://clawpump.tech' || !url.pathname.startsWith('/api/v1/')) return `MISSING_BASE:${url.href}`;
+  return url.pathname.slice('/api/v1'.length);
+}
+
 function fakeFetch(routes: Record<string, Handler>) {
   const calls: Call[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -75,7 +81,7 @@ function fakeFetch(routes: Record<string, Handler>) {
     const headers = new Headers(init?.headers);
     const call: Call = {
       method: init?.method ?? 'GET',
-      path: `${url.pathname}${url.search}`,
+      path: `${apiPath(url)}${url.search}`,
       body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
       auth: headers.get('authorization'),
       contentType: headers.get('content-type'),
@@ -83,7 +89,7 @@ function fakeFetch(routes: Record<string, Handler>) {
       hasSignal: init?.signal instanceof AbortSignal,
     };
     calls.push(call);
-    const handler = routes[`${call.method} ${url.pathname}`];
+    const handler = routes[`${call.method} ${apiPath(url)}`];
     if (!handler) return new Response('{"error":"Not Found"}', { status: 404 });
     return handler(call);
   }) as typeof fetch;

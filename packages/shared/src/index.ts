@@ -56,6 +56,8 @@ export * from './types/cove-baccarat';
 // Shared-table (multiplayer) baccarat public wire types (2026-10-22, frozen).
 export * from './types/cove-baccarat-table';
 export * from './constants/orientation-skill';
+// MCP ecosystem hub step 1 (2026-10-23): reviewed ecosystem MCP catalog.
+export * from './constants/ecosystem-catalog';
 export * from './constants/hatcher-actions';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';

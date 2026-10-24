@@ -325,10 +325,20 @@ describe('clawville_docs', () => {
 
   test('every topic fits its cap uncut', async () => {
     const { rt } = stubRuntime(undefined, null);
-    for (const topic of ['core', 'actions', 'world', 'cove', 'land', 'jobs', 'payments', 'trading', 'mcp']) {
+    for (const topic of ['core', 'actions', 'world', 'cove', 'land', 'jobs', 'payments', 'trading', 'ecosystem', 'mcp']) {
       const body = parse(answerText(await runMcpTool('clawville_docs', { topic }, rt)));
       expect({ topic, ok: body.ok, cut: Boolean(body.data?.truncated) }).toEqual({ topic, ok: true, cut: false });
     }
+  });
+
+  test('the topic enum offers ecosystem and the page is the served ecosystem page', async () => {
+    const docs = MCP_TOOLS.find((tool) => tool.name === 'clawville_docs')!;
+    const topicSchema = (docs.inputSchema as { properties: { topic: { enum: string[] } } }).properties.topic;
+    expect(topicSchema.enum).toContain('ecosystem');
+    const { rt } = stubRuntime(undefined, null);
+    const body = parse(answerText(await runMcpTool('clawville_docs', { topic: 'ecosystem' }, rt)));
+    expect(body.ok).toBe(true);
+    expect(body.data.markdown.startsWith('# ClawVille — Ecosystem MCPs\n\n## Ecosystem MCPs')).toBe(true);
   });
 
   test('the mcp page lists every game tool', async () => {

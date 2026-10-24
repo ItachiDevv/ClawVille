@@ -72,6 +72,7 @@ import { exchangeRoutes } from './routes/exchange';
 import { leaderboardRoutes } from './routes/leaderboard';
 import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
+import { ecosystemRoutes } from './routes/ecosystem';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
 // Tokenomics E1/E2 — internal, admin-only EARNED import/verifier/claw-back.
@@ -371,6 +372,8 @@ app.route('/api/exchange', exchangeRoutes);
 app.route('/api/leaderboard', leaderboardRoutes);
 app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
+// Public, read-only ecosystem MCP catalog (MCP ecosystem hub step 1).
+app.route('/api/ecosystem', ecosystemRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
 app.route('/api/admin/tokenomics/earn', tokenomicsEarnRoutes);

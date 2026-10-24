@@ -38,6 +38,13 @@ const HOUSE_ID = '0f600d73-05a0-4c2e-8215-ab2a770ba192';
 
 interface Call { method: string; url: string; body: unknown; auth: string | null }
 
+/** The path after the ClawPump /api/v1 base; a URL without the base path gets null (so it routes to 404). */
+function apiPath(url: string): string | null {
+  const parsed = new URL(url);
+  if (parsed.origin !== 'https://clawpump.tech' || !parsed.pathname.startsWith('/api/v1/')) return null;
+  return parsed.pathname.slice('/api/v1'.length);
+}
+
 function fakeFetch(routes: Record<string, (call: Call) => Response>): { fetchImpl: typeof fetch; calls: Call[] } {
   const calls: Call[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -51,8 +58,8 @@ function fakeFetch(routes: Record<string, (call: Call) => Response>): { fetchImp
       auth: headers.get('authorization'),
     };
     calls.push(call);
-    const path = new URL(url).pathname;
-    const handler = routes[`${method} ${path}`];
+    const path = apiPath(url);
+    const handler = path === null ? undefined : routes[`${method} ${path}`];
     if (!handler) return new Response('{"error":"Not Found"}', { status: 404 });
     return handler(call);
   }) as typeof fetch;
@@ -81,7 +88,7 @@ describe('createClawPumpAgent', () => {
     }, { env, fetchImpl });
     expect(created).toMatchObject({ id: ARENA_ID, walletAddress: 'So1anaWa11etAddre55xxxxxxxxxxxxxxxxxxxxxxx', isPublic: false });
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe('https://ai-agents-production-6ca0.up.railway.app/agents');
+    expect(calls[0]!.url).toBe('https://clawpump.tech/api/v1/agents');
     expect(calls[0]!.auth).toBe(`Bearer ${KEY}`);
     expect(calls[0]!.body).toEqual({
       name: 'CV Arena · Bob #abcd12340000',
@@ -130,7 +137,7 @@ describe('updateClawPumpAgent', () => {
     });
     const updated = await updateClawPumpAgent(ARENA_ID, { accepting_bids: false, is_public: false, enabled_skills: ['x402'] }, OWNED, { env, fetchImpl });
     expect(updated.acceptingBids).toBe(false);
-    expect(calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
+    expect(calls.map((call) => `${call.method} ${apiPath(call.url)}`)).toEqual([
       `GET /agents/${ARENA_ID}`, `PATCH /agents/${ARENA_ID}`,
     ]);
     expect(calls[1]!.body).toEqual({ accepting_bids: false, is_public: false, enabled_skills: ['x402'] });
@@ -426,7 +433,7 @@ describe('Codex r22: the last read inside the writer must report status "stopped
       expect((await x402PayViaClawPump(ARENA_ID, pay, OWNED, { env, fetchImpl })).ok).toBe(true);
       _resetClawPumpWriterRateForTest();
       expect((await updateClawPumpAgent(ARENA_ID, addPatch, OWNED, { env, fetchImpl })).id).toBe(ARENA_ID);
-      expect(writes(calls).map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
+      expect(writes(calls).map((call) => `${call.method} ${apiPath(call.url)}`)).toEqual([
         `POST /agents/${ARENA_ID}/x402/x402_service_pay`, `PATCH /agents/${ARENA_ID}`,
       ]);
     }
