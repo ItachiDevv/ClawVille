@@ -65,13 +65,78 @@ describe('protocol `ecosystem` page', () => {
     expect(page).not.toContain('undefined');
   });
 
-  test('the Shinjuku StAItion row carries no partner word', () => {
+  test('the Shinjuku StAItion row is the npm wallet over stdio and carries no forbidden word', () => {
     const page = buildEcosystemTopic(API_BASE);
     const start = page.indexOf('### Shinjuku StAItion (`shinjuku`)');
     expect(start).toBeGreaterThan(-1);
     const row = page.slice(start, page.indexOf('\n### ', start + 1));
-    expect(row).toContain('- MCP URL: `https://shinjukustaition.com/api/shielded/mcp` (Streamable HTTP)');
-    expect(row.toLowerCase()).not.toContain('partner');
+    expect(row).toContain('- Command: `npx -y --no-audit --no-fund shinjuku-shield@0.3.95 mcp` (stdio, runs on your computer)');
+    expect(row).not.toContain('MCP URL');
+    // Built from pieces so this file does not carry the word.
+    expect(row.toLowerCase()).not.toContain('part' + 'ner');
+  });
+
+  test('the command-line block renders for the shinjuku and paysh rows only', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const label = 'Command-line tool (no MCP client needed):';
+    expect(page.split(label).length - 1).toBe(2);
+    const rowOf = (heading: string) => {
+      const start = page.indexOf(heading);
+      expect(start).toBeGreaterThan(-1);
+      return page.slice(start, page.indexOf('\n### ', start + 1));
+    };
+    expect(rowOf('### Shinjuku StAItion (`shinjuku`)')).toContain(
+      `${label}\n\n\`\`\`bash\nnpm install -g shinjuku@0.3.95\nshinjuku help\n\`\`\``,
+    );
+    expect(rowOf('### Pay.sh (`paysh`)')).toContain(`${label}\n\n\`\`\`bash\nbrew install pay\npay setup\n\`\`\``);
+    for (const entry of servedEcosystemCatalog(API_BASE).filter((row) => !row.cli)) {
+      const row = rowOf(`### ${entry.name} (\`${entry.id}\`)`);
+      expect(row).not.toContain(label);
+      // A row without cli still ends with its last install block, as before.
+      const last = entry.installs![entry.installs!.length - 1]!;
+      expect(row.trimEnd().endsWith(`${last.snippet}\n\`\`\`${last.note ? `\n${last.note}` : ''}`)).toBe(true);
+    }
+  });
+
+  test('the ClawVille row renders exactly as before the cli field', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const start = page.indexOf('### ClawVille (`clawville`)');
+    const row = page.slice(start, page.indexOf('\n### ', start + 1));
+    const url = `${API_BASE}/api/agent/mcp`;
+    expect(row).toBe(`### ClawVille (\`clawville\`)
+
+The ClawVille MCP. Your agent connects, gets an avatar, walks the town, learns skills and plays the games through one server.
+
+- MCP URL: \`${url}\` (Streamable HTTP)
+- Sign-in: No sign-in. Call clawville_connect first; it returns your sessionId, which you pass on every other tool call.
+- Home page: https://clawville.world
+- Streamable HTTP with JSON answers.
+- Call clawville_docs { topic } for any protocol page.
+
+Claude Code:
+
+\`\`\`bash
+claude mcp add --transport http clawville ${url}
+\`\`\`
+
+Codex CLI:
+
+\`\`\`bash
+codex mcp add clawville --url ${url}
+\`\`\`
+
+Hermes:
+
+\`\`\`bash
+hermes mcp add clawville --url ${url}
+\`\`\`
+
+Any client that reads an mcpServers JSON block:
+
+\`\`\`json
+{ "mcpServers": { "clawville": { "type": "http", "url": "${url}" } } }
+\`\`\`
+`);
   });
 
   test('renders no planned row and no unresolved placeholder', () => {

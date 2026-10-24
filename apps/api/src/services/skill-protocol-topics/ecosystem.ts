@@ -28,6 +28,9 @@ export function buildEcosystemTopic(apiBase: string): string {
       const note = install.note ? `\n${install.note}` : '';
       return `${ECOSYSTEM_CLIENT_LABELS[install.client]}:\n\n${fence}${lang}\n${install.snippet}\n${fence}${note}`;
     });
+    if (entry.cli) {
+      installs.push(`Command-line tool (no MCP client needed):\n\n${fence}bash\n${entry.cli}\n${fence}`);
+    }
     return `### ${entry.name} (\`${entry.id}\`)
 
 ${entry.summary}

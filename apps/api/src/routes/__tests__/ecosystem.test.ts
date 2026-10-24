@@ -13,7 +13,10 @@ describe('GET /api/ecosystem/catalog', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/json');
     expect(response.headers.get('cache-control')).toBe('public, max-age=300');
-    const body = (await response.json()) as { protocolVersion: number; entries: Array<{ id: string; status: string; mcpUrl?: string }> };
+    const body = (await response.json()) as {
+      protocolVersion: number;
+      entries: Array<{ id: string; status: string; mcpUrl?: string; cli?: string }>;
+    };
     expect(Object.keys(body).sort()).toEqual(['entries', 'protocolVersion']);
     expect(body.protocolVersion).toBe(PROTOCOL_VERSION);
     expect(body.entries).toEqual(JSON.parse(JSON.stringify(servedEcosystemCatalog(resolveApiBase()))));
@@ -27,6 +30,14 @@ describe('GET /api/ecosystem/catalog', () => {
       expect(body.entries.some((entry) => entry.id === planned.id)).toBe(false);
     }
     expect(body.entries[0]!.mcpUrl).toBe(`${resolveApiBase()}/api/agent/mcp`);
+    // The optional cli field reaches the JSON body.
+    const shinjuku = body.entries.find((entry) => entry.id === 'shinjuku')!;
+    expect(shinjuku.mcpUrl).toBeUndefined();
+    expect(shinjuku.cli).toMatch(/^npm install -g shinjuku@\d+\.\d+\.\d+\nshinjuku help$/);
+    expect(body.entries.find((entry) => entry.id === 'paysh')!.cli).toBe('brew install pay\npay setup');
+    for (const id of ['clawville', 'studios', 'atelier']) {
+      expect(body.entries.find((entry) => entry.id === id)!.cli).toBeUndefined();
+    }
   });
 
   test('applies the public 60 per minute per IP limit', async () => {

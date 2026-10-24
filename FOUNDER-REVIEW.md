@@ -8,9 +8,9 @@
 ### MCP ecosystem catalog, hub step 1 (session mcp2, 2026-10-23, STAGING)
 
 - **WHERE:** https://api-staging.clawville.world/api/ecosystem/catalog (JSON); in any MCP client connected to the staging MCP, call `clawville_docs` with topic `ecosystem`.
-- **LOOK AT:** five served rows since protocol 103: ClawVille MCP (install lines for Claude Code, Codex CLI, Hermes and a JSON block), Studios by Claw Hunter, Atelier, Shinjuku StAItion (its read-only MCP) and Pay.sh (a local `pay mcp` server, the first stdio row). UsePod, ClawPump, Hydra and SAID Protocol are planned rows and are not served yet.
-- **FEEDBACK WANTED:** is the wording right for users? Do the install lines work in your clients (the Pay.sh lines need the pay CLI installed first)? Promote to prod?
-- **Session mcp2 / claw-2.0, 2026-10-23 (rows added 21:30Z).**
+- **LOOK AT:** five served rows since protocol 103: ClawVille MCP (install lines for Claude Code, Codex CLI, Hermes and a JSON block), Studios by Claw Hunter, Atelier, Shinjuku StAItion and Pay.sh (a local `pay mcp` server). Since protocol 104 the Shinjuku StAItion row is the Shinjuku Shield npm wallet, pinned to version 0.3.95: a local MCP server (`npx ... mcp`) or a command-line tool (`npm install -g shinjuku@...`, then `shinjuku help`). The Shinjuku StAItion and Pay.sh rows now end with a "Command-line tool (no MCP client needed)" block. UsePod, ClawPump, Hydra and SAID Protocol are planned rows and are not served yet.
+- **FEEDBACK WANTED:** is the wording right for users? Do the install lines work in your clients (the Pay.sh lines need the pay CLI installed first; the Shinjuku StAItion lines need its setup run once in a terminal)? Promote to prod?
+- **Session mcp2 / claw-2.0, 2026-10-23 (rows added 21:30Z). Shinjuku StAItion row moved to the npm wallet: session claw-2.0, 2026-10-24.**
 
 ### Quests: three quests claimable, Brand Ambassador removed (session roundup, 2026-10-22, ON PROD since promotion #13; buy cap + READY marking since #14 and #15)
 

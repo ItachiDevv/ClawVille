@@ -6,6 +6,7 @@ import {
   ECOSYSTEM_API_BASE_PLACEHOLDER,
   ECOSYSTEM_CATALOG,
   ECOSYSTEM_GENERAL_NOTES,
+  resolveEcosystemEntry,
   servedEcosystemCatalog,
 } from './ecosystem-catalog';
 
@@ -61,19 +62,63 @@ describe('ECOSYSTEM_CATALOG', () => {
       mcpServers: Record<string, { command: string; args: string[] }>;
     };
     expect(generic).toEqual({ mcpServers: { pay: { command: 'pay', args: ['mcp'] } } });
+    expect(paysh.cli).toBe('brew install pay\npay setup');
   });
 
-  test('the Shinjuku StAItion row is a read-only http row without the partner word', () => {
+  test('the Shinjuku StAItion row is the pinned npm wallet over stdio, with a cli and no MCP URL', () => {
     const shinjuku = servedEcosystemCatalog(API_BASE).find((entry) => entry.id === 'shinjuku')!;
-    const url = 'https://shinjukustaition.com/api/shielded/mcp';
-    expect(shinjuku.mcpUrl).toBe(url);
+    const command = 'npx -y --no-audit --no-fund shinjuku-shield@0.3.95 mcp';
+    expect(shinjuku.transport).toBe('stdio');
+    expect(shinjuku.mcpUrl).toBeUndefined();
+    expect(shinjuku.command).toBe(command);
     expect(shinjuku.installs).toEqual([
-      { client: 'claude-code', snippet: `claude mcp add --transport http shinjuku ${url}` },
-      { client: 'codex-cli', snippet: `codex mcp add shinjuku --url ${url}` },
-      { client: 'hermes', snippet: `hermes mcp add shinjuku --url ${url}` },
-      { client: 'generic-json', snippet: `{ "mcpServers": { "shinjuku": { "type": "http", "url": "${url}" } } }` },
+      { client: 'claude-code', snippet: `claude mcp add --scope user shinjuku-shielded -- ${command}` },
+      { client: 'codex-cli', snippet: `codex mcp add shinjuku-shielded -- ${command}` },
+      {
+        client: 'hermes',
+        snippet: 'hermes mcp add shinjuku-shielded --connect-timeout 60 --command npx --args -y --no-audit --no-fund shinjuku-shield@0.3.95 mcp',
+      },
+      {
+        client: 'generic-json',
+        snippet: '{ "mcpServers": { "shinjuku-shielded": { "command": "npx", "args": ["-y","--no-audit","--no-fund","shinjuku-shield@0.3.95","mcp"] } } }',
+      },
     ]);
-    expect(JSON.stringify(shinjuku).toLowerCase()).not.toContain('partner');
+    const generic = JSON.parse(shinjuku.installs!.find((install) => install.client === 'generic-json')!.snippet) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    expect(generic).toEqual({
+      mcpServers: { 'shinjuku-shielded': { command: 'npx', args: ['-y', '--no-audit', '--no-fund', 'shinjuku-shield@0.3.95', 'mcp'] } },
+    });
+    expect(shinjuku.cli).toBe('npm install -g shinjuku@0.3.95\nshinjuku help');
+    expect(shinjuku.homepage).toBe('https://shinjukustaition.com');
+    // Built from pieces so this file does not carry the word.
+    expect(JSON.stringify(shinjuku).toLowerCase()).not.toContain('part' + 'ner');
+  });
+
+  test('the Shinjuku version is one constant in the source, used by every versioned line', () => {
+    const source = readFileSync(join(import.meta.dir, 'ecosystem-catalog.ts'), 'utf8');
+    const version = /shinjuku-shield@(\d+\.\d+\.\d+)/.exec(
+      servedEcosystemCatalog(API_BASE).find((entry) => entry.id === 'shinjuku')!.command!,
+    )![1]!;
+    expect(source.split(version).length - 1).toBe(1);
+    const shinjuku = servedEcosystemCatalog(API_BASE).find((entry) => entry.id === 'shinjuku')!;
+    for (const install of shinjuku.installs!) expect(install.snippet).toContain(`shinjuku-shield@${version}`);
+    expect(shinjuku.cli).toContain(`shinjuku@${version}`);
+    expect(shinjuku.notes![0]).toContain(`shinjuku-shield@${version} setup`);
+    expect(shinjuku.notes!.some((note) => note.includes(`npm install -g shinjuku@${version}`))).toBe(true);
+    // No other version string of the package hides in the row.
+    const versions = JSON.stringify(shinjuku).match(/shinjuku(?:-shield)?@\d+\.\d+\.\d+/g)!;
+    expect(new Set(versions.map((v) => v.split('@')[1]))).toEqual(new Set([version]));
+  });
+
+  test('only the shinjuku and paysh rows carry a cli', () => {
+    const withCli = servedEcosystemCatalog(API_BASE).filter((entry) => entry.cli !== undefined).map((entry) => entry.id);
+    expect(withCli).toEqual(['shinjuku', 'paysh']);
+  });
+
+  test('resolving a row also fills the API base in its cli', () => {
+    const row = { ...ECOSYSTEM_CATALOG[0]!, cli: `curl ${ECOSYSTEM_API_BASE_PLACEHOLDER}/health` };
+    expect(resolveEcosystemEntry(row, API_BASE).cli).toBe(`curl ${API_BASE}/health`);
   });
 
   test('planned rows serve no URL and no install line', () => {

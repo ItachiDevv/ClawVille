@@ -1,6 +1,8 @@
 # MCP ecosystem catalog: research and decisions
 
-**Last Audited: 2026-10-23 21:16Z (new rows: Shinjuku StAItion and Pay.sh served, SAID Protocol planned; Trader Ralph and PenguinXBT out by owner decision; PROTOCOL_VERSION 101 -> 103).**
+**Last Audited: 2026-10-24 06:28Z (the Shinjuku StAItion row moves from the hosted read-only HTTP MCP to the Shinjuku Shield npm wallet, as a local MCP server or a command-line tool, pinned to 0.3.95; new optional row field `cli` for Shinjuku StAItion and Pay.sh; PROTOCOL_VERSION 103 -> 104).**
+
+**Prior Last Audited: 2026-10-23 21:16Z (new rows: Shinjuku StAItion and Pay.sh served, SAID Protocol planned; Trader Ralph and PenguinXBT out by owner decision; PROTOCOL_VERSION 101 -> 103).**
 
 **Prior Last Audited: 2026-10-23 10:31Z (first version, MCP hub step 1, PROTOCOL_VERSION 101).**
 
@@ -32,7 +34,7 @@ Only rows with status `available` are served. A `planned` project is not served 
 | ClawVille MCP | `/api/agent/mcp`, Streamable HTTP, install steps per client | (first party) | available |
 | Studios by Claw Hunter MCP | `https://mcp.mystudios.fun/mcp`, OAuth 2.1 in the user's client; the user sets a daily spend limit | installer now, gateway later | available |
 | Atelier MCP | `https://app.useatelier.ai/mcp`, OAuth or an `atelier_` API key | installer now, gateway later | available |
-| Shinjuku StAItion MCP | `https://shinjukustaition.com/api/shielded/mcp`, Streamable HTTP, read-only, no sign-in | installer | available |
+| Shinjuku StAItion (Shinjuku Shield wallet) | npm package at one pinned version: a local stdio MCP server, or a command-line tool; no sign-in, the keys stay on the user's computer | installer | available |
 | Pay.sh MCP | local stdio server, `pay mcp`; the operating system asks the user to approve each payment | installer | available |
 | UsePod | paid inference tier from the agent wallet | gateway | planned |
 | ClawPump agent tools | through ClawVille's own ClawPump access | gateway | planned |
@@ -80,11 +82,15 @@ Only rows with status `available` are served. A `planned` project is not served 
 
 ### Shinjuku StAItion
 
-- An agent market game on Solana with its own x402 facilitator.
-- The catalog row is its read-only MCP at `https://shinjukustaition.com/api/shielded/mcp` (Streamable HTTP). It gives facilitator facts, a seller search and setup help.
-- No sign-in. The server is read-only and holds no funds. At research time, a free `initialize` and `tools/list` probe got an answer.
-- Its play server and its wallet server need their own setup. Its agent manual is at `https://shinjukustaition.com/skill.md`.
-- Its wallet server can spend USDC and has no spending limit unless the user sets one.
+- The catalog row is Shinjuku Shield, a self-custody wallet that pays x402 URLs privately from a shielded USDC balance on Solana. Source: the public npm package README of `shinjuku-shield` 0.3.95.
+- Two options from the npm package. (1) A local MCP server over stdio: `npx -y --no-audit --no-fund shinjuku-shield@0.3.95 mcp`. (2) A command-line tool, for use without an MCP client: `npm install -g shinjuku@0.3.95`, then `shinjuku help`. The `shinjuku` package depends on `shinjuku-shield` at the same version.
+- Version: npm `latest` was 0.3.86 and `next` was 0.3.95 on 2026-10-24. The owner asked for the newest version, so the row pins 0.3.95. The version is one constant in `ecosystem-catalog.ts`. A version bump changes the served manual, so it bumps `PROTOCOL_VERSION`.
+- The MCP server name in every client config is `shinjuku-shielded`. The Claude Code line is the vendor's published form. We composed the Codex CLI and Hermes lines from their `mcp add` help. Hermes `--args` must be the last option, so `--connect-timeout 60` goes before `--command`.
+- No sign-in. The wallet and its keys stay on the user's computer. The user runs setup once in a terminal first. Setup makes the wallet, a private passphrase file and about 191 MB of proof tools, and writes a recovery file.
+- Spending limits are off by default: only the balance limits a payment. Setup takes `--max-payment`, `--max-session` and `--max-cumulative` in USDC.
+- Needs Node.js 22.21 or later (or 24 or later), on Linux or Windows with WSL. macOS is not supported.
+- Release check: each npm version holds one wallet release, with a hash in the release table at `https://github.com/ShinjukuStaition/shinjuku-shielded#releases`.
+- The row no longer points at the hosted read-only HTTP MCP.
 - Homepage: `https://shinjukustaition.com`.
 - Bucket: installer.
 
@@ -95,6 +101,7 @@ Only rows with status `available` are served. A `planned` project is not served 
 - No sign-in to the server. The operating system asks the user to approve each payment from the local wallet.
 - The user installs the pay CLI first. On macOS: `brew install pay`. Other ways: `https://pay.sh/docs/toolchain/install/index.md`.
 - `pay setup` makes the local wallet. It can also write the MCP config for Claude Code and Codex.
+- The row's `cli` block (since protocol 104) is `brew install pay`, then `pay setup`.
 - `pay mcp` has no spending limit by default. Its own docs show a guard, for example `pay mcp --max-payment '$1.00'`.
 - Homepage: `https://pay.sh`.
 - Bucket: installer.
