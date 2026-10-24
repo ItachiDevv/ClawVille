@@ -898,7 +898,8 @@ import {
 // 100 (2026-10-23, dropped-tag result lines): `dispatchHatcherActions` now sends a hosted brain one result line (one per reply) when it drops a tag before execution: an unknown verb (prod logs: about 100 in 6 h, mostly `chat_with_teacher` and `complete_quest`), or a malformed `buy_cosmetic` / `equip_cosmetic` / `view_wallet` / `update_appearance` tag. The `actions` page no longer says such drops are silent. Nothing executes and no money moves; no verb or param changed.
 // 101 (2026-10-23, MCP ecosystem hub step 1): new `ecosystem` page (last in PROTOCOL_TOPICS, so the topic index and the full manual gain it; MCP `clawville_docs` gains the topic), generated from `ECOSYSTEM_CATALOG` in `packages/shared/src/constants/ecosystem-catalog.ts`. It lists the MCP servers a user can add to their own client next to the ClawVille MCP (ClawVille, Studios by Claw Hunter, Atelier), with install lines for Claude Code, Codex CLI, Hermes and a generic `mcpServers` block. Planned rows are not served. The same rows are public JSON at `GET /api/ecosystem/catalog`. Read-only: no route, verb, status or `error` string changed, and ClawVille calls none of these servers.
 // 103 (2026-10-23, ecosystem catalog rows; 102 is reserved): two more install rows on the `ecosystem` page and `GET /api/ecosystem/catalog` (Shinjuku StAItion read-only MCP over HTTP, Pay.sh over stdio with a `Command:` line in place of the MCP URL) + one planned row (SAID, not served). Read-only: no route, verb, status or `error` string changed, and ClawVille calls none of these servers.
-export const PROTOCOL_VERSION = 103;
+// 104 (2026-10-24, ecosystem catalog shinjuku row): the shinjuku row moves to the npm wallet (local MCP or CLI, pinned version); new optional cli field (shinjuku, paysh).
+export const PROTOCOL_VERSION = 104;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

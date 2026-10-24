@@ -66,6 +66,8 @@ export interface EcosystemCatalogEntry {
   readonly command?: string;
   readonly homepage?: string;
   readonly installs?: readonly EcosystemInstallSnippet[];
+  /** Shell lines (one per line) that install and start the vendor's command-line tool, for use without an MCP client. */
+  readonly cli?: string;
   readonly notes?: readonly string[];
 }
 
@@ -79,7 +81,11 @@ export const ECOSYSTEM_GENERAL_NOTES: readonly string[] = [
 const CLAWVILLE_MCP_URL = `${ECOSYSTEM_API_BASE_PLACEHOLDER}/api/agent/mcp`;
 const STUDIOS_MCP_URL = 'https://mcp.mystudios.fun/mcp';
 const ATELIER_MCP_URL = 'https://app.useatelier.ai/mcp';
-const SHINJUKU_MCP_URL = 'https://shinjukustaition.com/api/shielded/mcp';
+/** The newest npm version on 2026-10-24. A bump changes the served manual, so it bumps PROTOCOL_VERSION. */
+const SHINJUKU_SHIELD_VERSION = '0.3.95';
+const SHINJUKU_SERVER_NAME = 'shinjuku-shielded';
+const SHINJUKU_SHIELD_ARGS = ['-y', '--no-audit', '--no-fund', `shinjuku-shield@${SHINJUKU_SHIELD_VERSION}`, 'mcp'];
+const SHINJUKU_SHIELD_COMMAND = `npx ${SHINJUKU_SHIELD_ARGS.join(' ')}`;
 
 /** The `mcpServers` JSON shape the entry manual already serves for ClawVille. */
 function mcpServersJson(name: string, url: string): string {
@@ -163,22 +169,32 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
   {
     id: 'shinjuku',
     name: 'Shinjuku StAItion',
-    summary: 'An agent market game on Solana with its own x402 facilitator. This row is its read-only MCP: facilitator facts, a seller search and setup help.',
+    summary: 'Shinjuku Shield, a self-custody wallet that pays x402 URLs privately from a shielded USDC balance on Solana. Use it as a local MCP server or as a command-line tool. Your keys stay on your computer.',
     bucket: 'installer',
     status: 'available',
-    auth: 'No sign-in. The server is read-only and holds no funds.',
-    mcpUrl: SHINJUKU_MCP_URL,
-    transport: 'http',
+    auth: 'No sign-in. The wallet and its keys stay on your computer. Run setup once in a terminal before the first use.',
+    transport: 'stdio',
+    command: SHINJUKU_SHIELD_COMMAND,
     homepage: 'https://shinjukustaition.com',
+    // The claude-code line is the vendor's published form. The codex-cli and
+    // hermes lines use the stdio forms above; Hermes `--args` must be the last option.
     installs: [
-      { client: 'claude-code', snippet: `claude mcp add --transport http shinjuku ${SHINJUKU_MCP_URL}` },
-      { client: 'codex-cli', snippet: `codex mcp add shinjuku --url ${SHINJUKU_MCP_URL}` },
-      { client: 'hermes', snippet: `hermes mcp add shinjuku --url ${SHINJUKU_MCP_URL}` },
-      { client: 'generic-json', snippet: mcpServersJson('shinjuku', SHINJUKU_MCP_URL) },
+      { client: 'claude-code', snippet: `claude mcp add --scope user ${SHINJUKU_SERVER_NAME} -- ${SHINJUKU_SHIELD_COMMAND}` },
+      { client: 'codex-cli', snippet: `codex mcp add ${SHINJUKU_SERVER_NAME} -- ${SHINJUKU_SHIELD_COMMAND}` },
+      {
+        client: 'hermes',
+        snippet: `hermes mcp add ${SHINJUKU_SERVER_NAME} --connect-timeout 60 --command npx --args ${SHINJUKU_SHIELD_ARGS.join(' ')}`,
+      },
+      { client: 'generic-json', snippet: mcpServersStdioJson(SHINJUKU_SERVER_NAME, 'npx', SHINJUKU_SHIELD_ARGS) },
     ],
+    cli: `npm install -g shinjuku@${SHINJUKU_SHIELD_VERSION}\nshinjuku help`,
     notes: [
-      'Its play server and its wallet server need their own setup. Read its agent manual first: https://shinjukustaition.com/skill.md',
-      'Its wallet server can spend USDC and has no spending limit unless you set one.',
+      `Run setup once in a terminal first: \`npx -y --no-audit --no-fund shinjuku-shield@${SHINJUKU_SHIELD_VERSION} setup\`. It makes the wallet, a private passphrase file and about 191 MB of proof tools. With \`--add-to claude-code\` (or \`claude-desktop\`, \`cursor\`), setup also adds the MCP server to that client.`,
+      'Setup also writes a recovery file. Copy it to two offline places, then delete it from the computer.',
+      'Spending limits are off by default: only the balance limits a payment. To set limits, give setup `--max-payment`, `--max-session` or `--max-cumulative` in USDC (`0.05` is 5 cents).',
+      'Needs Node.js 22.21 or later (or 24 or later), on Linux or Windows with WSL. macOS is not supported.',
+      `After \`npm install -g shinjuku@${SHINJUKU_SHIELD_VERSION}\`, every wallet command works after \`shinjuku\`, for example \`shinjuku balance\` or \`shinjuku chat\`.`,
+      'Each npm version holds one wallet release. Compare its hash with the release table: https://github.com/ShinjukuStaition/shinjuku-shielded#releases. Full guide: https://github.com/ShinjukuStaition/shinjuku-mcp',
     ],
   },
   {
@@ -197,6 +213,7 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
       { client: 'hermes', snippet: 'hermes mcp add pay --command pay --args mcp' },
       { client: 'generic-json', snippet: mcpServersStdioJson('pay', 'pay', ['mcp']) },
     ],
+    cli: 'brew install pay\npay setup',
     notes: [
       'Install the pay CLI first. On macOS: `brew install pay`. Other ways: https://pay.sh/docs/toolchain/install/index.md',
       '`pay setup` makes the local wallet and can write the MCP config for Claude Code and Codex itself.',
@@ -262,6 +279,7 @@ export function resolveEcosystemEntry(entry: EcosystemCatalogEntry, apiBase: str
           })),
         }
       : {}),
+    ...(entry.cli !== undefined ? { cli: r(entry.cli) } : {}),
     ...(entry.notes !== undefined ? { notes: entry.notes.map(r) } : {}),
   };
 }

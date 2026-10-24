@@ -71,7 +71,7 @@ if (typeof window !== 'undefined') {
   // Priority -1: Nori's bytes are admitted FIRST in the stage-A batch
   // ("really the first thing that loads") — the buildings follow at 0.
   onBootBuildingsFetch(() => {
-    void preloadKTX2Bytes('/models/guide-rigged.glb');
+    void preloadKTX2Bytes('/models/guide-rigged.glb?v=2');
   }, -1);
 }
 
@@ -120,7 +120,7 @@ const BREATH_AMP  = 0.008;
  * Module-level, so it is referentially stable. */
 function readNoriGltf(): unknown {
   return useGLTF(
-    '/models/guide-rigged.glb',
+    '/models/guide-rigged.glb?v=2',
     undefined,
     undefined,
     extendLoaderWithTextureDeviceCap,
@@ -129,7 +129,7 @@ function readNoriGltf(): unknown {
 
 const TownGuideInner = memo(function TownGuideInner() {
   const { scene: gltfScene, animations } = useGLTF(
-    '/models/guide-rigged.glb',
+    '/models/guide-rigged.glb?v=2',
     undefined,
     undefined,
     extendLoaderWithTextureDeviceCap,
