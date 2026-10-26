@@ -155,4 +155,29 @@ describe('alert-error Telegram delivery', () => {
       process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
     }
   });
+
+  it('redacts the bot token from a rejected send body and the fallback text', async () => {
+    const realShape = '1234567890:AAH-abcdefghijklmnopqrstuvwxyz012345';
+    process.env.ITACHI_DEBUG_BOT_TOKEN = realShape;
+    globalThis.fetch = (async (input, _init): Promise<Response> =>
+      new Response(`bad request for ${String(input)}`, { status: 400 })) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(await sendTelegramText(`echo ${realShape}`)).toBe(false);
+      const logged = [...warn.mock.calls, ...log.mock.calls].flat().map(String).join(' ');
+      expect(logged).toContain('<redacted>');
+      expect(logged).not.toContain('AAH-abcdefghijklmnopqrstuvwxyz012345');
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+      process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    }
+  });
+
+  it('resolves true only when Telegram accepts the send', async () => {
+    globalThis.fetch = (async (_input, _init): Promise<Response> =>
+      new Response('ok', { status: 200 })) as typeof fetch;
+    expect(await sendTelegramText('delivered')).toBe(true);
+  });
 });

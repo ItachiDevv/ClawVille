@@ -188,9 +188,11 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
       || directive === 'settle-rejected-with-signature'
       || directive === 'settle-rejected-free-tier-message'
       || directive === 'settle-rejected-insufficient-credits'
+      || directive === 'settle-rejected-insufficient-credits-with-signature'
     ) {
       const transaction =
         directive === 'settle-rejected-with-signature'
+        || directive === 'settle-rejected-insufficient-credits-with-signature'
           ? 'MockObservedSignature111111111111111111111111111111111111111111'
           : '';
       say(`POST /settle → structured HTTP 402 rejection network=${network}`);
@@ -199,6 +201,7 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
         ...(directive === 'settle-rejected-free-tier-message'
           ? { errorMessage: 'Mock rejection: FREE_TIER_EXHAUSTED.' }
           : directive === 'settle-rejected-insufficient-credits'
+            || directive === 'settle-rejected-insufficient-credits-with-signature'
             ? {
                 errorReason: 'insufficient_credits',
                 errorMessage: 'Your credit balance is too low for this payment.',

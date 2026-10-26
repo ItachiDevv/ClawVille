@@ -40,12 +40,15 @@ interface AdvisoryRunResult {
   sweep?: BulkReconcileResult;
 }
 
+/** Resolves false when the page was not delivered; any other value counts as delivered. */
+type SummarySender = (text: string) => Promise<boolean | void>;
+
 export interface X402AutoReconcileDeps {
   runSweep?: typeof runBulkReconcileSweep;
   withAdvisoryLock?: (
     run: () => Promise<BulkReconcileResult>,
   ) => Promise<AdvisoryRunResult>;
-  send?: typeof sendTelegramText;
+  send?: SummarySender;
   now?: () => Date;
   logError?: (message: string, error: unknown) => void;
   stampVerdict?: typeof stampAutoReconcileVerdict;
@@ -131,7 +134,7 @@ function manualAlertRows(result: BulkReconcileResult, nowMs: number): string[] {
 
 async function maybeSendSummary(
   result: BulkReconcileResult,
-  send: typeof sendTelegramText,
+  send: SummarySender,
   now: Date,
 ): Promise<boolean> {
   const nowMs = now.getTime();
@@ -147,16 +150,19 @@ async function maybeSendSummary(
     if (manualRows.length === 0) lastManualFingerprint = '';
     return false;
   }
-  lastManualFingerprint = fingerprint;
   const closedNoMoney = pendingClosedNoMoney;
-  if (closedNoMoney > 0) lastNoMoneyAlertMs = nowMs;
-  pendingClosedNoMoney = 0;
-  await send(
+  const delivered = await send(
     `auto-reconcile: captured ${result.summary.captured} ` +
       `($${(result.summary.capturedUsdCents / 100).toFixed(2)}), ` +
       `closed ${closedNoMoney} no-money, ` +
       `${manualRows.length} manual`,
   );
+  // An undelivered page keeps the rolled-up count and the old manual set, so
+  // the next sweep tries again.
+  if (delivered === false) return false;
+  lastManualFingerprint = fingerprint;
+  if (closedNoMoney > 0) lastNoMoneyAlertMs = nowMs;
+  pendingClosedNoMoney = 0;
   return true;
 }
 

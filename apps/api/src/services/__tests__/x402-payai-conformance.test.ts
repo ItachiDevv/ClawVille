@@ -331,6 +331,21 @@ describe('PayAI verify-to-settle sequencing against the in-repo mock facilitator
     expect(requestPaths).toEqual(['/verify', '/settle']);
   });
 
+  it('keeps an insufficient_credits rejection that carries a signature ambiguous', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-rejected-insufficient-credits-with-signature'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: 'MockObservedSignature111111111111111111111111111111111111111111',
+      failureReason: 'facilitator_settle_error',
+    });
+    expect(result.noBroadcast).toBeUndefined();
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
+
   it('treats success:true with an empty transaction signature as unsettled', async () => {
     const result = await verifyAndSettle({
       paymentHeader: paymentHeader('settle-empty-signature'),

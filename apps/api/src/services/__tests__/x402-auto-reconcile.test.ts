@@ -244,6 +244,39 @@ describe('x402 recurring auto-reconcile', () => {
     ]);
   });
 
+  it('keeps the rolled-up count and the manual set when a page is not delivered', async () => {
+    process.env.X402_AUTO_RECONCILE = 'true';
+    const messages: string[] = [];
+    let deliver = false;
+    let current = result([]);
+    const deps = {
+      stampVerdict: async () => {},
+      runSweep: async () => current,
+      withAdvisoryLock: async (run: () => Promise<BulkReconcileResult>) => ({
+        acquired: true,
+        sweep: await run(),
+      }),
+      send: async (message: string) => {
+        messages.push(`${deliver ? 'sent' : 'lost'}: ${message}`);
+        return deliver;
+      },
+      now: () => new Date('2026-07-23T12:00:00.000Z'),
+    };
+    current = result([
+      { row: row('closed'), bucket: 'no_money', action: 'applied_no_money', detail: 'closed' },
+      { row: row('manual'), bucket: 'manual', detail: 'ambiguous pairing' },
+    ]);
+    await runX402AutoReconcilePass(deps);
+    deliver = true;
+    current = result([{ row: row('manual'), bucket: 'manual', detail: 'ambiguous pairing' }]);
+    await runX402AutoReconcilePass(deps);
+    await runX402AutoReconcilePass(deps);
+    expect(messages).toEqual([
+      'lost: auto-reconcile: captured 0 ($0.00), closed 1 no-money, 1 manual',
+      'sent: auto-reconcile: captured 0 ($0.00), closed 1 no-money, 1 manual',
+    ]);
+  });
+
   it('alerts an indeterminate row only after it survives 24 hours', async () => {
     process.env.X402_AUTO_RECONCILE = 'true';
     const messages: string[] = [];

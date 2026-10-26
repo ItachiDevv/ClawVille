@@ -49,14 +49,17 @@ export interface AlertErrorParams {
   context?: Record<string, unknown>;
 }
 
-/** Send raw plain text through the itachi-debug Telegram bot. Never throws. */
-export async function sendTelegramText(text: string): Promise<void> {
+/**
+ * Send raw plain text through the itachi-debug Telegram bot. Never throws.
+ * Resolves true only when Telegram accepted the message.
+ */
+export async function sendTelegramText(text: string): Promise<boolean> {
   const { token, chatId } = telegramCreds();
   if (!token || !chatId) {
     console.warn('[alert-error] Telegram credentials not configured, skipping send', {
       text,
     });
-    return;
+    return false;
   }
 
   try {
@@ -71,23 +74,30 @@ export async function sendTelegramText(text: string): Promise<void> {
     });
     if (!res.ok) {
       console.warn(
-        `[alert-error] Telegram send rejected (${res.status}): ${(await res.text()).slice(0, 200)}`,
+        `[alert-error] Telegram send rejected (${res.status}): ${redactBotToken((await res.text()).slice(0, 200), token)}`,
       );
-      console.log('[alert-error] Telegram rejected message fallback:', text);
+      console.log('[alert-error] Telegram rejected message fallback:', redactBotToken(text, token));
+      return false;
     }
+    return true;
   } catch (err) {
     // Never log the error object: Bun's fetch error carries the request URL,
     // and the URL holds the bot token.
-    console.warn(`[alert-error] Telegram send failed: ${describeSendError(err, token)}`);
+    console.warn(`[alert-error] Telegram send failed: ${redactBotToken(describeSendError(err), token)}`);
+    return false;
   }
 }
 
-/** One token-free line for a failed Telegram send. */
-function describeSendError(err: unknown, token: string): string {
+/** One line for a failed Telegram send: name, message and code only. */
+function describeSendError(err: unknown): string {
   const code = (err as { code?: unknown } | null)?.code;
-  const text = err instanceof Error
+  return err instanceof Error
     ? `${err.name}: ${err.message}${typeof code === 'string' ? ` (${code})` : ''}`
     : String(err);
+}
+
+/** Remove the configured bot token, and any other bot-token-shaped string. */
+function redactBotToken(text: string, token: string): string {
   return text
     .split(token).join('<redacted>')
     .replace(/\d{6,}:[A-Za-z0-9_-]{30,}/g, '<redacted>');
