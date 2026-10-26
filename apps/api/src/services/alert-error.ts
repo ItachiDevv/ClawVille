@@ -57,7 +57,7 @@ export async function sendTelegramText(text: string): Promise<boolean> {
   const { token, chatId } = telegramCreds();
   if (!token || !chatId) {
     console.warn('[alert-error] Telegram credentials not configured, skipping send', {
-      text,
+      text: redactBotToken(text, token),
     });
     return false;
   }
@@ -74,7 +74,7 @@ export async function sendTelegramText(text: string): Promise<boolean> {
     });
     if (!res.ok) {
       console.warn(
-        `[alert-error] Telegram send rejected (${res.status}): ${redactBotToken((await res.text()).slice(0, 200), token)}`,
+        `[alert-error] Telegram send rejected (${res.status}): ${redactBotToken(await res.text(), token).slice(0, 200)}`,
       );
       console.log('[alert-error] Telegram rejected message fallback:', redactBotToken(text, token));
       return false;
@@ -97,10 +97,9 @@ function describeSendError(err: unknown): string {
 }
 
 /** Remove the configured bot token, and any other bot-token-shaped string. */
-function redactBotToken(text: string, token: string): string {
-  return text
-    .split(token).join('<redacted>')
-    .replace(/\d{6,}:[A-Za-z0-9_-]{30,}/g, '<redacted>');
+function redactBotToken(text: string, token: string | undefined): string {
+  const withoutToken = token ? text.split(token).join('<redacted>') : text;
+  return withoutToken.replace(/\d{6,}:[A-Za-z0-9_-]{30,}/g, '<redacted>');
 }
 
 export async function alertError(params: AlertErrorParams): Promise<void> {
@@ -126,9 +125,17 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
   const clawvilleEnv = process.env.CLAWVILLE_ENV;
   const deployed = clawvilleEnv === 'staging' || clawvilleEnv === 'production';
   if (!deployed && process.env.ALERT_TELEGRAM_FORCE !== 'true') {
+    const botToken = telegramCreds().token;
     console.warn(
       '[alert-error] non-deployed environment (CLAWVILLE_ENV unset) — alert logged, NOT paged',
-      { severity, source, message, context: context ? redactBearerTokens(JSON.stringify(context)) : undefined },
+      {
+        severity,
+        source,
+        message: redactBotToken(message, botToken),
+        context: context
+          ? redactBotToken(redactBearerTokens(JSON.stringify(context)), botToken)
+          : undefined,
+      },
     );
     return;
   }
@@ -137,7 +144,7 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
   if (!token || !chatId) {
     console.warn('[alert-error] Telegram credentials not configured, skipping alert', {
       source,
-      message,
+      message: redactBotToken(message, token),
     });
     return;
   }
