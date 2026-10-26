@@ -18,6 +18,8 @@ const DEFAULT_INTERVAL_MS = 15 * 60_000;
 const MIN_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_MAX_ROWS = 50;
 const SURVIVOR_ALERT_MS = 24 * 60 * 60_000;
+/** No-money closes alone page at most once per window; the count rolls up. */
+const NO_MONEY_ROLLUP_MS = 24 * 60 * 60_000;
 
 export interface X402AutoReconcileConfig {
   enabled: boolean;
@@ -112,6 +114,8 @@ let autoPassRunning = false;
 let autoInterval: ReturnType<typeof setInterval> | null = null;
 let autoGeneration = 0;
 let lastManualFingerprint = '';
+let pendingClosedNoMoney = 0;
+let lastNoMoneyAlertMs: number | null = null;
 
 function manualAlertRows(result: BulkReconcileResult, nowMs: number): string[] {
   return result.verdicts
@@ -130,19 +134,27 @@ async function maybeSendSummary(
   send: typeof sendTelegramText,
   now: Date,
 ): Promise<boolean> {
-  const manualRows = manualAlertRows(result, now.getTime());
+  const nowMs = now.getTime();
+  const manualRows = manualAlertRows(result, nowMs);
   const fingerprint = manualRows.join(',');
-  const didSomething = result.summary.captured > 0 || result.summary.closedNoMoney > 0;
+  pendingClosedNoMoney += result.summary.closedNoMoney;
+  // A no-money close moves no money, so on its own it pages once per window.
+  // A capture or a new manual set pages at once and carries the rolled-up count.
+  const noMoneyDue = pendingClosedNoMoney > 0
+    && (lastNoMoneyAlertMs === null || nowMs - lastNoMoneyAlertMs >= NO_MONEY_ROLLUP_MS);
   const manualChanged = manualRows.length > 0 && fingerprint !== lastManualFingerprint;
-  if (!didSomething && !manualChanged) {
+  if (result.summary.captured === 0 && !noMoneyDue && !manualChanged) {
     if (manualRows.length === 0) lastManualFingerprint = '';
     return false;
   }
   lastManualFingerprint = fingerprint;
+  const closedNoMoney = pendingClosedNoMoney;
+  if (closedNoMoney > 0) lastNoMoneyAlertMs = nowMs;
+  pendingClosedNoMoney = 0;
   await send(
     `auto-reconcile: captured ${result.summary.captured} ` +
       `($${(result.summary.capturedUsdCents / 100).toFixed(2)}), ` +
-      `closed ${result.summary.closedNoMoney} no-money, ` +
+      `closed ${closedNoMoney} no-money, ` +
       `${manualRows.length} manual`,
   );
   return true;
@@ -262,7 +274,7 @@ export function startX402AutoReconcile(): void {
 
 export function stopX402AutoReconcile(): void {
   autoGeneration += 1;
-  lastManualFingerprint = '';
+  resetAlertState();
   if (!autoInterval) return;
   clearInterval(autoInterval);
   autoInterval = null;
@@ -270,5 +282,11 @@ export function stopX402AutoReconcile(): void {
 
 /** Test-only state reset without exporting mutable internals. */
 export function resetX402AutoReconcileAlertDedupeForTests(): void {
+  resetAlertState();
+}
+
+function resetAlertState(): void {
   lastManualFingerprint = '';
+  pendingClosedNoMoney = 0;
+  lastNoMoneyAlertMs = null;
 }

@@ -234,6 +234,22 @@ describe('PayAI verify-to-settle sequencing against the in-repo mock facilitator
     expect(requestPaths).toEqual(['/verify', '/settle']);
   });
 
+  it('marks the allowlisted insufficient_credits rejection as no-broadcast and provider-wide', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-rejected-insufficient-credits'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: null,
+      failureReason: 'facilitator_settle_error',
+      noBroadcast: true,
+      facilitatorFailure: 'unavailable',
+    });
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
+
   it('matches an allowlisted typed rejection through its message when errorReason is absent', async () => {
     const result = await verifyAndSettle({
       paymentHeader: paymentHeader('settle-rejected-free-tier-message'),

@@ -569,6 +569,8 @@ export interface VerifyAndSettleResult {
 
 const FREE_TIER_EXHAUSTED_RE =
   /(?:^|[^a-z0-9_])free_tier_exhausted(?:[^a-z0-9_]|$)/i;
+const INSUFFICIENT_CREDITS_RE =
+  /(?:^|[^a-z0-9_])insufficient_credits(?:[^a-z0-9_]|$)/i;
 
 const PRE_BROADCAST_SETTLE_REASONS = [
   {
@@ -577,7 +579,17 @@ const PRE_BROADCAST_SETTLE_REASONS = [
     reason: 'free_tier_exhausted',
     pattern: FREE_TIER_EXHAUSTED_RE,
   },
+  {
+    // 2026-10-10 incident: the paid-credit form of the same gate ("stops
+    // settling new payments" per the pricing contract above). The chain scans
+    // of every row it rejected on prod found no transfer.
+    reason: 'insufficient_credits',
+    pattern: INSUFFICIENT_CREDITS_RE,
+  },
 ] as const;
+
+/** Credit-gate reasons. Credits belong to the API-key account, so they are provider-wide. */
+const CREDIT_GATE_REASONS: readonly unknown[] = ['free_tier_exhausted', 'insufficient_credits'];
 
 /**
  * Settle rejections that are proven to be decided before the facilitator can
@@ -620,8 +632,8 @@ export function isFacilitatorLevelFailure(error: unknown): boolean {
     return true;
   }
   if (
-    candidate.invalidReason === 'free_tier_exhausted'
-    || candidate.errorReason === 'free_tier_exhausted'
+    CREDIT_GATE_REASONS.includes(candidate.invalidReason)
+    || CREDIT_GATE_REASONS.includes(candidate.errorReason)
   ) {
     return true;
   }
@@ -633,7 +645,9 @@ export function isFacilitatorLevelFailure(error: unknown): boolean {
       return status >= 500 && status <= 599;
     }
   }
-  return error instanceof Error && FREE_TIER_EXHAUSTED_RE.test(error.message);
+  return error instanceof Error
+    && (FREE_TIER_EXHAUSTED_RE.test(error.message)
+      || INSUFFICIENT_CREDITS_RE.test(error.message));
 }
 
 /** Lazily-built facilitator client, memoized by resolved URL + non-secret auth

@@ -187,6 +187,7 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
       directive === 'settle-rejected-structured'
       || directive === 'settle-rejected-with-signature'
       || directive === 'settle-rejected-free-tier-message'
+      || directive === 'settle-rejected-insufficient-credits'
     ) {
       const transaction =
         directive === 'settle-rejected-with-signature'
@@ -197,10 +198,15 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
         success: false,
         ...(directive === 'settle-rejected-free-tier-message'
           ? { errorMessage: 'Mock rejection: FREE_TIER_EXHAUSTED.' }
-          : {
-              errorReason: 'free_tier_exhausted',
-              errorMessage: 'Mock facilitator quota exhausted.',
-            }),
+          : directive === 'settle-rejected-insufficient-credits'
+            ? {
+                errorReason: 'insufficient_credits',
+                errorMessage: 'Your credit balance is too low for this payment.',
+              }
+            : {
+                errorReason: 'free_tier_exhausted',
+                errorMessage: 'Mock facilitator quota exhausted.',
+              }),
         payer,
         transaction,
         network,

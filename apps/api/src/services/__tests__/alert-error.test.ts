@@ -130,4 +130,29 @@ describe('alert-error Telegram delivery', () => {
     warn.mockRestore();
     log.mockRestore();
   });
+
+  it('never logs the bot token when the send throws', async () => {
+    const realShape = '1234567890:AAH-abcdefghijklmnopqrstuvwxyz012345';
+    process.env.ITACHI_DEBUG_BOT_TOKEN = realShape;
+    globalThis.fetch = (async (input, _init): Promise<Response> => {
+      // Bun's fetch error carries the request URL (path), which holds the token.
+      throw Object.assign(new Error(`socket closed for ${String(input)}`), {
+        code: 'ECONNRESET',
+        path: String(input),
+      });
+    }) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await sendTelegramText('hello');
+      expect(warn).toHaveBeenCalledTimes(1);
+      const logged = warn.mock.calls.flat().map((part) =>
+        typeof part === 'string' ? part : JSON.stringify(part)).join(' ');
+      expect(logged).toContain('ECONNRESET');
+      expect(logged).not.toContain(realShape);
+      expect(logged).not.toContain('AAH-abcdefghijklmnopqrstuvwxyz012345');
+    } finally {
+      warn.mockRestore();
+      process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    }
+  });
 });

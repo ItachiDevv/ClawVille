@@ -76,8 +76,21 @@ export async function sendTelegramText(text: string): Promise<void> {
       console.log('[alert-error] Telegram rejected message fallback:', text);
     }
   } catch (err) {
-    console.warn('[alert-error] Telegram send failed', err);
+    // Never log the error object: Bun's fetch error carries the request URL,
+    // and the URL holds the bot token.
+    console.warn(`[alert-error] Telegram send failed: ${describeSendError(err, token)}`);
   }
+}
+
+/** One token-free line for a failed Telegram send. */
+function describeSendError(err: unknown, token: string): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  const text = err instanceof Error
+    ? `${err.name}: ${err.message}${typeof code === 'string' ? ` (${code})` : ''}`
+    : String(err);
+  return text
+    .split(token).join('<redacted>')
+    .replace(/\d{6,}:[A-Za-z0-9_-]{30,}/g, '<redacted>');
 }
 
 export async function alertError(params: AlertErrorParams): Promise<void> {
