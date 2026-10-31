@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-31 (session helius). **Staging is receiving "chain checks only for candidates and held coins" (branch `fix/chain-check-candidates`; DEPLOY LOG top entry).** PROD API = `7895c5923` (promotion #20). SCHEMA: synced.
+Last Audited: 2026-10-31 10:45Z (session helius). **PROD API = `e4163741f` (promotion #21, PR #332, VERIFIED): chain checks only for candidates, held coins and staging feed demand (11 checks in 15 min, was about 340); prod is the only Helius caller and feeds staging. STAGING API = `f239a59e4`, Helius OFF.** Prod web `d61b0c7b5`. SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-31 09:17Z (session helius). **PROD API = `7895c5923` (promotion #20, PR #331, VERIFIED 09:16Z): prod is the only Helius caller and serves arena chain verdicts to staging; prod web `d61b0c7b5`. STAGING API = `a6bd24fff`, Helius OFF, verdicts fed from prod (651 in the first minute).** SCHEMA: synced.
 
@@ -703,7 +703,8 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
-### 2026-10-31 (session helius) - chain checks only for candidates and held coins (branch `fix/chain-check-candidates`), PUSHED, verification pending
+### 2026-10-31 10:45Z (session helius) - promotion #21 ON PROD (`e4163741f`, PR #332): chain checks only for candidates and held coins, VERIFIED
+- **Verified:** staging `f239a59e4` (10:15Z): no arena errors, selector 11 eligible / 0 due. Prod run 41192266664 all jobs green; prod api `ebnatux…-20261031T102307` reports `e4163741f` (one container). Selector on prod: 12 eligible (was about 670). Chain checks 10:28-10:43Z: 11 (all pass), 0 errors, 0 chain-feed or chain-check failure lines; before the change about 23 per minute (about 340 per 15 min), so about 97% fewer chain-check Helius calls. `clawville.world/game` renders, 0 console errors. Prod web stays `d61b0c7b5`.
 - **What broke:** founder rule 10-31: "a coin should only be rechecked if it's still a candidate or if it's still being held". Measured on prod: 671 coins chain-checked in 30 min; only 11 passed the non-chain entry rules of any of the 6 active agents, and 3 were held. About 98% of chain-check Helius calls were for coins no agent could buy.
 - **Fix:** `selectDueChainChecks` selects only due coins that are a candidate of at least one active valid agent (the entry rules with the verdict taken as pass, holder share unknown, cooldown ignored; private and shared snapshots judged separately, 5-min snapshots so the set covers everything the entry tick can enter), held in an open position, or asked for through the prod feed in the last 5 min (staging demand, so a staging-only candidate still gets a prod check; in-process, single api container). Helpers `loadEntryAgents` / `loadSharedCandidates` extracted from `runEntryTick` (unchanged behavior). Side effect: coin-labels research and read-only displays show more pending/stale chain status for non-candidates.
 - **Evidence so far:** floor-arena + chain-feed tests 305/305, tsc 0, doc guard pass. Codex: BLOCKING x2 (private snapshot hid a passing shared one; staging-only candidates never checked) -> fixed -> VERDICT: APPROVE.
