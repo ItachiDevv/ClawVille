@@ -130,4 +130,91 @@ describe('alert-error Telegram delivery', () => {
     warn.mockRestore();
     log.mockRestore();
   });
+
+  it('never logs the bot token when the send throws', async () => {
+    const realShape = '1234567890:AAH-abcdefghijklmnopqrstuvwxyz012345';
+    process.env.ITACHI_DEBUG_BOT_TOKEN = realShape;
+    globalThis.fetch = (async (input, _init): Promise<Response> => {
+      // Bun's fetch error carries the request URL (path), which holds the token.
+      throw Object.assign(new Error(`socket closed for ${String(input)}`), {
+        code: 'ECONNRESET',
+        path: String(input),
+      });
+    }) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await sendTelegramText('hello');
+      expect(warn).toHaveBeenCalledTimes(1);
+      const logged = warn.mock.calls.flat().map((part) =>
+        typeof part === 'string' ? part : JSON.stringify(part)).join(' ');
+      expect(logged).toContain('ECONNRESET');
+      expect(logged).not.toContain(realShape);
+      expect(logged).not.toContain('AAH-abcdefghijklmnopqrstuvwxyz012345');
+    } finally {
+      warn.mockRestore();
+      process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    }
+  });
+
+  it('redacts the bot token from a rejected send body and the fallback text', async () => {
+    const realShape = '1234567890:AAH-abcdefghijklmnopqrstuvwxyz012345';
+    process.env.ITACHI_DEBUG_BOT_TOKEN = realShape;
+    globalThis.fetch = (async (input, _init): Promise<Response> =>
+      new Response(`bad request for ${String(input)}`, { status: 400 })) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(await sendTelegramText(`echo ${realShape}`)).toBe(false);
+      const logged = [...warn.mock.calls, ...log.mock.calls].flat().map(String).join(' ');
+      expect(logged).toContain('<redacted>');
+      expect(logged).not.toContain('AAH-abcdefghijklmnopqrstuvwxyz012345');
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+      process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    }
+  });
+
+  it('redacts the bot token on every fallback log path', async () => {
+    const realShape = '1234567890:AAH-abcdefghijklmnopqrstuvwxyz012345';
+    const secretTail = 'AAH-abcdefghijklmnopqrstuvwxyz012345';
+    process.env.ITACHI_DEBUG_BOT_TOKEN = realShape;
+    // The token straddles the 200-character cut of the reject body.
+    globalThis.fetch = (async (_input, _init): Promise<Response> =>
+      new Response(`${'x'.repeat(190)}${realShape}`, { status: 400 })) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await sendTelegramText('body probe');
+      delete process.env.ITACHI_DEBUG_CHAT_ID;
+      await sendTelegramText(`no chat ${realShape}`);
+      await alertError({ severity: 'warning', source: 'redact-no-chat', message: `m ${realShape}` });
+      process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
+      delete process.env.CLAWVILLE_ENV;
+      await alertError({
+        severity: 'warning',
+        source: 'redact-local',
+        message: `m ${realShape}`,
+        context: { url: `https://api.telegram.org/bot${realShape}/sendMessage` },
+      });
+      const logged = [...warn.mock.calls, ...log.mock.calls].flat().map((part) =>
+        typeof part === 'string' ? part : JSON.stringify(part)).join(' ');
+      expect(logged).toContain('<redacted>');
+      // Neither the bot id nor any part of the secret survives.
+      expect(logged).not.toContain('1234567890');
+      expect(logged).not.toContain(secretTail.slice(0, 8));
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+      process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+      process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
+      process.env.CLAWVILLE_ENV = 'staging';
+    }
+  });
+
+  it('resolves true only when Telegram accepts the send', async () => {
+    globalThis.fetch = (async (_input, _init): Promise<Response> =>
+      new Response('ok', { status: 200 })) as typeof fetch;
+    expect(await sendTelegramText('delivered')).toBe(true);
+  });
 });

@@ -46,7 +46,7 @@ export const inferenceUsageReporterSeams = {
   snapshotProvider: (): InferenceUsageSnapshot =>
     getInferenceRouter().usageSnapshot(),
   statsProvider: (): EndpointStats[] => getInferenceRouter().stats(),
-  sender: (text: string): Promise<void> => sendTelegramText(text),
+  sender: async (text: string): Promise<void> => { await sendTelegramText(text); },
 };
 
 let started = false;

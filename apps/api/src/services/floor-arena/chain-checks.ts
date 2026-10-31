@@ -121,8 +121,16 @@ export function verdictFromCodes(
 export interface ParsedAccount { owner: string; parsed: Record<string, unknown> | null }
 export interface RawAccount { owner: string; data: Uint8Array }
 
+/**
+ * `pool: undefined` = the pool was NOT read in this call (no pair, an invalid pair address, or an RPC that parsed the
+ * pool account instead of returning raw bytes); the caller reads it with `getRawAccount` after the mint rules pass.
+ */
+export interface MintAndPool { mint: ParsedAccount | null; pool: RawAccount | null | undefined }
+
 export interface ChainRpc {
   getParsedAccount(address: string): Promise<ParsedAccount | null>;
+  /** The mint (parsed) and the pair account (raw bytes) in ONE getMultipleAccounts round trip (Helius budget). */
+  getMintAndPool(mint: string, pair: string | null): Promise<MintAndPool>;
   getRawAccount(address: string): Promise<RawAccount | null>;
   getParsedAccounts(addresses: readonly string[]): Promise<Array<ParsedAccount | null>>;
   getAccountOwners(addresses: readonly string[]): Promise<Array<string | null>>;
@@ -137,11 +145,35 @@ function parsedOf(data: unknown): Record<string, unknown> | null {
 
 export function web3ChainRpc(connection: Connection): ChainRpc {
   const commitment = 'confirmed' as const;
+  const getParsedAccount = async (address: string): Promise<ParsedAccount | null> => {
+    const { value } = await connection.getParsedAccountInfo(new PublicKey(address), commitment);
+    if (!value) return null;
+    return { owner: value.owner.toBase58(), parsed: parsedOf(value.data) };
+  };
   return {
-    async getParsedAccount(address) {
-      const { value } = await connection.getParsedAccountInfo(new PublicKey(address), commitment);
-      if (!value) return null;
-      return { owner: value.owner.toBase58(), parsed: parsedOf(value.data) };
+    getParsedAccount,
+    async getMintAndPool(mint, pair) {
+      const mintKey = new PublicKey(mint);
+      let pairKey: PublicKey | null = null;
+      try {
+        pairKey = pair ? new PublicKey(pair) : null;
+      } catch {
+        // An invalid pair address must not change a mint-fail verdict: read the mint alone; the caller's later
+        // getRawAccount(pair) throws the same bad_address as before.
+        pairKey = null;
+      }
+      if (!pairKey) return { mint: await getParsedAccount(mint), pool: undefined };
+      // jsonParsed: the mint comes back parsed; a program account with no RPC parser (PumpSwap, Raydium, Meteora
+      // pools) comes back as base64, which web3.js coerces to a Buffer (ParsedOrRawAccountData).
+      const { value } = await connection.getMultipleParsedAccounts([mintKey, pairKey], { commitment });
+      const [mintInfo, poolInfo] = [value[0] ?? null, value[1] ?? null];
+      const mintAccount = mintInfo ? { owner: mintInfo.owner.toBase58(), parsed: parsedOf(mintInfo.data) } : null;
+      let pool: RawAccount | null | undefined;
+      if (!poolInfo) pool = null;
+      // Raw byte offsets need raw bytes: if this RPC parsed the pool, read it raw later instead.
+      else if (poolInfo.data instanceof Uint8Array) pool = { owner: poolInfo.owner.toBase58(), data: poolInfo.data };
+      else pool = undefined;
+      return { mint: mintAccount, pool };
     },
     async getRawAccount(address) {
       const value = await connection.getAccountInfo(new PublicKey(address), commitment);
@@ -211,9 +243,52 @@ function infoOf(account: ParsedAccount | null): Record<string, unknown> {
 
 // ---------------------------------------------------------------- the checks
 
+/** Accounts already read in one batch (Helius budget); a key that is absent is read from the RPC as before. */
+export type PrefetchedAccounts = ReadonlyMap<string, ParsedAccount | null>;
+
+/** LP mint address for the LP-token pools; null for every other owner. Throws 'pool account too short'. */
+function lpMintAddress(pool: RawAccount): string | null {
+  const { owner, data } = pool;
+  if (owner === PUMPSWAP_PROGRAM) return keyAt(data, 8 + 3 + 32 * 3, 8 + 3 + 32 * 4);
+  if (owner === RAYDIUM_CPMM_PROGRAM) return keyAt(data, 8 + 32 * 4, 8 + 32 * 5);
+  if (owner === RAYDIUM_AMM_V4_PROGRAM) return keyAt(data, 464, 496);
+  if (owner === METEORA_DAMM_V1_PROGRAM) return keyAt(data, 8, 40);
+  return null;
+}
+
+/**
+ * Pools with BOTH an LP mint and SOL/USDC vaults (PumpSwap, Raydium CPMM, Raydium AMM v4): read [lpMint, vaultA,
+ * vaultB] in ONE call instead of two. Any byte-range error skips the prefetch, so lpLockFail / poolReserveFail throw
+ * it at the same point as before (same error code).
+ */
+export async function prefetchPoolAccounts(rpc: ChainRpc, pool: RawAccount | null): Promise<PrefetchedAccounts | undefined> {
+  if (!pool) return undefined;
+  const ranges = POOL_VAULTS[pool.owner];
+  let addresses: string[];
+  try {
+    const lpMint = lpMintAddress(pool);
+    if (!ranges || lpMint === null) return undefined;
+    // AMM v4 also reads totalLp (bytes 720-727) before any RPC call: a short account must still fail
+    // 'pool account too short' with no prefetch call (Codex review 2026-10-31).
+    if (pool.owner === RAYDIUM_AMM_V4_PROGRAM) uintLE(pool.data, 720, 8);
+    addresses = [lpMint, ...ranges.map(([a, b]) => keyAt(pool.data, a, b))];
+  } catch {
+    return undefined;
+  }
+  const accounts = await rpc.getParsedAccounts(addresses);
+  return new Map(addresses.map((address, i) => [address, accounts[i] ?? null]));
+}
+
 /** Fraction of an LP-token pool's liquidity that some wallet can still withdraw. */
-export async function lpMintUnlocked(rpc: ChainRpc, lpMint: string, totalLp: bigint | null = null, escrowProgram: string | null = null): Promise<number> {
-  const supplyRaw = str(infoOf(await rpc.getParsedAccount(lpMint)).supply);
+export async function lpMintUnlocked(
+  rpc: ChainRpc,
+  lpMint: string,
+  totalLp: bigint | null = null,
+  escrowProgram: string | null = null,
+  prefetched?: PrefetchedAccounts,
+): Promise<number> {
+  const lpMintAccount = prefetched?.has(lpMint) ? prefetched.get(lpMint) ?? null : await rpc.getParsedAccount(lpMint);
+  const supplyRaw = str(infoOf(lpMintAccount).supply);
   if (supplyRaw === null) throw new Error('lp mint unreadable');
   const supply = BigInt(supplyRaw);
   if (supply === 0n) return 0;
@@ -259,23 +334,26 @@ export async function clmmUnlocked(rpc: ChainRpc, pool: string): Promise<number>
 }
 
 /** null when the pool cannot be drained by any wallet, else a fail code. `pool` is the pair account. */
-export async function lpLockFail(rpc: ChainRpc, pool: RawAccount | null, pairAddress: string): Promise<string | null> {
+export async function lpLockFail(
+  rpc: ChainRpc,
+  pool: RawAccount | null,
+  pairAddress: string,
+  prefetched?: PrefetchedAccounts,
+): Promise<string | null> {
   if (!pool) return 'lp_pool_unreadable';
   const { owner, data } = pool;
   if (BONDING_CURVE_PROGRAMS.has(owner)) return null;
   let unlocked: number;
-  if (owner === PUMPSWAP_PROGRAM) {
-    unlocked = await lpMintUnlocked(rpc, keyAt(data, 8 + 3 + 32 * 3, 8 + 3 + 32 * 4));
-  } else if (owner === RAYDIUM_CPMM_PROGRAM) {
-    unlocked = await lpMintUnlocked(rpc, keyAt(data, 8 + 32 * 4, 8 + 32 * 5));
+  if (owner === PUMPSWAP_PROGRAM || owner === RAYDIUM_CPMM_PROGRAM) {
+    unlocked = await lpMintUnlocked(rpc, lpMintAddress(pool)!, null, null, prefetched);
   } else if (owner === RAYDIUM_AMM_V4_PROGRAM) {
-    unlocked = await lpMintUnlocked(rpc, keyAt(data, 464, 496), uintLE(data, 720, 8));
+    unlocked = await lpMintUnlocked(rpc, lpMintAddress(pool)!, uintLE(data, 720, 8), null, prefetched);
   } else if (owner === METEORA_DAMM_V2_PROGRAM) {
     const liq = uintLE(data, 360, 16);
     const permanent = uintLE(data, 552, 16);
     unlocked = liq > 0n ? ratio(liq > permanent ? liq - permanent : 0n, liq) : 1;
   } else if (owner === METEORA_DAMM_V1_PROGRAM) {
-    unlocked = await lpMintUnlocked(rpc, keyAt(data, 8, 40), null, METEORA_DAMM_V1_PROGRAM);
+    unlocked = await lpMintUnlocked(rpc, lpMintAddress(pool)!, null, METEORA_DAMM_V1_PROGRAM, prefetched);
   } else if (owner === RAYDIUM_CLMM_PROGRAM) {
     unlocked = await clmmUnlocked(rpc, pairAddress);
   } else {
@@ -294,14 +372,18 @@ export async function poolReserveFail(
   pool: RawAccount | null,
   liqUsd: number | null,
   solPriceUsd: number | null,
+  prefetched?: PrefetchedAccounts,
 ): Promise<string | null> {
   if (!pool) return null;
   const ranges = POOL_VAULTS[pool.owner];
   if (!ranges) return null;
   const vaults = ranges.map(([a, b]) => keyAt(pool.data, a, b));
+  const vaultAccounts = prefetched && vaults.every((v) => prefetched.has(v))
+    ? vaults.map((v) => prefetched.get(v) ?? null)
+    : await rpc.getParsedAccounts(vaults);
   let quoteUsd: number | null = null;
   let unpriced = false;
-  for (const account of await rpc.getParsedAccounts(vaults)) {
+  for (const account of vaultAccounts) {
     const info = infoOf(account);
     const amount = Number((info.tokenAmount as { uiAmountString?: string; uiAmount?: number } | undefined)?.uiAmountString
       ?? (info.tokenAmount as { uiAmount?: number } | undefined)?.uiAmount ?? 0);
@@ -386,7 +468,11 @@ export function chainErrorCode(error: unknown): string {
   return 'rpc_error';
 }
 
-/** One full hard-rule verdict. Mint-level fails short-circuit the pool reads (saves RPC). */
+/**
+ * One full hard-rule verdict. Mint-level fails short-circuit the pool checks (saves RPC). Helius budget (2026-10-31):
+ * the mint and the pair account come back in one round trip (getMintAndPool), and for the LP-token pools with vaults
+ * the LP mint and both vaults come back in one more (prefetchPoolAccounts). Verdicts and fail-code order are unchanged.
+ */
 export async function runChainCheck(
   rpc: ChainRpc,
   mint: string,
@@ -398,7 +484,8 @@ export async function runChainCheck(
   const pairAddress = snapshot.pairAddress ?? null;
   try {
     return await withDeadline((async (): Promise<ArenaChainVerdict> => {
-      const mintRules = mintRuleFails(await rpc.getParsedAccount(mint));
+      const fetched = await rpc.getMintAndPool(mint, pairAddress);
+      const mintRules = mintRuleFails(fetched.mint);
       const base = {
         checkedAt, pairAddress,
         ...(mintRules.decimals === null ? {} : { decimals: mintRules.decimals }),
@@ -408,10 +495,11 @@ export async function runChainCheck(
         return verdictFromCodes(mintRules.fails.length ? mintRules.fails : ['mint_unreadable'], { top10Pct: null, ...base });
       }
       const fails: string[] = [];
-      const pool = pairAddress ? await rpc.getRawAccount(pairAddress) : null;
-      const lpFail = pairAddress ? await lpLockFail(rpc, pool, pairAddress) : 'lp_pool_unreadable';
+      const pool = !pairAddress ? null : fetched.pool !== undefined ? fetched.pool : await rpc.getRawAccount(pairAddress);
+      const prefetched = pairAddress ? await prefetchPoolAccounts(rpc, pool) : undefined;
+      const lpFail = pairAddress ? await lpLockFail(rpc, pool, pairAddress, prefetched) : 'lp_pool_unreadable';
       if (lpFail) fails.push(lpFail);
-      const reserveFail = await poolReserveFail(rpc, pool, snapshot.liqUsd ?? null, solPriceUsd);
+      const reserveFail = await poolReserveFail(rpc, pool, snapshot.liqUsd ?? null, solPriceUsd, prefetched);
       if (reserveFail) fails.push(reserveFail);
       const largest = (await rpc.getTokenLargestAccounts(mint)).map((row) => BigInt(row.amount));
       const liqBase = typeof snapshot.liqBase === 'number' && Number.isFinite(snapshot.liqBase) && snapshot.liqBase > 0 ? snapshot.liqBase : 0;
@@ -424,7 +512,7 @@ export async function runChainCheck(
   }
 }
 
-// ---------------------------------------------------------------- the 20 s tick
+// ---------------------------------------------------------------- the 30 s tick
 
 export interface DueRow { mint: string; snapshot: FloorArenaSnapshot | null; unchecked: boolean; firstSeenMs: number; checkedAtMs: number | null }
 
@@ -652,7 +740,7 @@ export interface ChainTickRpcStatus { primaryHealthy: boolean; downSince?: strin
 let loggedOutageEpisode: string | null = null;
 
 /**
- * One chain-check tick (every 20 s). Pacing follows the mainnet RPC breaker (`mainnetRpcStatus()`):
+ * One chain-check tick (every 30 s). Pacing follows the mainnet RPC breaker (`mainnetRpcStatus()`):
  * - primary healthy: up to CHECKS_PER_TICK due coins, CHECK_CONCURRENCY at a time (unchanged).
  * - episode open and `now < downUntil`: check NOTHING, return `skipped: 'rpc_outage'`. The breaker would send every
  *   read to the public fallback, which refuses `getTokenLargestAccounts` (HTTP 429 on a single call, measured

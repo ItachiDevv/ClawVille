@@ -198,6 +198,85 @@ describe('x402 recurring auto-reconcile', () => {
     ]);
   });
 
+  it('rolls no-money closes into one page per 24 hours; a capture still pages at once', async () => {
+    process.env.X402_AUTO_RECONCILE = 'true';
+    const messages: string[] = [];
+    const closed = (n: number, tag: string): BulkReconcileVerdict[] =>
+      Array.from({ length: n }, (_, i) => ({
+        row: row(`${tag}-${i}`),
+        bucket: 'no_money' as const,
+        action: 'applied_no_money' as const,
+        detail: 'closed',
+      }));
+    let current = result([]);
+    let clock = new Date('2026-10-26T00:00:00.000Z').getTime();
+    const deps = {
+      stampVerdict: async () => {},
+      runSweep: async () => current,
+      withAdvisoryLock: async (run: () => Promise<BulkReconcileResult>) => ({
+        acquired: true,
+        sweep: await run(),
+      }),
+      send: async (message: string) => { messages.push(message); },
+      now: () => new Date(clock),
+    };
+    const pass = async (verdicts: BulkReconcileVerdict[], minutes: number) => {
+      current = result(verdicts);
+      clock += minutes * 60_000;
+      await runX402AutoReconcilePass(deps);
+    };
+    await pass(closed(2, 'a'), 0);
+    await pass(closed(3, 'b'), 15);
+    await pass([], 15);
+    await pass([{
+      row: row('captured'),
+      bucket: 'matched',
+      action: 'applied_capture_fulfill',
+      detail: 'captured',
+    }], 15);
+    await pass(closed(4, 'c'), 15);
+    await pass(closed(1, 'd'), 24 * 60 - 15);
+    await pass(closed(1, 'e'), 15);
+    expect(messages).toEqual([
+      'auto-reconcile: captured 0 ($0.00), closed 2 no-money, 0 manual',
+      'auto-reconcile: captured 1 ($1.25), closed 3 no-money, 0 manual',
+      'auto-reconcile: captured 0 ($0.00), closed 5 no-money, 0 manual',
+    ]);
+  });
+
+  it('keeps the rolled-up count and the manual set when a page is not delivered', async () => {
+    process.env.X402_AUTO_RECONCILE = 'true';
+    const messages: string[] = [];
+    let deliver = false;
+    let current = result([]);
+    const deps = {
+      stampVerdict: async () => {},
+      runSweep: async () => current,
+      withAdvisoryLock: async (run: () => Promise<BulkReconcileResult>) => ({
+        acquired: true,
+        sweep: await run(),
+      }),
+      send: async (message: string) => {
+        messages.push(`${deliver ? 'sent' : 'lost'}: ${message}`);
+        return deliver;
+      },
+      now: () => new Date('2026-07-23T12:00:00.000Z'),
+    };
+    current = result([
+      { row: row('closed'), bucket: 'no_money', action: 'applied_no_money', detail: 'closed' },
+      { row: row('manual'), bucket: 'manual', detail: 'ambiguous pairing' },
+    ]);
+    await runX402AutoReconcilePass(deps);
+    deliver = true;
+    current = result([{ row: row('manual'), bucket: 'manual', detail: 'ambiguous pairing' }]);
+    await runX402AutoReconcilePass(deps);
+    await runX402AutoReconcilePass(deps);
+    expect(messages).toEqual([
+      'lost: auto-reconcile: captured 0 ($0.00), closed 1 no-money, 1 manual',
+      'sent: auto-reconcile: captured 0 ($0.00), closed 1 no-money, 1 manual',
+    ]);
+  });
+
   it('alerts an indeterminate row only after it survives 24 hours', async () => {
     process.env.X402_AUTO_RECONCILE = 'true';
     const messages: string[] = [];
