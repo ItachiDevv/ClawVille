@@ -5,7 +5,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
-  advanceExitRun, applyExitFill, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
+  advanceExitRun, applyExitFill, chainCheckCandidateMints, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
   ENTRY_STATEMENT_TIMEOUT_MS, ENTRY_TX_TIMEOUT_MS, exitSummary, freshBookingAllowed, insertTimeGate, keepNewerMark, openPosition,
   tryOpenPosition, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
   quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
@@ -754,5 +754,106 @@ describe('evaluateAgentCandidates', () => {
   test('a cooldown that has run out lets the coin back in', () => {
     const out = evaluateAgentCandidates(params, [cand('recent')], new Set(), new Map([['recent', T0 - 21_600_000]]), T0);
     expect(out.passed.map((c) => c.mint)).toEqual(['recent']);
+  });
+});
+
+/**
+ * Helius budget (founder rule 2026-10-31): a coin is chain-checked only while it is a candidate (passes the NON-chain
+ * entry rules of at least one active agent) or held.
+ */
+describe('chainCheckCandidateMints', () => {
+  const OFF: FloorArenaFilters = {
+    mcap_min: null, mcap_max: null, liq_min: 5_000, liq_max: null, age_min_s: null, age_max_s: null,
+    vol1h_over_mcap_min: null, vol1h_over_mcap_max: null, chg5m_min: null, chg5m_max: null, chg1h_min: null,
+    chg1h_max: null, chg6h_min: null, chg6h_max: null, chg24h_min: null, chg24h_max: null, txns1h_min: null,
+    txns1h_max: null, top10_max_pct: null,
+  };
+  function params(filters: Partial<FloorArenaFilters> = {}): FloorArenaParams {
+    return {
+      filters: { ...OFF, mcap_max: 250_000, ...filters },
+      entry: { discovered_within_s: 120, first_sight_sources: 'any', rank_by: 'vol_over_mcap', entries_per_tick: 1 },
+      exits: exits({ tp: [[1.1, 1]] }),
+      limits: { position_usd: 20, max_open: 5, reentry_cooldown_s: 21_600 },
+    };
+  }
+  function cand(mint: string, over: Partial<ArenaCandidate> = {}, f: Partial<FloorArenaFeatures> = {}): ArenaCandidate {
+    return {
+      mint, source: 'ds:token-profiles', symbol: mint, firstSeenAtMs: T0 - 30_000,
+      features: {
+        priceUsd: 0.001, mcap: 100_000, liqUsd: 20_000, liqBase: null, liqQuote: null, pairAddress: 'p', dexId: 'pumpswap',
+        quoteMint: null, labels: [], pairCreatedAt: T0 - 3_600_000, ageS: 3_600, chg5m: 0, chg1h: 0, chg6h: 0, chg24h: 0,
+        txns1h: 100, vol1h: 10_000, volOverMcap: 0.1, symbol: 'X', name: 'X', top10Pct: null, ...f,
+      },
+      verdict: 'pending', chainCheckedAtMs: null, isPrivate: false, tradeable: true, tradeableFirstSeenAtMs: T0 - 30_000,
+      tradeableSource: 'ds:token-profiles', ...over,
+    };
+  }
+  const sorted = (s: Set<string>) => [...s].sort();
+
+  test('a candidate is eligible; a coin failing a non-chain rule (filter, window, source) is not', () => {
+    const shared = [
+      cand('cand'), cand('big', {}, { mcap: 300_000 }), cand('late', { firstSeenAtMs: T0 - 121_000 }),
+      cand('gecko', { tradeable: false, tradeableFirstSeenAtMs: null }),
+    ];
+    expect(sorted(chainCheckCandidateMints([{ params: params(), privateCandidates: [] }], shared, [], T0))).toEqual(['cand']);
+  });
+
+  test('the verdict counts as pass: pending, stale and fail verdicts stay eligible', () => {
+    const shared = [cand('pending'), cand('stale', { verdict: 'stale' }), cand('fail', { verdict: 'fail' }), cand('pass', { verdict: 'pass' })];
+    expect(sorted(chainCheckCandidateMints([{ params: params(), privateCandidates: [] }], shared, [], T0)))
+      .toEqual(['fail', 'pass', 'pending', 'stale']);
+  });
+
+  test('top10_max_pct does not exclude an unchecked coin (and is not judged on a stored share either)', () => {
+    const p = params({ top10_max_pct: 20 });
+    // The entry gate would fail both (top10_unknown / top10).
+    expect(evaluateAgentCandidates(p, [cand('unknown', { verdict: 'pass' })], new Set(), new Map(), T0).failCounts).toEqual({ top10_unknown: 1 });
+    const shared = [cand('unknown'), cand('high', { verdict: 'pass' }, { top10Pct: 90 })];
+    expect(sorted(chainCheckCandidateMints([{ params: p, privateCandidates: [] }], shared, [], T0))).toEqual(['high', 'unknown']);
+  });
+
+  test('a held coin is eligible even when it fails every filter; a cooling coin is still a candidate', () => {
+    const shared = [cand('held', {}, { mcap: 999_999_999 }), cand('cooling')];
+    // The entry tick would cool 'cooling' (closed 1 min ago, 6 h cooldown); the selector ignores cooldowns.
+    expect(evaluateAgentCandidates(params(), [cand('cooling', { verdict: 'pass' })], new Set(), new Map([['cooling', T0 - 60_000]]), T0).passed)
+      .toEqual([]);
+    expect(sorted(chainCheckCandidateMints([{ params: params(), privateCandidates: [] }], shared, ['held'], T0)))
+      .toEqual(['cooling', 'held']);
+  });
+
+  test('no active agent: only held mints', () => {
+    expect(sorted(chainCheckCandidateMints([], [cand('cand')], ['held'], T0))).toEqual(['held']);
+  });
+
+  test('a coin is eligible when ANY agent accepts it', () => {
+    const shared = [cand('small', {}, { mcap: 50_000 }), cand('mid', {}, { mcap: 200_000 })];
+    const agents = [
+      { params: params({ mcap_max: 60_000 }), privateCandidates: [] },
+      { params: params({ mcap_min: 150_000 }), privateCandidates: [] },
+    ];
+    expect(sorted(chainCheckCandidateMints(agents, shared, [], T0))).toEqual(['mid', 'small']);
+  });
+
+  test('Codex: a failing private snapshot does not hide a passing shared snapshot of the same mint', () => {
+    // The owner's private row is 2 min old and fails liq_min; the fresh shared row passes. runEntryTick drops the
+    // private row after 60 s and evaluates the shared one, so the mint must stay eligible.
+    const privateRow = cand('both', { isPrivate: true, source: 'private:feed', tradeableFirstSeenAtMs: null, tradeableSource: null }, { liqUsd: 1_000 });
+    const sharedRow = cand('both', {}, { liqUsd: 20_000 });
+    expect(sorted(chainCheckCandidateMints([{ params: params(), privateCandidates: [privateRow] }], [sharedRow], [], T0))).toEqual(['both']);
+    // The other way round: a passing private row and a failing shared row.
+    const privatePass = { ...privateRow, features: { ...privateRow.features, liqUsd: 20_000 } };
+    const sharedFail = { ...sharedRow, features: { ...sharedRow.features, liqUsd: 1_000 } };
+    expect(sorted(chainCheckCandidateMints([{ params: params(), privateCandidates: [privatePass] }], [sharedFail], [], T0))).toEqual(['both']);
+  });
+
+  test('a private add-on mint is judged only by its owning agent', () => {
+    const addon = (mint: string, f: Partial<FloorArenaFeatures> = {}) =>
+      cand(mint, { isPrivate: true, source: 'private:feed', tradeableFirstSeenAtMs: null, tradeableSource: null }, f);
+    const agents = [
+      // Owner A accepts its add-on; owner B's add-on fails B's own cap (A's rules would accept it).
+      { params: params({ mcap_max: 1_000_000 }), privateCandidates: [addon('a-addon', { mcap: 500_000 })] },
+      { params: params({ mcap_max: 100_000 }), privateCandidates: [addon('b-addon', { mcap: 500_000 })] },
+    ];
+    expect(sorted(chainCheckCandidateMints(agents, [], [], T0))).toEqual(['a-addon']);
   });
 });

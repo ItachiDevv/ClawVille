@@ -17,7 +17,7 @@ import {
   ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, ARENA_POST_EXIT_TAIL_MS, DEFAULT_PAPER_COSTS, latestSnapshotMarks,
   markFallbackProceeds, quoteBuy, quoteSell, type BuyQuoteResult, type PaperCosts, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
-import { entryVerdictStatus, type EntryVerdict } from './chain-checks';
+import { CHAIN_SNAPSHOT_MAX_AGE_MS, entryVerdictStatus, type EntryVerdict } from './chain-checks';
 import { fireJevArenaEntry } from './jev-entry';
 import { fireCodexArenaEntry } from './codex-entry';
 import { pumpFlowForMint } from './pumpportal-feed';
@@ -478,6 +478,42 @@ export function evaluateAgentCandidates(
   return { evaluated, passed: rankCandidates(passed, params.entry.rank_by, nowMs), cooling, failCounts };
 }
 
+/** One active, valid agent as the chain-check selector sees it: its rules and its own private add-on mints. */
+export interface ChainCheckAgentView { params: FloorArenaParams; privateCandidates: readonly ArenaCandidate[] }
+
+/**
+ * Helius budget (founder rule 2026-10-31: "a coin should only be rechecked if it's still a candidate or if it's still
+ * being held"). The mints worth a chain check: every HELD mint, plus every coin that passes the NON-chain entry rules
+ * of at least one agent, judged exactly as evaluateAgentCandidates judges it for the entry tick, except:
+ *   - the chain verdict counts as 'pass' (it is what the check produces);
+ *   - top10_max_pct is off (the top-10 share is chain-derived: an unchecked coin has none, `top10_unknown`);
+ *   - nothing is held and nothing cools down (a cooling coin is still a candidate once the cooldown ends).
+ * A private add-on mint is judged only by its OWNING agent's rules (the entry tick shows it to no other agent).
+ * SUPERSET rule (Codex 2026-10-31): the result must hold every mint runEntryTick could enter. runAgentEntries keeps the
+ * private row of a mint that is also in the shared feed, but only while the private snapshot is <= 60 s old; after that
+ * it evaluates the shared row. So there is NO de-duplication here: the private row and the shared row of a mint are
+ * judged separately, and the mint is eligible when ANY of its snapshots passes. Pure.
+ */
+export function chainCheckCandidateMints(
+  agents: readonly ChainCheckAgentView[],
+  shared: readonly ArenaCandidate[],
+  heldMints: Iterable<string>,
+  nowMs: number,
+): Set<string> {
+  const out = new Set<string>(heldMints);
+  const asPassed = (c: ArenaCandidate): ArenaCandidate => ({ ...c, verdict: 'pass', features: { ...c.features, top10Pct: null } });
+  const sharedPassed = shared.map(asPassed);
+  const noneHeld = new Set<string>();
+  const noneClosed = new Map<string, number>();
+  for (const agent of agents) {
+    const params: FloorArenaParams = { ...agent.params, filters: { ...agent.params.filters, top10_max_pct: null } };
+    // No de-duplication (see above): evaluateAgentCandidates judges each row on its own.
+    const candidates = [...agent.privateCandidates.map(asPassed), ...sharedPassed];
+    for (const c of evaluateAgentCandidates(params, candidates, noneHeld, noneClosed, nowMs).passed) out.add(c.mint);
+  }
+  return out;
+}
+
 export function topFailCodes(failCounts: Record<string, number>, n = 5): Array<[string, number]> {
   return Object.entries(failCounts).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, n);
 }
@@ -659,11 +695,13 @@ function msOf(value: unknown): number | null {
 }
 
 
-/** The row snapshot when it is <= 60 s old; the DB is the only snapshot source (Codex r9). */
-function freshSnapshot(rowSnapshot: unknown, rowAt: unknown, nowMs: number): FloorArenaSnapshot | null {
+/**
+ * The row snapshot when it is <= `maxAgeMs` old (the entry tick: 60 s); the DB is the only snapshot source (Codex r9).
+ */
+function freshSnapshot(rowSnapshot: unknown, rowAt: unknown, nowMs: number, maxAgeMs = ARENA_MARK_MAX_AGE_MS): FloorArenaSnapshot | null {
   const at = msOf(rowAt);
   const snapshot = rowSnapshot as FloorArenaSnapshot | null;
-  if (!snapshot || at === null || nowMs - at > ARENA_MARK_MAX_AGE_MS) return null;
+  if (!snapshot || at === null || nowMs - at > maxAgeMs) return null;
   return snapshot;
 }
 
@@ -714,39 +752,11 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
   if (enginePaused) return result;
   const nowMs = now.getTime();
   pruneMemory(nowMs);
-  const agents = await db.select().from(floorArenaAgents).where(and(
-    eq(floorArenaAgents.status, 'active'),
-    eq(floorArenaAgents.mode, 'paper'),
-    or(eq(floorArenaAgents.kind, 'house'), eq(floorArenaAgents.seated, true)),
-  ));
+  const agents = await loadEntryAgents();
   result.agents = agents.length;
   if (agents.length === 0) return result;
 
-  const freshCutoff = new Date(nowMs - ARENA_MARK_MAX_AGE_MS).toISOString();
-  const sharedRows = rowsOf(await db.execute(sql`
-    SELECT mint, first_seen_at, first_source, sources, source_first_seen, symbol, snapshot, snapshot_at, chain_verdict,
-      chain_checked_at
-    FROM floor_discovery_mints
-    WHERE expires_at > ${now.toISOString()}::timestamptz AND snapshot IS NOT NULL AND snapshot_at >= ${freshCutoff}::timestamptz
-  `));
-  const shared: ArenaCandidate[] = [];
-  for (const row of sharedRows) {
-    const mint = String(row.mint);
-    const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs);
-    if (!snapshot) continue;
-    const { verdict, top10Pct, checkedAtMs } = entryVerdictStatus(row.chain_verdict, msOf(row.chain_checked_at), snapshot.pairAddress, nowMs);
-    const firstSeenAtMs = msOf(row.first_seen_at) ?? nowMs;
-    const sources = Array.isArray(row.sources) ? row.sources.map(String) : [];
-    const admitted = firstTradeableSource(sources, row.source_first_seen as Record<string, string> | null, firstSeenAtMs);
-    shared.push({
-      mint, source: String(row.first_source), symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
-      firstSeenAtMs, features: { ...snapshot, top10Pct }, verdict, chainCheckedAtMs: checkedAtMs, isPrivate: false,
-      tradeable: hasTradeableSource(sources),
-      tradeableFirstSeenAtMs: admitted?.atMs ?? null, tradeableSource: admitted?.source ?? null,
-    });
-  }
-  // Deterministic evaluation order before ranking: newest first sight first.
-  shared.sort((a, b) => b.firstSeenAtMs - a.firstSeenAtMs || (a.mint < b.mint ? -1 : 1));
+  const shared = await loadSharedCandidates(now);
   result.candidates = shared.length;
 
   const agentIds = agents.map((a) => a.id);
@@ -801,7 +811,51 @@ export async function runEntryTick(now: Date = new Date(), deps: EntryDeps = {})
   return result;
 }
 
-async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Promise<Map<string, ArenaCandidate[]>> {
+/** The agents the entry tick trades for: active, paper, and house or seated. */
+async function loadEntryAgents(): Promise<FloorArenaAgentRow[]> {
+  return db.select().from(floorArenaAgents).where(and(
+    eq(floorArenaAgents.status, 'active'),
+    eq(floorArenaAgents.mode, 'paper'),
+    or(eq(floorArenaAgents.kind, 'house'), eq(floorArenaAgents.seated, true)),
+  ));
+}
+
+/** The shared-feed candidates (snapshot <= `maxAgeMs` old), newest first sight first. */
+async function loadSharedCandidates(now: Date, maxAgeMs = ARENA_MARK_MAX_AGE_MS): Promise<ArenaCandidate[]> {
+  const nowMs = now.getTime();
+  const freshCutoff = new Date(nowMs - maxAgeMs).toISOString();
+  const sharedRows = rowsOf(await db.execute(sql`
+    SELECT mint, first_seen_at, first_source, sources, source_first_seen, symbol, snapshot, snapshot_at, chain_verdict,
+      chain_checked_at
+    FROM floor_discovery_mints
+    WHERE expires_at > ${now.toISOString()}::timestamptz AND snapshot IS NOT NULL AND snapshot_at >= ${freshCutoff}::timestamptz
+  `));
+  const shared: ArenaCandidate[] = [];
+  for (const row of sharedRows) {
+    const mint = String(row.mint);
+    const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs, maxAgeMs);
+    if (!snapshot) continue;
+    const { verdict, top10Pct, checkedAtMs } = entryVerdictStatus(row.chain_verdict, msOf(row.chain_checked_at), snapshot.pairAddress, nowMs);
+    const firstSeenAtMs = msOf(row.first_seen_at) ?? nowMs;
+    const sources = Array.isArray(row.sources) ? row.sources.map(String) : [];
+    const admitted = firstTradeableSource(sources, row.source_first_seen as Record<string, string> | null, firstSeenAtMs);
+    shared.push({
+      mint, source: String(row.first_source), symbol: (row.symbol as string | null) ?? snapshot.symbol ?? null,
+      firstSeenAtMs, features: { ...snapshot, top10Pct }, verdict, chainCheckedAtMs: checkedAtMs, isPrivate: false,
+      tradeable: hasTradeableSource(sources),
+      tradeableFirstSeenAtMs: admitted?.atMs ?? null, tradeableSource: admitted?.source ?? null,
+    });
+  }
+  // Deterministic evaluation order before ranking: newest first sight first.
+  shared.sort((a, b) => b.firstSeenAtMs - a.firstSeenAtMs || (a.mint < b.mint ? -1 : 1));
+  return shared;
+}
+
+async function loadPrivateCandidates(
+  agentIds: readonly string[],
+  now: Date,
+  maxAgeMs = ARENA_MARK_MAX_AGE_MS,
+): Promise<Map<string, ArenaCandidate[]>> {
   const out = new Map<string, ArenaCandidate[]>();
   if (agentIds.length === 0) return out;
   const nowMs = now.getTime();
@@ -812,7 +866,7 @@ async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Pr
   `));
   for (const row of rows) {
     const mint = String(row.mint);
-    const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs);
+    const snapshot = freshSnapshot(row.snapshot, row.snapshot_at, nowMs, maxAgeMs);
     if (!snapshot) continue;
     const { verdict, top10Pct, checkedAtMs } = entryVerdictStatus(row.chain_verdict, msOf(row.chain_checked_at), snapshot.pairAddress, nowMs);
     const agentId = String(row.agent_id);
@@ -824,6 +878,36 @@ async function loadPrivateCandidates(agentIds: readonly string[], now: Date): Pr
     });
   }
   return out;
+}
+
+/**
+ * The chain-check selector's eligible set (see chainCheckCandidateMints): held mints of ANY open position, plus the
+ * candidates of the agents runEntryTick trades for (active, paper, house or seated, valid params). Snapshots up to
+ * CHAIN_SNAPSHOT_MAX_AGE_MS old count (the chain universe's own freshness), a superset of the entry tick's 60 s, so a
+ * short snapshot gap does not drop a candidate. While entries are paused no coin is a candidate: only held mints.
+ * Reads only; writes no event.
+ */
+export async function loadChainCheckCandidateMints(now: Date = new Date()): Promise<Set<string>> {
+  const nowMs = now.getTime();
+  const openRows = await db.select({ mint: floorArenaPositions.mint })
+    .from(floorArenaPositions)
+    .where(eq(floorArenaPositions.status, 'open'));
+  const held = openRows.map((row) => row.mint);
+  if (enginePaused) return new Set(held);
+  const views: Array<{ id: string; params: FloorArenaParams }> = [];
+  for (const agent of await loadEntryAgents()) {
+    const checked = validateFloorArenaParams(agent.params);
+    if (checked.ok) views.push({ id: agent.id, params: checked.params });
+  }
+  if (views.length === 0) return new Set(held);
+  const shared = await loadSharedCandidates(now, CHAIN_SNAPSHOT_MAX_AGE_MS);
+  const privateByAgent = await loadPrivateCandidates(views.map((v) => v.id), now, CHAIN_SNAPSHOT_MAX_AGE_MS);
+  return chainCheckCandidateMints(
+    views.map((v) => ({ params: v.params, privateCandidates: privateByAgent.get(v.id) ?? [] })),
+    shared,
+    held,
+    nowMs,
+  );
 }
 
 async function runAgentEntries(
