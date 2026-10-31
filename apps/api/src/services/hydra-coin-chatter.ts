@@ -147,7 +147,10 @@ export async function pickHydraCoin(): Promise<HydraCoin | null> {
           return isStatementTimeout(err) ? null : [];
         })
         .then((coins) => {
-          if (coins === null) return [];
+          if (coins === null) {
+            pool = null; // drop the expired pool too: never answer with yesterday's coins
+            return [];
+          }
           // Any other failed or empty read is cached, so a DB outage still costs one query per minute.
           pool = { dayStartMs, loadedAtMs: Date.now(), coins };
           return coins;

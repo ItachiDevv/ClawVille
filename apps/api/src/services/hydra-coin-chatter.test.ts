@@ -174,6 +174,18 @@ describe('pickHydraCoin', () => {
     expect((await pickHydraCoin())?.symbol).toBe('BETA');
   });
 
+  it('a timeout after the TTL or past UTC midnight never answers with the expired pool', async () => {
+    setSystemTime(new Date('2026-10-31T23:59:30.000Z'));
+    nextRows = [row('A', 'OLD')];
+    expect((await pickHydraCoin())?.symbol).toBe('OLD');
+    setSystemTime(new Date('2026-11-01T00:00:10.000Z'));
+    nextRows = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    expect(await pickHydraCoin()).toBeNull();
+    setSystemTime(new Date('2026-11-01T00:00:20.000Z'));
+    expect(await pickHydraCoin()).toBeNull(); // re-reads (timeout not cached) and still never returns OLD
+    expect(selects()).toHaveLength(3);
+  });
+
   it('bounds the read server-side: SET LOCAL statement_timeout runs first, in the same transaction', async () => {
     nextRows = [row('A', 'ALPHA')];
     await pickHydraCoin();
