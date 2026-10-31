@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-31 09:00Z (session helius). **PROD API = `8c1367d74` (promotion #19, PR #330, VERIFIED 08:45Z: Helius budget + PayAI credit rejection); prod web `d61b0c7b5`.** **Staging is receiving the shared chain-verdict feed (prod serves verdicts, staging reads them with no Helius; DEPLOY LOG 2026-10-31 09:00Z); promotion #20 needed so prod serves the route.** SCHEMA: synced.
+Last Audited: 2026-10-31 09:17Z (session helius). **PROD API = `7895c5923` (promotion #20, PR #331, VERIFIED 09:16Z): prod is the only Helius caller and serves arena chain verdicts to staging; prod web `d61b0c7b5`. STAGING API = `a6bd24fff`, Helius OFF, verdicts fed from prod (651 in the first minute).** SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-31 09:00Z (session helius). **PROD API = `8c1367d74` (promotion #19, PR #330, VERIFIED 08:45Z: Helius budget + PayAI credit rejection); prod web `d61b0c7b5`.** **Staging is receiving the shared chain-verdict feed (prod serves verdicts, staging reads them with no Helius; DEPLOY LOG 2026-10-31 09:00Z); promotion #20 needed so prod serves the route.** SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-31 08:20Z (session helius). **STAGING API + WEB = `966072d3a`, VERIFIED: oracle DexScreener-first, chain checks batched + 30 s; staging Helius rows PARKED (OFF by default since 07:32Z; on/off round trip tested 08:07-08:17Z, now OFF; `scripts/deploy/staging-helius.sh`)** (API only; no schema, route or PROTOCOL_VERSION change; DEPLOY LOG 2026-10-31 07:55Z). **PROD API + WEB = `d61b0c7b5` (promotion #18).** SCHEMA: synced. Promotion (this push + `f19242fe3`) needs the founder's go.
 
@@ -698,6 +700,10 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-31 09:17Z (session helius) - promotion #20 ON PROD (`7895c5923`, PR #331): shared chain-verdict feed LIVE, VERIFIED
+- Prod run 41187299235 all jobs green; prod api `ebnatux…-20261031T091018` reports `7895c5923` with `CHAIN_FEED_SECRET` set (len 64); the old container drained by 09:15Z. The feed route answers 401 without the token (6/6 probes). Staging (no Helius key, 0 sockets to the Helius hosts) stored 651 verdicts from prod's feed in its first minute: 333 pass, 318 fail (pool-reserves 298, t22-fee 14, mint 13, freeze 9, lp-locked 5), the same mix as prod. Prod is now the only Helius caller for arena chain checks. Prod web stays `d61b0c7b5`.
+- **SCHEMA:** synced.
 
 ### 2026-10-31 09:00Z (session helius) - promotion #19 ON PROD (`8c1367d74`, PR #330); shared chain-verdict feed pushed to staging
 - **Promotion #19 (founder go 10-31):** PR #330 (staging `5a34290f9`: Helius budget + PayAI `insufficient_credits` / alert rollup) merged with the `[skip-nori-update]` waiver; prod run 41184927568 all jobs green (migrate + deploy success). Prod api `ebnatux…-20261031T083521` reports `8c1367d74` (`/health` matches, 08:43Z); prod web stays `d61b0c7b5` (no web change in the range). Oracle log "DexScreener primary → Helius fallback"; prod chain checks after the flip: 47 verdicts, 20 pass, 27 fail, 0 `chain_check_error`; no Helius 429 in the logs. `clawville.world/game` renders, 0 console errors.
