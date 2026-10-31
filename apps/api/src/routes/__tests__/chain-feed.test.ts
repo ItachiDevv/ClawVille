@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { createChainFeedHandler, loadChainFeedVerdicts, type ChainFeedDeps, type ChainFeedRow } from '../chain-feed';
+import { createChainFeedHandler, defaultChainFeedDeps, loadChainFeedVerdicts, type ChainFeedDeps, type ChainFeedRow } from '../chain-feed';
+import { chainFeedDemandMints, resetChainFeedDemand } from '../../services/floor-arena/chain-checks';
 
 /**
  * Driven through the handler's dependency seam, so it runs with NO database and NO env change in the shared routes
@@ -22,7 +23,9 @@ function distinctMints(count: number): string[] {
 
 function harness(over: Partial<ChainFeedDeps> = {}) {
   const asked: Array<readonly string[]> = [];
+  const demanded: Array<readonly string[]> = [];
   const deps: ChainFeedDeps = {
+    recordDemand: (mints) => { demanded.push(mints); },
     readSecret: () => SECRET,
     loadVerdicts: async (mints) => {
       asked.push(mints);
@@ -34,7 +37,7 @@ function harness(over: Partial<ChainFeedDeps> = {}) {
   app.get('/verdicts', createChainFeedHandler(deps));
   const call = (query: string, headers: Record<string, string> = { Authorization: `Bearer ${SECRET}` }) =>
     app.request(`/verdicts${query}`, { headers });
-  return { asked, call };
+  return { asked, demanded, call };
 }
 
 describe('GET /api/internal/chain-feed/verdicts', () => {
@@ -46,6 +49,7 @@ describe('GET /api/internal/chain-feed/verdicts', () => {
       expect(await res.text()).toBe('');
       expect(res.headers.get('cache-control')).toBe('no-store');
       expect(h.asked).toEqual([]);
+      expect(h.demanded).toEqual([]);
     }
   });
 
@@ -57,6 +61,7 @@ describe('GET /api/internal/chain-feed/verdicts', () => {
       expect(await res.text()).not.toContain(SECRET);
     }
     expect(h.asked).toEqual([]);
+    expect(h.demanded).toEqual([]);
   });
 
   it('400 for missing, empty, non-base58, too short or more than 200 mints', async () => {
@@ -67,6 +72,7 @@ describe('GET /api/internal/chain-feed/verdicts', () => {
       expect(res.status).toBe(400);
     }
     expect(h.asked).toEqual([]);
+    expect(h.demanded).toEqual([]);
   });
 
   it('200: dedupes and trims the mints, answers { verdicts: [{ mint, verdict, checkedAt }] } with no-store', async () => {
@@ -75,6 +81,7 @@ describe('GET /api/internal/chain-feed/verdicts', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(h.asked).toEqual([[MINT_A, MINT_B]]);
+    expect(h.demanded).toEqual([[MINT_A, MINT_B]]);
     const body = await res.json() as { verdicts: Array<Record<string, unknown>> };
     expect(body.verdicts).toHaveLength(2);
     expect(body.verdicts[0]).toEqual({ mint: MINT_A, verdict: { pass: true, fails: [], codes: [], checkedAt: CHECKED_AT }, checkedAt: CHECKED_AT });
@@ -87,6 +94,27 @@ describe('GET /api/internal/chain-feed/verdicts', () => {
     const res = await h.call(`?mints=${mints.join(',')}`);
     expect(res.status).toBe(200);
     expect(h.asked[0]).toHaveLength(200);
+  });
+
+  describe('demand: a valid request makes its mints chain-check demand in this process', () => {
+    beforeEach(() => { resetChainFeedDemand(); });
+
+    it('the default recorder stores the asked mints; 401 and 400 store nothing', async () => {
+      const h = harness({ recordDemand: undefined });
+      expect((await h.call(`?mints=${MINT_A}`, { Authorization: 'Bearer wrong' })).status).toBe(401);
+      expect((await h.call('?mints=abc')).status).toBe(400);
+      expect(chainFeedDemandMints()).toEqual([]);
+      expect((await h.call(`?mints=${MINT_A},${MINT_B}`)).status).toBe(200);
+      expect(chainFeedDemandMints().sort()).toEqual([MINT_A, MINT_B].sort());
+      resetChainFeedDemand();
+    });
+
+    it('the production deps record demand', () => {
+      expect(defaultChainFeedDeps.recordDemand).toBeDefined();
+      defaultChainFeedDeps.recordDemand!([MINT_A]);
+      expect(chainFeedDemandMints()).toEqual([MINT_A]);
+      resetChainFeedDemand();
+    });
   });
 });
 

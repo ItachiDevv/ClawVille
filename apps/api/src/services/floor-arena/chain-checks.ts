@@ -71,6 +71,8 @@ export const OUTAGE_PROBE_CHECKS = 1;
  * DexScreener liquidity 0 and must still get a verdict); a positive price and mcap 1k-100M.
  */
 export const CHAIN_UNIVERSE = { mcapMin: 1_000, mcapMax: 100_000_000 } as const;
+/** Snapshot freshness of the chain universe (also the candidate freshness, engine.loadChainCheckCandidateMints). */
+export const CHAIN_SNAPSHOT_MAX_AGE_MS = 5 * 60_000;
 
 /**
  * `chain_verdict` jsonb. `fails` holds ONLY hard-rule ids (FLOOR_ARENA_HARD_RULES, the UI labels them);
@@ -572,7 +574,6 @@ function rowsOf(result: unknown): Array<Record<string, unknown>> {
   return Array.isArray(result) ? result as Array<Record<string, unknown>> : ((result as { rows?: Array<Record<string, unknown>> })?.rows ?? []);
 }
 
-/** Mints in the coarse universe whose verdict is missing, older than 30 min, or for another pair. Unchecked first, newest first. */
 /**
  * A verdict that failed on a transient read (one RPC 429 held a good coin out for 30 min in the Python runner,
  * 2026-09-30) is re-checked after 2 min plus a per-mint jitter of 0-59 s; pass / fail verdicts keep 30 min.
@@ -608,69 +609,95 @@ export function chainVerdictDue(
   return age >= CHAIN_VERDICT_TTL_MS;
 }
 
-export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK): Promise<DueRow[]> {
-  const fresh = new Date(now.getTime() - 5 * 60_000).toISOString();
-  const stale = new Date(now.getTime() - CHAIN_VERDICT_TTL_MS).toISOString();
-  const retryFloor = new Date(now.getTime() - CHAIN_ERROR_RETRY_MS).toISOString();
-  const transient = JSON.stringify(CHAIN_TRANSIENT_ERRORS.map((code) => `chain_check_error: ${code}`));
-  const tradeablePrefixes = JSON.stringify(FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES);
-  const nowIso = now.toISOString();
-  const universe = (table: 'floor_discovery_mints' | 'floor_arena_private_mints') => sql`
-    snapshot IS NOT NULL
-    AND snapshot_at >= ${fresh}::timestamptz
-    AND (snapshot->>'priceUsd')::double precision > 0
-    AND (snapshot->>'mcap')::double precision BETWEEN ${CHAIN_UNIVERSE.mcapMin} AND ${CHAIN_UNIVERSE.mcapMax}
-    AND (chain_checked_at IS NULL OR chain_checked_at <= ${stale}::timestamptz
-         OR chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress'
-         OR (chain_verdict->>'error' IN (SELECT jsonb_array_elements_text(${transient}::jsonb))
-             AND chain_checked_at <= ${retryFloor}::timestamptz))
-    ${table === 'floor_discovery_mints' ? sql`
-      AND expires_at > ${nowIso}::timestamptz
-      -- D28: only coins with a TRADEABLE source (same rule as isFloorArenaTradeableSource); a GeckoTerminal-only coin
-      -- is never bought (D25), so it gets no RPC budget. Private add-on mints are all eligible.
-      AND EXISTS (
-        SELECT 1 FROM unnest(sources) AS src(s), jsonb_array_elements_text(${tradeablePrefixes}::jsonb) AS p(prefix)
-        WHERE starts_with(src.s, p.prefix)
-      )` : sql``}
-  `;
-  // Twice the limit: the per-mint jitter below may drop some errored rows this tick. Never-checked and checked rows
-  // are read with separate limits, so a flood of new coins cannot hide the checked rows (Codex r14 reserve).
-  const sharedColumns = sql`
-    SELECT mint, snapshot, chain_checked_at IS NULL AS unchecked, first_seen_at, chain_checked_at,
-      chain_verdict->>'error' AS verdict_error,
-      (chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress') AS pair_changed
-    FROM floor_discovery_mints`;
-  const shared = rowsOf(await db.execute(sql`
-    (${sharedColumns}
-      WHERE ${universe('floor_discovery_mints')} AND chain_checked_at IS NULL
-      ORDER BY first_seen_at DESC
-      LIMIT ${limit * 2})
-    UNION ALL
-    (${sharedColumns}
-      WHERE ${universe('floor_discovery_mints')} AND chain_checked_at IS NOT NULL
-      ORDER BY chain_checked_at ASC, first_seen_at DESC
-      LIMIT ${limit * 2})
-  `));
-  const privateRows = rowsOf(await db.execute(sql`
-    WITH due AS (
-      SELECT DISTINCT ON (mint) mint, snapshot, chain_checked_at, first_seen_at,
-        chain_verdict->>'error' AS verdict_error,
-        (chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress') AS pair_changed
-      FROM floor_arena_private_mints
-      WHERE ${universe('floor_arena_private_mints')}
-      ORDER BY mint, chain_checked_at ASC NULLS FIRST, first_seen_at DESC
-    )
-    (SELECT mint, snapshot, true AS unchecked, first_seen_at, chain_checked_at, verdict_error, pair_changed FROM due
-      WHERE chain_checked_at IS NULL ORDER BY first_seen_at DESC LIMIT ${limit * 2})
-    UNION ALL
-    (SELECT mint, snapshot, false AS unchecked, first_seen_at, chain_checked_at, verdict_error, pair_changed FROM due
-      WHERE chain_checked_at IS NOT NULL ORDER BY chain_checked_at ASC, first_seen_at DESC LIMIT ${limit * 2})
-  `));
+/**
+ * Feed DEMAND (Codex 2026-10-31, founder: one Helius caller serves both environments). Prod checks only its own
+ * candidates and held coins, so a coin that is a candidate only for a STAGING agent would never get a prod verdict, and
+ * the staging feed (which reads stored prod verdicts only) would leave it chain_pending. The feed route therefore records
+ * every mint an authenticated, valid request asks for, and the selector adds the mints asked for in the last
+ * FEED_DEMAND_TTL_MS to the eligible set. They still pass the coarse-universe SQL (fresh snapshot, mcap range, tradeable
+ * source, not expired); demand never bypasses it. Staging asks only for its own candidates and held coins, so demand
+ * stays small. In memory, per process. ASSUMPTION: prod runs ONE api container, and the arena loops run on the
+ * advisory-lock leader inside that same process as the route. If the route is served by a process that is not the
+ * leader, its demand is never read (no harm: the coin stays chain_pending on staging, as before).
+ */
+export const FEED_DEMAND_TTL_MS = 5 * 60_000;
+export const FEED_DEMAND_MAX_ENTRIES = 2_000;
+const feedDemand = new Map<string, number>();
+
+/** Record the mints of one authenticated, valid feed request (newest last; over the cap the oldest go first). */
+export function recordChainFeedDemand(mints: readonly string[], nowMs: number = Date.now()): void {
+  for (const mint of mints) {
+    feedDemand.delete(mint);
+    feedDemand.set(mint, nowMs);
+  }
+  while (feedDemand.size > FEED_DEMAND_MAX_ENTRIES) {
+    const oldest = feedDemand.keys().next().value;
+    if (oldest === undefined) break;
+    feedDemand.delete(oldest);
+  }
+}
+
+/** The mints asked for within the last FEED_DEMAND_TTL_MS; expired entries are dropped. */
+export function chainFeedDemandMints(nowMs: number = Date.now()): string[] {
+  const out: string[] = [];
+  for (const [mint, at] of feedDemand) {
+    if (nowMs - at >= FEED_DEMAND_TTL_MS) feedDemand.delete(mint);
+    else out.push(mint);
+  }
+  return out;
+}
+
+/** Test-only: clear the in-memory feed demand. */
+export function resetChainFeedDemand(): void {
+  feedDemand.clear();
+}
+
+/** A due-row candidate as the SQL reads it (private rows first, then shared). */
+export type RawDueRow = Record<string, unknown>;
+
+export interface SelectDueDeps {
+  /** The eligible mints (default: engine.loadChainCheckCandidateMints). */
+  loadEligible?: (now: Date) => Promise<ReadonlySet<string>>;
+  /** The SQL read of due rows restricted to `eligible` (default: readDueChainRows). */
+  readRows?: (now: Date, window: number, eligible: readonly string[]) => Promise<RawDueRow[]>;
+  /** Mints the staging feed asked for recently (default: chainFeedDemandMints). */
+  demand?: (nowMs: number) => readonly string[];
+}
+
+/**
+ * Lazy: engine.ts imports this module, so a static import back would be a cycle. The import resolves once, after both
+ * modules have loaded.
+ */
+async function loadCandidateMints(now: Date): Promise<ReadonlySet<string>> {
+  const { loadChainCheckCandidateMints } = await import('./engine');
+  return loadChainCheckCandidateMints(now);
+}
+
+/**
+ * Helius budget (founder rule 2026-10-31: "a coin should only be rechecked if it's still a candidate or if it's still
+ * being held"). The due coins of the coarse universe, restricted to the ELIGIBLE mints: held in an open position, or a
+ * candidate that passes the non-chain entry rules of at least one active agent (engine.chainCheckCandidateMints), or
+ * asked for by the staging feed within FEED_DEMAND_TTL_MS (see recordChainFeedDemand).
+ * Measured on prod before the rule: 671 coins checked in 30 min, 11 candidates + 3 held. The restriction runs BEFORE
+ * pickDueChainChecks, so the D28 order and the Codex r14 reserve spend the capacity on eligible coins only. No eligible
+ * mint = no SQL read and no check. Both the RPC path and the staging feed path call this selector.
+ */
+export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK, deps: SelectDueDeps = {}): Promise<DueRow[]> {
+  const eligible = new Set(await (deps.loadEligible ?? loadCandidateMints)(now));
+  for (const mint of (deps.demand ?? chainFeedDemandMints)(now.getTime())) eligible.add(mint);
+  if (eligible.size === 0) return [];
+  // Twice the limit: the per-mint jitter below may drop some errored rows this tick.
+  const raw = await (deps.readRows ?? readDueChainRows)(now, limit * 2, [...eligible]);
+  return dueRowsFromRaw(raw, eligible, now, limit);
+}
+
+/** Pure: the exact due rule per row, the eligible filter, one row per mint (first wins), then pickDueChainChecks. */
+export function dueRowsFromRaw(raw: readonly RawDueRow[], eligible: ReadonlySet<string>, now: Date, limit: number): DueRow[] {
   const nowMs = now.getTime();
   const byMint = new Map<string, DueRow>();
-  for (const row of [...privateRows, ...shared]) {
+  for (const row of raw) {
     const mint = String(row.mint);
-    if (byMint.has(mint)) continue;
+    if (byMint.has(mint) || !eligible.has(mint)) continue;
     const checkedAt = row.chain_checked_at === null || row.chain_checked_at === undefined
       ? null : new Date(row.chain_checked_at instanceof Date ? row.chain_checked_at.getTime() : String(row.chain_checked_at)).getTime();
     const due = chainVerdictDue({
@@ -689,6 +716,72 @@ export async function selectDueChainChecks(now: Date, limit = CHECKS_PER_TICK): 
     });
   }
   return pickDueChainChecks([...byMint.values()], limit);
+}
+
+/**
+ * The SQL read: due rows of the coarse universe whose mint is in `eligible`, private rows first, then shared. Never-
+ * checked and checked rows are read with separate limits, so a flood of new coins cannot hide the checked rows (Codex
+ * r14 reserve).
+ */
+async function readDueChainRows(now: Date, window: number, eligible: readonly string[]): Promise<RawDueRow[]> {
+  const eligibleJson = JSON.stringify(eligible);
+  const fresh = new Date(now.getTime() - CHAIN_SNAPSHOT_MAX_AGE_MS).toISOString();
+  const stale = new Date(now.getTime() - CHAIN_VERDICT_TTL_MS).toISOString();
+  const retryFloor = new Date(now.getTime() - CHAIN_ERROR_RETRY_MS).toISOString();
+  const transient = JSON.stringify(CHAIN_TRANSIENT_ERRORS.map((code) => `chain_check_error: ${code}`));
+  const tradeablePrefixes = JSON.stringify(FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES);
+  const nowIso = now.toISOString();
+  const universe = (table: 'floor_discovery_mints' | 'floor_arena_private_mints') => sql`
+    snapshot IS NOT NULL
+    AND snapshot_at >= ${fresh}::timestamptz
+    AND mint IN (SELECT jsonb_array_elements_text(${eligibleJson}::jsonb))
+    AND (snapshot->>'priceUsd')::double precision > 0
+    AND (snapshot->>'mcap')::double precision BETWEEN ${CHAIN_UNIVERSE.mcapMin} AND ${CHAIN_UNIVERSE.mcapMax}
+    AND (chain_checked_at IS NULL OR chain_checked_at <= ${stale}::timestamptz
+         OR chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress'
+         OR (chain_verdict->>'error' IN (SELECT jsonb_array_elements_text(${transient}::jsonb))
+             AND chain_checked_at <= ${retryFloor}::timestamptz))
+    ${table === 'floor_discovery_mints' ? sql`
+      AND expires_at > ${nowIso}::timestamptz
+      -- D28: only coins with a TRADEABLE source (same rule as isFloorArenaTradeableSource); a GeckoTerminal-only coin
+      -- is never bought (D25), so it gets no RPC budget. Private add-on mints are exempt (the owner's rules judge them).
+      AND EXISTS (
+        SELECT 1 FROM unnest(sources) AS src(s), jsonb_array_elements_text(${tradeablePrefixes}::jsonb) AS p(prefix)
+        WHERE starts_with(src.s, p.prefix)
+      )` : sql``}
+  `;
+  const sharedColumns = sql`
+    SELECT mint, snapshot, chain_checked_at IS NULL AS unchecked, first_seen_at, chain_checked_at,
+      chain_verdict->>'error' AS verdict_error,
+      (chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress') AS pair_changed
+    FROM floor_discovery_mints`;
+  const shared = rowsOf(await db.execute(sql`
+    (${sharedColumns}
+      WHERE ${universe('floor_discovery_mints')} AND chain_checked_at IS NULL
+      ORDER BY first_seen_at DESC
+      LIMIT ${window})
+    UNION ALL
+    (${sharedColumns}
+      WHERE ${universe('floor_discovery_mints')} AND chain_checked_at IS NOT NULL
+      ORDER BY chain_checked_at ASC, first_seen_at DESC
+      LIMIT ${window})
+  `));
+  const privateRows = rowsOf(await db.execute(sql`
+    WITH due AS (
+      SELECT DISTINCT ON (mint) mint, snapshot, chain_checked_at, first_seen_at,
+        chain_verdict->>'error' AS verdict_error,
+        (chain_verdict->>'pairAddress' IS DISTINCT FROM snapshot->>'pairAddress') AS pair_changed
+      FROM floor_arena_private_mints
+      WHERE ${universe('floor_arena_private_mints')}
+      ORDER BY mint, chain_checked_at ASC NULLS FIRST, first_seen_at DESC
+    )
+    (SELECT mint, snapshot, true AS unchecked, first_seen_at, chain_checked_at, verdict_error, pair_changed FROM due
+      WHERE chain_checked_at IS NULL ORDER BY first_seen_at DESC LIMIT ${window})
+    UNION ALL
+    (SELECT mint, snapshot, false AS unchecked, first_seen_at, chain_checked_at, verdict_error, pair_changed FROM due
+      WHERE chain_checked_at IS NOT NULL ORDER BY chain_checked_at ASC, first_seen_at DESC LIMIT ${window})
+  `));
+  return [...privateRows, ...shared];
 }
 
 type ArenaDatabase = Pick<typeof db, 'execute' | 'transaction'>;

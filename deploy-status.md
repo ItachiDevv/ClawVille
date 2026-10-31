@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-31 09:17Z (session helius). **PROD API = `7895c5923` (promotion #20, PR #331, VERIFIED 09:16Z): prod is the only Helius caller and serves arena chain verdicts to staging; prod web `d61b0c7b5`. STAGING API = `a6bd24fff`, Helius OFF, verdicts fed from prod (651 in the first minute).** SCHEMA: synced.
+Last Audited: 2026-10-31 (session helius). **Staging is receiving "chain checks only for candidates and held coins" (branch `fix/chain-check-candidates`; DEPLOY LOG top entry).** PROD API = `7895c5923` (promotion #20). SCHEMA: synced.
+
+Prior - Last Audited: 2026-10-31 09:17Z (session helius). **PROD API = `7895c5923` (promotion #20, PR #331, VERIFIED 09:16Z): prod is the only Helius caller and serves arena chain verdicts to staging; prod web `d61b0c7b5`. STAGING API = `a6bd24fff`, Helius OFF, verdicts fed from prod (651 in the first minute).** SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-31 09:00Z (session helius). **PROD API = `8c1367d74` (promotion #19, PR #330, VERIFIED 08:45Z: Helius budget + PayAI credit rejection); prod web `d61b0c7b5`.** **Staging is receiving the shared chain-verdict feed (prod serves verdicts, staging reads them with no Helius; DEPLOY LOG 2026-10-31 09:00Z); promotion #20 needed so prod serves the route.** SCHEMA: synced.
 
@@ -700,6 +702,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-31 (session helius) - chain checks only for candidates and held coins (branch `fix/chain-check-candidates`), PUSHED, verification pending
+- **What broke:** founder rule 10-31: "a coin should only be rechecked if it's still a candidate or if it's still being held". Measured on prod: 671 coins chain-checked in 30 min; only 11 passed the non-chain entry rules of any of the 6 active agents, and 3 were held. About 98% of chain-check Helius calls were for coins no agent could buy.
+- **Fix:** `selectDueChainChecks` selects only due coins that are a candidate of at least one active valid agent (the entry rules with the verdict taken as pass, holder share unknown, cooldown ignored; private and shared snapshots judged separately, 5-min snapshots so the set covers everything the entry tick can enter), held in an open position, or asked for through the prod feed in the last 5 min (staging demand, so a staging-only candidate still gets a prod check; in-process, single api container). Helpers `loadEntryAgents` / `loadSharedCandidates` extracted from `runEntryTick` (unchanged behavior). Side effect: coin-labels research and read-only displays show more pending/stale chain status for non-candidates.
+- **Evidence so far:** floor-arena + chain-feed tests 305/305, tsc 0, doc guard pass. Codex: BLOCKING x2 (private snapshot hid a passing shared one; staging-only candidates never checked) -> fixed -> VERDICT: APPROVE.
+- **SCHEMA:** synced.
 
 ### 2026-10-31 09:17Z (session helius) - promotion #20 ON PROD (`7895c5923`, PR #331): shared chain-verdict feed LIVE, VERIFIED
 - Prod run 41187299235 all jobs green; prod api `ebnatux…-20261031T091018` reports `7895c5923` with `CHAIN_FEED_SECRET` set (len 64); the old container drained by 09:15Z. The feed route answers 401 without the token (6/6 probes). Staging (no Helius key, 0 sockets to the Helius hosts) stored 651 verdicts from prod's feed in its first minute: 333 pass, 318 fail (pool-reserves 298, t22-fee 14, mint 13, freeze 9, lp-locked 5), the same mix as prod. Prod is now the only Helius caller for arena chain checks. Prod web stays `d61b0c7b5`.

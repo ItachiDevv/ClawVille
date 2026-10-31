@@ -3,7 +3,8 @@ import { Keypair, PublicKey, type Connection } from '@solana/web3.js';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
-  CHAIN_VERDICT_TTL_MS, ChainFeedError, chainErrorCode, chainFeedConfigured, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus,
+  CHAIN_VERDICT_TTL_MS, ChainFeedError, chainErrorCode, chainFeedDemandMints, dueRowsFromRaw, FEED_DEMAND_MAX_ENTRIES,
+  FEED_DEMAND_TTL_MS, recordChainFeedDemand, resetChainFeedDemand, selectDueChainChecks, chainFeedConfigured, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus,
   fetchChainFeed, isTransientChainError, lpLockFail, mintRuleFails,
   orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, runChainCheckTick, storeChainVerdict, top10Percent,
   FEED_MISS_BACKOFF_MS, resetChainFeedMissBackoff, usableFeedVerdict, verdictFromCodes, web3ChainRpc, type ArenaChainVerdict, type ChainFeedErrorCause, type ChainRpc, type DueRow, type ParsedAccount, type RawAccount,
@@ -954,5 +955,179 @@ describe('chain-check feed path (staging with no Helius RPC reads prod verdicts)
       const notConfigured = await withEnv({ ...good, CHAIN_FEED_SECRET: undefined }, () => fetchChainFeed(['MintA111'])).catch((e: unknown) => e);
       expect((notConfigured as ChainFeedError).code).toBe('not_configured');
     });
+  });
+});
+
+/**
+ * Helius budget (founder rule 2026-10-31): only ELIGIBLE coins (held, or a candidate of at least one active agent) are
+ * selected. The filter runs before pickDueChainChecks, so the D28 order and the Codex r14 reserve apply to them only.
+ */
+describe('chain-check selection: eligible (candidate or held) coins only', () => {
+  const PAIR = key();
+  beforeEach(() => { resetChainFeedDemand(); });
+  function raw(mint: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      mint, snapshot: { pairAddress: PAIR, liqUsd: 10_000, liqBase: 1 }, unchecked: true,
+      first_seen_at: new Date(NOW.getTime() - 60_000), chain_checked_at: null, verdict_error: null, pair_changed: true, ...over,
+    };
+  }
+  /** A checked row whose 30-min verdict is due (checked `ageMin` minutes ago). */
+  function checkedRaw(mint: string, ageMin: number): Record<string, unknown> {
+    return raw(mint, {
+      unchecked: false, chain_checked_at: new Date(NOW.getTime() - ageMin * 60_000), pair_changed: false,
+      first_seen_at: new Date(NOW.getTime() - 120 * 60_000),
+    });
+  }
+
+  test('a non-candidate due coin is not selected; a candidate (or held) one is', () => {
+    const [candidate, noise, held] = [key(), key(), key()];
+    const out = dueRowsFromRaw([raw(noise), raw(candidate), raw(held)], new Set([candidate, held]), NOW, 20);
+    expect(out.map((r) => r.mint).sort()).toEqual([candidate, held].sort());
+  });
+
+  test('no eligible mint: no SQL read, nothing selected', async () => {
+    let reads = 0;
+    const out = await selectDueChainChecks(NOW, 20, {
+      loadEligible: async () => new Set(),
+      readRows: async () => { reads += 1; return [raw(key())]; },
+    });
+    expect(out).toEqual([]);
+    expect(reads).toBe(0);
+  });
+
+  test('the SQL read gets the eligible list and twice the limit; non-eligible rows it returns are still dropped', async () => {
+    const [a, b, c] = [key(), key(), key()];
+    const calls: Array<{ window: number; eligible: readonly string[] }> = [];
+    const out = await selectDueChainChecks(NOW, 20, {
+      loadEligible: async () => new Set([a, b]),
+      readRows: async (_now, window, eligible) => { calls.push({ window, eligible }); return [raw(a), raw(b), raw(c)]; },
+    });
+    expect(calls).toEqual([{ window: 40, eligible: [a, b] }]);
+    expect(out.map((r) => r.mint).sort()).toEqual([a, b].sort());
+  });
+
+  test('reserve and order are applied AFTER the filter: many newer non-candidates take no slot', () => {
+    // 30 never-checked non-candidates (newest), 2 never-checked candidates, 3 checked candidates due.
+    const noise = Array.from({ length: 30 }, (_, i) => raw(key(), { first_seen_at: new Date(NOW.getTime() - i * 1_000) }));
+    const fresh1 = key();
+    const fresh2 = key();
+    const old = [key(), key(), key()];
+    const rows = [
+      ...noise,
+      raw(fresh1, { first_seen_at: new Date(NOW.getTime() - 100_000) }),
+      raw(fresh2, { first_seen_at: new Date(NOW.getTime() - 200_000) }),
+      checkedRaw(old[0]!, 31), checkedRaw(old[1]!, 45), checkedRaw(old[2]!, 40),
+    ];
+    const eligible = new Set([fresh1, fresh2, ...old]);
+    const out = dueRowsFromRaw(rows, eligible, NOW, 4);
+    // limit 4: at least ceil(4/2) = 2 re-checks (oldest verdict first), then the newest never-checked.
+    expect(out.map((r) => r.mint)).toEqual([fresh1, fresh2, old[1], old[2]]);
+    // Same as pickDueChainChecks over the eligible rows alone.
+    expect(out).toEqual(dueRowsFromRaw(rows.filter((r) => eligible.has(String(r.mint))), eligible, NOW, 4));
+  });
+
+  test('a verdict that is not due yet stays unselected even when eligible', () => {
+    const mint = key();
+    expect(dueRowsFromRaw([checkedRaw(mint, 10)], new Set([mint]), NOW, 20)).toEqual([]);
+  });
+
+  test('the feed path (staging, no RPC) asks prod only for eligible coins', async () => {
+    resetChainFeedMissBackoff();
+    const [candidate, noise] = [key(), key()];
+    const asked: Array<readonly string[]> = [];
+    const limits: number[] = [];
+    const result = await runChainCheckTick(NOW, {
+      configured: () => false,
+      feedConfigured: () => true,
+      selectDue: (now, limit) => {
+        limits.push(limit);
+        return selectDueChainChecks(now, limit, {
+          loadEligible: async () => new Set([candidate]),
+          readRows: async () => [raw(noise), raw(candidate)],
+        });
+      },
+      fetchFeed: async (mints) => { asked.push(mints); return { verdicts: [] }; },
+      store: async () => {},
+    });
+    expect(limits).toEqual([1000]);
+    expect(asked).toEqual([[candidate]]);
+    expect(result).toEqual({ checked: 1, passed: 0, errors: 0, skipped: null, fed: 0 });
+    resetChainFeedMissBackoff();
+  });
+
+  test('the RPC path checks only eligible coins', async () => {
+    const rpc = new FakeRpc();
+    const [candidate, noise] = [key(), key()];
+    for (const m of [candidate, noise]) rpc.parsed.set(m, mintAccount({ freezeAuthority: key() }));
+    const stored: string[] = [];
+    const result = await runChainCheckTick(NOW, {
+      rpc,
+      configured: () => true,
+      rpcStatus: () => ({ primaryHealthy: true, downUntil: null }),
+      selectDue: (now, limit) => selectDueChainChecks(now, limit, {
+        loadEligible: async () => new Set([candidate]),
+        readRows: async () => [raw(noise), raw(candidate)],
+      }),
+      store: async (mint) => { stored.push(mint); },
+    });
+    expect(stored).toEqual([candidate]);
+    expect(result.checked).toBe(1);
+  });
+});
+
+/**
+ * Feed demand (Codex 2026-10-31): a mint staging asks prod's feed for is chain-checked on prod for 5 minutes, inside the
+ * normal coarse universe (the SQL read still applies), so a staging-only candidate does not stay chain_pending.
+ */
+describe('chain-check feed demand (prod checks what staging asks for)', () => {
+  beforeEach(() => { resetChainFeedDemand(); });
+
+  test('a requested mint is eligible for 5 minutes, then not', async () => {
+    const mint = key();
+    recordChainFeedDemand([mint], NOW.getTime());
+    const seen: Array<readonly string[]> = [];
+    const deps = {
+      loadEligible: async () => new Set<string>(),
+      readRows: async (_now: Date, _window: number, eligible: readonly string[]) => { seen.push(eligible); return []; },
+    };
+    await selectDueChainChecks(new Date(NOW.getTime() + FEED_DEMAND_TTL_MS - 1), 20, deps);
+    expect(seen).toEqual([[mint]]);
+    await selectDueChainChecks(new Date(NOW.getTime() + FEED_DEMAND_TTL_MS), 20, deps);
+    // Expired: no eligible mint, so no SQL read at all.
+    expect(seen).toHaveLength(1);
+    expect(chainFeedDemandMints(NOW.getTime() + FEED_DEMAND_TTL_MS)).toEqual([]);
+  });
+
+  test('demand joins the candidates, and the SQL read still decides (no coarse-universe bypass)', async () => {
+    const [candidate, demanded] = [key(), key()];
+    recordChainFeedDemand([demanded], NOW.getTime());
+    let asked: readonly string[] = [];
+    const out = await selectDueChainChecks(NOW, 20, {
+      loadEligible: async () => new Set([candidate]),
+      // The SQL returns only the candidate: the demanded mint is outside the coarse universe.
+      readRows: async (_now, _window, eligible) => {
+        asked = eligible;
+        return [{ mint: candidate, snapshot: {}, unchecked: true, first_seen_at: NOW, chain_checked_at: null, verdict_error: null, pair_changed: true }];
+      },
+    });
+    expect([...asked].sort()).toEqual([candidate, demanded].sort());
+    expect(out.map((r) => r.mint)).toEqual([candidate]);
+  });
+
+  test('the cap drops the oldest entries; a re-request moves a mint to the newest end', () => {
+    const first = key();
+    recordChainFeedDemand([first], NOW.getTime());
+    const others = Array.from({ length: FEED_DEMAND_MAX_ENTRIES }, () => key());
+    recordChainFeedDemand(others, NOW.getTime() + 1);
+    const live = chainFeedDemandMints(NOW.getTime() + 2);
+    expect(live).toHaveLength(FEED_DEMAND_MAX_ENTRIES);
+    expect(live).not.toContain(first);
+    recordChainFeedDemand([others[0]!], NOW.getTime() + 3);
+    recordChainFeedDemand([first], NOW.getTime() + 4);
+    const after = chainFeedDemandMints(NOW.getTime() + 5);
+    expect(after).toHaveLength(FEED_DEMAND_MAX_ENTRIES);
+    expect(after).toContain(first);
+    expect(after).toContain(others[0]);
+    expect(after).not.toContain(others[1]);
   });
 });
