@@ -1,9 +1,10 @@
 import { Connection, PublicKey, type ParsedAccountData } from '@solana/web3.js';
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { z } from 'zod';
 import { db, sql } from '@clawville/database';
-import { tradingConnection, tradingRpcConfigured } from '../trading-rpc';
+import { shouldAlertTradingLoop, tradingConnection, tradingRpcConfigured } from '../trading-rpc';
 import { mainnetRpcStatus } from '../solana-mainnet-rpc';
-import { FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES, type FloorArenaHardRuleId } from '@clawville/shared';
+import { FLOOR_ARENA_HARD_RULES, FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES, type FloorArenaHardRuleId } from '@clawville/shared';
 import type { FloorArenaSnapshot } from './filters';
 import { currentSolPriceUsd, USDC_MINT, WSOL_MINT } from './pricing';
 
@@ -726,11 +727,238 @@ export async function storeChainVerdict(
   });
 }
 
+// ---------------------------------------------------------------- the prod verdict feed (staging consumer)
+
+/**
+ * Helius budget (founder order 2026-10-31: "one shared Helius service that calls Helius and feeds both
+ * environments"). Prod and staging share ONE Helius account quota, and staging runs with no Helius key. Prod serves
+ * the verdicts it already holds (`GET /api/internal/chain-feed/verdicts`, `routes/chain-feed.ts`); a staging box with
+ * no Helius RPC fills its due rows from that feed instead of calling any RPC. A staging box WITH Helius checks itself
+ * (the RPC path wins). Prod never reads the feed.
+ */
+export const CHAIN_FEED_SECRET_MIN_LENGTH = 32;
+export const FEED_ROWS_PER_TICK = 200;
+export const CHAIN_FEED_PATH = '/api/internal/chain-feed/verdicts';
+const FEED_TIMEOUT_MS = 10_000;
+/** A prod clock a little ahead of ours is fine; more than this is a bad row. */
+const FEED_MAX_FUTURE_MS = 60_000;
+const FEED_MAX_BODY_CHARS = 1_000_000;
+const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/** The secret when it is set with >= 32 characters, else null. Never logged. */
+export function chainFeedSecret(): string | null {
+  const secret = process.env.CHAIN_FEED_SECRET?.trim();
+  return secret && secret.length >= CHAIN_FEED_SECRET_MIN_LENGTH ? secret : null;
+}
+
+/** The feed origin from `CHAIN_FEED_URL` (https only; any path, query or credentials in the value are dropped). */
+export function chainFeedOrigin(): string | null {
+  const raw = process.env.CHAIN_FEED_URL?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Staging only, with an https feed URL and the secret. Prod (or any other env) never reads the feed. */
+export function chainFeedConfigured(): boolean {
+  return process.env.CLAWVILLE_ENV?.trim() === 'staging' && chainFeedOrigin() !== null && chainFeedSecret() !== null;
+}
+
+/** A feed failure cause: a fixed short code, never a message (it could carry the URL). */
+export type ChainFeedErrorCause = 'not_configured' | 'timeout' | 'network' | 'too_large' | 'invalid_json' | 'invalid_body' | `http_${number}`;
+
+export class ChainFeedError extends Error {
+  constructor(readonly code: ChainFeedErrorCause) {
+    super(`chain feed ${code}`);
+    this.name = 'ChainFeedError';
+  }
+}
+
+/**
+ * ONE GET to prod's feed for these mints (10 s timeout, body included). The secret goes only in the Authorization
+ * header; `redirect: 'error'` keeps it from following a redirect. Returns the parsed JSON, unvalidated.
+ */
+export async function fetchChainFeed(mints: readonly string[], fetchImpl: typeof fetch = fetch): Promise<unknown> {
+  const origin = chainFeedOrigin();
+  const secret = chainFeedSecret();
+  if (!origin || !secret) throw new ChainFeedError('not_configured');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FEED_TIMEOUT_MS);
+  try {
+    let text: string;
+    try {
+      const response = await fetchImpl(`${origin}${CHAIN_FEED_PATH}?mints=${mints.join(',')}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${secret}`, Accept: 'application/json' },
+        signal: controller.signal,
+        redirect: 'error',
+      });
+      if (!response.ok) throw new ChainFeedError(`http_${response.status}`);
+      text = await response.text();
+    } catch (error) {
+      if (error instanceof ChainFeedError) throw error;
+      throw new ChainFeedError(controller.signal.aborted ? 'timeout' : 'network');
+    }
+    if (text.length > FEED_MAX_BODY_CHARS) throw new ChainFeedError('too_large');
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new ChainFeedError('invalid_json');
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const hardRuleIds = FLOOR_ARENA_HARD_RULES.map((rule) => rule.id) as [FloorArenaHardRuleId, ...FloorArenaHardRuleId[]];
+
+/** ArenaChainVerdict, strict: an unknown key, a bad type or an inconsistent pass flag rejects the verdict. */
+export const feedVerdictSchema = z.object({
+  pass: z.boolean(),
+  fails: z.array(z.enum(hardRuleIds)).max(hardRuleIds.length),
+  codes: z.array(z.string().regex(/^[A-Za-z0-9_]{1,64}$/)).max(32),
+  checkedAt: z.string().max(40).refine((value) => Number.isFinite(Date.parse(value))),
+  error: z.string().max(120).optional(),
+  decimals: z.number().int().min(0).max(255).optional(),
+  top10Pct: z.number().finite().nullable().optional(),
+  pairAddress: z.string().regex(BASE58_ADDRESS).nullable().optional(),
+  tokenProgram: z.enum(['spl', 'token2022']).optional(),
+}).strict().refine((v) => v.pass === (v.codes.length === 0 && v.error === undefined) && (!v.pass || v.fails.length === 0));
+
+const feedEnvelopeSchema = z.object({
+  verdicts: z.array(z.object({ mint: z.string(), verdict: z.unknown(), checkedAt: z.string().max(40) })).max(FEED_ROWS_PER_TICK),
+});
+
+/**
+ * One feed verdict for one staging row: the parsed verdict and the ORIGINAL check time, or the reason it is not used.
+ * Used only when the verdict is valid, carries no `error`, is for the pair the staging row prices now, and its check
+ * time parses, is at most 60 s ahead of our clock and is younger than CHAIN_VERDICT_TTL_MS.
+ */
+export function usableFeedVerdict(
+  item: { verdict: unknown; checkedAt: string },
+  snapshotPairAddress: string | null,
+  nowMs: number,
+): { ok: true; verdict: ArenaChainVerdict; checkedAtMs: number } | { ok: false; reason: 'invalid' | 'error' | 'pair' | 'time' } {
+  const parsed = feedVerdictSchema.safeParse(item.verdict);
+  if (!parsed.success) return { ok: false, reason: 'invalid' };
+  const verdict = parsed.data as ArenaChainVerdict;
+  if (verdict.error !== undefined) return { ok: false, reason: 'error' };
+  if ((verdict.pairAddress ?? null) !== snapshotPairAddress) return { ok: false, reason: 'pair' };
+  const at = Date.parse(item.checkedAt);
+  if (!Number.isFinite(at) || at - nowMs > FEED_MAX_FUTURE_MS || nowMs - at >= CHAIN_VERDICT_TTL_MS) return { ok: false, reason: 'time' };
+  return { ok: true, verdict, checkedAtMs: at };
+}
+
+function warnChainFeed(cause: string, nowMs: number): void {
+  if (!shouldAlertTradingLoop(`floor-arena:chain-feed:${cause}`, nowMs)) return;
+  console.warn(`[floor-arena] chain feed unavailable (${cause}); no verdicts written this tick, staging coins with no fresh verdict stay chain_pending`);
+}
+
+/**
+ * Codex P1 (2026-10-31): a feed miss (prod has no usable verdict: absent, other pair, stale, future, error, invalid)
+ * leaves the staging row due. Without a delay the selector returns the same rows every tick, and rows prod never
+ * answers (for example staging-only private add-on mints) would fill every request forever. A missed mint therefore
+ * waits FEED_MISS_BACKOFF_MS before the feed asks for it again. In memory, per process, feed path only; a feed
+ * HTTP or envelope failure never sets it (only a real per-mint miss does).
+ */
+export const FEED_MISS_BACKOFF_MS = 5 * 60_000;
+/** Selection window before the backoff filter; staging's chain universe is about 700 coins. */
+export const FEED_SELECT_WINDOW = 1_000;
+export const FEED_MAX_REQUESTS_PER_TICK = 3;
+export const FEED_MISS_BACKOFF_MAX_ENTRIES = 20_000;
+const feedMissUntil = new Map<string, number>();
+
+/** Test-only: clear the in-memory feed miss backoff. */
+export function resetChainFeedMissBackoff(): void {
+  feedMissUntil.clear();
+}
+
+function pruneFeedMissBackoff(nowMs: number): void {
+  for (const [mint, until] of feedMissUntil) if (until <= nowMs) feedMissUntil.delete(mint);
+  if (feedMissUntil.size <= FEED_MISS_BACKOFF_MAX_ENTRIES) return;
+  // Over the cap: drop the entries that expire first.
+  const byExpiry = [...feedMissUntil.entries()].sort((a, b) => a[1] - b[1]);
+  for (const [mint] of byExpiry.slice(0, feedMissUntil.size - FEED_MISS_BACKOFF_MAX_ENTRIES)) feedMissUntil.delete(mint);
+}
+
+/**
+ * The feed path of runChainCheckTick (see there). Selects up to FEED_SELECT_WINDOW due rows (same selector and Codex
+ * r14 reserve as the RPC path, order kept), drops rows under the miss backoff, and asks prod for them in up to
+ * FEED_MAX_REQUESTS_PER_TICK sequential GETs of FEED_ROWS_PER_TICK mints. A failed GET stops the tick: it writes
+ * nothing and backs off nothing; writes from earlier GETs stay.
+ */
+async function runChainFeedTick(
+  now: Date,
+  selectDue: (now: Date, limit: number) => Promise<DueRow[]>,
+  fetchFeed: (mints: readonly string[]) => Promise<unknown>,
+  store: (mint: string, verdict: ArenaChainVerdict, now: Date) => Promise<void>,
+): Promise<ChainTickResult> {
+  const nowMs = now.getTime();
+  pruneFeedMissBackoff(nowMs);
+  // A row with no snapshot cannot be pair-matched. A mint the feed would refuse (not base58) is left out, so one bad
+  // row cannot make every request a 400. A mint under the miss backoff waits.
+  const due = (await selectDue(now, FEED_SELECT_WINDOW))
+    .filter((row) => row.snapshot !== null && BASE58_ADDRESS.test(row.mint) && !feedMissUntil.has(row.mint))
+    .slice(0, FEED_ROWS_PER_TICK * FEED_MAX_REQUESTS_PER_TICK);
+  if (due.length === 0) return { checked: 0, passed: 0, errors: 0, skipped: null, fed: 0 };
+  let checked = 0;
+  let fed = 0;
+  let passed = 0;
+  let invalid = 0;
+  let failed = false;
+  for (let start = 0; start < due.length; start += FEED_ROWS_PER_TICK) {
+    const chunk = due.slice(start, start + FEED_ROWS_PER_TICK);
+    let body: unknown;
+    try {
+      body = await fetchFeed(chunk.map((row) => row.mint));
+    } catch (error) {
+      warnChainFeed(error instanceof ChainFeedError ? error.code : 'network', nowMs);
+      failed = true;
+      break;
+    }
+    const envelope = feedEnvelopeSchema.safeParse(body);
+    if (!envelope.success) {
+      warnChainFeed('invalid_body', nowMs);
+      failed = true;
+      break;
+    }
+    const byMint = new Map<string, { verdict: unknown; checkedAt: string }>();
+    for (const item of envelope.data.verdicts) {
+      if (!byMint.has(item.mint)) byMint.set(item.mint, { verdict: item.verdict, checkedAt: item.checkedAt });
+    }
+    checked += chunk.length;
+    for (const row of chunk) {
+      const item = byMint.get(row.mint);
+      const usable = item ? usableFeedVerdict(item, row.snapshot?.pairAddress ?? null, nowMs) : null;
+      if (!usable || !usable.ok) {
+        if (usable?.reason === 'invalid') invalid += 1;
+        feedMissUntil.set(row.mint, nowMs + FEED_MISS_BACKOFF_MS);
+        continue;
+      }
+      // chain_checked_at = prod's check time (clamped to now for a small clock skew), never now: the 30-min entry
+      // freshness stays honest and the row comes due again when prod's verdict ages out.
+      await store(row.mint, usable.verdict, new Date(Math.min(usable.checkedAtMs, nowMs)));
+      feedMissUntil.delete(row.mint);
+      fed += 1;
+      if (usable.verdict.pass) passed += 1;
+    }
+  }
+  if (feedMissUntil.size > FEED_MISS_BACKOFF_MAX_ENTRIES) pruneFeedMissBackoff(nowMs);
+  if (invalid > 0) warnChainFeed('invalid_verdict', nowMs);
+  return { checked, passed, errors: 0, skipped: failed ? 'feed_error' : null, fed };
+}
+
 export interface ChainTickResult {
   checked: number;
   passed: number;
   errors: number;
-  skipped: 'rpc_not_configured' | 'rpc_outage' | null;
+  skipped: 'rpc_not_configured' | 'rpc_outage' | 'feed_error' | null;
+  /** Feed path only (staging with no Helius RPC): verdicts stored from prod's feed. Absent on the RPC path. */
+  fed?: number;
 }
 
 /** The part of `mainnetRpcStatus()` the tick reads. */
@@ -751,12 +979,19 @@ let loggedOutageEpisode: string | null = null;
  *   primary: a good answer closes the episode (the next tick is normal); a failure opens a new window (the next tick
  *   skips again) and the coin stores a transient `chain_check_error`, never a pass.
  * A missing `downUntil` on an open episode is treated as half-open.
+ *
+ * Source order (Helius budget 2026-10-31): a configured trading RPC always checks itself (the path above, unchanged).
+ * With no RPC, a staging box with the feed configured (`chainFeedConfigured()`) fills up to FEED_ROWS_PER_TICK due
+ * rows from prod's verdict feed (one HTTP GET, no RPC; see runChainFeedTick); otherwise `rpc_not_configured`.
  */
 export async function runChainCheckTick(
   now: Date = new Date(),
   deps: {
     rpc?: ChainRpc;
     configured?: () => boolean;
+    /** Feed seams; production uses chainFeedConfigured / fetchChainFeed. */
+    feedConfigured?: () => boolean;
+    fetchFeed?: (mints: readonly string[]) => Promise<unknown>;
     /** Test seams; production uses the module functions. `primaryHealthy` overrides `rpcStatus().primaryHealthy`. */
     primaryHealthy?: () => boolean;
     rpcStatus?: () => ChainTickRpcStatus;
@@ -765,6 +1000,9 @@ export async function runChainCheckTick(
   } = {},
 ): Promise<ChainTickResult> {
   if (!(deps.configured ?? tradingRpcConfigured)()) {
+    if ((deps.feedConfigured ?? chainFeedConfigured)()) {
+      return runChainFeedTick(now, deps.selectDue ?? selectDueChainChecks, deps.fetchFeed ?? fetchChainFeed, deps.store ?? storeChainVerdict);
+    }
     // No verdicts are written: coins stay chain_pending (no entries) and are checked as soon as RPC is configured.
     return { checked: 0, passed: 0, errors: 0, skipped: 'rpc_not_configured' };
   }

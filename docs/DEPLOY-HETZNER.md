@@ -1,6 +1,8 @@
 # ClawVille → Hetzner Deploy Playbook
 
-**Last Audited: 2026-10-31 (staging Helius switch).** Drift note: staging now runs with its Helius rows parked by default; new section "Staging Helius switch (2026-10-31)" and `scripts/deploy/staging-helius.sh`.
+**Last Audited: 2026-10-31 08:40Z (staging reads prod's chain-verdict feed).** Drift note: "Staging Helius switch" said the arena chain checks only skip while Helius is OFF; with `CHAIN_FEED_URL` + `CHAIN_FEED_SECRET` set they now read prod's verdict feed.
+
+**Prior Last Audited: 2026-10-31 (staging Helius switch).** Drift note: staging now runs with its Helius rows parked by default; new section "Staging Helius switch (2026-10-31)" and `scripts/deploy/staging-helius.sh`.
 
 **Prior Last Audited: 2026-10-04 (origin lock on both boxes).** Drift note: the Coolify panel, realtime and Traefik dashboard ports, and every non-Cloudflare 80/443 connection, are now dropped on the public interface of both boxes (`cv-origin-lock.service`); staging, api-staging and piq-hook became Cloudflare-proxied; the panel opens over Tailscale only. See "Origin lock (H1/H2, 2026-10-04)".
 
@@ -439,6 +441,7 @@ Docker-published ports go around ufw, so both boxes filter them in `DOCKER-USER`
 Prod and staging Helius keys draw on ONE Helius account quota. Founder rule 2026-10-31: staging uses no Helius unless someone tests a path that needs it. Default state: OFF.
 
 - OFF: the staging api (Coolify app 3) rows `HELIUS_API_KEY`, `HELIUS_RPC_URL` and `SAP_RPC_URL` are renamed `<NAME>_PARKED`; the values stay encrypted in Coolify. The api uses the public mainnet RPC; the arena chain checks skip (`rpc_not_configured`); the CLV oracle uses DexScreener alone.
+- Chain-verdict feed: with Helius OFF and `CHAIN_FEED_URL=https://api.clawville.world` + `CHAIN_FEED_SECRET` set on the staging api (the same secret on the prod api), staging reads prod's arena chain verdicts from `GET /api/internal/chain-feed/verdicts` instead of skipping; prod stays the only Helius caller. Verify: prod answers 401 without the bearer and 404 while its secret is unset.
 - `scripts/deploy/staging-helius.sh status` prints each row as ON, parked or absent (names only, never a value).
 - `scripts/deploy/staging-helius.sh on` restores the names, then queues a staging api redeploy pinned to the running `SOURCE_COMMIT` (`rollback: true`). Run `off` right after the test. Each switch rebuilds the api image (about 4 min on 2026-10-31); the env applies only after the container flips.
 - The script reads `STAGING_VPS_IP` from the environment or `scripts/deploy/.env.deploy`, and the key `~/.ssh/clawville_deploy` (override `STAGING_SSH_KEY`).
