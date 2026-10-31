@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-31 19:52Z (session hydra). **Staging is receiving `feat/hydra-npc` (Hydra coin-analyst wanderer + chat with every wanderer, PROTOCOL_VERSION 104 -> 105); verification pending (see DEPLOY LOG).** Prod unchanged: PROD API = `e4163741f` (promotion #21).
+Last Audited: 2026-10-31 20:14Z (session hydra). **Staging = `4c0a9cab7` (`feat/hydra-npc`: Hydra coin-analyst wanderer + chat with every wanderer, PROTOCOL_VERSION 104 -> 105), VERIFIED on staging 20:13Z; founder look check owed (see DEPLOY LOG).** Prod unchanged: PROD API = `e4163741f` (promotion #21).
 
 Prior - Last Audited: 2026-10-31 10:45Z (session helius). **PROD API = `e4163741f` (promotion #21, PR #332, VERIFIED): chain checks only for candidates, held coins and staging feed demand (11 checks in 15 min, was about 340); prod is the only Helius caller and feeds staging. STAGING API = `f239a59e4`, Helius OFF.** Prod web `d61b0c7b5`. SCHEMA: synced.
 
@@ -705,10 +705,11 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
-### 2026-10-31 19:52Z (session hydra) - STAGING push: Hydra wanderer NPC + wanderer chat fix (PROTOCOL 105), verification pending
+### 2026-10-31 19:52Z (session hydra) - STAGING push: Hydra wanderer NPC + wanderer chat fix (PROTOCOL 105), VERIFIED on staging 20:13Z
 - **What changed:** new free-roaming NPC Hydra (`hydra-analyst`): Meshy round-2 VRM `/avatars/hydra-w30k.vrm` (30.6k tris, 1.0 MB) with a neon-only emissive mask pulsed by `lib/three/hydra-glow.ts`; coin muttering from `floor_discovery_mints` (DB read only, 1.5 s deadline + `statement_timeout`, no Helius); human chat through `/api/chat/transient`, hosted agents through `talk_to_npc`, REST/MCP agents through `POST /api/agent/:sessionId/chat` `targetNpcId` -> `npcReply`. Players can now chat with every free-roaming wanderer (before this, `findNearestCharacter` knew building residents only). `npc-simulation.ts` tick no longer drops between-tick `agent_chat` bubbles.
 - **What broke during the build (fixed before push):** Codex review x4: BLOCK (no coin-query deadline; dead wanderers chattable; Meshy cap balance-based and racy, `submit-image` uncapped; image ledger race) -> BLOCK (ledger stale-lock break could evict a live holder; lock leak on a failed metadata write; 57014 timeout cached) -> BLOCK (expired pool after a timeout) -> BLOCK (midnight in-flight race) -> each fixed with a test proven to fail without the fix -> VERDICT: APPROVE on `ef78ac3c8`. W6 also found that an override agent driving Hydra's body would still get her LLM replies; fixed (Hydra stays silent while overridden).
 - **Evidence so far:** api/web/shared tsc 0; Hydra tests: sim 17/17, route 12/12, coin 23/23, reply 11/11, glow 9/9, character-positions 18/18, ledger 12/12; coupling gates 0 fail; doc guard pass; local prod build exit 0; `/preview/hermes?c=hydra` renders with idle/walk/run arms outside the body.
+- **Staging verification (19:53-20:13Z):** CI run all jobs green (coupling, money/cove/poker invariants, web Trading Floor, api routes, migrate, deploy). `SOURCE_COMMIT` = `4c0a9cab7` on the api and web containers. `/avatars/hydra-w30k.vrm` serves 200 (1,068,900 bytes); the web bundle references `hydra-w30k`. Onboarding smoke 14/14; hosted skill probe ALL PASS (16). `/api/npc/state`: Hydra alive about 1517 units from the world center. `POST /api/chat/transient` `{characterName:"Hydra"}` 200 with an in-character coin line from today's discovery mints. SSE `/api/npc/stream` `snapshot` events with a `/game` watcher: 2 Hydra `agent_chat` mutters in 35 s (20:12:42Z, 20:13:13Z). Not checked by me: the glow pulse and eyes in the live staging world (founder eyes, `FOUNDER-REVIEW.md`).
 - **For:** founder (Hydra look, glow, chatter); agents (PROTOCOL 105 manual line). Spend: OpenAI $4.80 booked of a $5 cap (about $3 real), Meshy 118 credits over both rounds (caps 70 and 100).
 - **SCHEMA:** synced (no migration).
 
