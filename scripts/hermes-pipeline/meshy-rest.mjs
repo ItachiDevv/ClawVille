@@ -4,10 +4,10 @@
 // packages/database/character-pipeline.md step 3).
 //
 // Usage:
-//   node scripts/hermes-pipeline/meshy-rest.mjs submit <slug>            # multi-image-to-3d from openai/{front,back,3q,face}.png
+//   node scripts/hermes-pipeline/meshy-rest.mjs submit <slug>            # multi-image-to-3d from openai/{front,back,3q}.png (+ face.png if present)
 //   node scripts/hermes-pipeline/meshy-rest.mjs status <slug>            # poll last submitted task
 //   node scripts/hermes-pipeline/meshy-rest.mjs download <slug>          # download GLB when SUCCEEDED
-//   node scripts/hermes-pipeline/meshy-rest.mjs rig <slug>               # rig the downloaded mesh (height 1.85m)
+//   node scripts/hermes-pipeline/meshy-rest.mjs rig <slug> [height_m]    # rig the downloaded mesh (default height 1.85m)
 //   node scripts/hermes-pipeline/meshy-rest.mjs rig-status <slug>
 //   node scripts/hermes-pipeline/meshy-rest.mjs rig-download <slug>
 //   node scripts/hermes-pipeline/meshy-rest.mjs animate <slug> <slot> <action_id>
@@ -15,6 +15,12 @@
 //
 // MESHY_API_KEY from env or ~/.itachi-api-keys. Task ids persisted to
 // apps/web/public/models/<slug>-mesh/meshy-openai/tasks.json.
+//
+// CREDIT CAP (owner rule 2026-10-04): every paid command (submit, rig, animate)
+// REFUSES to run without MESHY_CREDIT_CAP=<credits> (the owner-approved cap for
+// this slug). The first paid call records the account balance in tasks.json;
+// each later paid call refuses when (credits spent since then + this call's
+// estimate) would exceed the cap.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -34,7 +40,10 @@ const H = { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' }
 const [cmd, slug, arg3, arg4] = process.argv.slice(2);
 if (!cmd || !slug) { console.error('usage: meshy-rest.mjs <submit|status|download|rig|rig-status|rig-download|animate|anim-status> <slug> [...]'); process.exit(1); }
 
-const meshDir = resolve(`apps/web/public/models/${slug}-mesh/meshy-openai`);
+// MESHY_VARIANT=v2 reads <slug>-turnaround/openai-v2 and writes <slug>-mesh/meshy-openai-v2
+// (its own tasks.json, so its own credit-cap ledger); unset keeps the round-1 paths.
+const VARIANT = process.env.MESHY_VARIANT ? `-${process.env.MESHY_VARIANT.replace(/[^a-z0-9]/gi, '')}` : '';
+const meshDir = resolve(`apps/web/public/models/${slug}-mesh/meshy-openai${VARIANT}`);
 mkdirSync(meshDir, { recursive: true });
 mkdirSync(join(meshDir, 'anim'), { recursive: true });
 const tasksPath = join(meshDir, 'tasks.json');
@@ -50,6 +59,20 @@ async function req(method, path, body) {
   return txt ? JSON.parse(txt) : {};
 }
 
+// Upper-bound credit estimates per paid call (Meshy-6 textured mesh, rig, one clip).
+const CREDIT_ESTIMATE = { submit: 30, rig: 5, animate: 3 };
+async function enforceCap(kind) {
+  const cap = Number(process.env.MESHY_CREDIT_CAP);
+  if (!Number.isFinite(cap) || cap <= 0) throw new Error(`refusing paid '${kind}': set MESHY_CREDIT_CAP=<owner-approved credits>`);
+  const { balance } = await req('GET', '/balance');
+  if (typeof balance !== 'number') throw new Error('balance read failed; refusing paid call');
+  if (typeof tasks.startBalance !== 'number') { tasks.startBalance = balance; saveTasks(); }
+  const spent = tasks.startBalance - balance;
+  const next = CREDIT_ESTIMATE[kind];
+  if (spent + next > cap) throw new Error(`cap: spent ${spent} + est ${next} > cap ${cap}; refusing '${kind}'`);
+  console.log(`cap ok: spent ${spent}, est ${next}, cap ${cap}, balance ${balance}`);
+}
+
 async function download(url, outPath) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`download ${res.status}`);
@@ -58,9 +81,11 @@ async function download(url, outPath) {
 }
 
 if (cmd === 'submit') {
-  const dir = resolve(`apps/web/public/models/${slug}-turnaround/openai`);
-  const views = ['front.png', 'back.png', '3q.png', 'face.png'].map((f) => join(dir, f));
+  const dir = resolve(`apps/web/public/models/${slug}-turnaround/openai${VARIANT}`);
+  const views = ['front.png', 'back.png', '3q.png'].map((f) => join(dir, f));
   for (const v of views) if (!existsSync(v)) throw new Error(`missing view ${v}`);
+  if (existsSync(join(dir, 'face.png'))) views.push(join(dir, 'face.png'));
+  await enforceCap('submit');
   const body = {
     image_urls: views.map(dataUri),
     ai_model: 'meshy-6',
@@ -116,7 +141,10 @@ if (cmd === 'submit') {
     for (const [k, u] of Object.entries(t)) if (typeof u === 'string') await download(u, join(meshDir, `tex_${k}.png`)).catch((e) => console.warn(`tex ${k}: ${e.message}`));
   }
 } else if (cmd === 'rig') {
-  const r = await req('POST', '/rigging', { input_task_id: tasks.mesh, height_meters: 1.85 });
+  const height = arg3 ? Number(arg3) : 1.85;
+  if (!(height >= 1 && height <= 2.6)) throw new Error(`rig height ${arg3} outside 1.0-2.6 m`);
+  await enforceCap('rig');
+  const r = await req('POST', '/rigging', { input_task_id: tasks.mesh, height_meters: height });
   tasks.rig = r.result || r.id || r;
   saveTasks();
   console.log(`submitted rigging task: ${JSON.stringify(tasks.rig)}`);
@@ -136,6 +164,7 @@ if (cmd === 'submit') {
 } else if (cmd === 'animate') {
   const slot = arg3, actionId = Number(arg4);
   if (!slot || Number.isNaN(actionId)) throw new Error('usage: animate <slug> <slot> <action_id>');
+  await enforceCap('animate');
   const r = await req('POST', '/animations', { rig_task_id: tasks.rig, action_id: actionId });
   tasks.anims = tasks.anims || {};
   tasks.anims[slot] = r.result || r.id || r;

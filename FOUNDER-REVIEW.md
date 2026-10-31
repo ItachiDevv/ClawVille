@@ -5,6 +5,14 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### Hydra, the coin-analyst wanderer + chat with every wanderer (session hydra, 2026-10-31, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game, NPC mode, walk to the south side of the town ring (the road toward the Trading Floor). Bench page with every clip and the glow sliders: https://claude.ai/artifact/CogoeEVj8izxGUf28fyc7x
+- **LOOK AT:** her look (visible blue eyes, larger bust, flat boots); the neon pulse on the suit lines, the H, the ring earpieces, the mask line and the eyes (0.8 to 2.6 at 0.55 Hz, no bloom in the world); her coin muttering bubbles every 25 to 45 s; walk up and chat (she names a coin from today and says why she bought or skipped it); also chat with Adinero and Ansem, which never worked before this fix.
+- **KNOWN FLAW:** the bake smeared white hair texture onto the collar at the base of the neck (visible up close). Fixing it needs a texture repair or another Meshy run.
+- **DECISION FOR YOU:** every older Meshy character (Adinero, Ansem, Biggie, Helen and the Hatcher avatars) has a dim full-texture glow that washes out light colors. Hydra now has a neon-only glow. Keep the old look on the others, or give them the same fix?
+- **FEEDBACK WANTED:** glow strength and pulse speed (tell me the bench slider values you like), her lines (too much gibberish or not enough), and whether she should stand closer to the Trading Floor (that needs new movement code; wanderers stay on the town ring today).
+
 ### MCP ecosystem catalog, hub step 1 (session mcp2, 2026-10-23, STAGING)
 
 - **WHERE:** https://api-staging.clawville.world/api/ecosystem/catalog (JSON); in any MCP client connected to the staging MCP, call `clawville_docs` with topic `ecosystem`.

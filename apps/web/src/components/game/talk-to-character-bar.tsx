@@ -4,15 +4,17 @@
  * TalkToCharacterBar — NPC-mode chat with the nearest wandering NPC.
  *
  * Renders only when `controlMode === 'npc'`. Reads `nearCharacter` from
- * the game store (set by npc-controller / player-avatar proximity passes
- * via `findNearestCharacter()` against character-positions.ts).
+ * the game store (set by the npc-controller proximity pass via
+ * `findNearestCharacter()` in character-positions.ts, which also checks the
+ * live free-roaming wanderers: Adinero, Ansem, Hydra, ...).
  *
  * - When no nearCharacter: disabled pill "Walk closer to a character to talk"
  * - When near: pill "Talk to {name}", expandable into a chat panel
  * - Submits to /api/chat/transient — stateless OpenAI one-shot, no Eliza,
  *   no DB writes, no persistent memory. Conversation history is held
- *   in-component memory only and resets when the user walks away (and
- *   nearCharacter changes) or when control mode flips out of 'npc'.
+ *   in-component memory only. It resets when the user reaches a different
+ *   character or the control mode leaves 'npc'. An open panel stays open
+ *   when its (moving) wanderer walks out of range.
  *
  * Avatar chat (AvatarChatBar) is mounted only in player/autonomous modes per
  * Phase 6.2 — see /game/page.tsx. This component fills the mode-2 gap.
@@ -48,13 +50,27 @@ export default function TalkToCharacterBar() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Reset transcript whenever the nearby character changes (you walked
-  // away from one and approached another). Per session-only memory.
+  // The character the transcript belongs to. Wanderers keep walking, so an
+  // OPEN panel keeps its partner after the wanderer leaves talk range; the
+  // panel closes only when the user closes it or reaches a different
+  // character. Per session-only memory.
+  const [partner, setPartner] = useState<string | null>(null);
+  // Latest partner for async callbacks: a reply that lands after the
+  // partner changed belongs to the old transcript and is dropped.
+  const partnerRef = useRef<string | null>(null);
+
+  // Fresh transcript when the user reaches a different character, or when
+  // the control mode leaves 'npc'.
   useEffect(() => {
+    const next = controlMode === 'npc' ? nearCharacter : null;
+    if (next === partner) return;
+    if (next === null && controlMode === 'npc') return; // out of range: keep partner
+    partnerRef.current = next;
+    setPartner(next);
     setMessages([]);
     setExpanded(false);
     setHasUnread(false);
-  }, [nearCharacter]);
+  }, [controlMode, nearCharacter, partner]);
 
   // Don't render outside NPC mode, when the full ChatPanel is open, at a
   // BUILDING (`nearLocation` set), on a parcel (`nearParcelCode` set), or at
@@ -71,7 +87,9 @@ export default function TalkToCharacterBar() {
   if (controlMode !== 'npc' || chatOpen || guideChatOpen || promptOwner !== null
     || nearLocation || nearParcelCode || nearSalvageNodeId) return null;
 
-  const characterName = nearCharacter;
+  // Open panel: its partner (also after a wanderer walks out of range).
+  // Closed: the nearest character, if any.
+  const characterName = expanded ? partner : nearCharacter;
   const enabled = !!characterName;
 
   const scrollToBottom = () => {
@@ -97,6 +115,7 @@ export default function TalkToCharacterBar() {
     setLoading(true);
     try {
       const res = await api.sendTransientChat(characterName, content, history);
+      if (partnerRef.current !== characterName) return;
       const assistantMsg: TalkMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -106,6 +125,7 @@ export default function TalkToCharacterBar() {
       if (!expanded) setHasUnread(true);
       scrollToBottom();
     } catch (err: any) {
+      if (partnerRef.current !== characterName) return;
       const errorMsg: TalkMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',

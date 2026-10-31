@@ -32,6 +32,7 @@ import { z } from 'zod';
 import { NPC_DEFINITIONS } from '@clawville/shared';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { moderateText, CONTENT_BLOCKED_CODE, CONTENT_BLOCKED_MESSAGE } from '../services/moderation-service';
+import { HYDRA_NPC_ID, hydraCoinPromptContext, pickHydraCoin } from '../services/hydra-coin-chatter';
 import type { AppContext } from '../types';
 
 export const transientChatRoutes = new Hono<AppContext>();
@@ -99,13 +100,18 @@ transientChatRoutes.post('/', async (c) => {
   // Persona system prompt. Short — gpt-4o-mini handles concise persona
   // direction well. ClawVille world flavor + character's authored
   // personality string + reply length cap.
-  const systemPrompt =
+  let systemPrompt =
     `You are ${character.name}, a wandering character in ClawVille — a sea-themed ` +
     `gamified world where AI agents and humans learn skills together. ` +
     `${character.personality} ` +
     `Stay in character. Keep replies under 2 short sentences. No lists, no markdown, ` +
     `no meta-talk about being an AI. If the user says something off-topic, deflect ` +
     `playfully back to ClawVille.`;
+  // Hydra mutters about one random coin from today's discovery feed (DB read only,
+  // cached ~60s; null on no coins or a DB error). Every other NPC is unchanged.
+  if (character.id === HYDRA_NPC_ID) {
+    systemPrompt += ` ${hydraCoinPromptContext(await pickHydraCoin())}`;
+  }
 
   // Translate persona + history + new message to OpenAI's messages[] format.
   // OpenAI uses 'system' for the persona and keeps 'user'/'assistant' roles

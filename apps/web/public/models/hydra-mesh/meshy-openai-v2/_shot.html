@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Hydra QC shot</title>
+<script>self.ModelViewerElement={meshoptDecoderLocation:"https://cdn.jsdelivr.net/npm/meshoptimizer@0.21.0/meshopt_decoder.js"};</script>
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+<style>body{margin:0;background:#2a2a2a}model-viewer{width:100vw;height:100vh;background:#2a2a2a}</style></head>
+<body><model-viewer id="m" exposure="1.2" interaction-prompt="none"></model-viewer>
+<script>
+const q=new URLSearchParams(location.search), m=document.getElementById('m');
+m.src=q.get('src')||'mesh.glb?v=1'; m.cameraOrbit=(q.get('az')||'0')+'deg 88deg '+(q.get('r')||'auto'); m.minCameraOrbit='auto auto 0.1m'; if(q.get('ty')) m.cameraTarget='auto '+q.get('ty')+'m auto';
+if(q.get('anim')!==null){m.autoplay=true; if(q.get('anim')) m.animationName=q.get('anim');}
+</script></body></html>

@@ -147,3 +147,6 @@ scripts/anim-sources/**/*.glb
 
 # Python bytecode (branding scripts)
 __pycache__/
+
+# Partner key-art screenshot used as a local image reference only (never republish partner art in this public repo).
+apps/web/public/models/hydra-turnaround/source/site-ref.png

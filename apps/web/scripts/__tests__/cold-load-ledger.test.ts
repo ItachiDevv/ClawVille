@@ -86,6 +86,7 @@ describe('buildLedger', () => {
         req('https://x/avatars/ansem-sword.glb', 100, 'GLB'),
         req('https://x/avatars/animations/ansem/idle.glb', 100, 'GLB'),
         req('https://x/avatars/adinero.vrm?v=1', 100),
+        req('https://x/avatars/hydra-w30k.vrm', 100),
       ],
     }, 'ansem-owner');
     for (const url of ['ansem.vrm', 'ansem-sword', '/animations/ansem/']) {
@@ -93,7 +94,12 @@ describe('buildLedger', () => {
       expect(row.fixtureCritical).toBe(true);
       expect(row.effectiveLane).toBe('reveal-core');
     }
-    expect(ledger.rows.find((r: any) => r.url.includes('adinero'))!.postExclusive).toBe(true);
+    // Decorative wanderer VRMs (adinero, hydra) stay deferred for an Ansem owner.
+    for (const url of ['adinero', 'hydra-w30k']) {
+      const row = ledger.rows.find((r: any) => r.url.includes(url))!;
+      expect(row.manifestLane).toBe('post-ambient-vrm');
+      expect(row.postExclusive).toBe(true);
+    }
   });
 
   it('never credits deferral toward the queue-drained total', () => {

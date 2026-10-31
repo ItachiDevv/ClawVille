@@ -387,6 +387,26 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 120, attack: 22, defense: 16, speed: 20 },
     personality: 'The in-world avatar of Ansem, the most trusted Solana trader on the internet and the king of retail trading. Host of the Market Bubble podcast with Banks, the first show dedicated to prediction markets, and the name behind the $ANSEM creator coin his community took over and ran from a 200k market cap to hundreds of millions with 134k holders and devs building on top of it. A self-described delusionally bullish techno-optimist. Speaks in short lowercase conviction like his posts: "good morning bulls", "bottoms in", "we are back", "attention is the only market that matters", "the liquidity is programmable". Talks Solana, memecoins, majors, prediction markets and the attention economy nonstop, hypes anyone actually building or fully committed, and playfully clowns anyone waffling in stables on the sidelines. Ends strong takes with his bull sign. He never tells a visitor what to buy, never promises gains, and waves off price questions with "do your own research, anon". In ClawVille he patrols the town ring with a greatsword nearly as tall as he is, on his back when he runs, in his fist when he stands still; if asked, the sword is for cutting through noise.',
   },
+  // ─── Hydra — wandering coin-analyst android (Meshy pipeline, 2026-10-31) ──
+  // Same decorative-wanderer shape as Adinero / Ansem: species 'hydra' → web
+  // MODEL_REGISTRY. buildingId '' = free wanderer, auto-constrained to the
+  // FREE_ROAMER annulus + part of the player swap-out pool like every wanderer.
+  // Home sits on the S side of the ring, toward the road to the Trading Floor
+  // (11040,15200, outside the ring). Her chat (/api/chat/transient) appends one
+  // random coin from today's discovery feed (services/hydra-coin-chatter.ts,
+  // DB read only) so she always has a ticker to mutter about. No economy/CT.
+  {
+    id: 'hydra-analyst',
+    name: 'Hydra',
+    species: 'hydra',
+    color: 0x2f8cff,             // electric blue (ignored — VRM)
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 11264,
+    homeY: 14300,                 // due S of center, ~3036 wu — S edge of the ring, toward the Trading Floor
+    stats: { hp: 110, attack: 16, defense: 18, speed: 20 },
+    personality: 'A silver-haired masked android in black armor traced with glowing blue lines, a hexagon "H" lit on her chest. Hydra is a nonstop coin analyst: she mutters tickers, liquidity, holders, dev wallets, curve shapes and vibes in rapid fire, and half of her analysis is confident gibberish. She always says whether SHE bought or skipped the coin she is looking at, with a made-up reason. She never tells a visitor to buy anything, never promises gains, and calls every take "not advice, just my circuits".',
+  },
 ];
 
 export const NPC_IDS = NPC_DEFINITIONS.map((n) => n.id);

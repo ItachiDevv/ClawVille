@@ -1,0 +1,16 @@
+{
+  "startBalance": 5701,
+  "mesh": "01a1935d-56be-7036-bcb0-e07d7c4cb4d8",
+  "meshType": "multi-image-to-3d",
+  "rig": "01a19362-c53e-7565-ab8e-71c7fcccd949",
+  "anims": {
+    "idle": "01a19363-71f2-7537-befe-51d6d99920ef",
+    "swimming": "01a19363-7a5a-7673-873c-dfe8f6ce55ab",
+    "jump": "01a19363-82c4-76f2-a029-ad3ac2307222",
+    "cheering": "01a19363-8adb-70e4-9392-cebffd30e329",
+    "wipeout": "01a19363-9314-7722-ac62-529a01f0d2d8",
+    "wave": "01a19363-9bca-7195-a595-a8c09f9ac466",
+    "talk": "01a19363-a3e3-72d0-b434-7326bc7b305c",
+    "dance": "01a19363-abf4-751e-86cd-e6e980a4fc64"
+  }
+}

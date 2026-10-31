@@ -385,8 +385,8 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
   },
   clawville_chat_avatar: {
     sources: [gw('post', 'AGENT_CHAT_ROUTE', '/:sessionId/chat')],
-    calls: (c, i) => [{ method: 'POST', path: `${AGENT}/${seg(c.sid)}/chat`, body: pick(i, ['message']) }],
-    next: 'Call clawville_call GET /api/agent/<sessionId>/perception to look around.',
+    calls: (c, i) => [{ method: 'POST', path: `${AGENT}/${seg(c.sid)}/chat`, body: pick(i, ['message', 'targetNpcId']) }],
+    next: "With targetNpcId hydra-analyst, read data.npcReply.message for Hydra's reply. Call clawville_call GET /api/agent/<sessionId>/perception to look around.",
   },
   clawville_get_inventory: {
     sources: [src('items.ts', 'get', '/api/items', '/inventory')],

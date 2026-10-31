@@ -7,7 +7,8 @@
 //   NPC_INSET_WORLD            — shared with arena-location-npcs.tsx
 //   CHARACTER_POSITIONS        — module-scope map: buildingId → world coords
 //   TALK_RADIUS_WORLD          — proximity radius for chat activation
-//   findNearestCharacter()     — pure-primitive, zero-alloc nearest-character check
+//   findNearestCharacter()     — zero-alloc nearest talk target (resident or
+//                                live free-roaming wanderer)
 // ---------------------------------------------------------------------------
 
 import {
@@ -25,7 +26,8 @@ import {
   TRADING_FLOOR_DOOR_WORLD,
   TRADING_FLOOR_PROMPT_RADIUS_WU,
 } from './trading-floor/trading-floor-location';
-import { KELP_FOREST_PORTAL_HALF_X_WU } from '@clawville/shared';
+import { KELP_FOREST_PORTAL_HALF_X_WU, NPC_DEFINITIONS } from '@clawville/shared';
+import { useNpcStore } from '@/stores/npc';
 
 // ---------------------------------------------------------------------------
 // Shared constants (imported by arena-location-npcs.tsx — single source of truth)
@@ -324,36 +326,93 @@ export function isInsideCoveTunnel(playerWorldX: number, playerWorldZ: number): 
 }
 
 // ---------------------------------------------------------------------------
+// Free-roaming wanderers (Adinero, Ansem, Hydra, the Miladys, ...): every
+// NPC_DEFINITIONS entry with buildingId === ''. Their LIVE positions sit in
+// the NPC store (SSE snapshots, or the client wander loop when offline).
+// Keyed by NPC id → definition name; /api/chat/transient matches that name.
+// Built once at module load. Ids outside this map (the possessed player
+// body, autonomous avatars, retired wanderers) are never talk targets.
+// ---------------------------------------------------------------------------
+const WANDERER_NAMES: ReadonlyMap<string, string> = new Map(
+  NPC_DEFINITIONS.filter((d) => d.buildingId === '').map((d) => [d.id, d.name]),
+);
+
+/** Minimal NPC-store entry shape: id + position in game-space px. */
+export interface WandererSample {
+  readonly id: string;
+  readonly x: number;
+  readonly y: number;
+}
+
+/** Nearest talk target. `buildingId` is null for a free-roaming wanderer. */
+export interface NearestCharacter {
+  buildingId: string | null;
+  characterName: string;
+  distance: number;
+}
+
+// Reused result object: the hot path allocates nothing.
+const _nearest: NearestCharacter = { buildingId: null, characterName: '', distance: 0 };
+
+// ---------------------------------------------------------------------------
 // findNearestCharacter — zero-alloc, pure-primitive proximity check.
 // Arguments are primitive numbers so the caller never needs to allocate a
 // scratch Vector3 before calling (safe in useFrame hot path).
 //
-// Returns the nearest character within TALK_RADIUS_WORLD, or null.
+// Returns the nearest talk target within TALK_RADIUS_WORLD, or null:
+// a building resident (buildingId set) or a live wanderer (buildingId null).
+// The nearer one wins; on an exact tie the resident wins.
+//
+// `wanderers` defaults to the live NPC store (read with getState(), no
+// subscription). Pass null to check residents only.
+//
+// The returned object is SHARED and overwritten by the next call. Read its
+// fields at once; never keep the reference.
 // ---------------------------------------------------------------------------
 export function findNearestCharacter(
   playerWorldX: number,
   playerWorldZ: number,
-): { buildingId: string; characterName: string; distance: number } | null {
+  wanderers: readonly WandererSample[] | null = useNpcStore.getState().npcs,
+): NearestCharacter | null {
+  let found = false;
   let bestId: string | null = null;
   let bestName = '';
-  let bestDistSq = Infinity;
+  let bestDistSq = TALK_RADIUS_SQ;
 
   for (const id in CHARACTER_POSITIONS) {
     const cp = CHARACTER_POSITIONS[id];
     const dxW = playerWorldX - cp.worldX;
     const dzW = playerWorldZ - cp.worldZ;
     const distSq = dxW * dxW + dzW * dzW;
-    if (distSq < TALK_RADIUS_SQ && distSq < bestDistSq) {
+    if (distSq < bestDistSq) {
+      found = true;
       bestDistSq = distSq;
       bestId = id;
       bestName = cp.characterName;
     }
   }
 
-  if (bestId === null) return null;
-  return {
-    buildingId: bestId,
-    characterName: bestName,
-    distance: Math.sqrt(bestDistSq),
-  };
+  if (wanderers !== null) {
+    for (let i = 0; i < wanderers.length; i++) {
+      const npc = wanderers[i];
+      const name = WANDERER_NAMES.get(npc.id);
+      if (name === undefined) continue;
+      // Game-space px → world: same offset as CHARACTER_POSITIONS.
+      const dxW = playerWorldX - (npc.x + OFFSET_X);
+      const dzW = playerWorldZ - (npc.y + OFFSET_Z);
+      const distSq = dxW * dxW + dzW * dzW;
+      if (distSq < bestDistSq) {
+        found = true;
+        bestDistSq = distSq;
+        bestId = null;
+        bestName = name;
+      }
+    }
+  }
+
+  if (!found) return null;
+  _nearest.buildingId = bestId;
+  _nearest.characterName = bestName;
+  _nearest.distance = Math.sqrt(bestDistSq);
+  return _nearest;
 }

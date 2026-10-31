@@ -130,19 +130,22 @@ The exterior asset path appears in FOUR places besides `BUILDING_MODELS` — `as
 
 ## 3. NPC roster
 
-### 3a. Wandering NPCs — 9 total
+### 3a. Wandering NPCs — 17 total
 
-3 Milady VRMs + 3 Hermes/Tekk VRMs + 2 chibi VRMs + 1 lobster GLB. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected). The web store filters retired IDs (`wanderer-marlin`, `wanderer-riptide`) as a partial-deploy guard. All VRM sizing is handled by `computeVRMAvatarFit()` from `lib/three/vrm-avatar-sizing.ts` — every humanoid renders at `VRM_AVATAR_TARGET_HEIGHT_WU = 179.2` regardless of native bbox unit convention.
+8 Milady VRMs + 2 Hermes VRMs + 1 Tekk VRM + 2 chibi VRMs + 3 Meshy-pipeline VRMs (Adinero, Ansem, Hydra) + 1 lobster GLB. All are free roamers (`buildingId: ''`) kept on the town ring 1500–3200 wu from center (11264, 11264). Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected). The web store filters retired IDs (`wanderer-marlin`, `wanderer-riptide`) as a partial-deploy guard. All VRM sizing is handled by `computeVRMAvatarFit()` from `lib/three/vrm-avatar-sizing.ts` — every humanoid renders at `VRM_AVATAR_TARGET_HEIGHT_WU = 179.2` regardless of native bbox unit convention.
 
-| Species | Count | Asset |
+| Species | Count | Asset (web `MODEL_REGISTRY`) |
 |---|---|---|
-| Milady VRM | 3 | `milady-official-{2,7,8}.vrm` (Vivi / Miu / Kyoko — distinct paths required, shared paths cause T-pose collisions) |
-| Hermes VRM | 2 | `hermes-female.vrm` (Mira), `hermes-male.vrm` (Cyrus) |
-| Tekk VRM | 1 | `tekk.vrm` — uses `SPECIES_TARGET_HEIGHT_WU.tekk = 230` so wings can overshoot the body silhouette |
-| Chibi VRM | 2 | `eliza-chibi.vrm?v=2` (Eliza), `milady-chibi.vrm?v=2` (Mila) |
-| Lobster GLB | 1 | `models/lobster.glb` (Driftwood) — homeX 3348, homeY 5112, W inner (Phase 6.2 scaled ×1.5 from Phase 6.1) |
+| Milady VRM | 8 | `milady-official-{1..8}.vrm` (Aria 1, Vivi 2, Suki 3, Hana 4, Yumi 5, Ren 6, Miu 7, Kyoko 8; distinct paths required, shared paths cause T-pose collisions) |
+| Hermes VRM | 2 | `hermes-female.vrm?v=2` (Mira), `hermes-male.vrm?v=2` (Cyrus) |
+| Tekk VRM | 1 | `tekk-nonorm.vrm` (Tekk), `SPECIES_TARGET_HEIGHT_WU.tekk = 230` so wings can overshoot the body silhouette |
+| Chibi VRM | 2 | `eliza-chibi-mo.vrm` (Eliza), `milady-chibi-mo.vrm` (Mila) |
+| Adinero VRM | 1 | `adinero-w30k.vrm` (pink-haired clown; roasts passers-by) |
+| Ansem VRM | 1 | `ansem-w30k.vrm` + `ansem-sword.glb` (greatsword attachment) |
+| Hydra VRM | 1 | `hydra-w30k.vrm` (2026-10-31; coin-analyst android, home (11264, 14300) south edge of the ring nearest the Trading Floor; emissive neon mask pulsed by `lib/three/hydra-glow.ts`) |
+| Lobster GLB | 1 | `lobster-ktx.glb?v=2` (Driftwood), homeX 8852, homeY 10616 |
 
-> Table drift note (2026-07-22): counts/rows above predate the 8-Milady restore and Adinero (both live in `npc-definitions.ts` but missing here). Full reconciliation pending — `npc-definitions.ts` is authoritative. (Also 2026-07-22: `biggie` is a registry-only EXCLUSIVE avatar — manual per-account DB grant, deliberately NOT a wanderer and NOT in `AGENT_MODELS`; see `3dStructure.md` Last-edit entry.)
+> Table reconciled 2026-10-31 against `npc-definitions.ts` (17 entries) and `MODEL_REGISTRY` paths; it replaces the 2026-07-22 drift note (9 rows, missing the Milady restore, Adinero and Ansem). `biggie` remains a registry-only EXCLUSIVE avatar (manual per-account DB grant), not a wanderer and not in `AGENT_MODELS`.
 
 ### 3b. Building residents — 10 total
 
