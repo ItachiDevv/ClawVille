@@ -337,11 +337,13 @@ const WANDERER_NAMES: ReadonlyMap<string, string> = new Map(
   NPC_DEFINITIONS.filter((d) => d.buildingId === '').map((d) => [d.id, d.name]),
 );
 
-/** Minimal NPC-store entry shape: id + position in game-space px. */
+/** Minimal NPC-store entry shape: id + position in game-space px + dead flag. */
 export interface WandererSample {
   readonly id: string;
   readonly x: number;
   readonly y: number;
+  /** NPC store `isDead`: a dead wanderer is never a talk target. */
+  readonly isDead?: boolean;
 }
 
 /** Nearest talk target. `buildingId` is null for a free-roaming wanderer. */
@@ -361,7 +363,7 @@ const _nearest: NearestCharacter = { buildingId: null, characterName: '', distan
 //
 // Returns the nearest talk target within TALK_RADIUS_WORLD, or null:
 // a building resident (buildingId set) or a live wanderer (buildingId null).
-// The nearer one wins; on an exact tie the resident wins.
+// A dead wanderer (store `isDead`) is skipped. The nearer one wins; on an exact tie the resident wins.
 //
 // `wanderers` defaults to the live NPC store (read with getState(), no
 // subscription). Pass null to check residents only.
@@ -395,6 +397,7 @@ export function findNearestCharacter(
   if (wanderers !== null) {
     for (let i = 0; i < wanderers.length; i++) {
       const npc = wanderers[i];
+      if (npc.isDead === true) continue;
       const name = WANDERER_NAMES.get(npc.id);
       if (name === undefined) continue;
       // Game-space px → world: same offset as CHARACTER_POSITIONS.

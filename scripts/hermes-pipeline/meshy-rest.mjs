@@ -16,14 +16,18 @@
 // MESHY_API_KEY from env or ~/.itachi-api-keys. Task ids persisted to
 // apps/web/public/models/<slug>-mesh/meshy-openai/tasks.json.
 //
-// CREDIT CAP (owner rule 2026-10-04): every paid command (submit, rig, animate)
-// REFUSES to run without MESHY_CREDIT_CAP=<credits> (the owner-approved cap for
-// this slug). The first paid call records the account balance in tasks.json;
-// each later paid call refuses when (credits spent since then + this call's
-// estimate) would exceed the cap.
+// CREDIT CAP (owner rule 2026-10-04): every paid command (submit, submit-image,
+// rig, animate) REFUSES to run without MESHY_CREDIT_CAP=<credits> (the
+// owner-approved cap for this slug/variant). Before each paid POST it RESERVES
+// the call's credit estimate in credit-ledger.json (next to tasks.json) under an
+// exclusive lock (scripts/hermes-pipeline/spend-ledger.mjs), and refuses when
+// booked + estimate > cap. The ledger never reads the account balance, so
+// concurrent runs and credit top-ups cannot raise the headroom. A missing ledger
+// is seeded from the paid task ids already in tasks.json.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { reserveSpend, updateSpendEntry, withFileLock, writeJsonAtomic } from './spend-ledger.mjs';
 
 const API = 'https://api.meshy.ai/openapi/v1';
 
@@ -47,8 +51,18 @@ const meshDir = resolve(`apps/web/public/models/${slug}-mesh/meshy-openai${VARIA
 mkdirSync(meshDir, { recursive: true });
 mkdirSync(join(meshDir, 'anim'), { recursive: true });
 const tasksPath = join(meshDir, 'tasks.json');
-const tasks = existsSync(tasksPath) ? JSON.parse(readFileSync(tasksPath, 'utf8')) : {};
-const saveTasks = () => writeFileSync(tasksPath, JSON.stringify(tasks, null, 2));
+const ledgerPath = join(meshDir, 'credit-ledger.json');
+const readTasks = () => (existsSync(tasksPath) ? JSON.parse(readFileSync(tasksPath, 'utf8')) : {});
+const tasks = readTasks();
+// Read-modify-write under a lock, so a concurrent run's task ids are not overwritten.
+async function recordTask(mutate) {
+  await withFileLock(`${tasksPath}.lock`, () => {
+    const fresh = readTasks();
+    mutate(fresh);
+    writeJsonAtomic(tasksPath, fresh);
+    Object.assign(tasks, fresh);
+  });
+}
 
 const dataUri = (p) => `data:image/png;base64,${readFileSync(p).toString('base64')}`;
 
@@ -60,18 +74,41 @@ async function req(method, path, body) {
 }
 
 // Upper-bound credit estimates per paid call (Meshy-6 textured mesh, rig, one clip).
-const CREDIT_ESTIMATE = { submit: 30, rig: 5, animate: 3 };
-async function enforceCap(kind) {
-  const cap = Number(process.env.MESHY_CREDIT_CAP);
-  if (!Number.isFinite(cap) || cap <= 0) throw new Error(`refusing paid '${kind}': set MESHY_CREDIT_CAP=<owner-approved credits>`);
-  const { balance } = await req('GET', '/balance');
-  if (typeof balance !== 'number') throw new Error('balance read failed; refusing paid call');
-  if (typeof tasks.startBalance !== 'number') { tasks.startBalance = balance; saveTasks(); }
-  const spent = tasks.startBalance - balance;
-  const next = CREDIT_ESTIMATE[kind];
-  if (spent + next > cap) throw new Error(`cap: spent ${spent} + est ${next} > cap ${cap}; refusing '${kind}'`);
-  console.log(`cap ok: spent ${spent}, est ${next}, cap ${cap}, balance ${balance}`);
+const CREDIT_ESTIMATE = { submit: 30, 'submit-image': 30, rig: 5, animate: 3 };
+
+// Migration seed for a slug/variant dir with paid task ids from before the ledger existed
+// (a lower bound: tasks.json keeps only the latest id per slot).
+function seedLedgerFromTasks() {
+  const t = readTasks();
+  const calls = [];
+  const book = (kind, taskId) =>
+    calls.push({ id: `seed-${calls.length}`, at: null, label: `${kind} (seeded from tasks.json)`, kind, estCredits: CREDIT_ESTIMATE[kind], taskId });
+  if (t.mesh) book(t.meshType === 'image-to-3d' ? 'submit-image' : 'submit', t.mesh);
+  if (t.rig) book('rig', t.rig);
+  for (const id of Object.values(t.anims || {})) book('animate', id);
+  return { bookedCredits: calls.reduce((sum, c) => sum + c.estCredits, 0), calls };
 }
+
+/** Reserve this call's estimate in the locked ledger BEFORE the paid POST (throws a refusal). Returns the reservation id. */
+async function reserveCredits(kind) {
+  if (!process.env.MESHY_CREDIT_CAP) throw new Error(`refusing paid '${kind}': set MESHY_CREDIT_CAP=<owner-approved credits>`);
+  const cap = Number(process.env.MESHY_CREDIT_CAP);
+  const est = CREDIT_ESTIMATE[kind];
+  const { total, id } = await reserveSpend({
+    ledgerPath, amount: est, cap, label: kind, totalKey: 'bookedCredits',
+    entry: { kind, estCredits: est, taskId: null }, init: seedLedgerFromTasks,
+  });
+  console.log(`cap ok: reserved ${est} credits for '${kind}', booked ${total} of cap ${cap} (${ledgerPath})`);
+  // Information only: the cap never depends on the account balance.
+  await req('GET', '/balance').then(
+    (r) => console.log(`meshy balance (info): ${r.balance}`),
+    (e) => console.warn(`balance read failed (info only): ${e.message}`),
+  );
+  return id;
+}
+
+const noteTaskId = (reservationId, taskId) =>
+  updateSpendEntry({ ledgerPath, id: reservationId, patch: { taskId }, totalKey: 'bookedCredits' });
 
 async function download(url, outPath) {
   const res = await fetch(url);
@@ -85,7 +122,7 @@ if (cmd === 'submit') {
   const views = ['front.png', 'back.png', '3q.png'].map((f) => join(dir, f));
   for (const v of views) if (!existsSync(v)) throw new Error(`missing view ${v}`);
   if (existsSync(join(dir, 'face.png'))) views.push(join(dir, 'face.png'));
-  await enforceCap('submit');
+  const reservation = await reserveCredits('submit');
   const body = {
     image_urls: views.map(dataUri),
     ai_model: 'meshy-6',
@@ -101,9 +138,9 @@ if (cmd === 'submit') {
     target_formats: ['glb'],
   };
   const r = await req('POST', '/multi-image-to-3d', body);
-  tasks.mesh = r.result || r.id || r;
-  tasks.meshType = 'multi-image-to-3d';
-  saveTasks();
+  const meshId = r.result || r.id || r;
+  await recordTask((t) => { t.mesh = meshId; t.meshType = 'multi-image-to-3d'; });
+  await noteTaskId(reservation, meshId);
   console.log(`submitted multi-image-to-3d task: ${JSON.stringify(tasks.mesh)}`);
 } else if (cmd === 'submit-image') {
   // Single-image PROP submission (e.g. the ansem greatsword) — dedicated
@@ -111,6 +148,7 @@ if (cmd === 'submit') {
   // (a side-profile prop's mirror plane is the image plane, not image-left/right).
   const imgPath = resolve(arg3 || '');
   if (!arg3 || !existsSync(imgPath)) throw new Error(`usage: submit-image <slug> <imagePath> — missing ${arg3}`);
+  const reservation = await reserveCredits('submit-image');
   const body = {
     image_url: dataUri(imgPath),
     ai_model: 'meshy-6',
@@ -125,9 +163,9 @@ if (cmd === 'submit') {
     target_formats: ['glb'],
   };
   const r = await req('POST', '/image-to-3d', body);
-  tasks.mesh = r.result || r.id || r;
-  tasks.meshType = 'image-to-3d';
-  saveTasks();
+  const meshId = r.result || r.id || r;
+  await recordTask((t) => { t.mesh = meshId; t.meshType = 'image-to-3d'; });
+  await noteTaskId(reservation, meshId);
   console.log(`submitted image-to-3d task: ${JSON.stringify(tasks.mesh)}`);
 } else if (cmd === 'status') {
   const r = await req('GET', `/${tasks.meshType || 'multi-image-to-3d'}/${tasks.mesh}`);
@@ -143,10 +181,12 @@ if (cmd === 'submit') {
 } else if (cmd === 'rig') {
   const height = arg3 ? Number(arg3) : 1.85;
   if (!(height >= 1 && height <= 2.6)) throw new Error(`rig height ${arg3} outside 1.0-2.6 m`);
-  await enforceCap('rig');
+  if (!tasks.mesh) throw new Error('no mesh task id in tasks.json; run submit first');
+  const reservation = await reserveCredits('rig');
   const r = await req('POST', '/rigging', { input_task_id: tasks.mesh, height_meters: height });
-  tasks.rig = r.result || r.id || r;
-  saveTasks();
+  const rigId = r.result || r.id || r;
+  await recordTask((t) => { t.rig = rigId; });
+  await noteTaskId(reservation, rigId);
   console.log(`submitted rigging task: ${JSON.stringify(tasks.rig)}`);
 } else if (cmd === 'rig-status') {
   const r = await req('GET', `/rigging/${tasks.rig}`);
@@ -164,11 +204,12 @@ if (cmd === 'submit') {
 } else if (cmd === 'animate') {
   const slot = arg3, actionId = Number(arg4);
   if (!slot || Number.isNaN(actionId)) throw new Error('usage: animate <slug> <slot> <action_id>');
-  await enforceCap('animate');
+  if (!tasks.rig) throw new Error('no rig task id in tasks.json; run rig first');
+  const reservation = await reserveCredits('animate');
   const r = await req('POST', '/animations', { rig_task_id: tasks.rig, action_id: actionId });
-  tasks.anims = tasks.anims || {};
-  tasks.anims[slot] = r.result || r.id || r;
-  saveTasks();
+  const animId = r.result || r.id || r;
+  await recordTask((t) => { t.anims = t.anims || {}; t.anims[slot] = animId; });
+  await noteTaskId(reservation, animId);
   console.log(`submitted animation ${slot} (action ${actionId}): ${JSON.stringify(tasks.anims[slot])}`);
 } else if (cmd === 'anim-status') {
   for (const [slot, id] of Object.entries(tasks.anims || {})) {

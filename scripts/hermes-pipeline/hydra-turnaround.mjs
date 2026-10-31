@@ -15,14 +15,17 @@
  *
  * SPEND CAP (owner rule 2026-10-04): refuses to run without OPENAI_IMAGE_CAP_USD.
  * Every call is booked at EST_USD_PER_CALL (cautious upper bound) in
- * `hydra-turnaround/openai/spend.json` BEFORE it is sent; a call that would
- * push the booked total past the cap is refused. The real token usage the API
- * returns is stored next to each booking.
+ * `hydra-turnaround/openai-v2/spend.json` BEFORE it is sent, through the locked
+ * reservation ledger (`scripts/hermes-pipeline/spend-ledger.mjs`: lock, reload,
+ * check, atomic write), so concurrent runs cannot both pass the cap. A call that
+ * would push the booked total past the cap is refused. The real token usage the
+ * API returns is stored next to each booking.
  *
  * Env: OPENAI_API_KEY (env first — the owner supplied the key for this job).
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { reserveSpend, updateSpendEntry } from './spend-ledger.mjs';
 
 const EST_USD_PER_CALL = 0.4;
 
@@ -55,8 +58,14 @@ const turnDir = resolve('apps/web/public/models/hydra-turnaround');
 const outDir = join(turnDir, 'openai-v2');
 mkdirSync(outDir, { recursive: true });
 const spendPath = join(outDir, 'spend.json');
-const spend = existsSync(spendPath) ? JSON.parse(readFileSync(spendPath, 'utf8')) : { bookedUsd: 0, calls: [] };
-const saveSpend = () => writeFileSync(spendPath, JSON.stringify(spend, null, 2));
+// Information only (unlocked read); the cap check reloads the ledger under its lock.
+const bookedNow = () => {
+  try {
+    return existsSync(spendPath) ? Number(JSON.parse(readFileSync(spendPath, 'utf8')).bookedUsd) : 0;
+  } catch {
+    return Number.NaN;
+  }
+};
 
 // Identity block repeated verbatim in every view (cross-view consistency — lesson #1).
 const IDENTITY = [
@@ -121,14 +130,20 @@ async function genView(view) {
   if (!prompt) { console.error(`unknown view '${view}'`); return null; }
   const refs = refsFor(view);
   if (refs.length === 0) { console.error('no reference images found'); return null; }
-  if (spend.bookedUsd + EST_USD_PER_CALL > CAP) {
-    console.error(`[${view}] refused: booked $${spend.bookedUsd.toFixed(2)} + est $${EST_USD_PER_CALL} > cap $${CAP}`);
+  let reservation;
+  try {
+    reservation = await reserveSpend({
+      ledgerPath: spendPath,
+      amount: EST_USD_PER_CALL,
+      cap: CAP,
+      label: `${view}${SUFFIX}`,
+      entry: { view: `${view}${SUFFIX}`, estUsd: EST_USD_PER_CALL, usage: null, ok: false },
+    });
+  } catch (err) {
+    console.error(`[${view}] ${err.message}`);
     return null;
   }
-  const entry = { view: `${view}${SUFFIX}`, at: new Date().toISOString(), estUsd: EST_USD_PER_CALL, usage: null, ok: false };
-  spend.bookedUsd = Number((spend.bookedUsd + EST_USD_PER_CALL).toFixed(2));
-  spend.calls.push(entry);
-  saveSpend();
+  const record = (patch) => updateSpendEntry({ ledgerPath: spendPath, id: reservation.id, patch });
 
   const form = new FormData();
   form.append('model', MODEL);
@@ -142,19 +157,18 @@ async function genView(view) {
   const t0 = Date.now();
   const res = await fetch('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: form });
   const txt = await res.text();
-  if (!res.ok) { console.error(`[${view}] HTTP ${res.status}: ${txt.slice(0, 600)}`); saveSpend(); return null; }
+  if (!res.ok) { console.error(`[${view}] HTTP ${res.status}: ${txt.slice(0, 600)}`); return null; }
   const json = JSON.parse(txt);
-  entry.usage = json.usage ?? null;
+  const usage = json.usage ?? null;
   const b64 = json?.data?.[0]?.b64_json;
-  if (!b64) { console.error(`[${view}] no image in response`); saveSpend(); return null; }
+  if (!b64) { console.error(`[${view}] no image in response`); await record({ usage }); return null; }
   const outPath = join(outDir, `${view}${SUFFIX}.png`);
   writeFileSync(outPath, Buffer.from(b64, 'base64'));
-  entry.ok = true;
-  saveSpend();
-  console.log(`[${view}] OK -> ${outPath} (${((Date.now() - t0) / 1000).toFixed(1)}s, refs: ${refs.map((r) => r.split(/[\\/]/).pop()).join(' + ')}, usage ${JSON.stringify(entry.usage)})`);
+  await record({ usage, ok: true });
+  console.log(`[${view}] OK -> ${outPath} (${((Date.now() - t0) / 1000).toFixed(1)}s, refs: ${refs.map((r) => r.split(/[\\/]/).pop()).join(' + ')}, usage ${JSON.stringify(usage)}, booked $${reservation.total.toFixed(2)} of cap $${CAP})`);
   return outPath;
 }
 
-console.log(`hydra turnaround: views=${views.join(',')} model=${MODEL} quality=${quality} cap=$${CAP} booked=$${spend.bookedUsd.toFixed(2)}\n`);
+console.log(`hydra turnaround: views=${views.join(',')} model=${MODEL} quality=${quality} cap=$${CAP} booked=$${bookedNow().toFixed(2)}\n`);
 for (const v of views) await genView(v);
-console.log(`\nbooked total $${spend.bookedUsd.toFixed(2)} of cap $${CAP}`);
+console.log(`\nbooked total $${bookedNow().toFixed(2)} of cap $${CAP}`);

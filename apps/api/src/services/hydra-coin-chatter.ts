@@ -27,14 +27,38 @@ export interface HydraCoin {
 const POOL_TTL_MS = 60_000;
 const POOL_LIMIT = 64;
 const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/**
+ * Per-caller wait for the pool load. A caller that waits longer gets null (Hydra riffs on "the tape").
+ * The same value is the server-side `SET LOCAL statement_timeout`, so an abandoned query also stops.
+ */
+export const HYDRA_COIN_DEADLINE_MS = 1_500;
 
 let pool: { dayStartMs: number; loadedAtMs: number; coins: HydraCoin[] } | null = null;
 let inflight: Promise<HydraCoin[]> | null = null;
+let deadlineMs = HYDRA_COIN_DEADLINE_MS;
+let timeoutWarnedFor: Promise<HydraCoin[]> | null = null;
 
-/** Test seam: drop the cached pool. */
+/** Test seam: drop the cached pool and the in-flight load, and restore the default deadline. */
 export function __resetHydraCoinCacheForTests(): void {
   pool = null;
   inflight = null;
+  timeoutWarnedFor = null;
+  deadlineMs = HYDRA_COIN_DEADLINE_MS;
+}
+
+/** Test seam: shorten the per-caller deadline. */
+export function __setHydraCoinDeadlineForTests(ms: number): void {
+  deadlineMs = ms;
+}
+
+const TIMED_OUT = Symbol('hydra-coin-timeout');
+
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function utcDayStart(now: Date): Date {
@@ -70,15 +94,22 @@ function toCoin(row: Record<string, unknown>): HydraCoin | null {
 }
 
 async function loadPool(now: Date): Promise<HydraCoin[]> {
-  // last_seen_at >= first_seen_at, so "last seen today" covers "first seen today" too.
-  const result = await db.execute(sql`
-    SELECT mint, symbol, name, chain_verdict
-    FROM floor_discovery_mints
-    WHERE last_seen_at >= ${utcDayStart(now).toISOString()}::timestamptz
-      AND symbol IS NOT NULL
-    ORDER BY random()
-    LIMIT ${POOL_LIMIT}
-  `);
+  // The transaction exists only for SET LOCAL: the server cancels a stalled read after the deadline, so
+  // an abandoned query does not hold a pooled connection. The caller-side race in pickHydraCoin also
+  // covers a stall before SET LOCAL runs (pool checkout).
+  const result = await db.transaction(async (tx) => {
+    // Fixed numeric constant (never user input), safe under sql.raw.
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${HYDRA_COIN_DEADLINE_MS}`));
+    // last_seen_at >= first_seen_at, so "last seen today" covers "first seen today" too.
+    return tx.execute(sql`
+      SELECT mint, symbol, name, chain_verdict
+      FROM floor_discovery_mints
+      WHERE last_seen_at >= ${utcDayStart(now).toISOString()}::timestamptz
+        AND symbol IS NOT NULL
+      ORDER BY random()
+      LIMIT ${POOL_LIMIT}
+    `);
+  });
   const coins: HydraCoin[] = [];
   for (const row of rowsOf<Record<string, unknown>>(result)) {
     const coin = toCoin(row);
@@ -87,7 +118,13 @@ async function loadPool(now: Date): Promise<HydraCoin[]> {
   return coins;
 }
 
-/** Random coin first/last seen in the current UTC day from floor_discovery_mints; masked/offensive rows skipped; small in-memory pool cached ~60s (one DB query per minute max); returns null when none or on DB error (never throws). */
+/**
+ * Random coin first/last seen in the current UTC day from floor_discovery_mints; masked/offensive rows
+ * skipped; small in-memory pool cached ~60s (one DB query per minute max); returns null when none, on DB
+ * error, or when the load takes longer than the deadline (never throws, never waits past the deadline).
+ * A timed-out load is not cached: later callers share the same in-flight query (each with its own
+ * deadline), and when it settles its result is cached as usual.
+ */
 export async function pickHydraCoin(): Promise<HydraCoin | null> {
   const now = new Date();
   const dayStartMs = utcDayStart(now).getTime();
@@ -108,7 +145,14 @@ export async function pickHydraCoin(): Promise<HydraCoin | null> {
           inflight = null;
         });
     }
-    await inflight;
+    const load = inflight;
+    if ((await withDeadline(load, deadlineMs)) === TIMED_OUT) {
+      if (timeoutWarnedFor !== load) {
+        timeoutWarnedFor = load;
+        console.warn(`[hydra-coin-chatter] discovery read exceeded ${deadlineMs} ms; answering without a coin`);
+      }
+      return null;
+    }
   }
   const coins = pool?.coins ?? [];
   if (coins.length === 0) return null;

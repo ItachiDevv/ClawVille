@@ -123,6 +123,20 @@ describe('findNearestCharacter — resident vs wanderer precedence', () => {
     expect(r?.buildingId).toBe('visual-creation');
   });
 
+  test('a dead wanderer next to the player does not beat a live resident', () => {
+    const px = SPONGEBOB.worldX + 150;
+    const pz = SPONGEBOB.worldZ;
+    const r = findNearestCharacter(px, pz, [{ ...wandererAt('adinero-clown', px + 5, pz), isDead: true }]);
+    expect(r?.characterName).toBe('SpongeBob');
+    expect(r?.buildingId).toBe('visual-creation');
+  });
+
+  test('a dead wanderer alone → null; the same wanderer alive → talk target', () => {
+    const dead = { ...wandererAt('hydra-analyst', FREE_X + 10, FREE_Z), isDead: true };
+    expect(findNearestCharacter(FREE_X, FREE_Z, [dead])).toBeNull();
+    expect(findNearestCharacter(FREE_X, FREE_Z, [{ ...dead, isDead: false }])?.characterName).toBe('Hydra');
+  });
+
   test('wanderer out of range does not change the resident result', () => {
     const px = SPONGEBOB.worldX + 100;
     const pz = SPONGEBOB.worldZ;
@@ -146,6 +160,13 @@ describe('findNearestCharacter — hot-path contract', () => {
     const r = findNearestCharacter(FREE_X, FREE_Z);
     expect(r?.characterName).toBe('Adinero');
     expect(r?.buildingId).toBeNull();
+  });
+
+  test('default roster skips a store entry with isDead: true', () => {
+    const base = originalNpcs[0];
+    const dead = { ...base, id: 'adinero-clown', name: 'Adinero', x: FREE_X + 60 + MAP_WIDTH / 2, y: FREE_Z + MAP_HEIGHT / 2, isDead: true };
+    useNpcStore.setState({ npcs: [dead] });
+    expect(findNearestCharacter(FREE_X, FREE_Z)).toBeNull();
   });
 
   test('result object is reused across calls (zero allocation per frame)', () => {
