@@ -1,11 +1,11 @@
 import { describe, expect, spyOn, test } from 'bun:test';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, type Connection } from '@solana/web3.js';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   chainErrorCode, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus, isTransientChainError, lpLockFail, mintRuleFails,
   orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, runChainCheckTick, storeChainVerdict, top10Percent,
-  verdictFromCodes, type ChainRpc, type DueRow, type ParsedAccount, type RawAccount,
+  verdictFromCodes, web3ChainRpc, type ArenaChainVerdict, type ChainRpc, type DueRow, type ParsedAccount, type RawAccount,
 } from './chain-checks';
 import type { FloorArenaSnapshot } from './filters';
 
@@ -39,12 +39,19 @@ class FakeRpc implements ChainRpc {
   largest = new Map<string, Array<{ address: string; amount: string }>>();
   owners = new Map<string, string>();
   calls = 0;
-  async getParsedAccount(address: string) { this.calls += 1; return this.parsed.get(address) ?? null; }
-  async getRawAccount(address: string) { this.calls += 1; return this.raw.get(address) ?? null; }
-  async getParsedAccounts(addresses: readonly string[]) { this.calls += 1; return addresses.map((a) => this.parsed.get(a) ?? null); }
-  async getAccountOwners(addresses: readonly string[]) { this.calls += 1; return addresses.map((a) => this.owners.get(a) ?? null); }
-  async getTokenLargestAccounts(mint: string) { this.calls += 1; return this.largest.get(mint) ?? []; }
-  async getClmmPositions() { this.calls += 1; return []; }
+  /** Every RPC round trip by method name (Helius budget: per-check call counts). */
+  log: string[] = [];
+  private count(method: string) { this.calls += 1; this.log.push(method); }
+  async getParsedAccount(address: string) { this.count('getParsedAccount'); return this.parsed.get(address) ?? null; }
+  async getMintAndPool(mint: string, pair: string | null) {
+    this.count('getMintAndPool');
+    return { mint: this.parsed.get(mint) ?? null, pool: pair ? this.raw.get(pair) ?? null : undefined };
+  }
+  async getRawAccount(address: string) { this.count('getRawAccount'); return this.raw.get(address) ?? null; }
+  async getParsedAccounts(addresses: readonly string[]) { this.count('getParsedAccounts'); return addresses.map((a) => this.parsed.get(a) ?? null); }
+  async getAccountOwners(addresses: readonly string[]) { this.count('getAccountOwners'); return addresses.map((a) => this.owners.get(a) ?? null); }
+  async getTokenLargestAccounts(mint: string) { this.count('getTokenLargestAccounts'); return this.largest.get(mint) ?? []; }
+  async getClmmPositions() { this.count('getClmmPositions'); return []; }
 }
 
 function tokenAccount(owner: string, mint = key(), uiAmountString = '0'): ParsedAccount {
@@ -181,7 +188,7 @@ describe('top-10 share and the full verdict', () => {
 
   test('an RPC error fails closed as "not verified" and never stores a URL', async () => {
     const rpc = new FakeRpc();
-    rpc.getParsedAccount = async () => { throw new Error('fetch failed https://mainnet.helius-rpc.com/?api-key=SECRET'); };
+    rpc.getMintAndPool = async () => { throw new Error('fetch failed https://mainnet.helius-rpc.com/?api-key=SECRET'); };
     const verdict = await runChainCheck(rpc, key(), { pairAddress: 'p', liqUsd: 1, liqBase: 1 }, 200, NOW);
     expect(verdict.pass).toBe(false);
     expect(verdict.fails).toEqual([]);
@@ -280,6 +287,204 @@ describe('top-10 share and the full verdict', () => {
 });
 
 /**
+ * Helius budget (2026-10-31): the mint + pair account come back in ONE round trip, and for PumpSwap / Raydium CPMM /
+ * AMM v4 the LP mint + both vaults in one more. `legacyCheck` is the pre-change runChainCheck body (sequential reads,
+ * no prefetch); every scenario must give the SAME verdict with fewer calls.
+ */
+describe('Helius budget: batched reads, identical verdicts', () => {
+  async function legacyCheck(rpc: ChainRpc, mint: string, snapshot: { pairAddress: string | null; liqUsd: number; liqBase: number }, sol: number | null) {
+    const checkedAt = NOW.toISOString();
+    const pairAddress = snapshot.pairAddress ?? null;
+    try {
+      const mintRules = mintRuleFails(await rpc.getParsedAccount(mint));
+      const base = {
+        checkedAt, pairAddress,
+        ...(mintRules.decimals === null ? {} : { decimals: mintRules.decimals }),
+        ...(mintRules.tokenProgram === null ? {} : { tokenProgram: mintRules.tokenProgram }),
+      };
+      if (mintRules.fails.length > 0 || mintRules.supply === null || mintRules.decimals === null) {
+        return verdictFromCodes(mintRules.fails.length ? mintRules.fails : ['mint_unreadable'], { top10Pct: null, ...base });
+      }
+      const fails: string[] = [];
+      const pool = pairAddress ? await rpc.getRawAccount(pairAddress) : null;
+      const lpFail = pairAddress ? await lpLockFail(rpc, pool, pairAddress) : 'lp_pool_unreadable';
+      if (lpFail) fails.push(lpFail);
+      const reserveFail = await poolReserveFail(rpc, pool, snapshot.liqUsd, sol);
+      if (reserveFail) fails.push(reserveFail);
+      const largest = (await rpc.getTokenLargestAccounts(mint)).map((row) => BigInt(row.amount));
+      const poolRaw = BigInt(Math.floor(snapshot.liqBase * 10 ** mintRules.decimals));
+      return verdictFromCodes(fails, { top10Pct: Math.round(top10Percent(largest, mintRules.supply, poolRaw) * 100) / 100, ...base });
+    } catch (error) {
+      return verdictFromCodes(['chain_check_error'], { checkedAt, pairAddress, top10Pct: null }, `chain_check_error: ${chainErrorCode(error)}`);
+    }
+  }
+
+  /** One coin world; `variant` picks the scenario. Two independent fakes so each counts its own calls. */
+  function world(variant: 'good' | 'lp_held_low_reserve' | 'lp_mint_missing' | 'mint_fail' | 'pool_missing' | 'curve' | 'no_pair' | 'pool_short') {
+    const mint = key();
+    const lp = key();
+    const baseVault = key();
+    const quoteVault = key();
+    const holder = key();
+    const pair = key();
+    const build = () => {
+      const rpc = new FakeRpc();
+      rpc.parsed.set(mint, variant === 'mint_fail' ? mintAccount({ mintAuthority: key() }) : mintAccount());
+      if (variant === 'curve') rpc.raw.set(pair, { owner: PUMP_CURVE, data: new Uint8Array(100) });
+      else if (variant === 'pool_short') rpc.raw.set(pair, { owner: PUMPSWAP, data: pumpswapPool(lp, baseVault, quoteVault).data.slice(0, 150) });
+      else if (variant !== 'pool_missing') rpc.raw.set(pair, pumpswapPool(lp, baseVault, quoteVault));
+      if (variant !== 'lp_mint_missing') {
+        rpc.parsed.set(lp, { owner: SPL, parsed: { type: 'mint', info: { supply: variant === 'lp_held_low_reserve' ? '1000' : '0', decimals: 9 } } });
+      }
+      rpc.largest.set(lp, [{ address: holder, amount: '1000' }]);
+      rpc.parsed.set(holder, tokenAccount(key()));
+      rpc.parsed.set(baseVault, tokenAccount(key(), mint, '500000'));
+      rpc.parsed.set(quoteVault, tokenAccount(key(), USDC, variant === 'lp_held_low_reserve' ? '1000' : '20000'));
+      rpc.largest.set(mint, [{ address: key(), amount: '500000000000' }, { address: key(), amount: '50000000000' }]);
+      return rpc;
+    };
+    const snapshot = { pairAddress: variant === 'no_pair' ? null : pair, liqUsd: 40_000, liqBase: 500_000 };
+    return { mint, snapshot, legacy: build(), next: build() };
+  }
+
+  // [variant, legacy calls, new calls]
+  const CASES = [
+    ['good', 5, 3],
+    ['lp_held_low_reserve', 7, 5],
+    ['lp_mint_missing', 3, 2],
+    ['mint_fail', 1, 1],
+    ['pool_missing', 3, 2],
+    ['curve', 3, 2],
+    ['no_pair', 2, 2],
+    ['pool_short', 3, 2],
+  ] as const;
+
+  for (const [variant, legacyCalls, newCalls] of CASES) {
+    test(`${variant}: same verdict, ${legacyCalls} -> ${newCalls} RPC calls`, async () => {
+      const w = world(variant);
+      const before = await legacyCheck(w.legacy, w.mint, w.snapshot, 200);
+      const after: ArenaChainVerdict = await runChainCheck(w.next, w.mint, w.snapshot, 200, NOW);
+      expect(after).toEqual(before);
+      expect(w.legacy.calls).toBe(legacyCalls);
+      expect(w.next.calls).toBe(newCalls);
+    });
+  }
+
+  test('a truncated Raydium AMM v4 pool (addresses present, totalLp missing) fails pool_account_short with no prefetch (Codex 2026-10-31)', async () => {
+    const mint = key();
+    const pair = key();
+    const data = new Uint8Array(500); // LP mint 464-496 and vaults 336-400 fit; totalLp at 720-727 does not
+    for (const [start, address] of [[336, key()], [368, key()], [464, key()]] as const) {
+      data.set(new PublicKey(address).toBytes(), start);
+    }
+    const make = () => {
+      const rpc = new FakeRpc();
+      rpc.parsed.set(mint, mintAccount());
+      rpc.raw.set(pair, { owner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', data });
+      return rpc;
+    };
+    const snapshot = { pairAddress: pair, liqUsd: 40_000, liqBase: 500_000 };
+    const legacyRpc = make();
+    const nextRpc = make();
+    const before = await legacyCheck(legacyRpc, mint, snapshot, 200);
+    const after = await runChainCheck(nextRpc, mint, snapshot, 200, NOW);
+    expect(after.error).toBe('chain_check_error: pool_account_short');
+    expect(after).toEqual(before);
+    expect(nextRpc.log).toEqual(['getMintAndPool']);
+  });
+
+  test('the scenarios cover pass, both fail codes in order, and the error codes', async () => {
+    const verdictOf = async (variant: Parameters<typeof world>[0]) => {
+      const w = world(variant);
+      return runChainCheck(w.next, w.mint, w.snapshot, 200, NOW);
+    };
+    expect(await verdictOf('good')).toMatchObject({ pass: true, codes: [] });
+    expect((await verdictOf('lp_held_low_reserve')).codes).toEqual(['lp_not_locked', 'pool_reserves_low']);
+    expect((await verdictOf('lp_mint_missing')).error).toBe('chain_check_error: lp_mint_unreadable');
+    expect((await verdictOf('pool_short')).error).toBe('chain_check_error: pool_account_short');
+    expect((await verdictOf('pool_missing')).codes).toEqual(['lp_pool_unreadable']);
+    expect((await verdictOf('no_pair')).codes).toEqual(['lp_pool_unreadable']);
+  });
+
+  test('PumpSwap good coin: exactly getMintAndPool, one getParsedAccounts (lp mint + 2 vaults), getTokenLargestAccounts', async () => {
+    const w = world('good');
+    await runChainCheck(w.next, w.mint, w.snapshot, 200, NOW);
+    expect(w.next.log).toEqual(['getMintAndPool', 'getParsedAccounts', 'getTokenLargestAccounts']);
+  });
+
+  test('pool not read in the batch (RPC parsed it): read raw with getRawAccount, same verdict', async () => {
+    const w = world('lp_held_low_reserve');
+    const before = await legacyCheck(w.legacy, w.mint, w.snapshot, 200);
+    const batched = w.next.getMintAndPool.bind(w.next);
+    w.next.getMintAndPool = async (mint, pair) => ({ ...(await batched(mint, pair)), pool: undefined });
+    const after = await runChainCheck(w.next, w.mint, w.snapshot, 200, NOW);
+    expect(after).toEqual(before);
+    expect(w.next.log.slice(0, 2)).toEqual(['getMintAndPool', 'getRawAccount']);
+  });
+
+  describe('web3ChainRpc.getMintAndPool', () => {
+    const mint = key();
+    const pair = key();
+    const mintData = { program: 'spl-token', parsed: { type: 'mint', info: { decimals: 6, supply: '1', mintAuthority: null, freezeAuthority: null } }, space: 82 };
+    function fakeConnection(poolData: unknown, mintAccountData: unknown = mintData) {
+      const calls: string[] = [];
+      const connection = {
+        async getMultipleParsedAccounts(keys: PublicKey[]) {
+          calls.push(`multi:${keys.length}`);
+          return { context: { slot: 1 }, value: [
+            { owner: new PublicKey(SPL), data: mintAccountData, executable: false, lamports: 1 },
+            poolData === null ? null : { owner: new PublicKey(PUMPSWAP), data: poolData, executable: false, lamports: 1 },
+          ] };
+        },
+        async getParsedAccountInfo() {
+          calls.push('single');
+          return { context: { slot: 1 }, value: { owner: new PublicKey(SPL), data: mintAccountData, executable: false, lamports: 1 } };
+        },
+      };
+      return { rpc: web3ChainRpc(connection as unknown as Connection), calls };
+    }
+
+    test('one round trip: parsed mint + raw Buffer pool', async () => {
+      const bytes = Buffer.from([1, 2, 3]);
+      const { rpc, calls } = fakeConnection(bytes);
+      const out = await rpc.getMintAndPool(mint, pair);
+      expect(calls).toEqual(['multi:2']);
+      expect(out.mint).toEqual({ owner: SPL, parsed: mintData.parsed });
+      expect(out.pool).toEqual({ owner: PUMPSWAP, data: bytes });
+    });
+
+    test('a pool the RPC parsed is NOT used as raw bytes (pool undefined -> caller reads it raw)', async () => {
+      const { rpc } = fakeConnection({ program: 'x', parsed: { type: 'pool' }, space: 300 });
+      expect((await rpc.getMintAndPool(mint, pair)).pool).toBeUndefined();
+    });
+
+    test('a missing pool account reads null', async () => {
+      const { rpc } = fakeConnection(null);
+      expect((await rpc.getMintAndPool(mint, pair)).pool).toBeNull();
+    });
+
+    test('no pair or an invalid pair: the mint is read alone (a failing mint keeps its verdict, not bad_address)', async () => {
+      for (const p of [null, 'not-a-key!']) {
+        const { rpc, calls } = fakeConnection(Buffer.from([1]));
+        const out = await rpc.getMintAndPool(mint, p);
+        expect(calls).toEqual(['single']);
+        expect(out.pool).toBeUndefined();
+      }
+      // End to end through runChainCheck: freeze authority live + an invalid pair = the mint verdict, as before.
+      const frozen = { ...mintData, parsed: { ...mintData.parsed, info: { ...mintData.parsed.info, freezeAuthority: key() } } };
+      const { rpc } = fakeConnection(Buffer.from([1]), frozen);
+      const verdict = await runChainCheck(rpc, mint, { pairAddress: 'not-a-key!', liqUsd: 1, liqBase: 1 }, 200, NOW);
+      expect(verdict).toMatchObject({ pass: false, codes: ['freeze_authority'] });
+      expect(verdict.error).toBeUndefined();
+      // A passing mint with an invalid pair still fails closed on the raw read (bad_address), as before.
+      const passing = fakeConnection(Buffer.from([1]));
+      const err = await runChainCheck(passing.rpc, mint, { pairAddress: 'not-a-key!', liqUsd: 1, liqBase: 1 }, 200, NOW);
+      expect(err.error).toBe('chain_check_error: bad_address');
+    });
+  });
+});
+
+/**
  * O3 (N4): the verdict write to the private table (one row per agent for the mint) must lock in the shared order
  * (mint, then agent_id COLLATE "C") before it updates, like the snapshot write, or the two can deadlock. A fake
  * database records each statement and the transaction it ran in.
@@ -349,12 +554,12 @@ describe('chain-check tick pacing: skip inside the breaker window, probe 1 coin 
     });
     let inFlight = 0;
     let maxInFlight = 0;
-    const read = rpc.getParsedAccount.bind(rpc);
-    rpc.getParsedAccount = async (address: string) => {
+    const read = rpc.getMintAndPool.bind(rpc);
+    rpc.getMintAndPool = async (mint: string, pair: string | null) => {
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((r) => setTimeout(r, 2));
-      try { return await read(address); } finally { inFlight -= 1; }
+      try { return await read(mint, pair); } finally { inFlight -= 1; }
     };
     const limits: number[] = [];
     const stored: string[] = [];
@@ -442,7 +647,7 @@ describe('chain-check tick pacing: skip inside the breaker window, probe 1 coin 
 
   test('fail closed in the probe tick: an RPC error is stored as a transient error, never a pass', async () => {
     const h = tickHarness(3);
-    h.deps.rpc.getParsedAccount = async () => { throw new Error('429 Too Many Requests: fallback rate limited (local)'); };
+    h.deps.rpc.getMintAndPool = async () => { throw new Error('429 Too Many Requests: fallback rate limited (local)'); };
     const verdicts: Array<{ pass: boolean; error?: string }> = [];
     const result = await runChainCheckTick(NOW, {
       ...h.deps,

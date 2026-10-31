@@ -1708,7 +1708,7 @@ process.on('uncaughtException', (err) => {
 
     // CLV PRICE ORACLE (Tokenomics T0, 2026-07-07) — READ-ONLY price feed.
     // Seeds the 30-min TWAP window from `clv_price_snapshots`, then polls the
-    // CLV price (Helius primary → keyless DexScreener fallback) every ~60s,
+    // CLV price (keyless DexScreener primary → Helius fallback) every ~60s,
     // writing a snapshot row + refreshing an in-memory spot/TWAP cache behind
     // `getClvPrice()`. Fire-and-forget: a fetch/DB failure logs + degrades to
     // last-known, never crashes boot. Read surface: GET /api/oracle/clv (admin).

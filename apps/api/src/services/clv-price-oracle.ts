@@ -7,17 +7,19 @@
  * `avatars.clawTokens` or the ClawToken ledger — every value here is a USD
  * DECIMAL, never a ClawToken amount.
  *
- * DATA SOURCES (mirroring the existing repo patterns):
- *   1. Helius (primary when configured) — DAS `getAsset` RPC →
- *      `result.token_info.price_info.price_per_token`. Uses ONLY the
- *      `HELIUS_API_KEY` environment variable; when it is unset, or when a thin
- *      token returns no `price_info`, Helius is skipped/treated as failed and
- *      the poll falls through to DexScreener.
- *   2. DexScreener (fallback, KEYLESS — the dependable path) — mirrors
+ * DATA SOURCES (DexScreener primary → Helius fallback, since 2026-10-31 to cut
+ * Helius credits; the DAS call costs 10 credits and DexScreener runs every
+ * round anyway for depth):
+ *   1. DexScreener (primary, KEYLESS) — mirrors
  *      `apps/web/src/app/dash/tabs/token-economy.tsx`: `GET .../dex/tokens/<mint>`
  *      → highest-liquidity `pairs[].priceUsd`.
+ *   2. Helius (fallback, only when DexScreener gave no usable price) — DAS
+ *      `getAsset` RPC → `result.token_info.price_info.price_per_token`. Uses
+ *      ONLY the `HELIUS_API_KEY` environment variable; when it is unset, or
+ *      when a thin token returns no `price_info`, Helius is skipped/treated as
+ *      failed and the poll fails (serves last-known).
  *
- * FLOW: every poll fetches spot (Helius → DexScreener). On success it writes one
+ * FLOW: every poll fetches spot (DexScreener → Helius). On success it writes one
  * `clv_price_snapshots` row (durable history) and refreshes an in-memory cache
  * (latest spot + a rolling 30-min sample window for the TWAP). On boot it seeds
  * the window from the last ~30 min of rows so a restart doesn't lose the TWAP.
@@ -41,11 +43,10 @@
  *   pool, USD). Previously fetched into a local `bestLiq` and DISCARDED; now
  *   surfaced through the cache so the CLV swap executor (`clv-swap-executor.ts`)
  *   can size price-impact-capped clips. DexScreener is the ONLY depth source
- *   (Helius DAS carries no pool liquidity), so `fetchSpot` now runs BOTH feeds
- *   in parallel every poll: the PRICE preference is unchanged (configured
- *   Helius primary → keyless DexScreener fallback) while the DEPTH always
- *   refreshes from DexScreener when
- *   it responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
+ *   (Helius DAS carries no pool liquidity), so `fetchSpot` calls DexScreener
+ *   every poll; its price is the primary and Helius is only asked when
+ *   DexScreener gave no usable price. The DEPTH always refreshes from
+ *   DexScreener when it responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
  *   no schema change), so it re-warms within one poll (~60s) of boot; it goes
  *   `null` when the reading is missing or older than the same max-stale window
  *   as the price (a stale depth must never size a clip plan).
@@ -171,14 +172,13 @@ interface HeliusGetAssetResponse {
  */
 export async function fetchHeliusPrice(): Promise<number | null> {
   const key = process.env.HELIUS_API_KEY?.trim();
-  // Helius is optional and env-only. DexScreener remains the keyless fallback,
+  // Helius is optional and env-only (the fallback behind keyless DexScreener),
   // so a local environment never needs a committed or placeholder API key.
   if (!key) return null;
   try {
     // A quota-exhausted Helius (429) fails over to the public mainnet RPC. That
-    // endpoint has no DAS `getAsset`, so the fallback answers a JSON-RPC error,
-    // the price reads null, and the poll uses DexScreener (unchanged outcome,
-    // but the retry storm against the dead primary ends).
+    // endpoint has no DAS `getAsset`, so the fallback answers a JSON-RPC error
+    // and the price reads null (the retry storm against the dead primary ends).
     const res = await mainnetFailoverFetch(`https://mainnet.helius-rpc.com/?api-key=${key}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -251,28 +251,32 @@ async function fetchDexScreenerPrice(): Promise<{
 }
 
 /**
- * One poll round. PRICE preference is unchanged (configured Helius primary →
- * keyless DexScreener fallback; null only when BOTH fail). DEPTH (Tokenomics C3) always comes from
- * DexScreener — the only feed that carries pool liquidity — so both feeds are
- * fetched in PARALLEL every round (one extra keyless request per ~60s poll)
- * instead of DexScreener only running on a Helius failure.
+ * One poll round (Helius budget, 2026-10-31): DexScreener primary → Helius
+ * fallback. DexScreener runs every round anyway (it is the only DEPTH source,
+ * Tokenomics C3), so its price is used whenever it is a positive finite number;
+ * the Helius DAS `getAsset` call (10 credits) runs ONLY when DexScreener gave no
+ * usable price. null only when BOTH fail. Exported for the oracle unit test.
  */
-async function fetchSpot(): Promise<SpotResult | null> {
-  const [heliusPrice, dex] = await Promise.all([fetchHeliusPrice(), fetchDexScreenerPrice()]);
+export async function fetchSpot(): Promise<SpotResult | null> {
+  const dex = await fetchDexScreenerPrice();
   const liquidityUsd = dex?.liquidityUsd ?? null;
+  if (dex !== null) {
+    const priceNum = Number(dex.priceStr);
+    if (Number.isFinite(priceNum) && priceNum > 0) {
+      return {
+        priceNum,
+        priceStr: normalizeDecimalString(dex.priceStr),
+        source: 'dexscreener',
+        liquidityUsd,
+      };
+    }
+  }
+  const heliusPrice = await fetchHeliusPrice();
   if (heliusPrice !== null) {
     return {
       priceNum: heliusPrice,
       priceStr: numberToPlainDecimal(heliusPrice),
       source: 'helius',
-      liquidityUsd,
-    };
-  }
-  if (dex !== null) {
-    return {
-      priceNum: Number(dex.priceStr),
-      priceStr: normalizeDecimalString(dex.priceStr),
-      source: 'dexscreener',
       liquidityUsd,
     };
   }
@@ -497,7 +501,7 @@ export function startClvPriceOracle(): void {
 
   console.log(
     `[clv-price-oracle] started — polling CLV price every ${Math.round(periodMs / 1000)}s ` +
-      `(configured Helius primary → keyless DexScreener fallback)`,
+      `(DexScreener primary → Helius fallback)`,
   );
 }
 

@@ -15,7 +15,7 @@ import { ARENA_WITHDRAW_TICK_MS, runArenaWithdrawTick } from './withdraw';
 /**
  * Trading Floor Arena engine wiring (docs/trading-floor-arena.md §6). `startFloorArena()` is called from
  * apps/api/src/index.ts; only the leader (advisory lock) runs the loops:
- *   discovery pollers (one per source, 30-60 s, jittered backoff on failure), enrichment 20 s, chain checks 20 s,
+ *   discovery pollers (one per source, 30-60 s, jittered backoff on failure), enrichment 20 s, chain checks 30 s,
  *   entries 15 s, exits 10 s, provisioning + x402 reconcile 30 s, wallet withdrawals 30 s (withdraw.ts),
  *   analysis / add-ons 60 s, discovery expiry 5 min, event prune 1 h. Only the leader writes to ClawPump
  *   (single writer, Codex r19); the withdrawals loop is the only caller of the transfer POST (P5 I4).
@@ -140,7 +140,7 @@ function buildLoops(): ArenaLoop[] {
     new ArenaLoop('enrichment', 20_000, runEnrichmentTick, { initialDelayMs: 10_000, jitter: 0.05 }),
     // T4: the ONE PumpPortal websocket (leader-held; no backoff: a missed tick for 45 s closes the socket).
     new ArenaLoop('pumpportal', PUMPPORTAL_TICK_MS, runPumpPortalTick, { initialDelayMs: 3_000, jitter: 0.05 }),
-    new ArenaLoop('chain-checks', 20_000, (now) => runChainCheckTick(now), { initialDelayMs: 15_000, jitter: 0.05 }),
+    new ArenaLoop('chain-checks', 30_000, (now) => runChainCheckTick(now), { initialDelayMs: 15_000, jitter: 0.05 }),
     new ArenaLoop('entries', 15_000, (now) => runEntryTick(now), { initialDelayMs: 20_000, jitter: 0.05 }),
     new ArenaLoop('exits', 10_000, (now) => runExitTick(now), { initialDelayMs: 5_000, jitter: 0.05 }),
     new ArenaLoop('analysis', 60_000, runArenaAnalysisTick, { initialDelayMs: 30_000 }),
