@@ -161,6 +161,19 @@ describe('pickHydraCoin', () => {
     expect((await pickHydraCoin())?.symbol).toBe('ALPHA');
   });
 
+  it('does NOT cache a statement timeout (57014, also wrapped as a cause): the next call reads again', async () => {
+    nextRows = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    expect(await pickHydraCoin()).toBeNull();
+    nextRows = [row('A', 'ALPHA')];
+    expect((await pickHydraCoin())?.symbol).toBe('ALPHA');
+    expect(selects()).toHaveLength(2);
+    __resetHydraCoinCacheForTests();
+    nextRows = new Error('query failed', { cause: { code: '57014' } });
+    expect(await pickHydraCoin()).toBeNull();
+    nextRows = [row('B', 'BETA')];
+    expect((await pickHydraCoin())?.symbol).toBe('BETA');
+  });
+
   it('bounds the read server-side: SET LOCAL statement_timeout runs first, in the same transaction', async () => {
     nextRows = [row('A', 'ALPHA')];
     await pickHydraCoin();

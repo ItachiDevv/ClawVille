@@ -19,7 +19,6 @@
 import {
   closeSync,
   existsSync,
-  linkSync,
   openSync,
   readFileSync,
   renameSync,
@@ -32,7 +31,6 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 export const LOCK_TIMEOUT_MS = 10_000;
-export const STALE_LOCK_MS = 120_000;
 const LOCK_RETRY_MS = 25;
 const SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
 
@@ -63,32 +61,12 @@ export function writeJsonAtomic(path, value) {
 }
 
 /**
- * Break a lock older than staleMs. Rename it to a unique name first (only one breaker can win the
- * rename); if the renamed file turns out to be fresh, a live holder created it between our stat and
- * our rename, so put it back.
+ * Run fn while holding an exclusive lock file (created with flag 'wx'). Waits at most timeoutMs.
+ * A lock is NEVER broken automatically: an age-only check cannot tell a crashed holder from a slow
+ * live one, and breaking a live holder's lock lets two processes write the ledger (Codex re-review
+ * 2026-10-31). A leftover lock is removed by hand; the refusal names its age and holder.
  */
-function breakStaleLock(lockPath, staleMs) {
-  const tomb = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
-  try {
-    renameSync(lockPath, tomb);
-  } catch (err) {
-    if (err.code === 'ENOENT') return;
-    throw err;
-  }
-  let ageMs = Infinity;
-  try { ageMs = Date.now() - statSync(tomb).mtimeMs; } catch {}
-  if (ageMs < staleMs) {
-    try { linkSync(tomb, lockPath); } catch {}
-  } else {
-    let holder = '';
-    try { holder = readFileSync(tomb, 'utf8').trim(); } catch {}
-    console.warn(`[spend-ledger] broke a stale lock ${lockPath} (age ${Math.round(ageMs / 1000)} s, holder ${holder || 'unknown'})`);
-  }
-  try { unlinkSync(tomb); } catch {}
-}
-
-/** Run fn while holding an exclusive lock file (created with flag 'wx'). Waits at most timeoutMs. */
-export async function withFileLock(lockPath, fn, { timeoutMs = LOCK_TIMEOUT_MS, staleMs = STALE_LOCK_MS } = {}) {
+export async function withFileLock(lockPath, fn, { timeoutMs = LOCK_TIMEOUT_MS } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     let fd;
@@ -96,32 +74,29 @@ export async function withFileLock(lockPath, fn, { timeoutMs = LOCK_TIMEOUT_MS, 
       fd = openSync(lockPath, 'wx');
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
-      let ageMs = 0;
-      try {
-        ageMs = Date.now() - statSync(lockPath).mtimeMs;
-      } catch (statErr) {
-        if (statErr.code === 'ENOENT') continue; // released between open and stat
-        throw statErr;
-      }
-      if (ageMs > staleMs) {
-        breakStaleLock(lockPath, staleMs);
-        continue;
-      }
       if (Date.now() >= deadline) {
+        let detail = '';
+        try {
+          const ageS = Math.round((Date.now() - statSync(lockPath).mtimeMs) / 1000);
+          const holder = readFileSync(lockPath, 'utf8').trim();
+          detail = ` (lock age ${ageS} s, holder ${holder || 'unknown'})`;
+        } catch {}
         throw new SpendRefusedError(
-          `refusing: ledger lock ${lockPath} is held by another process (waited ${timeoutMs} ms). ` +
+          `refusing: ledger lock ${lockPath} is held by another process (waited ${timeoutMs} ms)${detail}. ` +
             `If no paid run is active, delete the lock file.`,
         );
       }
       await sleep(LOCK_RETRY_MS);
       continue;
     }
+    // From here on the lock file is ours: every path, including a failed metadata write or close,
+    // must remove it.
     try {
-      writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
-    } finally {
-      closeSync(fd);
-    }
-    try {
+      try {
+        writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+      } finally {
+        closeSync(fd);
+      }
       return await fn();
     } finally {
       try { unlinkSync(lockPath); } catch {}
@@ -154,7 +129,6 @@ export async function reserveSpend({
   entry = {},
   init,
   lockTimeoutMs = LOCK_TIMEOUT_MS,
-  staleLockMs = STALE_LOCK_MS,
 }) {
   if (typeof cap !== 'number' || !Number.isFinite(cap) || cap <= 0) {
     throw new SpendRefusedError(`refusing paid '${label}': no owner-approved spend cap (got ${String(cap)})`);
@@ -179,7 +153,7 @@ export async function reserveSpend({
       writeJsonAtomic(ledgerPath, ledger);
       return { total, id };
     },
-    { timeoutMs: lockTimeoutMs, staleMs: staleLockMs },
+    { timeoutMs: lockTimeoutMs },
   );
 }
 
@@ -190,7 +164,6 @@ export async function updateSpendEntry({
   patch,
   totalKey = 'bookedUsd',
   lockTimeoutMs = LOCK_TIMEOUT_MS,
-  staleLockMs = STALE_LOCK_MS,
 }) {
   return withFileLock(
     `${ledgerPath}.lock`,
@@ -201,6 +174,6 @@ export async function updateSpendEntry({
       Object.assign(call, patch, { id });
       writeJsonAtomic(ledgerPath, ledger);
     },
-    { timeoutMs: lockTimeoutMs, staleMs: staleLockMs },
+    { timeoutMs: lockTimeoutMs },
   );
 }

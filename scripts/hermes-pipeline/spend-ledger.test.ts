@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 // @ts-ignore -- plain .mjs module without type declarations
-import { reserveSpend, updateSpendEntry, SpendRefusedError } from './spend-ledger.mjs';
+import { reserveSpend, updateSpendEntry, withFileLock, SpendRefusedError } from './spend-ledger.mjs';
 
 const MODULE_URL = pathToFileURL(join(import.meta.dir, 'spend-ledger.mjs')).href;
 
@@ -160,15 +160,21 @@ describe('concurrency', () => {
 });
 
 describe('lock handling', () => {
-  test('a stale lock (older than staleLockMs) is broken with a warning, then the reservation proceeds', async () => {
+  test('an old lock is never broken automatically: refusal names its age and holder, lock stays', async () => {
     const lockPath = `${ledgerPath}.lock`;
     writeFileSync(lockPath, JSON.stringify({ pid: 999999, at: '2026-10-31T00:00:00.000Z' }));
     const old = new Date(Date.now() - 10 * 60_000);
     utimesSync(lockPath, old, old);
-    const { total } = await reserveSpend({ ledgerPath, amount: 1, cap: 5, label: 'x', lockTimeoutMs: 500 });
-    expect(total).toBe(1);
-    expect(quietWarn).toHaveBeenCalledTimes(1);
-    expect(String(quietWarn.mock.calls[0]![0])).toContain('broke a stale lock');
+    const err = await reserveSpend({ ledgerPath, amount: 1, cap: 5, label: 'x', lockTimeoutMs: 150 }).catch((e) => e);
+    expect(String(err.message)).toContain(`refusing: ledger lock ${lockPath} is held by another process (waited 150 ms)`);
+    expect(String(err.message)).toMatch(/lock age \d+ s, holder .*999999/);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(existsSync(ledgerPath)).toBe(false);
+  });
+
+  test('the lock is removed when the locked work throws', async () => {
+    const lockPath = `${ledgerPath}.lock`;
+    await expect(withFileLock(lockPath, () => { throw new Error('boom'); })).rejects.toThrow('boom');
     expect(existsSync(lockPath)).toBe(false);
   });
 

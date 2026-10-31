@@ -118,6 +118,15 @@ async function loadPool(now: Date): Promise<HydraCoin[]> {
   return coins;
 }
 
+/** Postgres query_canceled (57014, raised by statement_timeout), also when wrapped as an error cause. */
+function isStatementTimeout(err: unknown): boolean {
+  for (let e: unknown = err, depth = 0; e && typeof e === 'object' && depth < 5; depth++) {
+    if ((e as { code?: unknown }).code === '57014') return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
  * Random coin first/last seen in the current UTC day from floor_discovery_mints; masked/offensive rows
  * skipped; small in-memory pool cached ~60s (one DB query per minute max); returns null when none, on DB
@@ -132,12 +141,14 @@ export async function pickHydraCoin(): Promise<HydraCoin | null> {
   if (!fresh) {
     if (!inflight) {
       inflight = loadPool(now)
-        .catch((err: unknown) => {
+        .catch((err: unknown): HydraCoin[] | null => {
           console.warn('[hydra-coin-chatter] discovery read failed:', err instanceof Error ? err.message : String(err));
-          return [] as HydraCoin[];
+          // A statement timeout is not "no coins today": do not cache it (Codex re-review 2026-10-31).
+          return isStatementTimeout(err) ? null : [];
         })
         .then((coins) => {
-          // A failed or empty read is cached too, so a DB outage still costs one query per minute.
+          if (coins === null) return [];
+          // Any other failed or empty read is cached, so a DB outage still costs one query per minute.
           pool = { dayStartMs, loadedAtMs: Date.now(), coins };
           return coins;
         })
