@@ -179,6 +179,7 @@ import { adminTradingRoutes } from './routes/admin-trading';
 import { floorArenaRoutes } from './routes/floor-arena';
 import { floorArenaHouseBoardRoutes } from './routes/floor-arena-house-board';
 import { adminFloorArenaRoutes } from './routes/admin-floor-arena';
+import { chainFeedRoutes } from './routes/chain-feed';
 import { assertTradingLimitsWithinCode } from '@clawville/shared';
 import { registerTradeVerifiedCallback } from './services/trade-observer';
 import {
@@ -530,6 +531,9 @@ app.route('/api/admin/trading', adminTradingRoutes);
 // Trading Floor Arena (paper contest, docs/trading-floor-arena.md §5). Operator
 // routes use the admin-trading guard (session + moneyOperatorOnly).
 app.route('/api/admin/floor-arena', adminFloorArenaRoutes);
+// Helius budget (founder 2026-10-31): prod serves its arena chain verdicts to staging (secret-authed, read only,
+// 404 unless CHAIN_FEED_SECRET is set). See routes/chain-feed.ts.
+app.route('/api/internal/chain-feed', chainFeedRoutes);
 // ORDER IS LOAD BEARING: mounted BEFORE '/api/floor'. The trading-floor router
 // registers `use('*', sessionMiddleware)` at '/api/floor/*', which also matches
 // '/api/floor/arena/*'. Registered first, the arena's public GETs answer before

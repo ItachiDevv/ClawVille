@@ -1,13 +1,15 @@
-import { describe, expect, spyOn, test } from 'bun:test';
+import { beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { Keypair, PublicKey, type Connection } from '@solana/web3.js';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
-  chainErrorCode, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus, isTransientChainError, lpLockFail, mintRuleFails,
+  CHAIN_VERDICT_TTL_MS, ChainFeedError, chainErrorCode, chainFeedConfigured, chainRetryJitterMs, chainVerdictDue, entryVerdictStatus,
+  fetchChainFeed, isTransientChainError, lpLockFail, mintRuleFails,
   orderDueChainChecks, pickDueChainChecks, poolReserveFail, runChainCheck, runChainCheckTick, storeChainVerdict, top10Percent,
-  verdictFromCodes, web3ChainRpc, type ArenaChainVerdict, type ChainRpc, type DueRow, type ParsedAccount, type RawAccount,
+  FEED_MISS_BACKOFF_MS, resetChainFeedMissBackoff, usableFeedVerdict, verdictFromCodes, web3ChainRpc, type ArenaChainVerdict, type ChainFeedErrorCause, type ChainRpc, type DueRow, type ParsedAccount, type RawAccount,
 } from './chain-checks';
 import type { FloorArenaSnapshot } from './filters';
+import { resetTradingLoopAlertsForTest } from '../trading-rpc';
 
 const SPL = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const T22 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -657,5 +659,300 @@ describe('chain-check tick pacing: skip inside the breaker window, probe 1 coin 
     expect(result).toMatchObject({ checked: 1, passed: 0, errors: 1, skipped: null });
     expect(verdicts.map((v) => [v.pass, v.error])).toEqual([[false, 'chain_check_error: rpc_rate_limited']]);
     expect(isTransientChainError(verdicts[0]!.error)).toBe(true);
+  });
+});
+
+/**
+ * Helius budget (founder order 2026-10-31): staging with no Helius RPC fills its verdicts from prod's feed. A verdict
+ * is stored only for the same pair, fresh, not from the future and not an error, with prod's ORIGINAL check time.
+ */
+describe('chain-check feed path (staging with no Helius RPC reads prod verdicts)', () => {
+  const PAIR = key();
+  beforeEach(() => { resetChainFeedMissBackoff(); });
+  function row(mint: string, pairAddress: string | null = PAIR, snapshot = true): DueRow {
+    return {
+      mint,
+      snapshot: snapshot ? { pairAddress, liqUsd: 10_000, liqBase: 1 } as unknown as FloorArenaSnapshot : null,
+      unchecked: true,
+      firstSeenMs: 1_000,
+      checkedAtMs: null,
+    };
+  }
+  function passVerdict(pairAddress: string | null = PAIR, checkedAt = NOW.toISOString()): ArenaChainVerdict {
+    return verdictFromCodes([], { checkedAt, pairAddress, top10Pct: 12.5, decimals: 6, tokenProgram: 'spl' });
+  }
+  function feedHarness(rows: DueRow[], body: unknown) {
+    const limits: number[] = [];
+    const asked: Array<readonly string[]> = [];
+    const stored: Array<{ mint: string; verdict: ArenaChainVerdict; at: string }> = [];
+    let rpcCalls = 0;
+    const rpc = new FakeRpc();
+    const read = rpc.getMintAndPool.bind(rpc);
+    rpc.getMintAndPool = async (mint: string, pair: string | null) => { rpcCalls += 1; return read(mint, pair); };
+    const deps = {
+      rpc,
+      configured: () => false,
+      feedConfigured: () => true,
+      rpcStatus: () => ({ primaryHealthy: true, downUntil: null }),
+      selectDue: async (_now: Date, limit: number) => { limits.push(limit); return rows; },
+      fetchFeed: async (mints: readonly string[]) => {
+        asked.push(mints);
+        return typeof body === 'function' ? (body as (m: readonly string[]) => Promise<unknown>)(mints) : body;
+      },
+      store: async (mint: string, verdict: ArenaChainVerdict, at: Date) => { stored.push({ mint, verdict, at: at.toISOString() }); },
+    };
+    return { deps, limits, asked, stored, rpcCalls: () => rpcCalls };
+  }
+  const item = (mint: string, verdict: unknown, checkedAt = (verdict as ArenaChainVerdict).checkedAt) => ({ mint, verdict, checkedAt });
+
+  describe('Codex P1: feed misses do not starve other due rows', () => {
+    /** Prod answers only the mints in `answered`, each with a fresh pass verdict for PAIR. */
+    function answering(answered: ReadonlySet<string>) {
+      return async (mints: readonly string[]) => ({ verdicts: mints.filter((m) => answered.has(m)).map((m) => item(m, passVerdict())) });
+    }
+
+    test('200 rows prod never answers come first: the answered row is still fed in the same tick, then the 200 back off for 5 min', async () => {
+      const unanswered = Array.from({ length: 200 }, () => key());
+      const answered = key();
+      const rows = [...unanswered.map((m) => row(m)), row(answered)];
+      const h = feedHarness(rows, answering(new Set([answered])));
+      const first = await runChainCheckTick(NOW, h.deps);
+      expect(h.limits).toEqual([1000]);
+      expect(h.asked.map((chunk) => chunk.length)).toEqual([200, 1]);
+      expect(h.asked[1]).toEqual([answered]);
+      expect(h.stored.map((s) => s.mint)).toEqual([answered]);
+      expect(first).toEqual({ checked: 201, passed: 1, errors: 0, skipped: null, fed: 1 });
+
+      // Next tick: the stored row is no longer due; the 200 misses are under backoff, so no GET at all.
+      rows.pop();
+      const second = await runChainCheckTick(new Date(NOW.getTime() + 30_000), h.deps);
+      expect(h.asked).toHaveLength(2);
+      expect(second).toEqual({ checked: 0, passed: 0, errors: 0, skipped: null, fed: 0 });
+
+      // After the 5-min backoff they are asked again.
+      const third = await runChainCheckTick(new Date(NOW.getTime() + FEED_MISS_BACKOFF_MS), h.deps);
+      expect(h.asked).toHaveLength(3);
+      expect(h.asked[2]).toEqual(unanswered);
+      expect(third).toEqual({ checked: 200, passed: 0, errors: 0, skipped: null, fed: 0 });
+    });
+
+    test('a rejected verdict (other pair) also backs off; at most 3 GETs of 200 per tick', async () => {
+      const mints = Array.from({ length: 700 }, () => key());
+      const h = feedHarness(mints.map((m) => row(m)), async (asked: readonly string[]) => ({
+        verdicts: asked.map((m) => item(m, passVerdict(key()))),
+      }));
+      const result = await runChainCheckTick(NOW, h.deps);
+      expect(h.asked.map((chunk) => chunk.length)).toEqual([200, 200, 200]);
+      expect(h.asked.flat()).toEqual(mints.slice(0, 600));
+      expect(result).toEqual({ checked: 600, passed: 0, errors: 0, skipped: null, fed: 0 });
+      await runChainCheckTick(new Date(NOW.getTime() + 30_000), h.deps);
+      expect(h.asked[3]).toEqual(mints.slice(600));
+    });
+
+    test('a failed chunk writes nothing and backs off nothing; earlier chunk writes stay', async () => {
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      resetTradingLoopAlertsForTest();
+      try {
+        const mints = Array.from({ length: 450 }, () => key());
+        let call = 0;
+        const rows = mints.map((m) => row(m));
+        const h = feedHarness(rows, async (asked: readonly string[]) => {
+          call += 1;
+          if (call === 2) throw new ChainFeedError('http_502');
+          // Chunk 2 would answer every mint; chunk 1 answers only its first mint.
+          return { verdicts: (call === 1 ? asked.slice(0, 1) : asked).map((m) => item(m, passVerdict())) };
+        });
+        const first = await runChainCheckTick(NOW, h.deps);
+        expect(h.asked.map((chunk) => chunk.length)).toEqual([200, 200]);
+        expect(h.stored.map((s) => s.mint)).toEqual([mints[0]]);
+        expect(first).toEqual({ checked: 200, passed: 1, errors: 0, skipped: 'feed_error', fed: 1 });
+        // Next tick: the stored row is no longer due; chunk-1 misses wait; the failed chunk's rows (and the unsent
+        // tail) are asked again at once.
+        rows.shift();
+        const second = await runChainCheckTick(new Date(NOW.getTime() + 30_000), h.deps);
+        expect(h.asked.slice(2).flat()).toEqual(mints.slice(200));
+        expect(second.fed).toBe(250);
+        expect(h.stored).toHaveLength(251);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
+  test('stores a usable verdict with the original prod check time; one GET for every due row with a snapshot', async () => {
+    const [a, b, c] = [key(), key(), key()];
+    const olderAt = new Date(NOW.getTime() - 20 * 60_000).toISOString();
+    const failVerdict = verdictFromCodes(['mint_authority'], { checkedAt: olderAt, pairAddress: PAIR, top10Pct: null });
+    const h = feedHarness([row(a), row(b), row(c, PAIR, false), row('not-base58!')], { verdicts: [item(a, passVerdict()), item(b, failVerdict)] });
+    const result = await runChainCheckTick(NOW, h.deps);
+    expect(h.limits).toEqual([1000]);
+    expect(h.asked).toEqual([[a, b]]);
+    expect(h.rpcCalls()).toBe(0);
+    expect(h.stored).toEqual([
+      { mint: a, verdict: passVerdict(), at: NOW.toISOString() },
+      { mint: b, verdict: failVerdict, at: olderAt },
+    ]);
+    expect(result).toEqual({ checked: 2, passed: 1, errors: 0, skipped: null, fed: 2 });
+  });
+
+  test('skips a pair mismatch, a stale, a future, an error and a malformed verdict; a mint not asked is ignored', async () => {
+    const [pair, stale, future, errored, bad, nearFuture] = [key(), key(), key(), key(), key(), key()];
+    const staleAt = new Date(NOW.getTime() - CHAIN_VERDICT_TTL_MS).toISOString();
+    const futureAt = new Date(NOW.getTime() + 61_000).toISOString();
+    const skewAt = new Date(NOW.getTime() + 30_000).toISOString();
+    const errorVerdict = verdictFromCodes(['chain_check_error'], { checkedAt: NOW.toISOString(), pairAddress: PAIR, top10Pct: null }, 'chain_check_error: rpc_timeout');
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    resetTradingLoopAlertsForTest();
+    try {
+      const h = feedHarness([row(pair), row(stale), row(future), row(errored), row(bad), row(nearFuture)], {
+        verdicts: [
+          item(pair, passVerdict(key())),
+          item(stale, passVerdict(PAIR, staleAt)),
+          item(future, passVerdict(PAIR, futureAt)),
+          item(errored, errorVerdict),
+          item(bad, { ...passVerdict(), extra: 'x' }),
+          item(nearFuture, passVerdict(PAIR, skewAt)),
+          item(key(), passVerdict()),
+        ],
+      });
+      const result = await runChainCheckTick(NOW, h.deps);
+      // A verdict up to 60 s ahead (clock skew) is used, stored at our now, never later.
+      expect(h.stored.map((s) => [s.mint, s.at])).toEqual([[nearFuture, NOW.toISOString()]]);
+      expect(result).toEqual({ checked: 6, passed: 1, errors: 0, skipped: null, fed: 1 });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('invalid_verdict');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('usableFeedVerdict: a null pair matches a null snapshot pair; an inconsistent verdict is invalid', () => {
+    const at = NOW.toISOString();
+    expect(usableFeedVerdict({ verdict: passVerdict(null), checkedAt: at }, null, NOW.getTime())).toMatchObject({ ok: true });
+    expect(usableFeedVerdict({ verdict: { ...passVerdict(), codes: ['mint_authority'] }, checkedAt: at }, PAIR, NOW.getTime()))
+      .toEqual({ ok: false, reason: 'invalid' });
+    expect(usableFeedVerdict({ verdict: { ...passVerdict(), fails: ['not-a-rule'] }, checkedAt: at }, PAIR, NOW.getTime()))
+      .toEqual({ ok: false, reason: 'invalid' });
+    expect(usableFeedVerdict({ verdict: passVerdict(), checkedAt: 'nope' }, PAIR, NOW.getTime())).toEqual({ ok: false, reason: 'time' });
+  });
+
+  test('feed failure or a bad envelope: no writes, skipped feed_error, one log per cause, never throws', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    resetTradingLoopAlertsForTest();
+    try {
+      const a = key();
+      const failing = feedHarness([row(a)], async () => { throw new ChainFeedError('http_503'); });
+      const first = await runChainCheckTick(NOW, failing.deps);
+      const second = await runChainCheckTick(new Date(NOW.getTime() + 30_000), failing.deps);
+      for (const result of [first, second]) expect(result).toEqual({ checked: 0, passed: 0, errors: 0, skipped: 'feed_error', fed: 0 });
+      expect(failing.stored).toEqual([]);
+      const malformed = feedHarness([row(a)], { verdicts: 'nope' });
+      expect(await runChainCheckTick(NOW, malformed.deps)).toEqual({ checked: 0, passed: 0, errors: 0, skipped: 'feed_error', fed: 0 });
+      expect(malformed.stored).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0]![0])).toContain('http_503');
+      expect(String(warn.mock.calls[1]![0])).toContain('invalid_body');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('no due rows: no GET', async () => {
+    const h = feedHarness([], { verdicts: [] });
+    expect(await runChainCheckTick(NOW, h.deps)).toEqual({ checked: 0, passed: 0, errors: 0, skipped: null, fed: 0 });
+    expect(h.asked).toEqual([]);
+  });
+
+  test('a configured RPC wins: the feed is never read and the result has no feed fields', async () => {
+    const a = key();
+    const h = feedHarness([row(a)], { verdicts: [item(a, passVerdict())] });
+    h.deps.rpc.parsed.set(a, mintAccount({ freezeAuthority: key() }));
+    const result = await runChainCheckTick(NOW, { ...h.deps, configured: () => true });
+    expect(h.asked).toEqual([]);
+    expect(h.rpcCalls()).toBe(1);
+    expect(result).toEqual({ checked: 1, passed: 0, errors: 0, skipped: null });
+  });
+
+  test('no RPC and no feed: the unchanged rpc_not_configured skip', async () => {
+    const h = feedHarness([row(key())], { verdicts: [] });
+    expect(await runChainCheckTick(NOW, { ...h.deps, feedConfigured: () => false }))
+      .toEqual({ checked: 0, passed: 0, errors: 0, skipped: 'rpc_not_configured' });
+    expect(h.asked).toEqual([]);
+    expect(h.limits).toEqual([]);
+  });
+
+  describe('env: staging only, https URL, secret >= 32 characters', () => {
+    const NAMES = ['CLAWVILLE_ENV', 'CHAIN_FEED_URL', 'CHAIN_FEED_SECRET'] as const;
+    const SECRET = 's'.repeat(40);
+    type EnvPatch = Partial<Record<(typeof NAMES)[number], string | undefined>>;
+    async function withEnv<T>(env: EnvPatch, run: () => T | Promise<T>): Promise<T> {
+      const saved = NAMES.map((name) => [name, process.env[name]] as const);
+      for (const name of NAMES) {
+        const value = env[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      try {
+        return await run();
+      } finally {
+        for (const [name, value] of saved) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      }
+    }
+    const good: EnvPatch = { CLAWVILLE_ENV: 'staging', CHAIN_FEED_URL: 'https://api.clawville.world', CHAIN_FEED_SECRET: SECRET };
+
+    test('chainFeedConfigured', async () => {
+      expect(await withEnv(good, chainFeedConfigured)).toBe(true);
+      expect(await withEnv({ ...good, CLAWVILLE_ENV: 'production' }, chainFeedConfigured)).toBe(false);
+      expect(await withEnv({ ...good, CLAWVILLE_ENV: undefined }, chainFeedConfigured)).toBe(false);
+      expect(await withEnv({ ...good, CHAIN_FEED_URL: 'http://api.clawville.world' }, chainFeedConfigured)).toBe(false);
+      expect(await withEnv({ ...good, CHAIN_FEED_URL: 'not a url' }, chainFeedConfigured)).toBe(false);
+      expect(await withEnv({ ...good, CHAIN_FEED_SECRET: 'short' }, chainFeedConfigured)).toBe(false);
+      expect(await withEnv({ ...good, CHAIN_FEED_SECRET: undefined }, chainFeedConfigured)).toBe(false);
+    });
+
+    test('prod never uses the feed: the default tick with no RPC skips rpc_not_configured', async () => {
+      const h = feedHarness([row(key())], { verdicts: [] });
+      const { feedConfigured: _unused, ...deps } = h.deps;
+      const result = await withEnv({ ...good, CLAWVILLE_ENV: 'production' }, () => runChainCheckTick(NOW, deps));
+      expect(result).toEqual({ checked: 0, passed: 0, errors: 0, skipped: 'rpc_not_configured' });
+      expect(h.asked).toEqual([]);
+    });
+
+    test('fetchChainFeed: one GET to the origin path, secret only in the Authorization header, no redirects', async () => {
+      const calls: Array<{ url: string; init: RequestInit }> = [];
+      const fake = (async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return new Response(JSON.stringify({ verdicts: [] }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const env = { ...good, CHAIN_FEED_URL: 'https://api.clawville.world/ignored/path?x=1' };
+      const body = await withEnv(env, () => fetchChainFeed(['MintA111', 'MintB222'], fake));
+      expect(body).toEqual({ verdicts: [] });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url).toBe('https://api.clawville.world/api/internal/chain-feed/verdicts?mints=MintA111,MintB222');
+      expect(calls[0]!.url).not.toContain(SECRET);
+      expect((calls[0]!.init.headers as Record<string, string>).Authorization).toBe(`Bearer ${SECRET}`);
+      expect(calls[0]!.init.redirect).toBe('error');
+      expect(calls[0]!.init.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    test('fetchChainFeed failures map to fixed codes that never carry the secret or the URL', async () => {
+      const cases: Array<[typeof fetch, ChainFeedErrorCause]> = [
+        [(async () => new Response('down', { status: 503 })) as unknown as typeof fetch, 'http_503'],
+        [(async () => { throw new Error(`connect ECONNREFUSED https://api.clawville.world?k=${SECRET}`); }) as unknown as typeof fetch, 'network'],
+        [(async () => new Response('{not json', { status: 200 })) as unknown as typeof fetch, 'invalid_json'],
+      ];
+      for (const [fake, code] of cases) {
+        const error = await withEnv(good, () => fetchChainFeed(['MintA111'], fake)).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(ChainFeedError);
+        expect((error as ChainFeedError).code).toBe(code);
+        expect((error as Error).message).not.toContain(SECRET);
+        expect((error as Error).message).not.toContain('clawville.world');
+      }
+      const notConfigured = await withEnv({ ...good, CHAIN_FEED_SECRET: undefined }, () => fetchChainFeed(['MintA111'])).catch((e: unknown) => e);
+      expect((notConfigured as ChainFeedError).code).toBe('not_configured');
+    });
   });
 });
