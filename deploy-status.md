@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-31 10:45Z (session helius). **PROD API = `e4163741f` (promotion #21, PR #332, VERIFIED): chain checks only for candidates, held coins and staging feed demand (11 checks in 15 min, was about 340); prod is the only Helius caller and feeds staging. STAGING API = `f239a59e4`, Helius OFF.** Prod web `d61b0c7b5`. SCHEMA: synced.
+Last Audited: 2026-10-31 19:52Z (session hydra). **Staging is receiving `feat/hydra-npc` (Hydra coin-analyst wanderer + chat with every wanderer, PROTOCOL_VERSION 104 -> 105); verification pending (see DEPLOY LOG).** Prod unchanged: PROD API = `e4163741f` (promotion #21).
+
+Prior - Last Audited: 2026-10-31 10:45Z (session helius). **PROD API = `e4163741f` (promotion #21, PR #332, VERIFIED): chain checks only for candidates, held coins and staging feed demand (11 checks in 15 min, was about 340); prod is the only Helius caller and feeds staging. STAGING API = `f239a59e4`, Helius OFF.** Prod web `d61b0c7b5`. SCHEMA: synced.
 
 Prior - Last Audited: 2026-10-31 09:17Z (session helius). **PROD API = `7895c5923` (promotion #20, PR #331, VERIFIED 09:16Z): prod is the only Helius caller and serves arena chain verdicts to staging; prod web `d61b0c7b5`. STAGING API = `a6bd24fff`, Helius OFF, verdicts fed from prod (651 in the first minute).** SCHEMA: synced.
 
@@ -702,6 +704,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-10-31 19:52Z (session hydra) - STAGING push: Hydra wanderer NPC + wanderer chat fix (PROTOCOL 105), verification pending
+- **What changed:** new free-roaming NPC Hydra (`hydra-analyst`): Meshy round-2 VRM `/avatars/hydra-w30k.vrm` (30.6k tris, 1.0 MB) with a neon-only emissive mask pulsed by `lib/three/hydra-glow.ts`; coin muttering from `floor_discovery_mints` (DB read only, 1.5 s deadline + `statement_timeout`, no Helius); human chat through `/api/chat/transient`, hosted agents through `talk_to_npc`, REST/MCP agents through `POST /api/agent/:sessionId/chat` `targetNpcId` -> `npcReply`. Players can now chat with every free-roaming wanderer (before this, `findNearestCharacter` knew building residents only). `npc-simulation.ts` tick no longer drops between-tick `agent_chat` bubbles.
+- **What broke during the build (fixed before push):** Codex review x4: BLOCK (no coin-query deadline; dead wanderers chattable; Meshy cap balance-based and racy, `submit-image` uncapped; image ledger race) -> BLOCK (ledger stale-lock break could evict a live holder; lock leak on a failed metadata write; 57014 timeout cached) -> BLOCK (expired pool after a timeout) -> BLOCK (midnight in-flight race) -> each fixed with a test proven to fail without the fix -> VERDICT: APPROVE on `ef78ac3c8`. W6 also found that an override agent driving Hydra's body would still get her LLM replies; fixed (Hydra stays silent while overridden).
+- **Evidence so far:** api/web/shared tsc 0; Hydra tests: sim 17/17, route 12/12, coin 23/23, reply 11/11, glow 9/9, character-positions 18/18, ledger 12/12; coupling gates 0 fail; doc guard pass; local prod build exit 0; `/preview/hermes?c=hydra` renders with idle/walk/run arms outside the body.
+- **For:** founder (Hydra look, glow, chatter); agents (PROTOCOL 105 manual line). Spend: OpenAI $4.80 booked of a $5 cap (about $3 real), Meshy 118 credits over both rounds (caps 70 and 100).
+- **SCHEMA:** synced (no migration).
 
 ### 2026-10-31 10:45Z (session helius) - promotion #21 ON PROD (`e4163741f`, PR #332): chain checks only for candidates and held coins, VERIFIED
 - **Verified:** staging `f239a59e4` (10:15Z): no arena errors, selector 11 eligible / 0 due. Prod run 41192266664 all jobs green; prod api `ebnatux…-20261031T102307` reports `e4163741f` (one container). Selector on prod: 12 eligible (was about 670). Chain checks 10:28-10:43Z: 11 (all pass), 0 errors, 0 chain-feed or chain-check failure lines; before the change about 23 per minute (about 340 per 15 min), so about 97% fewer chain-check Helius calls. `clawville.world/game` renders, 0 console errors. Prod web stays `d61b0c7b5`.
