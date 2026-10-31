@@ -168,7 +168,8 @@ export async function pickHydraCoin(): Promise<HydraCoin | null> {
       return null;
     }
   }
-  const coins = pool?.coins ?? [];
+  // A shared query that started before UTC midnight can settle with yesterday's pool: never pick from it.
+  const coins = pool !== null && pool.dayStartMs === dayStartMs ? pool.coins : [];
   if (coins.length === 0) return null;
   return coins[Math.floor(Math.random() * coins.length)] ?? null;
 }

@@ -186,6 +186,18 @@ describe('pickHydraCoin', () => {
     expect(selects()).toHaveLength(3);
   });
 
+  it('a caller after UTC midnight that shares a query started before midnight never gets yesterday\'s coin', async () => {
+    setSystemTime(new Date('2026-10-31T23:59:59.900Z'));
+    let release: (rows: unknown[]) => void = () => undefined;
+    nextRows = new Promise<unknown[]>((resolve) => { release = resolve; });
+    const before = pickHydraCoin(); // starts the shared read for 2026-10-31
+    setSystemTime(new Date('2026-11-01T00:00:00.100Z'));
+    const after = pickHydraCoin(); // new day: pool is stale, joins the in-flight read
+    release([row('A', 'OLD')]);
+    expect((await before)?.symbol).toBe('OLD');
+    expect(await after).toBeNull();
+  });
+
   it('bounds the read server-side: SET LOCAL statement_timeout runs first, in the same transaction', async () => {
     nextRows = [row('A', 'ALPHA')];
     await pickHydraCoin();
