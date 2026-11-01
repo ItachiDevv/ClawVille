@@ -35,10 +35,13 @@ import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/thr
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 import {
   NO_HYDRA_GLOW_MATERIALS,
+  hydraGlowIntensity,
   prefersReducedMotion,
   prepareHydraGlow,
   updateHydraGlow,
 } from '@/lib/three/hydra-glow';
+// Classic WebGLRenderer page: the halo uses its GLSL hook, so no three/tsl decorator here.
+import { NO_HYDRA_HALO_MOUNT, mountHydraHalo } from '@/lib/three/hydra-halo';
 
 const SCENE_BG = new THREE.Color(0xffffff); // white backdrop for video capture
 // Target visual height — camera at y=8 looking at y=7 frames a 6.5u-tall avatar.
@@ -64,7 +67,7 @@ const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = 
   ansem:  { path: '/avatars/ansem-w30k.vrm',         animatorId: 'ansem' },
   // Hydra — wandering NPC Meshy VRM (2026-10-31); dedicated animatorId with
   // idle/walk/run position tracks stripped (adinero-pattern underground guard).
-  hydra:  { path: '/avatars/hydra-w30k.vrm',         animatorId: 'hydra' },
+  hydra:  { path: '/avatars/hydra-w30k.vrm?v=2',     animatorId: 'hydra' },
 };
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
@@ -73,6 +76,7 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
   // Same Hydra emissive pulse as the world (arena-npcs.tsx VRMNpcMesh) so QC matches.
   const hydraGlowRef = useRef(NO_HYDRA_GLOW_MATERIALS);
+  const hydraHaloRef = useRef(NO_HYDRA_HALO_MOUNT);
   const [fit, setFit] = useState<{ scale: number; offsetY: number } | null>(null);
 
   useEffect(() => {
@@ -101,7 +105,10 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
     const autoOffsetY = -box.min.y * autoScale;
     setFit({ scale: autoScale, offsetY: autoOffsetY });
 
-    hydraGlowRef.current = prepareHydraGlow(vrm.scene, animatorId, prefersReducedMotion());
+    const reducedMotion = prefersReducedMotion();
+    hydraGlowRef.current = prepareHydraGlow(vrm.scene, animatorId, reducedMotion);
+    const hydraHalo = mountHydraHalo(vrm.scene, animatorId, reducedMotion);
+    hydraHaloRef.current = hydraHalo;
 
     const animator = new VRMCharacterAnimator(vrm, animatorId);
     animatorRef.current = animator;
@@ -115,6 +122,8 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
     return () => {
       animatorRef.current = null;
       hydraGlowRef.current = NO_HYDRA_GLOW_MATERIALS;
+      hydraHaloRef.current = NO_HYDRA_HALO_MOUNT;
+      hydraHalo.dispose();
       animator.dispose();
       disposeVRMInstance(path, `preview-${character}`);
     };
@@ -143,6 +152,7 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
     const dt = Math.min(delta, 0.1);
     animatorRef.current?.update(dt, mode === 'walk');
     updateHydraGlow(hydraGlowRef.current, state.clock.elapsedTime);
+    hydraHaloRef.current.live?.setIntensity(hydraGlowIntensity(state.clock.elapsedTime));
   });
 
   if (!vrm || !fit) return null;

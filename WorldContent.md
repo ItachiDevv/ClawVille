@@ -142,7 +142,7 @@ The exterior asset path appears in FOUR places besides `BUILDING_MODELS` — `as
 | Chibi VRM | 2 | `eliza-chibi-mo.vrm` (Eliza), `milady-chibi-mo.vrm` (Mila) |
 | Adinero VRM | 1 | `adinero-w30k.vrm` (pink-haired clown; roasts passers-by) |
 | Ansem VRM | 1 | `ansem-w30k.vrm` + `ansem-sword.glb` (greatsword attachment) |
-| Hydra VRM | 1 | `hydra-w30k.vrm` (2026-10-31; coin-analyst android, home (11264, 14300) south edge of the ring nearest the Trading Floor; emissive neon mask pulsed by `lib/three/hydra-glow.ts`) |
+| Hydra VRM | 1 | `hydra-w30k.vrm` (2026-10-31; coin-analyst android, home (11264, 14300) south edge of the ring nearest the Trading Floor; emissive neon mask pulsed by `lib/three/hydra-glow.ts`; since 2026-11-01 `hydra-w30k.vrm?v=2` with the mirrored face and a soft neon halo from `lib/three/hydra-halo.ts` (2 extra draws)) |
 | Lobster GLB | 1 | `lobster-ktx.glb?v=2` (Driftwood), homeX 8852, homeY 10616 |
 
 > Table reconciled 2026-10-31 against `npc-definitions.ts` (17 entries) and `MODEL_REGISTRY` paths; it replaces the 2026-07-22 drift note (9 rows, missing the Milady restore, Adinero and Ansem). `biggie` remains a registry-only EXCLUSIVE avatar (manual per-account DB grant), not a wanderer and not in `AGENT_MODELS`.

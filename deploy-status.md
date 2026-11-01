@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-10-31 20:14Z (session hydra). **Staging = `4c0a9cab7` (`feat/hydra-npc`: Hydra coin-analyst wanderer + chat with every wanderer, PROTOCOL_VERSION 104 -> 105), VERIFIED on staging 20:13Z; founder look check owed (see DEPLOY LOG).** Prod unchanged: PROD API = `e4163741f` (promotion #21).
+Last Audited: 2026-11-01 11:05Z (session hydra). **Staging = Hydra halo push (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), verification PENDING (see DEPLOY LOG).**
+
+Prior - Last Audited: 2026-10-31 20:14Z (session hydra). **Staging = `4c0a9cab7` (`feat/hydra-npc`: Hydra coin-analyst wanderer + chat with every wanderer, PROTOCOL_VERSION 104 -> 105), VERIFIED on staging 20:13Z; founder look check owed (see DEPLOY LOG).** Prod unchanged: PROD API = `e4163741f` (promotion #21).
 
 Prior - Last Audited: 2026-10-31 10:45Z (session helius). **PROD API = `e4163741f` (promotion #21, PR #332, VERIFIED): chain checks only for candidates, held coins and staging feed demand (11 checks in 15 min, was about 340); prod is the only Helius caller and feeds staging. STAGING API = `f239a59e4`, Helius OFF.** Prod web `d61b0c7b5`. SCHEMA: synced.
 
@@ -704,6 +706,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-01 11:05Z (session hydra) - STAGING push: Hydra face fix + halo shells, verification PENDING
+- **What changed:** founder signed off the bench look on 2026-11-01 ("dope"). NEW `scripts/hermes-pipeline/hydra-face-fix.mjs` repairs the source GLB: -X face mirrored from +X (261 vertices, normals + up to 3.6 mm), -X eye UVs mirrored from the clean eye, earpiece cups suit black, chest H + eyes added to the emissive mask, and two halo masks baked (`hydra-halo-suit.webp` 92 KB, `hydra-halo-hot.webp` 9 KB). VRM rebuilt (inject, optimize, plain decimation 30,597 tris, validator S3.0 only) and served at `/avatars/hydra-w30k.vrm?v=2`. NEW `lib/three/hydra-halo.ts` + `hydra-halo-node.ts`: 2 additive skinned shells (suit 73,966 tris, hot 3,351 tris) on the body skeleton, GLSL hook for the classic preview page, TSL node overrides for the WebGPU world.
+- **What broke during the build (fixed before push):** first halo bake read sharp's 3-channel output of a 1-channel input as grey (hair lit, H missing); fixed with `.extractChannel(0)`, layers then match the bench (correlation 0.88-0.90). Codex x3: BLOCK (corner+centroid selection missed lit triangles; shell culling used its own pose sphere; load-failure leak) -> BLOCK (coarse mips sample outside the selected triangles; mipmaps now off) -> APPROVE. Codex also flagged the sRGB mask decode; kept on purpose for bench parity (documented in code).
+- **Evidence so far:** web tsc 0; halo 10/10, glow 9/9, ledger tests pass (32 total); local prod build exit 0; local `/preview/hermes?c=hydra` (classic WebGL) scene graph shows `hydra-halo-suit` 73,966 and `hydra-halo-hot` 3,351 tris, no shader errors, screenshot shows the glowing H, eyes and suit halo. NOT yet seen: the WebGPU world path and world FPS.
+- **For:** founder (Hydra look in the world). Perf: Hydra 1 -> 3 draws, 30.6k -> about 107.9k skinned tris (bench drew 183.6k).
+- **SCHEMA:** synced (no migration).
 
 ### 2026-10-31 19:52Z (session hydra) - STAGING push: Hydra wanderer NPC + wanderer chat fix (PROTOCOL 105), VERIFIED on staging 20:13Z
 - **What changed:** new free-roaming NPC Hydra (`hydra-analyst`): Meshy round-2 VRM `/avatars/hydra-w30k.vrm` (30.6k tris, 1.0 MB) with a neon-only emissive mask pulsed by `lib/three/hydra-glow.ts`; coin muttering from `floor_discovery_mints` (DB read only, 1.5 s deadline + `statement_timeout`, no Helius); human chat through `/api/chat/transient`, hosted agents through `talk_to_npc`, REST/MCP agents through `POST /api/agent/:sessionId/chat` `targetNpcId` -> `npcReply`. Players can now chat with every free-roaming wanderer (before this, `findNearestCharacter` knew building residents only). `npc-simulation.ts` tick no longer drops between-tick `agent_chat` bubbles.

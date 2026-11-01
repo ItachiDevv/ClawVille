@@ -230,7 +230,7 @@ export const MODEL_REGISTRY = {
   // (PER_CHARACTER_IN_PLACE_CLIPS). faceYaw Math.PI (VRM1 faces +Z → flip to -Z).
   // Brand-new asset path (never cached at this URL) so no ?v= query is needed.
   // NOT in shared AGENT_MODELS — NPC species are free strings.
-  hydra:        { path: '/avatars/hydra-w30k.vrm',        scale: 13, label: 'Hydra',        category: 'other',   avatar_type: 'vrm', animatorId: 'hydra',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/hydra-turnaround/openai/front.png' },
+  hydra:        { path: '/avatars/hydra-w30k.vrm?v=2',    scale: 13, label: 'Hydra',        category: 'other',   avatar_type: 'vrm', animatorId: 'hydra',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/hydra-turnaround/openai/front.png' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
