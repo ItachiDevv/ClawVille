@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-01 11:05Z (session hydra). **Staging = Hydra halo push (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), verification PENDING (see DEPLOY LOG).**
+Last Audited: 2026-11-01 11:50Z (session hydra). **Staging = `cca95a4b5` (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), VERIFIED on staging 11:48Z (web lane needed a solo retrigger); founder look check owed.**
 
 Prior - Last Audited: 2026-10-31 20:14Z (session hydra). **Staging = `4c0a9cab7` (`feat/hydra-npc`: Hydra coin-analyst wanderer + chat with every wanderer, PROTOCOL_VERSION 104 -> 105), VERIFIED on staging 20:13Z; founder look check owed (see DEPLOY LOG).** Prod unchanged: PROD API = `e4163741f` (promotion #21).
 
@@ -707,10 +707,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
-### 2026-11-01 11:05Z (session hydra) - STAGING push: Hydra face fix + halo shells, verification PENDING
+### 2026-11-01 11:05Z (session hydra) - STAGING push: Hydra face fix + halo shells (`cca95a4b5`), VERIFIED on staging 11:48Z
 - **What changed:** founder signed off the bench look on 2026-11-01 ("dope"). NEW `scripts/hermes-pipeline/hydra-face-fix.mjs` repairs the source GLB: -X face mirrored from +X (261 vertices, normals + up to 3.6 mm), -X eye UVs mirrored from the clean eye, earpiece cups suit black, chest H + eyes added to the emissive mask, and two halo masks baked (`hydra-halo-suit.webp` 92 KB, `hydra-halo-hot.webp` 9 KB). VRM rebuilt (inject, optimize, plain decimation 30,597 tris, validator S3.0 only) and served at `/avatars/hydra-w30k.vrm?v=2`. NEW `lib/three/hydra-halo.ts` + `hydra-halo-node.ts`: 2 additive skinned shells (suit 73,966 tris, hot 3,351 tris) on the body skeleton, GLSL hook for the classic preview page, TSL node overrides for the WebGPU world.
 - **What broke during the build (fixed before push):** first halo bake read sharp's 3-channel output of a 1-channel input as grey (hair lit, H missing); fixed with `.extractChannel(0)`, layers then match the bench (correlation 0.88-0.90). Codex x3: BLOCK (corner+centroid selection missed lit triangles; shell culling used its own pose sphere; load-failure leak) -> BLOCK (coarse mips sample outside the selected triangles; mipmaps now off) -> APPROVE. Codex also flagged the sRGB mask decode; kept on purpose for bench parity (documented in code).
 - **Evidence so far:** web tsc 0; halo 10/10, glow 9/9, ledger tests pass (32 total); local prod build exit 0; local `/preview/hermes?c=hydra` (classic WebGL) scene graph shows `hydra-halo-suit` 73,966 and `hydra-halo-hot` 3,351 tris, no shader errors, screenshot shows the glowing H, eyes and suit halo. NOT yet seen: the WebGPU world path and world FPS.
+- **What broke on deploy (fixed):** CI run 41299894655 all green, api (app 3) flipped at 11:13Z, but the web lane (app 4, queue `e13794jq09t2um4qm8o4brps`) FAILED at 11:16Z: the built image was missing at container start ("pull access denied for ju0n3sddhll3cuhbrspt4muy"), the known concurrent api+web image-export failure on this box. No active deploys, so web was re-queued ALONE via tinker, pinned to `cca95a4b5` with `rollback: true` (queue `c1p335rkgwjp77q48wuvdt7k`), finished and flipped. Cloudflare serves these assets `DYNAMIC` (no edge cache), so the early `?v=2` fetch did not poison anything.
+- **Staging verification (11:28-11:48Z):** `SOURCE_COMMIT` = `cca95a4b5` on both containers; api `/health` commit `cca95a4b5`; `/avatars/hydra-w30k.vrm?v=2` 200 1,071,988 bytes (new file), `hydra-halo-suit.webp?v=1` 200 91,836, `hydra-halo-hot.webp?v=1` 200 8,748. Headless Chrome (WebGPU) on `/game`: both shells in the scene 20 s after load (`hydra-halo-suit` 73,966 tris, `hydra-halo-hot` 3,351 tris, node `positionNode` set), no shader or page errors; with the camera forced onto Hydra, rAF 59.0 (halo on) / 60.0 (off) / 59.8 (on), vsync-capped on the desktop GPU, so NOT an Iris Xe number. Headless capture cannot read the WebGPU swapchain, so the halo pixels in the world are NOT yet seen by anyone: founder screenshot owed.
 - **For:** founder (Hydra look in the world). Perf: Hydra 1 -> 3 draws, 30.6k -> about 107.9k skinned tris (bench drew 183.6k).
 - **SCHEMA:** synced (no migration).
 
