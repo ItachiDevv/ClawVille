@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-02 22:35Z (session hydra). **Promotion #22 (PR #333, `5c301780c`) merged to prod; staging carries the follow-up re-bump of burned Hydra asset URLs (VRM `?v=3`, halo `?v=2`); promotion #23 next (DEPLOY LOG 2026-11-02).** SCHEMA: synced.
+Last Audited: 2026-11-02 23:08Z (session hydra). **PROD = `b22947b36` (promotion #23, PR #334, VERIFIED 23:07Z): Hydra NPC + halo look (promotion #22, PROTOCOL 105) with re-bumped asset URLs (VRM `?v=3`, halo `?v=2`). Staging = `7a121e1d6`.** Founder look check owed. SCHEMA: synced.
 
 Prior - Last Audited: 2026-11-01 11:34Z (session hydra). **Staging = `cca95a4b5` (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), VERIFIED on staging 11:33Z (web lane needed a solo retrigger); founder look check owed.**
 
@@ -708,6 +708,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-02 23:08Z (session hydra) - promotion #23 ON PROD (`b22947b36`, PR #334): Hydra asset re-bump, VERIFIED
+- **What changed:** staging `7a121e1d6` promoted. Prod web + api `SOURCE_COMMIT` = `b22947b36` (old web container gone 23:07Z); api `/health` commit `b22947b36`.
+- **Verification (after the flip only):** `hydra-w30k.vrm?v=3` 200 1,071,988 B, `hydra-halo-suit.webp?v=2` 200 91,836 B, `hydra-halo-hot.webp?v=2` 200 8,748 B, all `cf-cache-status: MISS` (fresh). Staging before promotion: same sizes, bundle carries `?v=3`. In-world halo pixels still need the founder's eyes (FOUNDER-REVIEW.md).
+- **What broke:** nothing in this promotion. Promotion #22 (`5c301780c`) was live 22:38-23:07Z with burned URLs, so Hydra's model could fail to load for that period at the PoP that cached the 404.
+- **Who it's for:** players and agents who see Hydra in the prod world.
+- SCHEMA: synced.
 
 ### 2026-11-02 22:35Z (session hydra) - promotion #22 (PR #333, merge `5c301780c`) + STAGING push: burned Hydra asset URLs re-bumped (VRM `?v=3`, halo masks `?v=2`)
 - **What changed:** promotion #22 merged staging `915cb8676` (Hydra coin-analyst NPC, PROTOCOL 105, mirrored face, halo shells) to master; all 4 gates, `migrate` and `deploy` jobs passed. Follow-up staging push bumps `/avatars/hydra-w30k.vrm?v=2` -> `?v=3` and `hydra-halo-{suit,hot}.webp?v=1` -> `?v=2` in `agent-model-registry.ts`, `hydra-halo.ts`, `preview/hermes/page.tsx` and the cold-load ledger test; registry `preview` path fixed from the missing `hydra-turnaround/openai/front.png` to `openai-v2/front.png`.
