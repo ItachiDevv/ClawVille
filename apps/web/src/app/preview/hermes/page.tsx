@@ -67,7 +67,7 @@ const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = 
   ansem:  { path: '/avatars/ansem-w30k.vrm',         animatorId: 'ansem' },
   // Hydra — wandering NPC Meshy VRM (2026-10-31); dedicated animatorId with
   // idle/walk/run position tracks stripped (adinero-pattern underground guard).
-  hydra:  { path: '/avatars/hydra-w30k.vrm?v=2',     animatorId: 'hydra' },
+  hydra:  { path: '/avatars/hydra-w30k.vrm?v=3',     animatorId: 'hydra' },
 };
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {

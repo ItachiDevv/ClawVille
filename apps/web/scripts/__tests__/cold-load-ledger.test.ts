@@ -86,7 +86,7 @@ describe('buildLedger', () => {
         req('https://x/avatars/ansem-sword.glb', 100, 'GLB'),
         req('https://x/avatars/animations/ansem/idle.glb', 100, 'GLB'),
         req('https://x/avatars/adinero.vrm?v=1', 100),
-        req('https://x/avatars/hydra-w30k.vrm?v=2', 100),
+        req('https://x/avatars/hydra-w30k.vrm?v=3', 100),
       ],
     }, 'ansem-owner');
     for (const url of ['ansem.vrm', 'ansem-sword', '/animations/ansem/']) {
