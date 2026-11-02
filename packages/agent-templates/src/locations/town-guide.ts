@@ -83,6 +83,10 @@ export const townGuide: LocationTemplate = {
     // Town Guide knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync").
     'Adinero is a pink-haired clown who roams the town-center ring — you will catch him sprinting up to people to crack a joke or a playful roast, then darting off to pester someone else. Walk up to him in NPC mode and click to chat; he roasts everyone equally, so it is all in good fun. Pure laughs — no vCLAW, no quests, no skills.',
 
+    // Hydra the wandering coin analyst (2026-10-31) — decorative NPC; same-diff
+    // Town Guide knowledge sync. Orientation only.
+    'Hydra is a silver-haired masked android in black armor with glowing blue lines who roams the south side of the town ring, near the road to the Trading Floor. Walk up to her in NPC mode and click to chat: she mutters nonstop about coins and tells you whether she bought or skipped each one. Her picks are random coins from the day\'s discovery feed and her reasons are made up, so treat them as jokes, never as advice.',
+
     // Agent export & portability (2026-06-19) — the "take your agent anywhere"
     // flow. User-facing, so it lives in Nori's orientation per the three-surface rule.
     'You can take your agent anywhere. In Avatar Settings there are two exports: "Take agent home to Milady" emits a Milady-installable bundle (an ElizaOS character + skill pack + a one-line install command), and "Download portable manifest (.json)" gives you a single signed, content-addressed manifest file — your agent\'s 3D body (with a SHA-256 so anyone can verify the exact bytes), equipped cosmetics, learned skills, and identity + wallet public keys, all signed by ClawVille so a third party can trust it. The manifest never contains any secret key. It is the artifact you keep when you leave, and the same file we will accept to re-import an agent later.',

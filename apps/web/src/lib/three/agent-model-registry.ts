@@ -220,6 +220,18 @@ export const MODEL_REGISTRY = {
   // are free strings, only the web render map needs the key.
   adinero:      { path: '/avatars/adinero-w30k.vrm',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'adinero',       faceYaw: Math.PI, pickerHidden: true },
 
+  // ── Hydra — wandering NPC female android (Meshy pipeline 2026-10-31) ──
+  // NPC-ONLY decorative wanderer (NOT a player/Hatcher avatar), same treatment as
+  // Adinero. OpenAI→Meshy-6→rig→VRM pipeline: VRM 1.0, 22 humanoid bones, 30.3k
+  // tris, meshopt+WebP ~1.5 MB, ~1.75 m. Lives ONLY as the `hydra` NPC species
+  // (npc-definitions.ts); pickerHidden keeps it out of /create-agent and the
+  // appearance grid. Same 0.01-scale Meshy VRM rig class as Adinero/Biggie/Ansem,
+  // so animatorId 'hydra' owns the idle/walk/run position-strip guard
+  // (PER_CHARACTER_IN_PLACE_CLIPS). faceYaw Math.PI (VRM1 faces +Z → flip to -Z).
+  // Brand-new asset path (never cached at this URL) so no ?v= query is needed.
+  // NOT in shared AGENT_MODELS — NPC species are free strings.
+  hydra:        { path: '/avatars/hydra-w30k.vrm?v=2',    scale: 13, label: 'Hydra',        category: 'other',   avatar_type: 'vrm', animatorId: 'hydra',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/hydra-turnaround/openai/front.png' },
+
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
   // consistently clipped the modal card. The GLB still ships under
@@ -369,4 +381,6 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   ansem:              'fox',
   // Adinero (wandering NPC clown, 2026-06-19) — humanoid → 'fox' 2D fallback.
   adinero:            'fox',
+  // Hydra (wandering NPC android, 2026-10-31) — humanoid → 'fox' 2D fallback.
+  hydra:              'fox',
 };

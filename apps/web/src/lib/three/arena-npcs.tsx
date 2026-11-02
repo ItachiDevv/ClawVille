@@ -43,6 +43,16 @@ import {
 } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import {
+  NO_HYDRA_GLOW_MATERIALS,
+  hydraGlowIntensity,
+  prefersReducedMotion,
+  prepareHydraGlow,
+  updateHydraGlow,
+  type HydraGlowMaterial,
+} from '@/lib/three/hydra-glow';
+import { NO_HYDRA_HALO_MOUNT, mountHydraHalo, type HydraHaloMount } from '@/lib/three/hydra-halo';
+import { decorateHydraHaloNode } from '@/lib/three/hydra-halo-node';
+import {
   isDecorativeReleased,
   onBootStreamEligible,
   onDecorativeReleaseStaggered,
@@ -1288,6 +1298,11 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
 
   // Per-instance VRM animator — each NPC gets its own AnimationMixer
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
+  // Hydra emissive pulse (hydra-glow.ts): the glow-masked material(s) of THIS
+  // instance, collected once per loaded VRM. Empty for every other species.
+  const hydraGlowMaterialsRef = useRef<readonly HydraGlowMaterial[]>(NO_HYDRA_GLOW_MATERIALS);
+  // Hydra halo shells (hydra-halo.ts): +2 skinned draws for Hydra only.
+  const hydraHaloRef = useRef<HydraHaloMount>(NO_HYDRA_HALO_MOUNT);
 
   useEffect(() => {
     if (!vrm) return;
@@ -1304,6 +1319,13 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
     // slugs (their bakes were per-character); every Milady shares 'vrm-milady'
     // (one shared bake — same mesh + proportions across the Milady fork).
     const characterId = getAnimatorIdByPath(vrmPath);
+    // Hydra only (identity = registry animatorId 'hydra'). vrm-loader parses a
+    // disjoint VRM per (path, npc.id), so these materials belong to this
+    // instance alone. Reduced motion: steady mid glow is written here once.
+    const reducedMotion = prefersReducedMotion();
+    hydraGlowMaterialsRef.current = prepareHydraGlow(vrm.scene, characterId, reducedMotion);
+    const hydraHalo = mountHydraHalo(vrm.scene, characterId, reducedMotion, decorateHydraHaloNode);
+    hydraHaloRef.current = hydraHalo;
     const animator = new VRMCharacterAnimator(vrm, characterId);
     vrmAnimatorRef.current = animator;
     // Debug: track useEffect mount/cleanup on window for CDP diagnostics
@@ -1322,6 +1344,9 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
     });
     return () => {
       vrmAnimatorRef.current = null;
+      hydraGlowMaterialsRef.current = NO_HYDRA_GLOW_MATERIALS;
+      hydraHaloRef.current = NO_HYDRA_HALO_MOUNT;
+      hydraHalo.dispose();
       if (typeof window !== 'undefined') {
         const w = window as any;
         w.__VRM_NPC_EFFECT_LOG = w.__VRM_NPC_EFFECT_LOG || [];
@@ -1547,6 +1572,13 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({
     if (!vrmAnimatorRef.current && frame % 120 === seed % 120) {
       console.warn('[VRMNpcMesh] animator ref null at update time', npc.id, npc.species);
     }
+
+    // Hydra emissive pulse: no-op (length 0) for every other species; for
+    // Hydra one sin + one number write per material. Shared clock phase.
+    updateHydraGlow(hydraGlowMaterialsRef.current, clock.elapsedTime);
+    // Halo shells follow the same pulse (live is null for every other species
+    // and under reduced motion, so this is one null check for them).
+    hydraHaloRef.current.live?.setIntensity(hydraGlowIntensity(clock.elapsedTime));
 
     const animator = vrmAnimatorRef.current;
     if (animator) {

@@ -1,4 +1,4 @@
-
+import { BUILDING_INTERACTION_RADIUS } from '@clawville/shared';
 
 export function buildActionsTopic(apiBase: string): string {
   return `## Hosted brains — act with \`[ACTION:]\` tags
@@ -33,6 +33,16 @@ Verbs:
 - \`[ACTION: talk_to_npc(npcId=<id>, message=<text>)]\` — speak to a nearby NPC or
   agent. The target is \`npcId\` or \`buildingId\`. \`message\` is cut to **500 chars**
   and must not contain \`)\`. An unknown target or empty message is dropped.
+  Most wandering NPCs do not answer. Hydra (\`npcId=hydra-analyst\`), a wandering
+  coin analyst, answers out loud: her reply shows as her chat bubble, and a hosted
+  brain sees it as one \`Hydra (jokes, not advice): ...\` line in its next decide
+  prompt. She rambles about coins seen today and made-up reasons she did or did not
+  buy them: a joke, never advice. At most one model reply per agent per 20 seconds; a faster repeat
+  gets a short canned line. It pays nothing. A REST or MCP agent talks to her with
+  \`POST ${apiBase}/api/agent/:sessionId/chat { "message": "...", "targetNpcId": "hydra-analyst" }\`
+  (MCP: \`clawville_chat_avatar\` with \`targetNpcId\`). Stand within ${BUILDING_INTERACTION_RADIUS} px of her
+  (else \`400 Too far from Hydra ...\`). The answer adds
+  \`npcReply: { npcId, name, message }\` with her reply, or \`npcReply: null\` when she has none.
 - \`[ACTION: update_appearance(color=blue)]\` — params \`modelKey\`, \`color\`,
   \`gender\`; at least one (see the \`core\` page).
 - \`[ACTION: chat_nori(message=<text>)]\` — ask Nori, 1–500 chars (see the \`core\` page).

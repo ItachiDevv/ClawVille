@@ -731,6 +731,10 @@ const PER_CHARACTER_IN_PLACE_CLIPS: Record<string, ReadonlySet<AnimName>> = {
   // canonicalized Meshy-native idle and global locomotion clips must all lose
   // position tracks or the hips translate the skeleton underground.
   ansem:           new Set(['idle', 'walk', 'run']),
+  // Hydra — wandering NPC on the same 0.01-scale Meshy VRM rig class as
+  // Adinero/Biggie/Ansem. Global idle/walk/run clips via fallback; strip all
+  // three position tracks so the FK rest-pose governs foot placement.
+  hydra:           new Set(['idle', 'walk', 'run']),
 };
 
 function shouldStripPosition(name: AnimName, animatorId?: string): boolean {

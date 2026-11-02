@@ -104,6 +104,9 @@ import {
 // Type-only: the runtime modules load lazily inside the test seams.
 import type { CosmeticActor, CosmeticActionFailure } from './cosmetic-actions';
 import type { CustodialBalancesResult } from './wallet-withdraw-executor';
+// Hydra (wandering coin analyst): DB-only coin pool + template lines, no LLM.
+import { HYDRA_NPC_ID, hydraAmbientLine, pickHydraCoin } from './hydra-coin-chatter';
+import type { HydraAgentReply } from './hydra-agent-reply';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
@@ -121,6 +124,14 @@ const MAP_HEIGHT = 22528;
 // backgrounded tab would otherwise hold the gate open forever (Codex round,
 // 2026-07-13).
 const WATCHER_GRACE_MS = 90_000;
+
+// Hydra's ambient muttering cadence: one template line (no LLM) every 25-45 s,
+// jittered, only while the world is watched (same latch as ambient banter).
+const HYDRA_MUTTER_MIN_MS = 25_000;
+const HYDRA_MUTTER_MAX_MS = 45_000;
+/** Ticks between Hydra mutter checks (5 ticks x 200 ms = 1 s). */
+const HYDRA_MUTTER_CHECK_TICKS = 5;
+const HYDRA_BUBBLE_MAX_CHARS = 160;
 
 // Hard cost backstop for ambient banter, INDEPENDENT of the watcher latch: max
 // LLM-generated conversations per fixed hourly window (per box). The /watch
@@ -1222,6 +1233,18 @@ class NpcSimulation {
     const { agentAutonomyDriver } = await import('./agent-autonomy-driver');
     agentAutonomyDriver.rememberActionResult(agentId, avatarId, text);
   };
+  /** Test seam; Hydra's ambient line (DB-only coin pick + template text, no LLM). */
+  hydraAmbientLineSource: () => Promise<string> = async () => hydraAmbientLine(await pickHydraCoin());
+  /** Test seam; Hydra's answer to an agent's talk_to_npc (model + moderation, template fallback). */
+  hydraAgentReply: (input: { agentKey: string; message: string }) => Promise<HydraAgentReply> = async (input) => {
+    const { replyToAgentAsHydra } = await import('./hydra-agent-reply');
+    return replyToAgentAsHydra(input);
+  };
+  /** Epoch ms of Hydra's next ambient line. Never serialized. */
+  private hydraNextMutterAt = 0;
+  private hydraMutterInFlight = false;
+  /** Warn once per process for a failed ambient line, then stay quiet. */
+  private hydraMutterFailureLogged = false;
   private arenaRound: ArenaRoundState | null = null;
 
   // OpenClaw bot registry
@@ -2696,6 +2719,7 @@ class NpcSimulation {
    *   enter_kelp_forest()                                 -> walk to the Kelp Forest portal
    *   enter_trading_floor()                               -> walk to the Trading Floor (cron-automation)
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
+   *                  (npcId=hydra-analyst: Hydra also answers, answerAgentAsHydra)
    *
    * Unknown names / bad params are DROPPED (never executed, never throw). Only
    * applies to a body that is in the world; otherwise tags are still stripped.
@@ -3691,6 +3715,80 @@ class NpcSimulation {
     } finally { this.noriChatsInFlight.delete(attribution.avatarId); }
   }
 
+  /**
+   * Hydra answers an agent's `talk_to_npc(npcId=hydra-analyst)`. The executor
+   * already passed the target + proximity checks. The reply is a public bubble
+   * over Hydra and, for a hosted agent, one result line in its next decide
+   * prompt (data only: it never re-enters action dispatch). Rate limits and the
+   * template fallback live in `hydra-agent-reply.ts`. Never throws.
+   * Returns the reply text (null when Hydra is gone or the reply failed).
+   */
+  async answerAgentAsHydra(
+    agentNpcId: string,
+    attribution: AgentActionAttribution | null,
+    message: string,
+  ): Promise<string | null> {
+    try {
+      // An override agent driving Hydra's body speaks for itself; Hydra stays silent (no LLM spend).
+      if (this.npcOverrides.has(HYDRA_NPC_ID)) return null;
+      const reply = await this.hydraAgentReply({ agentKey: attribution?.agentId ?? agentNpcId, message });
+      const text = reply.text.slice(0, HYDRA_BUBBLE_MAX_CHARS).trim();
+      const hydra = this.npcs.get(HYDRA_NPC_ID);
+      if (!text || !hydra || hydra.isDead || this.npcOverrides.has(HYDRA_NPC_ID)) return null;
+      this.injectAgentChat(HYDRA_NPC_ID, text);
+      if (attribution) {
+        await this.autonomousActionResult(
+          attribution.agentId,
+          attribution.avatarId,
+          // <= 27 + 160 chars: fits the 200-char hosted decide-prompt slot.
+          `Hydra (jokes, not advice): ${text}`,
+        );
+      }
+      return text;
+    } catch (err) {
+      console.warn(`[Hydra] agent reply failed: ${err instanceof Error ? err.name : 'unknown'}`);
+      return null;
+    }
+  }
+
+  /**
+   * Hydra's ambient muttering: one template line (no LLM, zero inference cost)
+   * every 25-45 s, jittered, only while the world is watched. Called from
+   * `tick()` once per second. The line is an `agent_chat` bubble, the same
+   * broadcast the agent bubbles use. One fetch at a time; a failure warns once
+   * and never reaches the tick loop.
+   */
+  private maybeHydraMutter(now: number = Date.now()): void {
+    if (this.hydraMutterInFlight || now < this.hydraNextMutterAt) return;
+    const hydra = this.npcs.get(HYDRA_NPC_ID);
+    if (!hydra || hydra.isDead || hydra.inConversation || hydra.inCombat) return;
+    if (this.npcOverrides.has(HYDRA_NPC_ID) || !this.hasActiveWatchers(now)) return;
+    this.hydraNextMutterAt = now + HYDRA_MUTTER_MIN_MS + Math.random() * (HYDRA_MUTTER_MAX_MS - HYDRA_MUTTER_MIN_MS);
+    this.hydraMutterInFlight = true;
+    let pending: Promise<string>;
+    try {
+      pending = this.hydraAmbientLineSource();
+    } catch (err) {
+      pending = Promise.reject(err);
+    }
+    void pending
+      .then((line) => {
+        // Same body, still free to talk (a conversation may have started).
+        const current = this.npcs.get(HYDRA_NPC_ID);
+        if (current !== hydra || current.isDead || current.inConversation || this.npcOverrides.has(HYDRA_NPC_ID)) return;
+        const text = typeof line === 'string' ? line.replace(/\s+/g, ' ').trim().slice(0, HYDRA_BUBBLE_MAX_CHARS) : '';
+        if (text) this.injectAgentChat(HYDRA_NPC_ID, text);
+      })
+      .catch((err: unknown) => {
+        if (this.hydraMutterFailureLogged) return;
+        this.hydraMutterFailureLogged = true;
+        console.warn(`[Hydra] ambient line failed (logged once): ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
+        this.hydraMutterInFlight = false;
+      });
+  }
+
   private async updateOwnAppearance(npcId: string, npc: NpcRuntimeState, attribution: AgentActionAttribution, patch: Record<string, string>): Promise<void> {
     const session = this.agentBotSessions.get(attribution.sessionId);
     const config = session?.config;
@@ -4320,6 +4418,9 @@ class NpcSimulation {
           msgSha256: createHash('sha256').update(message, 'utf8').digest('hex'),
           len: message.length,
         });
+        // Hydra is the one wanderer that answers an agent (Rule E5 parity with
+        // the human Talk bar). Other wanderers keep the one-way bubble.
+        if (target === HYDRA_NPC_ID) void this.answerAgentAsHydra(npcId, attribution, message);
         return;
       }
       case 'trade_token': {
@@ -4609,7 +4710,6 @@ class NpcSimulation {
     this.tickCount++;
     this.conversationCooldown = Math.max(0, this.conversationCooldown - 1);
     this.combatCooldown = Math.max(0, this.combatCooldown - 1);
-    this.pendingEvents = [];
 
     this.handleRespawns();
     this.progressCombats();
@@ -4638,6 +4738,9 @@ class NpcSimulation {
     if (this.arenaMode && this.combatCooldown === 0 && this.tickCount % 3 === 0) {
       this.tryStartCombat();
     }
+    if (!this.arenaMode && this.tickCount % HYDRA_MUTTER_CHECK_TICKS === 0) {
+      this.maybeHydraMutter();
+    }
 
     // Arena round progression
     if (this.arenaMode) this.tickRounds();
@@ -4654,6 +4757,10 @@ class NpcSimulation {
 
     this.cleanup();
     this.broadcast();
+    // Clear AFTER the broadcast, not at tick start. An event pushed BETWEEN
+    // ticks (an async reply's agent_chat bubble: REST /chat, a teacher reply,
+    // Hydra) must ride the next broadcast; a tick-start clear dropped it unseen.
+    this.pendingEvents = [];
 
     // Clean up stale browser claws every ~6s (30 ticks * 200ms)
     if (this.tickCount % 30 === 0) {

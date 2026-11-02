@@ -42,7 +42,9 @@ import {
   resolveIdentityForTicket,
   resolveConnectGatewayForPersistence,
   IDENTITY_KEY_RESERVED_BODY,
+  protocolProximityGateExempt,
 } from '../services/agent-session-config';
+import { HYDRA_NPC_ID } from '../services/hydra-coin-chatter';
 import {
   agentOwnerBoundSince,
   markAgentOwnedNow,
@@ -2799,8 +2801,38 @@ agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
 
   const { npcId, npc } = resolved;
 
+  // Hydra is the one wanderer that answers (Rule E5 parity with the human Talk
+  // bar and the hosted `talk_to_npc` verb). Every check runs BEFORE the bubble,
+  // so a refused call has no side effect. The proximity rule mirrors the
+  // `talk_to_npc` executor (same exemption predicate, same radius); that check
+  // is inline in the private executor, so it is mirrored here, not shared.
+  const talksToHydra = parsed.data.targetNpcId === HYDRA_NPC_ID;
+  if (talksToHydra) {
+    if (npcId === HYDRA_NPC_ID) return c.json({ error: 'You are Hydra; pick another targetNpcId' }, 400);
+    const hydra = npcSimulation.getNpcById(HYDRA_NPC_ID);
+    if (!hydra || hydra.isDead) return c.json({ error: 'Hydra is not in the world right now' }, 409);
+    if (!protocolProximityGateExempt(npcSimulation.getAgentBotClient(npcId)?.getProtocol())) {
+      const dist = Math.hypot(npc.x - hydra.x, npc.y - hydra.y);
+      if (dist > BUILDING_INTERACTION_RADIUS) {
+        return c.json({ error: `Too far from Hydra (${Math.round(dist)}px, need <=${BUILDING_INTERACTION_RADIUS}px)` }, 400);
+      }
+    }
+  }
+
   // Always inject into world simulation for visible chat bubbles
   npcSimulation.injectAgentChat(npcId, parsed.data.message);
+
+  // Started now so it overlaps the ElizaOS turn below. Never rejects: rate
+  // limits, moderation and the template fallback live in hydra-agent-reply.ts.
+  // The key is the session's agent identity (the same key the executor uses).
+  let hydraReply: Promise<string | null> | null = null;
+  if (talksToHydra) {
+    const hydraConfig = npcSimulation.getAgentBotConfig(sessionId);
+    const attribution: Parameters<typeof npcSimulation.answerAgentAsHydra>[1] = hydraConfig?.avatarId
+      ? { avatarId: hydraConfig.avatarId, agentId: hydraConfig.agentId, sessionId, actorKind: 'agent' }
+      : null;
+    hydraReply = npcSimulation.answerAgentAsHydra(npcId, attribution, parsed.data.message);
+  }
 
   // Route through ElizaOS agent for memory + context (if agent exists)
   let elizaResponse: string | null = null;
@@ -2924,6 +2956,14 @@ agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
     },
   });
 
+  if (hydraReply) {
+    const message = await hydraReply;
+    return c.json({
+      success: true,
+      response: elizaResponse,
+      npcReply: message ? { npcId: HYDRA_NPC_ID, name: 'Hydra', message } : null,
+    });
+  }
   return c.json({ success: true, response: elizaResponse });
 });
 

@@ -384,7 +384,11 @@ function useWorldPlayerController({
         }
       }
 
-      const nearest = findNearestCharacter(frame.x, frame.z);
+      // Residents only (null = no wanderers). Wanderer chat is the NPC-mode
+      // TalkToCharacterBar (NpcController's pass); this body mounts only in
+      // 'player' mode, which has no wanderer chat UI, so a passing wanderer
+      // must not hide a building or venue prompt here.
+      const nearest = findNearestCharacter(frame.x, frame.z, null);
       // Resident chat wins the overlap sliver in front of a venue door, so
       // walking up reads "Talk to <resident>" then "Enter <venue>".
       const nearId: string | null = nearest

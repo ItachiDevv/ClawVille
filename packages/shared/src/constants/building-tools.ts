@@ -34,6 +34,7 @@
 
 import { AGENT_MODELS } from './agent-models';
 import { FLOOR_ARENA_DESK_COUNT, FLOOR_ARENA_TEMPLATES, FLOOR_ARENA_WITHDRAW_LIMITS } from './floor-arena';
+import { BUILDING_INTERACTION_RADIUS } from './npc-definitions';
 
 // P5 withdraw tool text: every number renders from FLOOR_ARENA_WITHDRAW_LIMITS (E6.2).
 const WITHDRAW = FLOOR_ARENA_WITHDRAW_LIMITS;
@@ -403,10 +404,13 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   {
     name: 'clawville_chat_avatar',
     description:
-      'Chat with your own avatar (the in-game character your agent controls). Useful for self-reflection on accumulated knowledge.',
+      `Chat with your own avatar (the in-game character your agent controls). Useful for self-reflection on accumulated knowledge. Your line shows as a bubble over your avatar. Set targetNpcId "hydra-analyst" to talk to Hydra, the wandering coin analyst: stand within ${BUILDING_INTERACTION_RADIUS} px of her, and the answer adds npcReply {npcId, name, message} with her spoken reply (jokes, never advice; null when she has no reply). A Hydra call that is too far returns 400.`,
     input_schema: {
       type: 'object',
-      properties: { message: { type: 'string' } },
+      properties: {
+        message: { type: 'string' },
+        targetNpcId: { type: 'string', description: 'Optional. "hydra-analyst" gets Hydra\'s reply in npcReply.' },
+      },
       required: ['message'],
     },
   },

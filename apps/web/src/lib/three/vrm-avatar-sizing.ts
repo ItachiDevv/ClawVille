@@ -97,6 +97,12 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
   // Biggie male-humanoid target height.
   ansem: 297,
 
+  // Hydra — wandering NPC female android (Meshy, ~1.75 m). Explicitly pinned
+  // to the female-humanoid standard: Helen/Clytemnestra/hermes_female/Milady
+  // all use the 270 base (VRM_AVATAR_TARGET_HEIGHT_WU). One key: the NPC
+  // species and the animatorId are both 'hydra'.
+  hydra: VRM_AVATAR_TARGET_HEIGHT_WU,
+
   // Tekk — design intent is "taller than everyone else" + wing-bbox
   // overhead. Iteration 2026-05-18:
   //   - 230 (original): body ~Milady height, wings fan above (base 179.2)
