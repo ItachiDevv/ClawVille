@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-01 11:34Z (session hydra). **Staging = `cca95a4b5` (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), VERIFIED on staging 11:33Z (web lane needed a solo retrigger); founder look check owed.**
+Last Audited: 2026-11-02 22:35Z (session hydra). **Promotion #22 (PR #333, `5c301780c`) merged to prod; staging carries the follow-up re-bump of burned Hydra asset URLs (VRM `?v=3`, halo `?v=2`); promotion #23 next (DEPLOY LOG 2026-11-02).** SCHEMA: synced.
+
+Prior - Last Audited: 2026-11-01 11:34Z (session hydra). **Staging = `cca95a4b5` (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), VERIFIED on staging 11:33Z (web lane needed a solo retrigger); founder look check owed.**
 
 Prior - Last Audited: 2026-10-31 20:14Z (session hydra). **Staging = `4c0a9cab7` (`feat/hydra-npc`: Hydra coin-analyst wanderer + chat with every wanderer, PROTOCOL_VERSION 104 -> 105), VERIFIED on staging 20:13Z; founder look check owed (see DEPLOY LOG).** Prod unchanged: PROD API = `e4163741f` (promotion #21).
 
@@ -706,6 +708,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-02 22:35Z (session hydra) - promotion #22 (PR #333, merge `5c301780c`) + STAGING push: burned Hydra asset URLs re-bumped (VRM `?v=3`, halo masks `?v=2`)
+- **What changed:** promotion #22 merged staging `915cb8676` (Hydra coin-analyst NPC, PROTOCOL 105, mirrored face, halo shells) to master; all 4 gates, `migrate` and `deploy` jobs passed. Follow-up staging push bumps `/avatars/hydra-w30k.vrm?v=2` -> `?v=3` and `hydra-halo-{suit,hot}.webp?v=1` -> `?v=2` in `agent-model-registry.ts`, `hydra-halo.ts`, `preview/hermes/page.tsx` and the cold-load ledger test; registry `preview` path fixed from the missing `hydra-turnaround/openai/front.png` to `openai-v2/front.png`.
+- **What broke + root cause:** at 22:32Z I curled the three new prod asset URLs while the prod Coolify rows were still `in_progress` (containers on `e4163741f`). Next.js served 404 and Cloudflare cached it (`cf-cache-status: HIT`, 7-day TTL, no purge scope). The same mistake as the 2026-09-19 cove GLB and the Ansem 404. `hydra-w30k.vrm?v=2` and `hydra-halo-*.webp?v=1` are BURNED on prod; never reuse them.
+- **Fix:** new `?v=` numbers above, shipped as promotion #23. Prod asset probes only after every prod web container `SOURCE_COMMIT` equals the merge sha.
+- **Who it's for:** players and agents who see Hydra in the prod world.
+- SCHEMA: synced.
 
 ### 2026-11-01 11:05Z (session hydra) - STAGING push: Hydra face fix + halo shells (`cca95a4b5`), VERIFIED on staging 11:33Z
 - **What changed:** founder signed off the bench look on 2026-11-01 ("dope"). NEW `scripts/hermes-pipeline/hydra-face-fix.mjs` repairs the source GLB: -X face mirrored from +X (261 vertices, normals + up to 3.6 mm), -X eye UVs mirrored from the clean eye, earpiece cups suit black, chest H + eyes added to the emissive mask, and two halo masks baked (`hydra-halo-suit.webp` 92 KB, `hydra-halo-hot.webp` 9 KB). VRM rebuilt (inject, optimize, plain decimation 30,597 tris, validator S3.0 only) and served at `/avatars/hydra-w30k.vrm?v=2`. NEW `lib/three/hydra-halo.ts` + `hydra-halo-node.ts`: 2 additive skinned shells (suit 73,966 tris, hot 3,351 tris) on the body skeleton, GLSL hook for the classic preview page, TSL node overrides for the WebGPU world.

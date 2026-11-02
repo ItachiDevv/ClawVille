@@ -54,8 +54,8 @@ import {
   HYDRA_GLOW_STEADY_INTENSITY,
 } from './hydra-glow';
 
-export const HYDRA_HALO_SUIT_URL = '/avatars/hydra-halo-suit.webp?v=1';
-export const HYDRA_HALO_HOT_URL = '/avatars/hydra-halo-hot.webp?v=1';
+export const HYDRA_HALO_SUIT_URL = '/avatars/hydra-halo-suit.webp?v=2';
+export const HYDRA_HALO_HOT_URL = '/avatars/hydra-halo-hot.webp?v=2';
 /** Hydra neon (#30a8ff), the colour of every glow line in the emissive map. */
 export const HYDRA_HALO_NEON_SRGB = [48 / 255, 168 / 255, 255 / 255] as const;
 /** Peak emissive intensity of the pulse; uHaloK = intensity / peak. */
