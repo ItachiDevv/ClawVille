@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-02 23:08Z (session hydra). **PROD = `b22947b36` (promotion #23, PR #334, VERIFIED 23:07Z): Hydra NPC + halo look (promotion #22, PROTOCOL 105) with re-bumped asset URLs (VRM `?v=3`, halo `?v=2`). Staging = `7a121e1d6`.** Founder look check owed. SCHEMA: synced.
+Last Audited: 2026-11-04 02:27Z (session claw-2.0). **STAGING API + WEB = `e28917fba`, VERIFIED: 2026-10-26 audit faults closed** (support ticket relay through the shared Telegram sender with ticket text kept out of logs; reconcile capture pages roll up; a once-per-day page when operator rows fill the sweep cap; alertError keeps its retry window and reports suppressed counts; usage reporter keeps pending state on an undelivered page; one PayAI credit-gate list; API only, no schema, env, route or PROTOCOL_VERSION change; DEPLOY LOG 2026-11-04 02:27Z). **PROD = `b22947b36` (promotion #23).** SCHEMA: synced. Promotion needs the founder's go.
+
+Prior - Last Audited: 2026-11-02 23:08Z (session hydra). **PROD = `b22947b36` (promotion #23, PR #334, VERIFIED 23:07Z): Hydra NPC + halo look (promotion #22, PROTOCOL 105) with re-bumped asset URLs (VRM `?v=3`, halo `?v=2`). Staging = `7a121e1d6`.** Founder look check owed. SCHEMA: synced.
 
 Prior - Last Audited: 2026-11-01 11:34Z (session hydra). **Staging = `cca95a4b5` (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), VERIFIED on staging 11:33Z (web lane needed a solo retrigger); founder look check owed.**
 
@@ -708,6 +710,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-04 02:27Z (session claw-2.0) - 2026-10-26 audit faults closed on staging (`e28917fba`), VERIFIED
+- **What changed:** `routes/support.ts` relays tickets through `sendTelegramText` with `logUndeliveredText: false` (its own fetch logged the raw error with the bot-token URL; this path is still on prod). `x402-auto-reconcile.ts`: captured counts roll up so a lost capture page is re-sent; a once-per-24h page when manual + indeterminate rows fill the 50-row sweep cap. `alert-error.ts`: an undelivered page keeps the 60 s window as the retry delay and its count is reported on the next page (the "+N more" line was dead). `inference-usage-reporter.ts`: the default sender throws on an undelivered page. `x402-payai.ts`: one credit-gate list; a plain-text settle 402 that names a credit gate counts toward the breaker and stays ambiguous. ARCHITECTURE.md corrects the overstated 2026-10-26 PayAI facts.
+- **What broke + fix:** the first push (`49cadb292`) failed the money gate: the new alert-error suites restored fake Telegram credentials (saved after the file set them), so a later shared-process test (`mainnet-read-sites-failover`) saw a Telegram fetch. `e28917fba` restores the pre-file values. Product code was not at fault.
+- **Evidence:** Codex VERDICT: APPROVED (2nd pass, read by me). Local CI money lane: 4415 shared tests pass, 42 isolated files pass; tsc 0; coupling gate passes. CI run 41758613957 all jobs green. Both staging containers `e28917fba`; `/health` matches; onboarding smoke 14/14; `/game` renders with 0 console errors (about 30 s load after the web rebuild).
+- **Prod note:** agent-pay settles resumed on 2026-10-26 (37-56 per day, read-only prod query), so the PayAI credits were added.
+- **Who it is for:** ops (no token or ticket text in logs, no lost money pages).
+- **SCHEMA:** synced.
 
 ### 2026-11-02 23:08Z (session hydra) - promotion #23 ON PROD (`b22947b36`, PR #334): Hydra asset re-bump, VERIFIED
 - **What changed:** staging `7a121e1d6` promoted. Prod web + api `SOURCE_COMMIT` = `b22947b36` (old web container gone 23:07Z); api `/health` commit `b22947b36`.
