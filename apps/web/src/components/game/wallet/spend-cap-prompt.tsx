@@ -13,9 +13,11 @@ import { SpendingCard, useHumanSpendPolicy } from './spending-card';
 
 const DISMISS_KEY = 'clawville:spendCapPromptDismissed';
 
-function readFlag(storage: Storage | undefined, key: string): boolean {
+/** Reads a sessionStorage flag. The `sessionStorage` getter itself can throw
+ *  (blocked site data), so the whole access sits inside the try. */
+export function readSessionFlag(key: string): boolean {
   try {
-    return !!storage?.getItem(key);
+    return !!window.sessionStorage.getItem(key);
   } catch {
     return false;
   }
@@ -27,12 +29,11 @@ export default function SpendCapPrompt() {
   const [backupPending, setBackupPending] = useState(true);
 
   useEffect(() => {
-    const session = typeof window === 'undefined' ? undefined : window.sessionStorage;
-    setDismissed(readFlag(session, DISMISS_KEY));
-    setBackupPending(readFlag(session, FIRST_TIME_DISCLOSURE_STORAGE_KEY));
+    setDismissed(readSessionFlag(DISMISS_KEY));
+    setBackupPending(readSessionFlag(FIRST_TIME_DISCLOSURE_STORAGE_KEY));
     // The backup modal purges its key on acknowledgement; check again later.
     const timer = window.setInterval(() => {
-      setBackupPending(readFlag(window.sessionStorage, FIRST_TIME_DISCLOSURE_STORAGE_KEY));
+      setBackupPending(readSessionFlag(FIRST_TIME_DISCLOSURE_STORAGE_KEY));
     }, 2_000);
     return () => window.clearInterval(timer);
   }, []);

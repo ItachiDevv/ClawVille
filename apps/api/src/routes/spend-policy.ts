@@ -23,6 +23,7 @@ import {
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { noStorePrivate } from '../middleware/no-store';
+import type { SessionCreatedVia } from '../lib/auth';
 import { readSpendPolicy, spendPolicyInputSchema, writeSpendPolicy } from '../services/spend-policy';
 import type { AppContext } from '../types';
 
@@ -36,19 +37,38 @@ spendPolicyRoutes.get('/', requireAuthOrAgentSession, async (c) => {
   return c.json(await readSpendPolicy(identity.avatarId));
 });
 
+/**
+ * Login origins that only a human sign-in produces. An agent can trade its
+ * live session for its owner's cookie ('agent_exchange'), so that origin, a
+ * guest session and a pre-0089 session (NULL) cannot write. Known gap: an
+ * agent that opens its human's magic link itself gets a 'magic_link' session.
+ */
+const HUMAN_SESSION_ORIGINS = new Set<SessionCreatedVia>(['password', 'magic_link', 'avatar_create']);
+
+const HUMAN_ONLY = {
+  error: 'spend_policy_human_only',
+  message: 'Only the human owner can change spend rules. Ask your human to set them in the ClawVille wallet panel.',
+} as const;
+
 spendPolicyRoutes.put(
   '/',
   async (c, next) => {
-    // Fail with a clear reason when an agent tries to write its own rules.
-    if (!c.get('user') && c.req.header(AGENT_SESSION_HEADER)) {
+    // Any request that carries an agent session header is an agent request.
+    if (c.req.header(AGENT_SESSION_HEADER)) return c.json(HUMAN_ONLY, 403);
+    return next();
+  },
+  requireAuth,
+  async (c, next) => {
+    const createdVia = c.get('session')?.createdVia ?? null;
+    if (createdVia === 'agent_exchange') return c.json(HUMAN_ONLY, 403);
+    if (createdVia === null || !HUMAN_SESSION_ORIGINS.has(createdVia)) {
       return c.json({
-        error: 'spend_policy_human_only',
-        message: 'Only the human owner can change spend rules. Ask your human to set them in the ClawVille wallet panel.',
+        error: 'spend_policy_needs_human_login',
+        message: 'Sign in again in your browser, then change your spend rules.',
       }, 403);
     }
     return next();
   },
-  requireAuth,
   requireNonGuestUser,
   async (c) => {
     const user = c.get('user') as { id: string };

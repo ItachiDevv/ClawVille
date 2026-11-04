@@ -1,8 +1,9 @@
 -- 0089_user_spend_policies.sql: per-avatar spend rules for paid third-party tools (MCP hub step 2, phase 1;
 -- founder 2026-11-04: users spend on these tools from their own wallet under their own rules).
 --
--- ADDITIVE + IDEMPOTENT. Creates one new table. It alters, drops, or rewrites no existing table, column, index,
--- or row. The file runs as one implicit transaction, so a failure applies nothing. NEVER apply via drizzle-kit push.
+-- ADDITIVE + IDEMPOTENT. Creates one new table and adds one nullable column to "sessions" (end of file). It drops or
+-- rewrites no existing column, index, or row. The file runs as one implicit transaction, so a failure applies
+-- nothing. NEVER apply via drizzle-kit push.
 --
 -- One row per avatar. Only a logged-in human (the avatar's owner) writes it: PUT /api/wallet/spend-policy is a
 -- Lucia-session route and refuses agent sessions, so an agent can never raise its own cap. Agents read it.
@@ -29,3 +30,10 @@ CREATE TABLE IF NOT EXISTS "user_spend_policies" (
     CHECK ("daily_cap_usd_cents" IS NULL OR "per_call_cap_usd_cents" IS NULL
       OR "per_call_cap_usd_cents" <= "daily_cap_usd_cents")
 );
+
+-- Login-session origin (Codex review 2026-11-04). An agent can trade its live session for its owner's login cookie
+-- (POST /api/auth/milady-session-exchange), so a cookie alone does not prove a human. Each new session records how
+-- it was made: 'password', 'magic_link', 'avatar_create', 'guest' or 'agent_exchange'. Existing rows stay NULL
+-- (made before this migration). The spend-rules write accepts only 'password', 'magic_link' and 'avatar_create'.
+-- Additive: one nullable column; old code ignores it and leaves it NULL.
+ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS "created_via" text;

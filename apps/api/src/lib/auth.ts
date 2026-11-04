@@ -49,6 +49,9 @@ export function resolveSessionCookieDomain(): string | undefined {
   return undefined;
 }
 
+/** How a login session was made. Stored in `sessions.created_via` (migration 0089). */
+export type SessionCreatedVia = 'password' | 'magic_link' | 'avatar_create' | 'guest' | 'agent_exchange';
+
 export const lucia = new Lucia(adapter, {
   sessionCookie: {
     attributes: {
@@ -57,6 +60,7 @@ export const lucia = new Lucia(adapter, {
       domain: resolveSessionCookieDomain(),
     },
   },
+  getSessionAttributes: (attributes) => ({ createdVia: attributes.createdVia ?? null }),
   getUserAttributes: (attributes) => {
     return {
       email: attributes.email,
@@ -74,6 +78,9 @@ export const lucia = new Lucia(adapter, {
 declare module 'lucia' {
   interface Register {
     Lucia: typeof lucia;
+    DatabaseSessionAttributes: {
+      createdVia: SessionCreatedVia | null;
+    };
     DatabaseUserAttributes: {
       email: string | null;
       name: string | null;

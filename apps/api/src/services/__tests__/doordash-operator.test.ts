@@ -637,7 +637,7 @@ describe('doordashOperatorOnly', () => {
     hono.use('*', async (c, next) => {
       c.set('user', userId ? { id: userId } as AppContext['Variables']['user'] : null);
       c.set('session', hasSession ? {
-        id: 'lucia-session', userId: userId ?? '', fresh: false, expiresAt: new Date(Date.now() + 60_000),
+        id: 'lucia-session', userId: userId ?? '', fresh: false, expiresAt: new Date(Date.now() + 60_000), createdVia: 'password',
       } : null);
       await next();
     });
