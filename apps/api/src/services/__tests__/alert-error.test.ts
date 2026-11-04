@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 
 const originalToken = process.env.ITACHI_DEBUG_BOT_TOKEN;
 const originalChatId = process.env.ITACHI_DEBUG_CHAT_ID;
@@ -220,17 +220,33 @@ describe('alert-error Telegram delivery', () => {
 });
 
 describe('alertError rate limit', () => {
+  const saved = {
+    token: process.env.ITACHI_DEBUG_BOT_TOKEN,
+    chat: process.env.ITACHI_DEBUG_CHAT_ID,
+    env: process.env.CLAWVILLE_ENV,
+  };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  beforeEach(() => {
+    process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
+    process.env.CLAWVILLE_ENV = 'staging';
+  });
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    restore('ITACHI_DEBUG_BOT_TOKEN', saved.token);
+    restore('ITACHI_DEBUG_CHAT_ID', saved.chat);
+    restore('CLAWVILLE_ENV', saved.env);
   });
 
-  it('frees the window after an undelivered page and carries the suppressed count', async () => {
-    process.env.CLAWVILLE_ENV = 'staging';
+  it('keeps the window after an undelivered page and reports every lost page on the next one', async () => {
     const texts: string[] = [];
     let accept = false;
     globalThis.fetch = (async (_input, init): Promise<Response> => {
       texts.push(String((JSON.parse(String(init?.body)) as { text: string }).text));
-      return new Response('nope', { status: accept ? 200 : 500 });
+      return new Response('nope', { status: accept ? 200 : 429 });
     }) as typeof fetch;
     const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
     const log = spyOn(console, 'log').mockImplementation(() => undefined);
@@ -239,16 +255,42 @@ describe('alertError rate limit', () => {
       const params = { severity: 'warning' as const, source: 'rate-test', message: 'same text' };
       now.mockReturnValue(1_000_000);
       await alertError(params);
+      // Same window: no new request, so a failing channel is not hammered.
+      await alertError(params);
+      await alertError(params);
+      await alertError(params);
+      expect(texts).toHaveLength(1);
       accept = true;
-      await alertError(params);
-      await alertError(params);
-      await alertError(params);
       now.mockReturnValue(1_000_000 + 61_000);
       await alertError(params);
-      expect(texts).toHaveLength(3);
-      expect(texts[2]).toContain('(+2 more since the last page)');
+      expect(texts).toHaveLength(2);
+      // 1 undelivered page + 3 suppressed calls.
+      expect(texts[1]).toContain('(+4 more since the last page)');
     } finally {
       now.mockRestore();
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+});
+
+describe('sendTelegramText undelivered text', () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('keeps user text out of the logs when logUndeliveredText is false', async () => {
+    process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
+    globalThis.fetch = (async (_input, _init): Promise<Response> =>
+      new Response('bad request', { status: 400 })) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(await sendTelegramText('private ticket text', { logUndeliveredText: false })).toBe(false);
+      const logged = [...warn.mock.calls, ...log.mock.calls].flat().map(String).join(' ');
+      expect(logged).not.toContain('private ticket text');
+    } finally {
       warn.mockRestore();
       log.mockRestore();
     }

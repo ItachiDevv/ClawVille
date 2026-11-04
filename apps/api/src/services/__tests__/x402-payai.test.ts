@@ -82,6 +82,15 @@ describe('x402-payai facilitator-level failure classification', () => {
     expect(isFacilitatorLevelFailure(
       new Error('Facilitator settle failed (400): invalid signature'),
     )).toBe(false);
+    // Only a plain SETTLE 402 may name a credit gate.
+    for (const message of [
+      'Facilitator verify failed (402): insufficient_credits',
+      'Facilitator verify failed (400): insufficient_credits',
+      'Facilitator settle failed (400): insufficient_credits',
+      'Facilitator settle failed (403): free_tier_exhausted',
+    ]) {
+      expect(isFacilitatorLevelFailure(new Error(message))).toBe(false);
+    }
   });
 });
 

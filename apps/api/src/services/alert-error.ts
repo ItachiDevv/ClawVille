@@ -50,16 +50,29 @@ export interface AlertErrorParams {
   context?: Record<string, unknown>;
 }
 
+export interface SendTelegramOptions {
+  /**
+   * Log the message text when it is not delivered (default true). Set false
+   * for user-written text, such as a support ticket, that must stay out of logs.
+   */
+  logUndeliveredText?: boolean;
+}
+
 /**
  * Send raw plain text through the itachi-debug Telegram bot. Never throws.
  * Resolves true only when Telegram accepted the message.
  */
-export async function sendTelegramText(text: string): Promise<boolean> {
+export async function sendTelegramText(
+  text: string,
+  options: SendTelegramOptions = {},
+): Promise<boolean> {
+  const logText = options.logUndeliveredText !== false;
   const { token, chatId } = telegramCreds();
   if (!token || !chatId) {
-    console.warn('[alert-error] Telegram credentials not configured, skipping send', {
-      text: redactBotToken(text, token),
-    });
+    console.warn(
+      '[alert-error] Telegram credentials not configured, skipping send',
+      logText ? { text: redactBotToken(text, token) } : {},
+    );
     return false;
   }
 
@@ -77,7 +90,9 @@ export async function sendTelegramText(text: string): Promise<boolean> {
       console.warn(
         `[alert-error] Telegram send rejected (${res.status}): ${redactBotToken(await res.text(), token).slice(0, 200)}`,
       );
-      console.log('[alert-error] Telegram rejected message fallback:', redactBotToken(text, token));
+      if (logText) {
+        console.log('[alert-error] Telegram rejected message fallback:', redactBotToken(text, token));
+      }
       return false;
     }
     return true;
@@ -165,6 +180,10 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     lines.push(`_(+${suppressedCount} more since the last page)_`);
   }
 
-  // An undelivered page frees its window, so the next alert tries again.
-  if (!(await sendTelegramText(lines.join('\n')))) rateLimiter.delete(key);
+  // An undelivered page keeps its window (the retry delay) and returns its
+  // carried count plus itself to the window, so the next page reports them.
+  if (!(await sendTelegramText(lines.join('\n')))) {
+    const entry = rateLimiter.get(key);
+    if (entry) entry.suppressed += suppressedCount + 1;
+  }
 }

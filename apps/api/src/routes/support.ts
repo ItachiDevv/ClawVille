@@ -112,8 +112,9 @@ async function relayToTelegram(t: {
     `\n${t.message.slice(0, 1500)}` +
     (t.message.length > 1500 ? ' …[truncated]' : '') +
     ctxLine;
-  // The shared sender never throws and never logs the bot token.
-  await sendTelegramText(body);
+  // The shared sender never throws and never logs the bot token. The ticket
+  // is user text, so it stays out of the logs when the send fails.
+  await sendTelegramText(body, { logUndeliveredText: false });
 }
 
 // ─── POST /tickets ────────────────────────────────────────────────────────────

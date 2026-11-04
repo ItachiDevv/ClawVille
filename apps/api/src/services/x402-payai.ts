@@ -635,9 +635,14 @@ export function isFacilitatorLevelFailure(error: unknown): boolean {
   if (error instanceof Error) {
     const plainStatus =
       /^Facilitator (?:verify|settle) failed \((\d{3})\):/.exec(error.message);
-    // A plain 5xx is provider-wide. A plain 4xx counts only when its body names
-    // a credit gate (for example a non-JSON 402 that says insufficient_credits).
-    if (plainStatus && Number(plainStatus[1]) >= 500 && Number(plainStatus[1]) <= 599) return true;
+    if (plainStatus) {
+      const status = Number(plainStatus[1]);
+      if (status >= 500 && status <= 599) return true;
+      // Only a plain settle 402 (a non-JSON credit-gate body) may name a credit
+      // gate; every other plain 4xx stays payment-specific.
+      return /^Facilitator settle failed \(402\):/.test(error.message)
+        && mentionsCreditGate(error.message);
+    }
     return mentionsCreditGate(error.message);
   }
   return false;
