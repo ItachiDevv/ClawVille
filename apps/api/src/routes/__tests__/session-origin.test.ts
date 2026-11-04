@@ -8,12 +8,12 @@
 
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const ROUTES = join(import.meta.dir, '..');
 
 function createSessionCalls(file: string): string[] {
-  const text = readFileSync(join(ROUTES, file), 'utf8');
+  const text = readFileSync(resolve(ROUTES, file), 'utf8');
   return [...text.matchAll(/lucia\.createSession\(([^)]*)\)/g)].map((m) => m[1]!.replace(/\s+/g, ' ').trim());
 }
 
@@ -39,5 +39,11 @@ describe('session origin labels', () => {
 
   it('labels the avatar-create session', () => {
     expect(createSessionCalls('avatars.ts')).toEqual(["ownerId, { createdVia: 'avatar_create' }"]);
+  });
+
+  it('labels the Next.js login and signup session creators', () => {
+    const webAuth = join(import.meta.dir, '../../../../web/src/app/api/auth');
+    expect(createSessionCalls(join(webAuth, 'login/route.ts'))).toEqual(["user.id, { createdVia: 'password' }"]);
+    expect(createSessionCalls(join(webAuth, 'signup/route.ts'))).toEqual(["userId, { createdVia: 'password' }"]);
   });
 });
