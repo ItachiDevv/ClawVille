@@ -220,11 +220,8 @@ describe('alert-error Telegram delivery', () => {
 });
 
 describe('alertError rate limit', () => {
-  const saved = {
-    token: process.env.ITACHI_DEBUG_BOT_TOKEN,
-    chat: process.env.ITACHI_DEBUG_CHAT_ID,
-    env: process.env.CLAWVILLE_ENV,
-  };
+  // The file sets fake credentials at load time, so restore the values from before it.
+  const saved = { token: originalToken, chat: originalChatId, env: originalClawvilleEnv };
   const restore = (name: string, value: string | undefined) => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -275,13 +272,21 @@ describe('alertError rate limit', () => {
 });
 
 describe('sendTelegramText undelivered text', () => {
+  const saved = { token: originalToken, chat: originalChatId };
+  beforeEach(() => {
+    process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
+  });
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    // Never leak test credentials into later files of a shared test process.
+    if (saved.token === undefined) delete process.env.ITACHI_DEBUG_BOT_TOKEN;
+    else process.env.ITACHI_DEBUG_BOT_TOKEN = saved.token;
+    if (saved.chat === undefined) delete process.env.ITACHI_DEBUG_CHAT_ID;
+    else process.env.ITACHI_DEBUG_CHAT_ID = saved.chat;
   });
 
   it('keeps user text out of the logs when logUndeliveredText is false', async () => {
-    process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
-    process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
     globalThis.fetch = (async (_input, _init): Promise<Response> =>
       new Response('bad request', { status: 400 })) as typeof fetch;
     const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
