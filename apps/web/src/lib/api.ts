@@ -4,6 +4,8 @@ import type {
   AutonomyStatusResponse,
   HatcherLaunchExchangeResponse,
   LandTier,
+  SpendPolicyView,
+  SpendVendorId,
 } from '@clawville/shared';
 // Type-only (erased at compile time — no runtime store dependency): the
 // heartbeat body's optional controlMode mirrors the game store's union so the
@@ -623,6 +625,19 @@ export const api = {
   // Read the caller's custodial-wallet on-chain balances + the withdraw flag.
   // Live regardless of the flag; 404 code:'wallet_missing' when no wallet.
   walletBalances: () => request<WalletBalancesResponse>('/api/wallet/balances'),
+
+  // ── Spend rules for paid third-party tools (routes/spend-policy.ts) ──────
+  // The human owner writes them; the agent only reads. Null caps = not set.
+  getSpendPolicy: () => request<SpendPolicyView>('/api/wallet/spend-policy'),
+  putSpendPolicy: (body: {
+    dailyCapUsdCents: number | null;
+    perCallCapUsdCents: number | null;
+    allowedVendors: SpendVendorId[];
+  }) =>
+    request<SpendPolicyView>('/api/wallet/spend-policy', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 
   /**
    * Move the caller's OWN deposited SOL/USDC/CLV out of their custodial

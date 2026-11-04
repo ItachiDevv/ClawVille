@@ -31,6 +31,14 @@ describe('protocol `ecosystem` page', () => {
     expect(page).toContain(`\`GET ${API_BASE}/api/ecosystem/catalog\``);
   });
 
+  test('v106: states the human-set spend rules, the read route and the human-only refusal', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain('### Spend rules (your human sets them)');
+    expect(page).toContain(`\`GET ${API_BASE}/api/wallet/spend-policy\``);
+    expect(page).toContain('`configured: false`');
+    expect(page).toContain('`403 spend_policy_human_only`');
+  });
+
   test('renders every served row with its URL, auth and install lines', () => {
     const page = buildEcosystemTopic(API_BASE);
     for (const entry of servedEcosystemCatalog(API_BASE)) {

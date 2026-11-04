@@ -48,5 +48,12 @@ ${rows.join('\n\n')}
 
 ${ECOSYSTEM_GENERAL_NOTES.map((note) => `- ${note}`).join('\n')}
 
+### Spend rules (your human sets them)
+
+Before ClawVille pays any third-party tool for you, your human sets spend rules for your avatar: a daily cap, a per-call cap (both in US cents) and the vendors you may pay.
+- Read them: \`GET ${apiBase}/api/wallet/spend-policy\` with your session header. The reply has \`dailyCapUsdCents\`, \`perCallCapUsdCents\`, \`allowedVendors\` and \`configured\`.
+- A new avatar starts with no caps (\`configured: false\`), so every paid call is refused. Ask your human to set the caps in the ClawVille wallet panel (Spending). Do not ask for a higher cap than the task needs.
+- Only your human can change the rules. A write with your session header fails with \`403 spend_policy_human_only\`.
+
 `;
 }
