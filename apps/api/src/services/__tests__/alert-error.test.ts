@@ -218,3 +218,39 @@ describe('alert-error Telegram delivery', () => {
     expect(await sendTelegramText('delivered')).toBe(true);
   });
 });
+
+describe('alertError rate limit', () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('frees the window after an undelivered page and carries the suppressed count', async () => {
+    process.env.CLAWVILLE_ENV = 'staging';
+    const texts: string[] = [];
+    let accept = false;
+    globalThis.fetch = (async (_input, init): Promise<Response> => {
+      texts.push(String((JSON.parse(String(init?.body)) as { text: string }).text));
+      return new Response('nope', { status: accept ? 200 : 500 });
+    }) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    const now = spyOn(Date, 'now');
+    try {
+      const params = { severity: 'warning' as const, source: 'rate-test', message: 'same text' };
+      now.mockReturnValue(1_000_000);
+      await alertError(params);
+      accept = true;
+      await alertError(params);
+      await alertError(params);
+      await alertError(params);
+      now.mockReturnValue(1_000_000 + 61_000);
+      await alertError(params);
+      expect(texts).toHaveLength(3);
+      expect(texts[2]).toContain('(+2 more since the last page)');
+    } finally {
+      now.mockRestore();
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+});

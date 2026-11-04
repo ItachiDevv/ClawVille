@@ -36,7 +36,7 @@ describe('x402-payai facilitator-level failure classification', () => {
       statusCode: 200,
       invalidReason: 'free_tier_exhausted',
     })).toBe(true);
-    // 2026-10-10 prod shape: the paid-credit gate, as typed reason and as message.
+    // The paid-credit gate. Prod logs showed the message form; the typed-reason form is assumed.
     expect(isFacilitatorLevelFailure(Object.assign(new Error(
       'insufficient_credits: Your credit balance is too low for this payment.',
     ), {
@@ -46,6 +46,10 @@ describe('x402-payai facilitator-level failure classification', () => {
     }))).toBe(true);
     expect(isFacilitatorLevelFailure(new Error(
       'insufficient_credits: Your credit balance is too low for this payment.',
+    ))).toBe(true);
+    // A non-JSON 402 body that names the credit gate.
+    expect(isFacilitatorLevelFailure(new Error(
+      'Facilitator settle failed (402): insufficient_credits: Your credit balance is too low.',
     ))).toBe(true);
     expect(isFacilitatorLevelFailure(Object.assign(new Error('upstream'), {
       name: 'VerifyError',

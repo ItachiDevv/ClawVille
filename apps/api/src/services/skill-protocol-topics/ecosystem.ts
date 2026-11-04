@@ -14,7 +14,7 @@ export function buildEcosystemTopic(apiBase: string): string {
   const rows = servedEcosystemCatalog(apiBase).map((entry) => {
     const facts = [
       entry.mcpUrl
-        ? `- MCP URL: \`${entry.mcpUrl}\`${entry.transport === 'http' ? ' (Streamable HTTP)' : entry.transport === 'stdio' ? ' (stdio)' : ''}`
+        ? `- MCP URL: \`${entry.mcpUrl}\` (Streamable HTTP)`
         : null,
       entry.transport === 'stdio' && entry.command
         ? `- Command: \`${entry.command}\` (stdio, runs on your computer)`

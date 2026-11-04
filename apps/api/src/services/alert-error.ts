@@ -34,8 +34,9 @@ function shouldSend(key: string): { send: boolean; suppressedCount: number } {
   const existing = rateLimiter.get(key);
 
   if (!existing || now - existing.firstAt > WINDOW_MS) {
+    // Carry the count that the previous window suppressed into this page.
     rateLimiter.set(key, { firstAt: now, suppressed: 0 });
-    return { send: true, suppressedCount: 0 };
+    return { send: true, suppressedCount: existing?.suppressed ?? 0 };
   }
 
   existing.suppressed += 1;
@@ -140,15 +141,6 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     return;
   }
 
-  const { token, chatId } = telegramCreds();
-  if (!token || !chatId) {
-    console.warn('[alert-error] Telegram credentials not configured, skipping alert', {
-      source,
-      message: redactBotToken(message, token),
-    });
-    return;
-  }
-
   const key = `${source}::${message}`;
   const { send, suppressedCount } = shouldSend(key);
   if (!send) return;
@@ -170,8 +162,9 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     lines.push('```');
   }
   if (suppressedCount > 0) {
-    lines.push(`_(+${suppressedCount} more in last 60s)_`);
+    lines.push(`_(+${suppressedCount} more since the last page)_`);
   }
 
-  await sendTelegramText(lines.join('\n'));
+  // An undelivered page frees its window, so the next alert tries again.
+  if (!(await sendTelegramText(lines.join('\n')))) rateLimiter.delete(key);
 }

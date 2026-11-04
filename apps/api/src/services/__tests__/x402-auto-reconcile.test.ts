@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
   isX402AutoReconcileEnabled,
-  resetX402AutoReconcileAlertDedupeForTests,
   resolveX402AutoReconcileConfig,
   runX402AutoReconcilePass,
   stopX402AutoReconcile,
@@ -57,7 +56,6 @@ function result(verdicts: BulkReconcileVerdict[]): BulkReconcileResult {
 
 afterEach(() => {
   stopX402AutoReconcile();
-  resetX402AutoReconcileAlertDedupeForTests();
   delete process.env.X402_AUTO_RECONCILE;
   delete process.env.X402_AUTO_RECONCILE_INTERVAL_MS;
   delete process.env.X402_AUTO_RECONCILE_MAX_ROWS;
@@ -90,7 +88,7 @@ describe('x402 recurring auto-reconcile', () => {
       runSweep: async () => { swept = true; return sweep; },
       withAdvisoryLock: async (run) => ({ acquired: true, sweep: await run() }),
       now: () => new Date('2026-09-13T12:00:00.000Z'),
-      send: async () => {},
+      send: async () => true,
       logError: (message) => { errors.push(message); },
       stampVerdict: async (candidate, annotation) => {
         expect(swept).toBe(true);
@@ -158,7 +156,7 @@ describe('x402 recurring auto-reconcile', () => {
         return sweep;
       },
       withAdvisoryLock: async (run) => ({ acquired: true, sweep: await run() }),
-      send: async (message) => { messages.push(message); },
+      send: async (message) => { messages.push(message); return true; },
     });
     expect(calls).toEqual([{
       apply: true,
@@ -182,7 +180,7 @@ describe('x402 recurring auto-reconcile', () => {
         acquired: true,
         sweep: await run(),
       }),
-      send: async (message: string) => { messages.push(message); },
+      send: async (message: string) => { messages.push(message); return true; },
       now: () => new Date('2026-07-23T12:00:00.000Z'),
     };
     await runX402AutoReconcilePass(deps);
@@ -217,7 +215,7 @@ describe('x402 recurring auto-reconcile', () => {
         acquired: true,
         sweep: await run(),
       }),
-      send: async (message: string) => { messages.push(message); },
+      send: async (message: string) => { messages.push(message); return true; },
       now: () => new Date(clock),
     };
     const pass = async (verdicts: BulkReconcileVerdict[], minutes: number) => {
@@ -277,6 +275,71 @@ describe('x402 recurring auto-reconcile', () => {
     ]);
   });
 
+  it('pages once per day when operator rows fill the whole row cap', async () => {
+    process.env.X402_AUTO_RECONCILE = 'true';
+    process.env.X402_AUTO_RECONCILE_MAX_ROWS = '2';
+    const messages: string[] = [];
+    let clock = new Date('2026-07-23T12:00:00.000Z').getTime();
+    const current = result([
+      { row: row('m1'), bucket: 'manual', detail: 'ambiguous pairing' },
+      { row: row('m2'), bucket: 'manual', detail: 'ambiguous pairing' },
+    ]);
+    const deps = {
+      stampVerdict: async () => {},
+      runSweep: async () => current,
+      withAdvisoryLock: async (run: () => Promise<BulkReconcileResult>) => ({
+        acquired: true,
+        sweep: await run(),
+      }),
+      send: async (message: string) => { messages.push(message); return true; },
+      now: () => new Date(clock),
+    };
+    await runX402AutoReconcilePass(deps);
+    clock += 15 * 60_000;
+    await runX402AutoReconcilePass(deps);
+    clock += 24 * 60 * 60_000;
+    await runX402AutoReconcilePass(deps);
+    const blocked = messages.filter((message) => message.includes('need an operator'));
+    expect(blocked).toEqual([
+      'auto-reconcile: all 2 selected rows need an operator (2 manual, 0 indeterminate); newer reconcile rows wait. Resolve them with the operator CLI.',
+      'auto-reconcile: all 2 selected rows need an operator (2 manual, 0 indeterminate); newer reconcile rows wait. Resolve them with the operator CLI.',
+    ]);
+  });
+
+  it('sends an undelivered capture page again on the next sweep', async () => {
+    process.env.X402_AUTO_RECONCILE = 'true';
+    const messages: string[] = [];
+    let deliver = false;
+    let current = result([{
+      row: row('captured'),
+      bucket: 'matched',
+      action: 'applied_capture_fulfill',
+      detail: 'captured',
+    }]);
+    const deps = {
+      stampVerdict: async () => {},
+      runSweep: async () => current,
+      withAdvisoryLock: async (run: () => Promise<BulkReconcileResult>) => ({
+        acquired: true,
+        sweep: await run(),
+      }),
+      send: async (message: string) => {
+        messages.push(`${deliver ? 'sent' : 'lost'}: ${message}`);
+        return deliver;
+      },
+      now: () => new Date('2026-07-23T12:00:00.000Z'),
+    };
+    await runX402AutoReconcilePass(deps);
+    deliver = true;
+    current = result([]);
+    await runX402AutoReconcilePass(deps);
+    await runX402AutoReconcilePass(deps);
+    expect(messages).toEqual([
+      'lost: auto-reconcile: captured 1 ($1.25), closed 0 no-money, 0 manual',
+      'sent: auto-reconcile: captured 1 ($1.25), closed 0 no-money, 0 manual',
+    ]);
+  });
+
   it('alerts an indeterminate row only after it survives 24 hours', async () => {
     process.env.X402_AUTO_RECONCILE = 'true';
     const messages: string[] = [];
@@ -292,7 +355,7 @@ describe('x402 recurring auto-reconcile', () => {
         acquired: true,
         sweep: await run(),
       }),
-      send: async (message: string) => { messages.push(message); },
+      send: async (message: string) => { messages.push(message); return true; },
       now: () => new Date('2026-07-23T12:00:00.000Z'),
     };
     await runX402AutoReconcilePass(deps);

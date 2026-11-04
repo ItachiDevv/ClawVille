@@ -24,6 +24,7 @@ import {
   resolveAgentSession,
 } from '../middleware/require-auth-or-agent';
 import { slideAgentSessionTtl } from '../services/agent-session-ttl';
+import { sendTelegramText } from '../services/alert-error';
 import type { AppContext } from '../types';
 
 export const supportRouter = new Hono<AppContext>();
@@ -111,15 +112,8 @@ async function relayToTelegram(t: {
     `\n${t.message.slice(0, 1500)}` +
     (t.message.length > 1500 ? ' …[truncated]' : '') +
     ctxLine;
-  try {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT, text: body }),
-    });
-  } catch (err) {
-    console.warn('[support] Telegram relay failed (ticket still persisted)', err);
-  }
+  // The shared sender never throws and never logs the bot token.
+  await sendTelegramText(body);
 }
 
 // ─── POST /tickets ────────────────────────────────────────────────────────────
