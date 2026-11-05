@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-05 04:39Z (session claw-2.0). **STAGING API + WEB = `d6e83b15e`, VERIFIED 04:57Z: spend rules phase 1b (linked wallet signs every raise; wallet change needs the old wallet; PROTOCOL_VERSION 107) (DEPLOY LOG 2026-11-05 04:39Z).** **PROD = `2b3c5fa36` (promotion #24).** SCHEMA: synced (no migration).
+Last Audited: 2026-11-05 05:32Z (session claw-2.0). **STAGING = phase 2a, Studios images paid from the avatar wallet (PROTOCOL_VERSION 108, migration 0090), PUSHED 05:32Z, VERIFICATION PENDING (DEPLOY LOG 2026-11-05 05:32Z).** **PROD = `2b3c5fa36` (promotion #24).** SCHEMA: prod-migration-pending: `packages/database/migrations/0090_vendor_spend_ledger.sql`.
+
+Prior - Last Audited: 2026-11-05 04:39Z (session claw-2.0). **STAGING API + WEB = `d6e83b15e`, VERIFIED 04:57Z: spend rules phase 1b (linked wallet signs every raise; wallet change needs the old wallet; PROTOCOL_VERSION 107) (DEPLOY LOG 2026-11-05 04:39Z).** **PROD = `2b3c5fa36` (promotion #24).** SCHEMA: synced (no migration).
 
 Prior - Last Audited: 2026-11-05 03:40Z (session claw-2.0). **PROD = `2b3c5fa36` (promotion #24, PR #335, VERIFIED 03:38Z): 2026-10-26 audit fault fixes + user spend rules (PROTOCOL_VERSION 106, migration 0089).** **STAGING API + WEB = `d07940051`** (branch tip moved with docs only). SCHEMA: synced.
 
@@ -716,6 +718,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-05 05:32Z (session claw-2.0) - phase 2a on staging: Studios images paid from the avatar wallet (PROTOCOL_VERSION 108, migration 0090), VERIFICATION PENDING
+- **What changed:** `POST /api/vendors/studios/images` (human session or ledger-capable agent session, Idempotency-Key) pays Studios with x402 v2 from the avatar wallet inside the human's spend rules (`services/outbound-x402.ts`): unpaid quote -> the one exact + Solana mainnet + USDC entry -> pinned payTo, amount ceiling, fee payer not our wallet -> caps and a pending ledger row under the spend-rules lock -> decrypt, sign the seller's entry unchanged, wipe -> store our wallet's signature -> paid request. Only a 2xx with valid settlement proof is `paid`; everything else after sending is `ambiguous` and counted. New table `vendor_spend_ledger` (migration 0090), reconcile script `apps/api/scripts/vendors/vendor-ledger-reconcile.ts`, live test script `apps/api/scripts/vendors/studios-live-test.ts`. Manual + Nori line; PROTOCOL_VERSION 107 -> 108. No web form yet (phase 2b, before promotion).
+- **What broke / found:** Codex and an independent adversarial money audit both returned CHANGES REQUIRED on the first version: a seller could name our wallet as fee payer; a 402 after sending was recorded `failed` although the x402 facilitator returns an empty transaction after a confirmation timeout even when the transfer lands; the key was decrypted before the cap checks and only one copy was wiped; no way to resolve stuck rows; no rate or body limit; the live-test budget was per avatar and unlocked. All fixed in `a439760c6`; a new test signs a real transaction against a fake RPC and decodes it (one USDC TransferChecked of the quoted amount to the payTo token account, the seller as fee payer).
+- **Local evidence:** services lane 4219 pass 0 fail (42 isolated OK; one structure allowlist updated for the new key-vault importer); route lane 637 pass 0 fail (44 isolated OK); DB tests skipped locally (no local Postgres) and run in the CI route lane; api tsc 0; shared 186/0; coupling gate 0; doc-path check passed.
+- **Who it is for:** agents and humans that want images; the founder's $1 live test.
+- **SCHEMA:** prod-migration-pending: `0090_vendor_spend_ledger.sql` (additive).
+- **PARITY:** human path: POST /api/vendors/studios/images with the Lucia session (web form in phase 2b, before promotion); agent path: the same route with a ledger-capable agent session (manual PV 108); settlement binds to identity.avatarId.
 
 ### 2026-11-05 04:39Z (session claw-2.0) - spend rules phase 1b on staging (PROTOCOL_VERSION 107), VERIFIED
 - **Staging evidence (04:57Z):** CI run 41969139599 success (gates, migrate, deploy); the route lane ran all 8 Postgres spend-rule tests, including both lock races (the wallet-change race waited 215 ms on the lock, then refused the old wallet's proof); both containers `SOURCE_COMMIT=d6e83b15eaae2ba167bf8b95d255dfa0ed95674a`; `/health` 200; agent-header POST to `/api/wallet/spend-policy/challenge` 403 `spend_policy_human_only`; agent-header POST to `/api/wallet/link/challenge` 403 `wallet_link_human_only`; unauthenticated link challenge 401; public play manual `protocol_version: 107`; onboarding smoke 14/14 PASS; `/game` renders for a guest with 0 console errors (first load after the deploy took about 40 s); the served bundle contains the challenge call. Not checked: the signed-in Spending card and the wallet signature step (they need a browser wallet such as Phantom, which I cannot drive; founder eyes, FOUNDER-REVIEW). Mobile and iPad sweep not done.
