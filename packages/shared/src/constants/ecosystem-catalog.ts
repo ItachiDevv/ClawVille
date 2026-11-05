@@ -86,6 +86,11 @@ const SHINJUKU_SHIELD_VERSION = '0.3.95';
 const SHINJUKU_SERVER_NAME = 'shinjuku-shielded';
 const SHINJUKU_SHIELD_ARGS = ['-y', '--no-audit', '--no-fund', `shinjuku-shield@${SHINJUKU_SHIELD_VERSION}`, 'mcp'];
 const SHINJUKU_SHIELD_COMMAND = `npx ${SHINJUKU_SHIELD_ARGS.join(' ')}`;
+/** The newest npm version on 2026-11-05. A bump changes the served manual, so it bumps PROTOCOL_VERSION. */
+const BRAINCHAIN_MCP_VERSION = '0.7.2';
+const BRAINCHAIN_MCP_ARGS = ['-y', `brainchain-mcp@${BRAINCHAIN_MCP_VERSION}`];
+const BRAINCHAIN_MCP_COMMAND = `npx ${BRAINCHAIN_MCP_ARGS.join(' ')}`;
+const BRAINCHAIN_KEY_ENV = 'BRAINCHAIN_PAYER_KEY_FILE=~/.brainchain/payer.key';
 
 /** The `mcpServers` JSON shape the entry manual already serves for ClawVille. */
 function mcpServersJson(name: string, url: string): string {
@@ -93,8 +98,9 @@ function mcpServersJson(name: string, url: string): string {
 }
 
 /** The `mcpServers` JSON shape for a stdio server that the client starts as a local command. */
-function mcpServersStdioJson(name: string, command: string, args: readonly string[]): string {
-  return `{ "mcpServers": { "${name}": { "command": ${JSON.stringify(command)}, "args": ${JSON.stringify(args)} } } }`;
+function mcpServersStdioJson(name: string, command: string, args: readonly string[], env?: Record<string, string>): string {
+  const envJson = env ? `, "env": ${JSON.stringify(env)}` : '';
+  return `{ "mcpServers": { "${name}": { "command": ${JSON.stringify(command)}, "args": ${JSON.stringify(args)}${envJson} } } }`;
 }
 
 export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
@@ -218,6 +224,34 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
       'Install the pay CLI first. On macOS: `brew install pay`. Other ways: https://pay.sh/docs/toolchain/install/index.md',
       '`pay setup` makes the local wallet and can write the MCP config for Claude Code and Codex itself.',
       "`pay mcp` has no spending limit by default. Its own docs show a guard, for example `pay mcp --max-payment '$1.00'`.",
+    ],
+  },
+  {
+    id: 'brainchain',
+    name: 'BrainChain',
+    summary: 'Your agent hands a written task to BrainChain, and Jev hires a model or a staked worker agent to do it. Each task costs 1 USDG on Robinhood Chain or 1 USDC on Base, and the money comes back if the work falls short of the levels you set.',
+    bucket: 'installer',
+    status: 'available',
+    auth: 'No sign-in. The server pays from a wallet whose private key stays on your computer, in the file that BRAINCHAIN_PAYER_KEY_FILE names.',
+    transport: 'stdio',
+    command: BRAINCHAIN_MCP_COMMAND,
+    homepage: 'https://docs.usebrainchain.com/agents',
+    // Hermes `--args` must be the last option, so `--env` goes before it.
+    installs: [
+      { client: 'claude-code', snippet: `claude mcp add brainchain -e ${BRAINCHAIN_KEY_ENV} -- ${BRAINCHAIN_MCP_COMMAND}` },
+      { client: 'codex-cli', snippet: `codex mcp add brainchain --env ${BRAINCHAIN_KEY_ENV} -- ${BRAINCHAIN_MCP_COMMAND}` },
+      { client: 'hermes', snippet: `hermes mcp add brainchain --command npx --env ${BRAINCHAIN_KEY_ENV} --args ${BRAINCHAIN_MCP_ARGS.join(' ')}` },
+      {
+        client: 'generic-json',
+        snippet: mcpServersStdioJson('brainchain', 'npx', BRAINCHAIN_MCP_ARGS, { BRAINCHAIN_PAYER_KEY_FILE: '~/.brainchain/payer.key' }),
+      },
+    ],
+    notes: [
+      'Use a fresh wallet that holds only what you plan to spend. Save its private key in `~/.brainchain/payer.key` and make the file readable only by you: `chmod 600 ~/.brainchain/payer.key`.',
+      `\`BRAINCHAIN_PAYER_KEY_FILE=~/.brainchain/payer.key ${BRAINCHAIN_MCP_COMMAND} wallet\` checks the file and prints the wallet and what it holds.`,
+      'It pays in USDG on Robinhood Chain by default. To pay in USDC on Base, add `BRAINCHAIN_PAY_ON=base` to the server environment.',
+      'Spending is capped by default: 1 USDG or USDC per task and 10 in total while the server runs. `BRAINCHAIN_DAILY_UNITS` adds a daily cap that holds across restarts.',
+      'Briefs and accepted results are public. Keep secrets out of a brief.',
     ],
   },
   {
