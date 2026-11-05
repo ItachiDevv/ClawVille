@@ -386,7 +386,7 @@ async function finish(
 }
 
 /** Read a JSON reply up to MAX_REPLY_BYTES; null when larger or not JSON. */
-async function readJsonCapped(res: Response): Promise<unknown> {
+export async function readJsonCapped(res: Response): Promise<unknown> {
   const declared = Number(res.headers.get('content-length') ?? '0');
   if (declared > MAX_REPLY_BYTES) {
     await res.body?.cancel().catch(() => {});
