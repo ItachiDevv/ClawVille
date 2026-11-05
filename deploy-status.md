@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-04 11:19Z (session claw-2.0). **STAGING API + WEB = `d07940051`, VERIFIED 11:38Z: user spend rules, phase 1 of MCP hub step 2 (PROTOCOL_VERSION 106; migration 0089 applied on the staging DB) (DEPLOY LOG 2026-11-04 11:19Z).** **PROD = `b22947b36` (promotion #23).** SCHEMA: prod-migration-pending: `packages/database/migrations/0089_user_spend_policies.sql`. Promotion needs the founder's go.
+Last Audited: 2026-11-05 03:40Z (session claw-2.0). **PROD = `2b3c5fa36` (promotion #24, PR #335, VERIFIED 03:38Z): 2026-10-26 audit fault fixes + user spend rules (PROTOCOL_VERSION 106, migration 0089).** **STAGING API + WEB = `d07940051`** (branch tip moved with docs only). SCHEMA: synced.
+
+Prior - Last Audited: 2026-11-04 11:19Z (session claw-2.0). **STAGING API + WEB = `d07940051`, VERIFIED 11:38Z: user spend rules (DEPLOY LOG 2026-11-04 11:19Z).** **PROD = `b22947b36` (promotion #23).** SCHEMA: prod-migration-pending 0089.
 
 Prior - Last Audited: 2026-11-04 02:27Z (session claw-2.0). **STAGING API + WEB = `e28917fba`, VERIFIED: 2026-10-26 audit faults closed** (support ticket relay through the shared Telegram sender with ticket text kept out of logs; reconcile capture pages roll up; a once-per-day page when operator rows fill the sweep cap; alertError keeps its retry window and reports suppressed counts; usage reporter keeps pending state on an undelivered page; one PayAI credit-gate list; API only, no schema, env, route or PROTOCOL_VERSION change; DEPLOY LOG 2026-11-04 02:27Z). **PROD = `b22947b36` (promotion #23).** SCHEMA: synced. Promotion needs the founder's go.
 
@@ -712,6 +714,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-05 03:40Z (session claw-2.0) - PROMOTION #24 (PR #335, merge `2b3c5fa36`), VERIFIED
+- **What shipped:** the 2026-10-26 audit fault fixes (`e28917fba`: support tickets relay through the shared Telegram sender and keep the bot token and ticket text out of logs; reconcile and alert fixes) and user spend rules phase 1 (`d07940051`, PROTOCOL_VERSION 106, migration 0089). Founder go 2026-11-04.
+- **Evidence:** prod run 41961481700 success (gates, migrate, deploy); api and web containers `SOURCE_COMMIT=2b3c5fa3679212f9d825327e8ff7d3411ba7a858`; `/health` 200; web `/game` 200 and renders for a guest with 0 console errors; public play manual `protocol_version: 106`; prod DB has `sessions.created_via`, an empty `user_spend_policies` and its 3 CHECK constraints (read-only query in the api container); agent-header PUT 403 `spend_policy_human_only`; unauthenticated GET 401. The onboarding smoke was not run on prod (it provisions identities). FPS not measured (background tab). Prod disk 42%.
+- **Known, fixed on the branch, not yet shipped:** every existing human session has a NULL origin, so the first save shows `spend_policy_needs_human_login` as raw text. Commit `46eeedce2` maps it to plain text ("sign out and sign in again"); it ships with phase 1b. Caps stay unset either way, so no money risk.
+- **Not done:** the mobile and iPad viewport sweep for the new prompt and card (chrome-devtools did not connect); the signed-in screens need founder eyes (FOUNDER-REVIEW).
+- **Telegram token:** the itachi-debug bot token (`ITACHI_DEBUG_BOT_TOKEN`) was in prod api container logs on failed sends before #23/#24. Today 0 Docker log files on prod or staging hold it. Rotation (BotFather `/revoke` + new value in Coolify on both boxes) is a founder action; status unknown.
+- **SCHEMA:** synced.
+- **PARITY:** human path: PUT /api/wallet/spend-policy (Spending card, setup prompt); agent path: GET /api/wallet/spend-policy (read only by design) + manual "Spend rules" (PV 106); binds to the active avatar or the agent session's bound avatar.
 
 ### 2026-11-04 11:19Z (session claw-2.0) - user spend rules on staging (phase 1 of MCP hub step 2, PROTOCOL_VERSION 106), VERIFIED
 - **Staging evidence (11:38Z):** CI run 41820029908 success (gates, migrate, deploy); both app containers `SOURCE_COMMIT=d0794005184a7cd22a257d36cf793c8b46964598`; api `/health` 200; web `/game` 200 and renders for a guest with 0 console errors; staging DB has `sessions.created_via`, an empty `user_spend_policies` and its 3 CHECK constraints; unauthenticated GET 401; PUT with an agent session header 403 `spend_policy_human_only`; onboarding smoke 14/14 PASS (served manual version 106); served bundles contain the prompt code. Not checked: the signed-in prompt and Spending card in a browser (founder eyes, FOUNDER-REVIEW entry). Staging disk 87% after the flip (10 GB free).
