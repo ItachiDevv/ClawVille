@@ -35,35 +35,24 @@ export function buildStudiosImageRequest(input: { prompt: string; model?: Studio
 }
 
 export interface StudiosImage {
-  /** https URL from Studios (a signed link that expires), or null. */
-  imageUrl: string | null;
-  /** Base64 image data when the model returns data instead of a URL, or null. */
-  imageBase64: string | null;
+  /** Base64 image data (`b64_json`). A reply with only a link is not accepted. */
+  imageBase64: string;
 }
 
-const MAX_BASE64_CHARS = 8 * 1024 * 1024;
+const MAX_BASE64_CHARS = 12 * 1024 * 1024;
 
-/** Read only the first image from a Studios reply. Anything else is ignored. */
+/**
+ * Read only the first image from a Studios reply, as base64 data. A `url`
+ * field is ignored: the API never stores, follows or redirects to a
+ * vendor-supplied link.
+ */
 export function parseStudiosImage(json: unknown): StudiosImage | null {
   if (!json || typeof json !== 'object') return null;
   const data = (json as { data?: unknown }).data;
   if (!Array.isArray(data) || data.length === 0) return null;
-  const first = data[0] as { url?: unknown; b64_json?: unknown } | null;
+  const first = data[0] as { b64_json?: unknown } | null;
   if (!first || typeof first !== 'object') return null;
-  let imageUrl: string | null = null;
-  if (typeof first.url === 'string') {
-    try {
-      const parsed = new URL(first.url);
-      if (parsed.protocol === 'https:') imageUrl = parsed.toString();
-    } catch {
-      imageUrl = null;
-    }
-  }
-  const imageBase64 = typeof first.b64_json === 'string'
-    && first.b64_json.length <= MAX_BASE64_CHARS
-    && /^[A-Za-z0-9+/=\s]+$/.test(first.b64_json)
-    ? first.b64_json.replace(/\s+/g, '')
-    : null;
-  if (!imageUrl && !imageBase64) return null;
-  return { imageUrl, imageBase64 };
+  if (typeof first.b64_json !== 'string' || first.b64_json.length > MAX_BASE64_CHARS) return null;
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(first.b64_json)) return null;
+  return { imageBase64: first.b64_json.replace(/\s+/g, '') };
 }

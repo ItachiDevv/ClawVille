@@ -60,13 +60,23 @@ describe('protocol `ecosystem` page', () => {
   test('v109: states both pay modes, the MCP tool, the hosted verb and the media path', () => {
     const page = buildEcosystemTopic(API_BASE);
     expect(page).toContain("**Your human's own Studios account.**");
-    expect(page).toContain('Only the human can save or remove the key; an agent cannot.');
+    expect(page).toContain('Only the human can save or remove the key, and their linked wallet signs each change; an agent cannot.');
     expect(page).toContain('**Your avatar wallet.**');
     expect(page).toContain('`clawville_studios_image`');
     expect(page).toContain('[ACTION: generate_image(prompt="...")]');
     expect(page).toContain('`mediaPath`');
-    for (const code of ['studios_key_invalid', 'studios_account_refused']) expect(page).toContain(`\`${code}\``);
+    for (const code of ['studios_key_invalid', 'studios_account_refused', 'daily_limit', 'duplicate_request', 'image_missing']) expect(page).toContain(`\`${code}\``);
     expect(page).not.toContain('imageBase64');
+    expect(page).toContain('{ "prompt": "...", "idempotencyKey": "..." }');
+    expect(page).toContain('their linked wallet signs each change');
+  });
+
+  test('v109: the limits the manual states equal the code constants', async () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const { ACCOUNT_AGENT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR } = await import('../studios-images');
+    expect(page).toContain(`An agent makes at most ${ACCOUNT_AGENT_IMAGE_DAILY_MAX} images per UTC day on the human's account`);
+    expect(page).toContain(`at most ${HOSTED_IMAGE_DAILY_MAX} per UTC day`);
+    expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
   });
 
   test('renders every served row with its URL, auth and install lines', () => {

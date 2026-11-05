@@ -7,22 +7,28 @@
  *          pays with x402 inside the spend rules. Returns the stored image path.
  *   GET    /api/vendors/studios/images  the avatar's newest images.
  *   GET    /api/vendors/studios/key     whether a key is saved (last 4 only).
- *   PUT    /api/vendors/studios/key     save the human's own key. Human only.
- *   DELETE /api/vendors/studios/key     remove it (back to mode B). Human only.
+ *   POST   /api/vendors/studios/key/challenge  a message for the human's
+ *          linked wallet to sign (`{ action: 'save', last4 }` or
+ *          `{ action: 'remove' }`). Human only.
+ *   PUT    /api/vendors/studios/key     save the human's own key, with the
+ *          wallet `proof`. Human only.
+ *   DELETE /api/vendors/studios/key     remove it (back to mode B), with the
+ *          wallet `proof`. Human only.
  *
  * PARITY (Rule E5): human path = these routes with a Lucia session (wallet
  * panel, Studios card); agent path = the same image routes with the agent
  * session header (ledger-capable for POST), the MCP tool
  * `clawville_studios_image` and the hosted `[ACTION:] generate_image` verb,
  * all through `services/studios-images.ts`. The key routes are human-only by
- * design: the human chooses whose account pays.
+ * design: the human chooses whose account pays, and the linked wallet signs
+ * each change (a magic-link session alone does not prove a human).
  */
 
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { and, avatars, db, eq } from '@clawville/database';
+import { and, avatars, db, eq, users } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { createRateLimiter } from '../middleware/rate-limit';
 import {
@@ -36,6 +42,7 @@ import {
   type HumanGateCopy,
 } from '../middleware/require-human-session';
 import { noStorePrivate } from '../middleware/no-store';
+import { issueVendorKeyChallenge, verifyVendorKeyProof } from '../services/spend-policy-proof';
 import { generateStudiosImage, listMedia } from '../services/studios-images';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
 import { STUDIOS_IMAGE_MODELS, STUDIOS_PROMPT_MAX } from '../services/vendors/studios';
@@ -122,7 +129,52 @@ async function activeAvatarId(userId: string): Promise<string> {
   return avatar.id;
 }
 
-const keyBodySchema = z.object({ apiKey: z.string().trim().regex(STUDIOS_KEY_PATTERN) }).strict();
+const keyBodySchema = z.object({
+  apiKey: z.string().trim().regex(STUDIOS_KEY_PATTERN),
+  proof: z.object({ nonce: z.string().min(1).max(128), signature: z.string().min(1).max(128) }).strict().optional(),
+}).strict();
+const removeBodySchema = z.object({
+  proof: z.object({ nonce: z.string().min(1).max(128), signature: z.string().min(1).max(128) }).strict().optional(),
+}).strict();
+const challengeSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('save'), last4: z.string().regex(/^[A-Za-z0-9_-]{4}$/) }).strict(),
+  z.object({ action: z.literal('remove') }).strict(),
+]);
+
+// The key decides whose account pays, and a magic link passes through the
+// agent, so a human session alone is not enough: the human's linked wallet
+// signs each save or remove (the same proof as a spend-rules raise).
+const NEEDS_WALLET_LINK = {
+  error: 'studios_key_needs_wallet_link',
+  code: 'studios_key_needs_wallet_link',
+  message: 'Link your own wallet in the wallet panel first. It signs to approve a Studios key change.',
+} as const;
+const NEEDS_WALLET_PROOF = {
+  error: 'studios_key_needs_wallet_proof',
+  code: 'studios_key_needs_wallet_proof',
+  message: 'Saving or removing the Studios key needs a signature from your linked wallet. Ask POST /api/vendors/studios/key/challenge first.',
+} as const;
+const INVALID_WALLET_PROOF = {
+  error: 'studios_key_invalid_wallet_proof',
+  code: 'studios_key_invalid_wallet_proof',
+  message: 'The wallet signature did not match. Ask for a new challenge and sign again.',
+} as const;
+
+async function linkedWallet(userId: string): Promise<string | null> {
+  const owner = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { linkedWalletPubkey: true } });
+  return owner?.linkedWalletPubkey ?? null;
+}
+
+vendorStudiosRoutes.post('/key/challenge', smallBody, refuseAgentHeader(KEY_GATE), requireAuth, requireHumanSessionOrigin(KEY_GATE), requireNonGuestUser, async (c) => {
+  const user = c.get('user') as { id: string };
+  const body = challengeSchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: 'invalid_request', code: 'invalid_request' }, 400);
+  await activeAvatarId(user.id);
+  const wallet = await linkedWallet(user.id);
+  if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
+  const last4 = body.data.action === 'save' ? body.data.last4 : null;
+  return c.json({ ...issueVendorKeyChallenge(user.id, 'studios', body.data.action, last4), walletPubkey: wallet });
+});
 
 vendorStudiosRoutes.put('/key', smallBody, refuseAgentHeader(KEY_GATE), requireAuth, requireHumanSessionOrigin(KEY_GATE), requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
@@ -130,12 +182,41 @@ vendorStudiosRoutes.put('/key', smallBody, refuseAgentHeader(KEY_GATE), requireA
   if (!body.success) {
     return c.json({ error: 'invalid_studios_key', code: 'invalid_studios_key', message: 'A Studios API key starts with chk_.' }, 400);
   }
-  return c.json(await saveVendorKey(await activeAvatarId(user.id), 'studios', user.id, body.data.apiKey));
+  const avatarId = await activeAvatarId(user.id);
+  const wallet = await linkedWallet(user.id);
+  if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
+  if (!body.data.proof) return c.json(NEEDS_WALLET_PROOF, 403);
+  const verdict = verifyVendorKeyProof({
+    userId: user.id,
+    vendor: 'studios',
+    action: 'save',
+    last4: body.data.apiKey.slice(-4),
+    nonce: body.data.proof.nonce,
+    signature: body.data.proof.signature,
+    walletPubkey: wallet,
+  });
+  if (verdict !== 'ok') return c.json(INVALID_WALLET_PROOF, 401);
+  return c.json(await saveVendorKey(avatarId, 'studios', user.id, body.data.apiKey));
 });
 
-vendorStudiosRoutes.delete('/key', refuseAgentHeader(KEY_GATE), requireAuth, requireHumanSessionOrigin(KEY_GATE), requireNonGuestUser, async (c) => {
+vendorStudiosRoutes.delete('/key', smallBody, refuseAgentHeader(KEY_GATE), requireAuth, requireHumanSessionOrigin(KEY_GATE), requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };
+  const body = removeBodySchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) return c.json({ error: 'invalid_request', code: 'invalid_request' }, 400);
   const avatarId = await activeAvatarId(user.id);
+  const wallet = await linkedWallet(user.id);
+  if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
+  if (!body.data.proof) return c.json(NEEDS_WALLET_PROOF, 403);
+  const verdict = verifyVendorKeyProof({
+    userId: user.id,
+    vendor: 'studios',
+    action: 'remove',
+    last4: null,
+    nonce: body.data.proof.nonce,
+    signature: body.data.proof.signature,
+    walletPubkey: wallet,
+  });
+  if (verdict !== 'ok') return c.json(INVALID_WALLET_PROOF, 401);
   await deleteVendorKey(avatarId, 'studios');
   return c.json(await readVendorKeyStatus(avatarId, 'studios'));
 });

@@ -6,11 +6,13 @@
  * ones the agent made), and chooses who pays: their own Studios account (an
  * API key; Studios keeps the image in My Media) or the agent wallet inside the
  * spend caps. Same service as the agent path (POST /api/vendors/studios/images).
+ * Saving or removing the key needs a signature from the human's linked wallet.
  */
 
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/lib/api';
+import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { useHumanSpendPolicy } from './spending-card';
 
 const KEY_QUERY = ['studios-key'] as const;
@@ -18,6 +20,7 @@ const IMAGES_QUERY = ['studios-images'] as const;
 
 /** Plain text for a failed call. Branches on the API code, never on raw text. */
 export function studiosErrorText(error: unknown): string {
+  if (error instanceof WalletSignError) return error.message;
   if (error instanceof ApiError) {
     switch (error.code) {
       case 'spend_rules_not_set':
@@ -28,19 +31,26 @@ export function studiosErrorText(error: unknown): string {
       case 'over_daily_cap':
         return 'This image would pass your spend caps. Nothing was paid.';
       case 'payment_ambiguous':
-        return 'Studios did not confirm the result. The payment may have gone through; it counts toward your daily cap until it is checked. Do not try again right away.';
+        return 'Studios did not confirm the result. The payment may have gone through; it counts toward your daily cap until it is checked. Do not try the same image again.';
       case 'studios_key_invalid':
-        return 'Studios refused your saved API key. Save a new key below.';
+        return 'Your saved Studios API key does not work. Save it again below.';
       case 'studios_account_refused':
         return 'Studios refused the call on your Studios account (for example, no credits left).';
       case 'rate_limited':
         return 'Too many images. Wait one minute.';
+      case 'daily_limit':
+        return 'The daily image limit is used up. Try again after 00:00 UTC.';
       case 'invalid_studios_key':
         return 'A Studios API key starts with chk_.';
       case 'studios_key_needs_human_login':
         return 'For your safety, sign out and sign in again in this browser. Then save the key.';
       case 'studios_key_human_only':
         return 'Only you can change the Studios key, in your own browser session.';
+      case 'studios_key_needs_wallet_link':
+        return 'Link your own wallet in the wallet panel first. It signs to approve a key change.';
+      case 'studios_key_needs_wallet_proof':
+      case 'studios_key_invalid_wallet_proof':
+        return 'Your wallet signature did not match. Try again and approve the request in your wallet.';
       case 'wallet_missing':
         return 'Your avatar has no agent wallet yet.';
       case 'payment_prepare_failed':
@@ -51,7 +61,9 @@ export function studiosErrorText(error: unknown): string {
       case 'vendor_pay_to_changed':
         return 'Studios is not available now, or its price changed. Nothing was paid.';
       case 'duplicate_request':
-        return 'This request was already sent once.';
+        return 'This image request was already sent once and did not finish. Change the text to make a new image.';
+      case 'image_missing':
+        return 'Studios sent no readable image.';
       case 'payload_too_large':
         return 'The text is too long.';
       default:
@@ -69,19 +81,41 @@ function newIdempotencyKey(): string {
   return `web-${random}`.slice(0, 64);
 }
 
+/** True when the server answered with a refusal code (the request key is spent). */
+function serverAnswered(error: unknown): boolean {
+  return error instanceof ApiError && typeof error.code === 'string';
+}
+
+async function signKeyChange(body: { action: 'save'; last4: string } | { action: 'remove' }) {
+  const challenge = await api.studiosKeyChallenge(body);
+  const signed = await signMessageWithSolanaWallet(challenge.messageToSign, challenge.walletPubkey);
+  return { nonce: challenge.nonce, signature: signed.signatureBase58 };
+}
+
 export function StudiosCard() {
   const queryClient = useQueryClient();
   const { signedIn } = useHumanSpendPolicy();
   const [prompt, setPrompt] = useState('');
   const [keyText, setKeyText] = useState('');
   const [last, setLast] = useState<{ mediaPath: string; note: string } | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  // The request key for the current prompt. A retry after a lost reply reuses
+  // it, so the server returns the first image instead of paying again.
+  const [pending, setPending] = useState<{ prompt: string; key: string } | null>(null);
+  // After payment_ambiguous, the same prompt cannot be sent again.
+  const [blockedPrompt, setBlockedPrompt] = useState<string | null>(null);
 
   const keyQuery = useQuery({ queryKey: KEY_QUERY, queryFn: api.studiosKeyStatus, enabled: signedIn, retry: false });
   const imagesQuery = useQuery({ queryKey: IMAGES_QUERY, queryFn: api.studiosImages, enabled: signedIn, retry: false });
 
   const make = useMutation({
-    mutationFn: (text: string) => api.studiosImage({ prompt: text }, newIdempotencyKey()),
+    mutationFn: (request: { prompt: string; key: string }) => api.studiosImage({ prompt: request.prompt }, request.key),
+    onMutate: () => {
+      setError(null);
+      setLast(null);
+    },
     onSuccess: (result) => {
+      setPending(null);
       setLast({
         mediaPath: result.mediaPath,
         note: result.mode === 'account'
@@ -90,22 +124,44 @@ export function StudiosCard() {
       });
       queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
     },
+    onError: (err, request) => {
+      setError(err);
+      if (err instanceof ApiError && err.code === 'payment_ambiguous') setBlockedPrompt(request.prompt);
+      // A refusal spends the key; a lost reply keeps it for an exact retry.
+      if (serverAnswered(err)) setPending(null);
+      queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
+    },
   });
   const saveKey = useMutation({
-    mutationFn: (key: string) => api.saveStudiosKey(key),
+    mutationFn: async (key: string) => {
+      // Check the shape before the wallet is asked to sign anything.
+      if (!/^chk_[A-Za-z0-9_-]{16,128}$/.test(key)) throw new ApiError('invalid_studios_key', 400, 'invalid_studios_key');
+      return api.saveStudiosKey(key, await signKeyChange({ action: 'save', last4: key.slice(-4) }));
+    },
+    onMutate: () => setError(null),
     onSuccess: (status) => {
       setKeyText('');
       queryClient.setQueryData(KEY_QUERY, status);
     },
+    onError: (err) => setError(err),
   });
   const removeKey = useMutation({
-    mutationFn: () => api.deleteStudiosKey(),
+    mutationFn: async () => api.deleteStudiosKey(await signKeyChange({ action: 'remove' })),
+    onMutate: () => setError(null),
     onSuccess: (status) => queryClient.setQueryData(KEY_QUERY, status),
+    onError: (err) => setError(err),
   });
 
   if (!signedIn) return null;
   const linked = keyQuery.data?.linked === true;
-  const error = make.error ?? saveKey.error ?? removeKey.error;
+  const text = prompt.trim();
+  const blocked = blockedPrompt !== null && blockedPrompt === text;
+
+  const submit = () => {
+    const request = pending && pending.prompt === text ? pending : { prompt: text, key: newIdempotencyKey() };
+    setPending(request);
+    make.mutate(request);
+  };
 
   return (
     <div className="space-y-2">
@@ -132,11 +188,11 @@ export function StudiosCard() {
         </label>
         <button
           type="button"
-          onClick={() => make.mutate(prompt.trim())}
-          disabled={make.isPending || prompt.trim().length === 0}
+          onClick={submit}
+          disabled={make.isPending || text.length === 0 || blocked}
           className="w-full min-h-[44px] rounded-md bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-sm font-bold text-white"
         >
-          {make.isPending ? 'Making the image...' : 'Make image'}
+          {make.isPending ? 'Making the image...' : blocked ? 'Change the text to make a new image' : 'Make image'}
         </button>
 
         {last && (
@@ -146,7 +202,7 @@ export function StudiosCard() {
             <p className="text-xs text-emerald-300">{last.note}</p>
           </div>
         )}
-        {error && <p className="text-xs text-red-300">{studiosErrorText(error)}</p>}
+        {error !== null && <p className="text-xs text-red-300">{studiosErrorText(error)}</p>}
 
         {(imagesQuery.data?.images.length ?? 0) > 0 && (
           <div className="space-y-1">
@@ -164,7 +220,8 @@ export function StudiosCard() {
 
         <div className="pt-2 border-t border-white/10 space-y-2">
           <p className="text-xs text-white/70">
-            Use your own Studios account instead (optional). Paste an API key from mystudios.fun. Only you can change this; your agent cannot.
+            Use your own Studios account instead (optional). Paste an API key from mystudios.fun. Your linked wallet signs to approve
+            each change. Only you can change this; your agent cannot.
           </p>
           {linked ? (
             <button
@@ -173,7 +230,7 @@ export function StudiosCard() {
               disabled={removeKey.isPending}
               className="w-full min-h-[44px] rounded-md border border-white/20 text-sm text-white/80 hover:bg-white/10"
             >
-              Remove my Studios key (pay from the agent wallet)
+              {removeKey.isPending ? 'Approve in your wallet...' : 'Remove my Studios key (pay from the agent wallet)'}
             </button>
           ) : (
             <div className="flex gap-2">
@@ -184,7 +241,7 @@ export function StudiosCard() {
                 onChange={(e) => setKeyText(e.target.value.trim())}
                 placeholder="chk_..."
                 aria-label="Studios API key"
-                className="flex-1 min-h-[44px] rounded-md bg-black/40 border border-white/15 px-2 text-sm text-white"
+                className="flex-1 min-w-0 min-h-[44px] rounded-md bg-black/40 border border-white/15 px-2 text-sm text-white"
               />
               <button
                 type="button"
@@ -192,7 +249,7 @@ export function StudiosCard() {
                 disabled={saveKey.isPending || keyText.length === 0}
                 className="min-h-[44px] px-3 rounded-md bg-white/15 hover:bg-white/25 disabled:opacity-50 text-sm text-white"
               >
-                Save
+                {saveKey.isPending ? 'Approve...' : 'Save'}
               </button>
             </div>
           )}

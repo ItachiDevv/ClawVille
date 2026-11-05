@@ -8,10 +8,17 @@
  *     stored before sending) -> 'failed' (never_sent);
  *   - our payer_signature found in a transaction of the payer wallet on chain:
  *     no error -> 'paid' with that transaction; error -> 'failed';
- *   - not found once the scan reaches transactions older than the row -> 'failed'
- *     (not_landed; the seller's quote allows at most 300 s and a blockhash
- *     expires sooner, so a later landing is impossible);
- *   - anything unclear (RPC error, scan limit) -> unchanged.
+ *   - not found once the scan reaches transactions older than the row, with
+ *     every transaction in the landing window read -> 'failed' (not_landed;
+ *     the seller's quote allows at most 300 s and a blockhash expires sooner,
+ *     so a later landing is impossible);
+ *   - anything unclear (RPC error, a transaction the RPC cannot return, an
+ *     empty or short history, scan limit) -> unchanged.
+ * Only transactions inside the landing window are fetched, so a busy wallet
+ * costs a few signature pages, not hundreds of transaction reads. A row left
+ * unchanged backs off (15 min doubling, at most 24 h) and is dropped from the
+ * automatic pass after MAX_RECONCILE_ATTEMPTS (manual review; it still counts
+ * toward that day's cap).
  * Only chain evidence moves a row. Nothing is ever paid or retried here.
  */
 
@@ -29,11 +36,15 @@ type Row = {
   payer_wallet: string;
   payer_signature: string | null;
   created_at: string;
+  reconcile_attempts: number;
 };
 
 const MAX_PAGES = 5;
 const SLACK_SECONDS = 120;
+/** The quote allows at most 300 s; anything later cannot be our payment. */
+const LANDING_WINDOW_SECONDS = 300 + SLACK_SECONDS;
 export const MIN_RECONCILE_AGE_MINUTES = 10;
+export const MAX_RECONCILE_ATTEMPTS = 8;
 
 export interface ChainReader {
   signaturesFor(wallet: string, before: string | undefined): Promise<Array<{ signature: string; blockTime: number | null }>>;
@@ -60,16 +71,27 @@ export async function decideRow(chain: ChainReader, row: Row): Promise<Reconcile
       : { id: row.id, to: 'unchanged', reason: 'ambiguous_without_payer_signature' };
   }
   const createdSec = Math.floor(new Date(row.created_at).getTime() / 1000);
+  let unreadInWindow = false;
   let before: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const sigs = await chain.signaturesFor(row.payer_wallet, before);
-    if (sigs.length === 0) return { id: row.id, to: 'failed', reason: 'not_landed' };
+    // An empty page before the scan reaches the row's time proves nothing
+    // (a lagging RPC, or a history that starts after the row).
+    if (sigs.length === 0) return { id: row.id, to: 'unchanged', reason: 'history_incomplete' };
     for (const info of sigs) {
       if (info.blockTime !== null && info.blockTime < createdSec - SLACK_SECONDS) {
-        return { id: row.id, to: 'failed', reason: 'not_landed' };
+        return unreadInWindow
+          ? { id: row.id, to: 'unchanged', reason: 'chain_unavailable' }
+          : { id: row.id, to: 'failed', reason: 'not_landed' };
       }
+      // Newer than the landing window: cannot be our payment; skip unread.
+      if (info.blockTime !== null && info.blockTime > createdSec + LANDING_WINDOW_SECONDS) continue;
       const tx = await chain.transaction(info.signature);
-      if (tx?.signatures.includes(row.payer_signature)) {
+      if (!tx) {
+        unreadInWindow = true;
+        continue;
+      }
+      if (tx.signatures.includes(row.payer_signature)) {
         return tx.failed
           ? { id: row.id, to: 'failed', reason: 'landed_with_error', tx: info.signature }
           : { id: row.id, to: 'paid', tx: info.signature };
@@ -91,11 +113,13 @@ export async function reconcileVendorLedger(options: {
   const chain = options.chain
     ?? connectionChainReader(process.env.SOLANA_MAINNET_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com');
   const rows = Array.from(await db.execute<Row>(sql`
-    SELECT id, status, payer_wallet, payer_signature, created_at::text
+    SELECT id, status, payer_wallet, payer_signature, created_at::text, reconcile_attempts
     FROM vendor_spend_ledger
     WHERE status IN ('pending', 'ambiguous')
       AND created_at < now() - make_interval(mins => ${olderThan})
-    ORDER BY created_at
+      AND reconcile_attempts < ${MAX_RECONCILE_ATTEMPTS}
+      AND (reconcile_next_at IS NULL OR reconcile_next_at <= now())
+    ORDER BY COALESCE(reconcile_next_at, created_at)
     LIMIT ${limit}`));
   const decisions: ReconcileDecision[] = [];
   for (const row of rows) {
@@ -106,7 +130,23 @@ export async function reconcileVendorLedger(options: {
       decision = { id: row.id, to: 'unchanged', reason: 'rpc_error' };
     }
     decisions.push(decision);
-    if (!options.apply || decision.to === 'unchanged') continue;
+    if (!options.apply) continue;
+    if (decision.to === 'unchanged') {
+      try {
+        // Back off: 15 min, 30, 60, ... at most 24 h; then manual review.
+        await db.execute(sql`UPDATE vendor_spend_ledger
+          SET reconcile_attempts = reconcile_attempts + 1,
+              reconcile_next_at = now() + LEAST(make_interval(mins => 15 * power(2, reconcile_attempts)::int), interval '24 hours'),
+              updated_at = now()
+          WHERE id = ${row.id} AND status IN ('pending', 'ambiguous')`);
+        if (row.reconcile_attempts + 1 >= MAX_RECONCILE_ATTEMPTS) {
+          console.warn(`[vendor-ledger-reconcile] row ${row.id} needs manual review (${decision.reason})`);
+        }
+      } catch (err) {
+        console.error(`[vendor-ledger-reconcile] back-off failed for ${row.id}:`, err instanceof Error ? err.message : 'unknown');
+      }
+      continue;
+    }
     try {
       if (decision.to === 'paid') {
         await db.execute(sql`UPDATE vendor_spend_ledger

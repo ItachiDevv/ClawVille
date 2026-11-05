@@ -1,15 +1,16 @@
 /**
  * Executed contract of the Studios image service against DATABASE_URL
  * (migrations 0090 + 0091): mode A with the human's own key (Studios is a fake
- * fetch), image storage, GET /api/media/:id, the 50-image limit, and the key
- * store (encrypted at rest, last 4 only).
+ * fetch), image storage, GET /api/media/:id, the 50-image limit, the key
+ * store (encrypted at rest, last 4 only), the request reservation (a retry
+ * never bills twice) and the persistent daily limits.
  *
  * Skips when DATABASE_URL is absent or migration 0091 is not applied.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
 import * as dbMod from '@clawville/database';
-import { MEDIA_KEEP_PER_AVATAR, generateStudiosImage, listMedia } from '../../services/studios-images';
+import { ACCOUNT_AGENT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR, generateStudiosImage, listMedia } from '../../services/studios-images';
 import { deleteVendorKey, loadVendorKey, readVendorKeyStatus, saveVendorKey } from '../../services/vendor-credentials';
 import { mediaRoutes } from '../media';
 
@@ -28,9 +29,9 @@ let schemaReady = false;
 if (process.env.DATABASE_URL) {
   try {
     const t = await db.execute<{ n: number | string }>(
-      sql`SELECT COUNT(*)::int AS n FROM information_schema.tables WHERE table_name IN ('avatar_media', 'user_vendor_credentials')`,
+      sql`SELECT COUNT(*)::int AS n FROM information_schema.tables WHERE table_name IN ('avatar_media', 'user_vendor_credentials', 'vendor_call_requests')`,
     );
-    schemaReady = Number(first(t).n) === 2;
+    schemaReady = Number(first(t).n) === 3;
   } catch {
     schemaReady = false;
   }
@@ -66,6 +67,7 @@ describeIfSchema('studios images: executed DB contract', () => {
 
   afterAll(async () => {
     globalThis.fetch = realFetch;
+    await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM avatar_media WHERE avatar_id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM user_vendor_credentials WHERE avatar_id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM avatars WHERE id = ${avatarId}`).catch(() => {});
@@ -106,7 +108,24 @@ describeIfSchema('studios images: executed DB contract', () => {
     expect(res.headers.get('Content-Type')).toBe('image/png');
     expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(Buffer.from(await res.arrayBuffer()).equals(PNG)).toBe(true);
+    const etag = res.headers.get('ETag');
+    expect(etag).toBe(`"${result.mediaId}"`);
+    expect((await app.request(result.mediaPath, { headers: { 'If-None-Match': etag! } })).status).toBe(304);
     expect((await app.request('/api/media/not-a-uuid')).status).toBe(404);
+
+    // A retry with the same key returns the same image and calls Studios no more.
+    seen = [];
+    const replay = await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'a crab', idempotencyKey: `${tag}-a1` });
+    expect(replay).toMatchObject({ ok: true, mode: 'account', mediaId: result.mediaId });
+    expect(seen).toHaveLength(0);
+  });
+
+  it('never accepts a link-only reply and never retries a failed request key', async () => {
+    fakeStudios(200, { data: [{ url: 'https://evil.example/x.png' }] });
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-u1` })).toMatchObject({ ok: false, code: 'image_missing' });
+    seen = [];
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-u1` })).toMatchObject({ ok: false, code: 'duplicate_request' });
+    expect(seen).toHaveLength(0);
   });
 
   it('mode A: maps a refused key and no credits to our own codes', async () => {
@@ -129,6 +148,28 @@ describeIfSchema('studios images: executed DB contract', () => {
     expect((await listMedia(avatarId, 1))[0]?.prompt).toBe(`n${MEDIA_KEEP_PER_AVATAR + 2}`);
   });
 
+  it('limits an agent on the human account per UTC day, and keeps counting after the call', async () => {
+    fakeStudios(200, { data: [{ b64_json: PNG.toString('base64') }] });
+    const used = Number(first(await db.execute<{ n: number | string }>(
+      sql`SELECT COUNT(*)::int AS n FROM vendor_call_requests WHERE avatar_id = ${avatarId} AND actor = 'agent' AND mode = 'account'`,
+    )).n);
+    for (let i = used; i < ACCOUNT_AGENT_IMAGE_DAILY_MAX; i += 1) {
+      expect((await generateStudiosImage({ avatarId, actor: 'agent', prompt: `g${i}`, idempotencyKey: `${tag}-g${i}` })).ok).toBe(true);
+    }
+    seen = [];
+    expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'over', idempotencyKey: `${tag}-gover` })).toMatchObject({ ok: false, code: 'daily_limit', httpStatus: 429 });
+    expect(seen).toHaveLength(0);
+    // The human is not limited by the agent's count.
+    expect((await generateStudiosImage({ avatarId, actor: 'human', prompt: 'mine', idempotencyKey: `${tag}-hmine` })).ok).toBe(true);
+  });
+
+  it('a saved key that cannot be read is an error, never a switch to the wallet', async () => {
+    await db.execute(sql`UPDATE user_vendor_credentials SET enc = 'AAAA' WHERE avatar_id = ${avatarId}`);
+    seen = [];
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-bad` })).toMatchObject({ ok: false, code: 'studios_key_invalid' });
+    expect(seen).toHaveLength(0);
+  });
+
   it('removing the key returns to wallet mode (which refuses here: no spend rules)', async () => {
     await deleteVendorKey(avatarId, 'studios');
     expect(await readVendorKeyStatus(avatarId, 'studios')).toMatchObject({ linked: false });
@@ -136,5 +177,18 @@ describeIfSchema('studios images: executed DB contract', () => {
     const result = await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'x', idempotencyKey: `${tag}-b1` });
     expect(result.ok).toBe(false);
     expect(seen.every((s) => s.auth === null)).toBe(true);
+  });
+
+  it('limits the hosted verb per avatar per UTC day in the database (survives a restart)', async () => {
+    fakeStudios(402, {});
+    for (let i = 0; i < HOSTED_IMAGE_DAILY_MAX; i += 1) {
+      const r = await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'h', idempotencyKey: `hosted-img-${tag}-${i}`, surface: 'hosted' });
+      expect(r).toMatchObject({ ok: false });
+      expect(r.ok === false && r.code).not.toBe('daily_limit');
+    }
+    seen = [];
+    expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'h', idempotencyKey: `hosted-img-${tag}-x`, surface: 'hosted' }))
+      .toMatchObject({ ok: false, code: 'daily_limit' });
+    expect(seen).toHaveLength(0);
   });
 });

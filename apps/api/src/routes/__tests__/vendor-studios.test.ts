@@ -10,6 +10,8 @@ if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgresql://u:p@loca
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import bs58 from 'bs58';
+import nacl from 'tweetnacl';
 import * as realDatabase from '@clawville/database';
 import * as realAgentAuth from '../../middleware/require-auth-or-agent';
 import * as realGuard from '../../middleware/require-non-guest';
@@ -22,6 +24,10 @@ let nextResult: realImages.StudiosImageResult = { ok: false, code: 'spend_rules_
 const calls: Array<Parameters<typeof realImages.generateStudiosImage>[0]> = [];
 const savedKeys: Array<{ avatarId: string; key: string }> = [];
 const sessions = new Map<string, { userId: string; createdVia: string | null }>();
+const humanWallet = nacl.sign.keyPair();
+const otherWallet = nacl.sign.keyPair();
+let linkedWalletPubkey: string | null = null;
+const deletedKeys: string[] = [];
 
 mock.module('../../lib/auth', () => ({
   resolveSessionCookieDomain: () => undefined,
@@ -54,7 +60,10 @@ mock.module('../../middleware/require-non-guest', () => ({
 }));
 mock.module('@clawville/database', () => ({
   ...realDatabase,
-  db: { query: { avatars: { findFirst: async () => ({ id: 'avatar-of-user' }) } } },
+  db: { query: {
+    avatars: { findFirst: async () => ({ id: 'avatar-of-user' }) },
+    users: { findFirst: async () => ({ linkedWalletPubkey }) },
+  } },
 }));
 mock.module('../../services/studios-images', () => ({
   ...realImages,
@@ -71,7 +80,9 @@ mock.module('../../services/vendor-credentials', () => ({
     return { linked: true, last4: key.slice(-4), updatedAt: '2026-11-05T00:00:00.000Z' };
   },
   readVendorKeyStatus: async () => ({ linked: false, last4: null, updatedAt: null }),
-  deleteVendorKey: async () => {},
+  deleteVendorKey: async (avatarId: string) => {
+    deletedKeys.push(avatarId);
+  },
 }));
 
 const { vendorStudiosRoutes, resetStudiosRateLimit } = await import('../vendor-studios');
@@ -85,17 +96,35 @@ function post(body: unknown, key: string | null = 'key-12345678') {
   return app.request('/api/vendors/studios/images', { method: 'POST', headers, body: JSON.stringify(body) });
 }
 
-function putKey(opts: { cookie?: string; agent?: string; apiKey: string }) {
+type Proof = { nonce: string; signature: string };
+
+function keyRequest(method: 'PUT' | 'DELETE' | 'POST', path: string, opts: { cookie?: string; agent?: string; body: unknown }) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.cookie) headers.Cookie = `auth_session=${opts.cookie}`;
   if (opts.agent) headers[realAgentAuth.AGENT_SESSION_HEADER] = opts.agent;
-  return app.request('/api/vendors/studios/key', { method: 'PUT', headers, body: JSON.stringify({ apiKey: opts.apiKey }) });
+  return app.request(`/api/vendors/studios${path}`, { method, headers, body: JSON.stringify(opts.body) });
+}
+
+function putKey(opts: { cookie?: string; agent?: string; apiKey: string; proof?: Proof }) {
+  return keyRequest('PUT', '/key', { ...opts, body: { apiKey: opts.apiKey, ...(opts.proof ? { proof: opts.proof } : {}) } });
+}
+
+/** Ask a challenge and sign it with `signer` (the linked wallet by default). */
+async function signedProof(body: { action: 'save'; last4: string } | { action: 'remove' }, signer = humanWallet): Promise<Proof> {
+  const res = await keyRequest('POST', '/key/challenge', { cookie: 'pw', body });
+  expect(res.status).toBe(200);
+  const challenge = await res.json() as { nonce: string; messageToSign: string; walletPubkey: string };
+  expect(challenge.walletPubkey).toBe(linkedWalletPubkey!);
+  const signature = nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), signer.secretKey);
+  return { nonce: challenge.nonce, signature: bs58.encode(signature) };
 }
 
 beforeEach(() => {
   resetStudiosRateLimit();
   calls.length = 0;
   savedKeys.length = 0;
+  deletedKeys.length = 0;
+  linkedWalletPubkey = bs58.encode(humanWallet.publicKey);
   sessions.clear();
   sessions.set('pw', { userId: 'u1', createdVia: 'password' });
   sessions.set('exchanged', { userId: 'u1', createdVia: 'agent_exchange' });
@@ -158,23 +187,64 @@ describe('POST /api/vendors/studios/images', () => {
   });
 });
 
-describe('PUT /api/vendors/studios/key', () => {
+describe('Studios key routes (human only, linked wallet signs)', () => {
   it('refuses an agent header and an agent-exchanged cookie', async () => {
     for (const opts of [{ agent: 'x', cookie: 'pw' }, { cookie: 'exchanged' }]) {
       const res = await putKey({ ...opts, apiKey: 'chk_abcdefghijklmnop1234' });
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ code: 'studios_key_human_only' });
+      const challenge = await keyRequest('POST', '/key/challenge', { ...opts, body: { action: 'remove' } });
+      expect(challenge.status).toBe(403);
     }
     expect(savedKeys).toHaveLength(0);
   });
 
-  it('saves a well-formed key for the human active avatar and returns only the last 4', async () => {
+  it('needs a linked wallet and its signature: a session alone cannot change the key', async () => {
     expect((await putKey({ cookie: 'pw', apiKey: 'not-a-key' })).status).toBe(400);
-    const res = await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234' });
+    let res = await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'studios_key_needs_wallet_proof' });
+    linkedWalletPubkey = null;
+    res = await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'studios_key_needs_wallet_link' });
+    res = await keyRequest('POST', '/key/challenge', { cookie: 'pw', body: { action: 'remove' } });
+    expect(await res.json()).toMatchObject({ code: 'studios_key_needs_wallet_link' });
+    expect(savedKeys).toHaveLength(0);
+  });
+
+  it('refuses a proof from another wallet, for another key, for another action, or used twice', async () => {
+    const otherSigner = await signedProof({ action: 'save', last4: '1234' }, otherWallet);
+    expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: otherSigner })).status).toBe(401);
+    const otherKey = await signedProof({ action: 'save', last4: '9999' });
+    expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: otherKey })).status).toBe(401);
+    const removeProof = await signedProof({ action: 'remove' });
+    expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: removeProof })).status).toBe(401);
+    const good = await signedProof({ action: 'save', last4: '1234' });
+    expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: good })).status).toBe(200);
+    expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: good })).status).toBe(401);
+    expect(savedKeys).toHaveLength(1);
+  });
+
+  it('saves a well-formed key for the human active avatar and returns only the last 4', async () => {
+    const proof = await signedProof({ action: 'save', last4: '1234' });
+    const res = await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ linked: true, last4: '1234', updatedAt: '2026-11-05T00:00:00.000Z' });
     expect(JSON.stringify(body)).not.toContain('chk_');
     expect(savedKeys).toEqual([{ avatarId: 'avatar-of-user', key: 'chk_abcdefghijklmnop1234' }]);
+  });
+
+  it('removes the key only with a remove proof', async () => {
+    let res = await keyRequest('DELETE', '/key', { cookie: 'pw', body: {} });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'studios_key_needs_wallet_proof' });
+    const saveProof = await signedProof({ action: 'save', last4: '1234' });
+    expect((await keyRequest('DELETE', '/key', { cookie: 'pw', body: { proof: saveProof } })).status).toBe(401);
+    const proof = await signedProof({ action: 'remove' });
+    res = await keyRequest('DELETE', '/key', { cookie: 'pw', body: { proof } });
+    expect(res.status).toBe(200);
+    expect(deletedKeys).toEqual(['avatar-of-user']);
   });
 });

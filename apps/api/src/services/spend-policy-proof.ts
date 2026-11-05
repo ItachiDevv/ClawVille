@@ -85,17 +85,61 @@ export function verifySpendProof(input: {
   signature: string;
   walletPubkey: string;
 }): SpendProofResult {
-  const entry = nonces.get(input.nonce);
+  return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
+    buildSpendRulesMessage(input.userId, input.values, input.nonce));
+}
+
+/**
+ * Saving or removing a vendor API key (MCP hub step 2 phase 2b) uses the same
+ * proof: the key decides whose account pays, and a magic-link session alone
+ * does not prove a human. The message names the account, the vendor, the
+ * action and the last 4 characters of the key; never the key itself.
+ */
+export type VendorKeyAction = 'save' | 'remove';
+
+export function buildVendorKeyMessage(userId: string, vendor: string, action: VendorKeyAction, last4: string | null, nonce: string): string {
+  return [
+    'ClawVille paid tool key',
+    `account: ${userId}`,
+    `tool: ${vendor}`,
+    action === 'save' ? `action: use my own ${vendor} key ending ${last4 ?? ''}` : `action: remove my ${vendor} key`,
+    `nonce: ${nonce}`,
+  ].join('\n');
+}
+
+export function issueVendorKeyChallenge(userId: string, vendor: string, action: VendorKeyAction, last4: string | null): SpendProofChallenge {
+  const nonce = bs58.encode(randomBytes(32));
+  const message = buildVendorKeyMessage(userId, vendor, action, last4, nonce);
+  const expiresAtMs = Date.now() + NONCE_TTL_MS;
+  nonces.set(nonce, { userId, message, expiresAt: expiresAtMs });
+  return { nonce, expiresAt: new Date(expiresAtMs).toISOString(), messageToSign: message };
+}
+
+/** Consume the nonce and verify the linked wallet signed THIS key action. */
+export function verifyVendorKeyProof(input: {
+  userId: string;
+  vendor: string;
+  action: VendorKeyAction;
+  last4: string | null;
+  nonce: string;
+  signature: string;
+  walletPubkey: string;
+}): SpendProofResult {
+  return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
+    buildVendorKeyMessage(input.userId, input.vendor, input.action, input.last4, input.nonce));
+}
+
+function verifyMessage(userId: string, nonce: string, signature: string, walletPubkey: string, expected: string): SpendProofResult {
+  const entry = nonces.get(nonce);
   if (!entry) return 'invalid_challenge';
-  nonces.delete(input.nonce);
-  if (entry.userId !== input.userId || Date.now() > entry.expiresAt) return 'invalid_challenge';
-  const expected = buildSpendRulesMessage(input.userId, input.values, input.nonce);
+  nonces.delete(nonce);
+  if (entry.userId !== userId || Date.now() > entry.expiresAt) return 'invalid_challenge';
   if (expected !== entry.message) return 'invalid_challenge';
   let sig: Uint8Array;
   let pub: Uint8Array;
   try {
-    sig = bs58.decode(input.signature);
-    pub = bs58.decode(input.walletPubkey);
+    sig = bs58.decode(signature);
+    pub = bs58.decode(walletPubkey);
   } catch {
     return 'invalid_signature';
   }

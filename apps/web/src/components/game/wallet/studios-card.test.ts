@@ -23,7 +23,8 @@ describe('studiosErrorText', () => {
       'studios_key_invalid', 'studios_account_refused', 'rate_limited', 'invalid_studios_key',
       'studios_key_needs_human_login', 'studios_key_human_only', 'wallet_missing', 'payment_prepare_failed',
       'vendor_unreachable', 'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed',
-      'duplicate_request', 'payload_too_large', 'some_new_code',
+      'duplicate_request', 'payload_too_large', 'daily_limit', 'image_missing', 'studios_key_needs_wallet_link',
+      'studios_key_needs_wallet_proof', 'studios_key_invalid_wallet_proof', 'some_new_code',
     ];
     for (const code of codes) {
       expect(studiosErrorText(new ApiError(code, 403, code))).not.toMatch(/[a-z]+_[a-z_]+/);

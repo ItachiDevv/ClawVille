@@ -72,9 +72,11 @@ describe('payerSignatureFromPayload', () => {
 });
 
 describe('parseStudiosImage', () => {
-  it('reads an https url or base64 data from the first entry only', () => {
-    expect(parseStudiosImage({ data: [{ url: 'https://cdn.example/x.png?sig=1' }] })).toEqual({ imageUrl: 'https://cdn.example/x.png?sig=1', imageBase64: null });
-    expect(parseStudiosImage({ data: [{ b64_json: 'aGVsbG8=' }] })).toEqual({ imageUrl: null, imageBase64: 'aGVsbG8=' });
+  it('reads base64 data from the first entry only', () => {
+    expect(parseStudiosImage({ data: [{ b64_json: 'aGVs\nbG8=' }] })).toEqual({ imageBase64: 'aGVsbG8=' });
+  });
+  it('never accepts a link (the API stores, follows and redirects to no vendor URL)', () => {
+    expect(parseStudiosImage({ data: [{ url: 'https://cdn.example/x.png?sig=1' }] })).toBeNull();
   });
   it('drops anything else', () => {
     expect(parseStudiosImage({ data: [{ url: 'http://plain/x.png' }] })).toBeNull();

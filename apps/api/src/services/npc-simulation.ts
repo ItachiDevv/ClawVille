@@ -1289,6 +1289,8 @@ class NpcSimulation {
     actor: 'agent';
     prompt: string;
     idempotencyKey: string;
+    /** Always 'hosted': the service keeps the persistent daily limit. */
+    surface: 'hosted';
   }) => Promise<StudiosImageResult> = async (input) => {
     const { generateStudiosImage } = await import('./studios-images');
     return generateStudiosImage(input);
@@ -3606,7 +3608,7 @@ class NpcSimulation {
       const idempotencyKey = `hosted-img-${avatarId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}-${randomUUID()}`;
       let resultLine: string;
       try {
-        const result = await this.autonomousImageGenerate({ avatarId, actor: 'agent', prompt, idempotencyKey });
+        const result = await this.autonomousImageGenerate({ avatarId, actor: 'agent', prompt, idempotencyKey, surface: 'hosted' });
         resultLine = formatGeneratedImageResult(result);
         if (!result.ok) console.warn(`[Hatcher] generate_image not made — ${result.code}`);
         const body = this.npcs.get(npcId);

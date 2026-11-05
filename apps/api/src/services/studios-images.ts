@@ -9,11 +9,23 @@
  *   - mode 'wallet' (B): no key saved. The avatar wallet pays with x402 inside
  *     the human's spend rules (`outbound-x402.ts`).
  *
- * The image is stored in `avatar_media` and served at GET /api/media/:id.
+ * Every request first reserves a `vendor_call_requests` row (unique per
+ * avatar + idempotency key) under a per-avatar advisory lock, so a retry never
+ * bills twice in either mode and the daily limits survive a restart:
+ *   - surface 'hosted' (the [ACTION:] verb): HOSTED_IMAGE_DAILY_MAX per avatar
+ *     per UTC day, any mode;
+ *   - mode 'account' with actor 'agent': ACCOUNT_AGENT_IMAGE_DAILY_MAX per
+ *     avatar per UTC day (the spend caps do not cover the human's Studios
+ *     credits, so this bounds an agent loop on the human's account).
+ * A retry of a finished request returns the same image; a retry of an
+ * unfinished or failed one is `duplicate_request`.
+ *
+ * The image is stored in `avatar_media` (checked png/jpeg/webp bytes only; a
+ * reply with only a link is `image_missing`) and served at GET /api/media/:id.
  * Vendor text is untrusted: only the image and our own status leave here.
  */
 
-import { and, avatarMedia, db, desc, eq, inArray } from '@clawville/database';
+import { and, avatarMedia, db, desc, eq, inArray, sql, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
 import { callVendorWithAvatarWallet, readJsonCapped, type VendorCallFailure } from './outbound-x402';
 import { loadVendorKey } from './vendor-credentials';
 import {
@@ -25,13 +37,16 @@ import {
 } from './vendors/studios';
 
 export const MEDIA_KEEP_PER_AVATAR = 50;
+export const HOSTED_IMAGE_DAILY_MAX = 3;
+export const ACCOUNT_AGENT_IMAGE_DAILY_MAX = 20;
 const ACCOUNT_CALL_TIMEOUT_MS = 120_000;
 
 export type StudiosImageFailure =
   | VendorCallFailure
   | 'studios_key_invalid'
   | 'studios_account_refused'
-  | 'image_missing';
+  | 'image_missing'
+  | 'daily_limit';
 
 export type StudiosImageResult =
   | {
@@ -45,10 +60,13 @@ export type StudiosImageResult =
     paidUsdCents: number | null;
     txSignature: string | null;
   }
-  | { ok: false; code: StudiosImageFailure; message: string; httpStatus: 400 | 402 | 403 | 409 | 502; ledgerId: string | null };
+  | { ok: false; code: StudiosImageFailure; message: string; httpStatus: FailureStatus; ledgerId: string | null };
 
-const MESSAGES: Record<StudiosImageFailure, { httpStatus: 400 | 402 | 403 | 409 | 502; message: string }> = {
-  duplicate_request: { httpStatus: 409, message: 'This Idempotency-Key was already used. Use a new key for a new image.' },
+type FailureStatus = 400 | 402 | 403 | 409 | 429 | 502;
+
+const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message: string }> = {
+  duplicate_request: { httpStatus: 409, message: 'This Idempotency-Key was already used for a request that did not finish. Do not retry it; use a new key only for a new image.' },
+  daily_limit: { httpStatus: 429, message: 'The daily image limit for this avatar is used up. Try again after 00:00 UTC.' },
   vendor_unreachable: { httpStatus: 502, message: 'Studios did not answer. Nothing was paid. Try again later.' },
   vendor_refused: { httpStatus: 502, message: 'Studios refused the request before payment. Nothing was paid.' },
   vendor_quote_invalid: { httpStatus: 502, message: 'Studios sent a price ClawVille cannot accept. Nothing was paid.' },
@@ -60,9 +78,9 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: 400 | 402 | 403 | 409 
   wallet_missing: { httpStatus: 403, message: 'This avatar has no wallet. Nothing was paid.' },
   payment_prepare_failed: { httpStatus: 502, message: 'The payment could not be signed. Nothing was paid. Try again later.' },
   payment_ambiguous: { httpStatus: 502, message: 'Studios did not confirm the result. The payment may have gone through (for example, the wallet may not hold enough USDC, or the reply was lost). Do not retry; it counts toward the daily cap until it is checked on chain.' },
-  studios_key_invalid: { httpStatus: 403, message: 'Studios refused the saved API key. Ask your human to save a new key in the wallet panel.' },
+  studios_key_invalid: { httpStatus: 403, message: 'The saved Studios API key does not work. Ask your human to save it again in the wallet panel. Nothing was paid.' },
   studios_account_refused: { httpStatus: 402, message: "Studios refused the call on your human's Studios account (for example, no credits left). ClawVille paid nothing." },
-  image_missing: { httpStatus: 502, message: 'Studios sent no readable image. Contact support with the ledgerId if one is shown.' },
+  image_missing: { httpStatus: 502, message: 'Studios sent no readable image. Do not retry; contact support with the ledgerId if one is shown.' },
 };
 
 function failure(code: StudiosImageFailure, ledgerId: string | null = null): StudiosImageResult {
@@ -89,10 +107,10 @@ async function storeMedia(input: {
   actor: 'human' | 'agent';
   prompt: string;
   ledgerId: string | null;
-  image: { imageUrl: string | null; imageBase64: string | null };
+  imageBase64: string;
 }): Promise<string | null> {
-  const decoded = input.image.imageBase64 ? decodeImage(input.image.imageBase64) : null;
-  if (!decoded && !input.image.imageUrl) return null;
+  const decoded = decodeImage(input.imageBase64);
+  if (!decoded) return null;
   const [row] = await db
     .insert(avatarMedia)
     .values({
@@ -100,9 +118,8 @@ async function storeMedia(input: {
       vendor: 'studios',
       mode: input.mode,
       actor: input.actor,
-      mimeType: decoded?.mime ?? null,
-      bytes: decoded?.bytes ?? null,
-      externalUrl: decoded ? null : input.image.imageUrl,
+      mimeType: decoded.mime,
+      bytes: decoded.bytes,
       prompt: input.prompt,
       ledgerId: input.ledgerId,
     })
@@ -143,6 +160,92 @@ async function callWithAccountKey(key: string, request: { url: string; body: Rec
   return { ok: false, code: 'vendor_refused' };
 }
 
+type Reservation =
+  | { kind: 'new'; requestId: string }
+  | { kind: 'done'; result: StudiosImageResult };
+
+/** Reserve the request, or find the earlier one, under the avatar's lock. */
+async function reserveRequest(input: {
+  avatarId: string;
+  actor: 'human' | 'agent';
+  surface: 'api' | 'hosted';
+  mode: 'wallet' | 'account';
+  idempotencyKey: string;
+}): Promise<Reservation> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`vendor-call:${input.avatarId}`}))`);
+    const [prior] = await tx
+      .select({ status: vendorCallRequests.status, mode: vendorCallRequests.mode, mediaId: vendorCallRequests.mediaId, ledgerId: vendorCallRequests.ledgerId })
+      .from(vendorCallRequests)
+      .where(and(
+        eq(vendorCallRequests.avatarId, input.avatarId),
+        eq(vendorCallRequests.vendor, 'studios'),
+        eq(vendorCallRequests.idempotencyKey, input.idempotencyKey),
+      ))
+      .limit(1);
+    if (prior) {
+      if (prior.status === 'done' && prior.mediaId) {
+        const [ledger] = prior.ledgerId
+          ? await tx.select({ usdCents: vendorSpendLedger.usdCents, txSignature: vendorSpendLedger.txSignature })
+            .from(vendorSpendLedger).where(eq(vendorSpendLedger.id, prior.ledgerId)).limit(1)
+          : [];
+        return {
+          kind: 'done',
+          result: {
+            ok: true,
+            mode: prior.mode === 'account' ? 'account' : 'wallet',
+            mediaId: prior.mediaId,
+            mediaPath: `/api/media/${prior.mediaId}`,
+            ledgerId: prior.ledgerId,
+            paidUsdCents: ledger?.usdCents ?? null,
+            txSignature: ledger?.txSignature ?? null,
+          },
+        };
+      }
+      return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
+    }
+    const dayStart = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
+    if (input.surface === 'hosted') {
+      const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
+        eq(vendorCallRequests.avatarId, input.avatarId),
+        eq(vendorCallRequests.surface, 'hosted'),
+        sql`${vendorCallRequests.createdAt} >= ${dayStart}`,
+      ));
+      if ((row?.n ?? 0) >= HOSTED_IMAGE_DAILY_MAX) return { kind: 'done', result: failure('daily_limit') };
+    }
+    if (input.mode === 'account' && input.actor === 'agent') {
+      const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
+        eq(vendorCallRequests.avatarId, input.avatarId),
+        eq(vendorCallRequests.mode, 'account'),
+        eq(vendorCallRequests.actor, 'agent'),
+        sql`${vendorCallRequests.createdAt} >= ${dayStart}`,
+      ));
+      if ((row?.n ?? 0) >= ACCOUNT_AGENT_IMAGE_DAILY_MAX) return { kind: 'done', result: failure('daily_limit') };
+    }
+    const [created] = await tx.insert(vendorCallRequests).values({
+      avatarId: input.avatarId,
+      vendor: 'studios',
+      actor: input.actor,
+      surface: input.surface,
+      mode: input.mode,
+      idempotencyKey: input.idempotencyKey,
+    }).returning({ id: vendorCallRequests.id });
+    if (!created) throw new Error('vendor_call_requests insert returned no row');
+    return { kind: 'new', requestId: created.id };
+  });
+}
+
+/** Record the outcome on the request row, then return it unchanged. */
+async function finishRequest(requestId: string, result: StudiosImageResult): Promise<StudiosImageResult> {
+  await db.update(vendorCallRequests).set({
+    status: result.ok ? 'done' : 'failed',
+    mediaId: result.ok ? result.mediaId : null,
+    ledgerId: result.ledgerId,
+    updatedAt: new Date(),
+  }).where(eq(vendorCallRequests.id, requestId));
+  return result;
+}
+
 /**
  * Make one Studios image for `avatarId`. The caller has already proved the
  * caller acts for this avatar (human session, ledger-capable agent session,
@@ -154,25 +257,41 @@ export async function generateStudiosImage(input: {
   prompt: string;
   idempotencyKey: string;
   model?: StudiosImageModel;
+  /** 'hosted' = the [ACTION:] verb, with its own daily limit. Default 'api'. */
+  surface?: 'api' | 'hosted';
 }): Promise<StudiosImageResult> {
   const request = buildStudiosImageRequest({ prompt: input.prompt, model: input.model });
 
-  let key: string | null = null;
+  // A saved key that cannot be read is an error, never a silent switch to the
+  // wallet: the human chose their own account.
+  let key: string | null;
   try {
     key = await loadVendorKey(input.avatarId, 'studios');
   } catch {
-    key = null;
+    return failure('studios_key_invalid');
   }
+  const mode = key ? 'account' : 'wallet';
+
+  const reservation = await reserveRequest({
+    avatarId: input.avatarId,
+    actor: input.actor,
+    surface: input.surface ?? 'api',
+    mode,
+    idempotencyKey: input.idempotencyKey,
+  });
+  if (reservation.kind === 'done') return reservation.result;
+  const { requestId } = reservation;
 
   if (key) {
     const result = await callWithAccountKey(key, request);
     key = null;
-    if (!result.ok) return failure(result.code);
+    if (!result.ok) return finishRequest(requestId, failure(result.code));
     const image = parseStudiosImage(result.json);
-    if (!image) return failure('image_missing');
-    const mediaId = await storeMedia({ avatarId: input.avatarId, mode: 'account', actor: input.actor, prompt: input.prompt, ledgerId: null, image });
-    if (!mediaId) return failure('image_missing');
-    return { ok: true, mode: 'account', mediaId, mediaPath: `/api/media/${mediaId}`, ledgerId: null, paidUsdCents: null, txSignature: null };
+    const mediaId = image
+      ? await storeMedia({ avatarId: input.avatarId, mode: 'account', actor: input.actor, prompt: input.prompt, ledgerId: null, imageBase64: image.imageBase64 })
+      : null;
+    if (!mediaId) return finishRequest(requestId, failure('image_missing'));
+    return finishRequest(requestId, { ok: true, mode: 'account', mediaId, mediaPath: `/api/media/${mediaId}`, ledgerId: null, paidUsdCents: null, txSignature: null });
   }
 
   const paid = await callVendorWithAvatarWallet({
@@ -184,13 +303,13 @@ export async function generateStudiosImage(input: {
     url: request.url,
     body: request.body,
   });
-  if (!paid.ok) return failure(paid.code, paid.ledgerId ?? null);
+  if (!paid.ok) return finishRequest(requestId, failure(paid.code, paid.ledgerId ?? null));
   const image = parseStudiosImage(paid.responseJson);
   const mediaId = image
-    ? await storeMedia({ avatarId: input.avatarId, mode: 'wallet', actor: input.actor, prompt: input.prompt, ledgerId: paid.ledgerId, image })
+    ? await storeMedia({ avatarId: input.avatarId, mode: 'wallet', actor: input.actor, prompt: input.prompt, ledgerId: paid.ledgerId, imageBase64: image.imageBase64 })
     : null;
-  if (!mediaId) return failure('image_missing', paid.ledgerId);
-  return {
+  if (!mediaId) return finishRequest(requestId, failure('image_missing', paid.ledgerId));
+  return finishRequest(requestId, {
     ok: true,
     mode: 'wallet',
     mediaId,
@@ -198,21 +317,16 @@ export async function generateStudiosImage(input: {
     ledgerId: paid.ledgerId,
     paidUsdCents: paid.usdCents,
     txSignature: paid.txSignature,
-  };
+  });
 }
 
 /** One stored image, for GET /api/media/:id. */
-export async function readMedia(id: string): Promise<
-  { kind: 'bytes'; mime: string; bytes: Buffer } | { kind: 'link'; url: string } | null
-> {
+export async function readMedia(id: string): Promise<{ mime: string; bytes: Buffer } | null> {
   const row = await db.query.avatarMedia.findFirst({
     where: eq(avatarMedia.id, id),
-    columns: { mimeType: true, bytes: true, externalUrl: true },
+    columns: { mimeType: true, bytes: true },
   });
-  if (!row) return null;
-  if (row.bytes && row.mimeType) return { kind: 'bytes', mime: row.mimeType, bytes: Buffer.from(row.bytes) };
-  if (row.externalUrl) return { kind: 'link', url: row.externalUrl };
-  return null;
+  return row ? { mime: row.mimeType, bytes: Buffer.from(row.bytes) } : null;
 }
 
 /** The newest images of one avatar (ids and prompts only). */

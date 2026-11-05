@@ -664,14 +664,21 @@ export const api = {
     ),
   studiosKeyStatus: () =>
     request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key'),
-  saveStudiosKey: (apiKey: string) =>
+  /** A message for the linked wallet to sign before a key save or remove. */
+  studiosKeyChallenge: (body: { action: 'save'; last4: string } | { action: 'remove' }) =>
+    request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>('/api/vendors/studios/key/challenge', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  saveStudiosKey: (apiKey: string, proof: { nonce: string; signature: string }) =>
     request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key', {
       method: 'PUT',
-      body: JSON.stringify({ apiKey }),
+      body: JSON.stringify({ apiKey, proof }),
     }),
-  deleteStudiosKey: () =>
+  deleteStudiosKey: (proof: { nonce: string; signature: string }) =>
     request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key', {
       method: 'DELETE',
+      body: JSON.stringify({ proof }),
     }),
   /** Absolute URL of a stored image path such as /api/media/<id>. */
   mediaUrl: (mediaPath: string) => `${API_URL}${mediaPath}`,

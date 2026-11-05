@@ -141,7 +141,8 @@ describe('generate_image hosted action', () => {
     expect(input.avatarId).toBe(AVATAR);
     expect(input.actor).toBe('agent');
     expect(input.prompt).toBe('a crab, message=hi, at dusk');
-    expect(Object.keys(input).sort()).toEqual(['actor', 'avatarId', 'idempotencyKey', 'prompt']);
+    expect(Object.keys(input).sort()).toEqual(['actor', 'avatarId', 'idempotencyKey', 'prompt', 'surface']);
+    expect(input.surface).toBe('hosted');
     expect(input.idempotencyKey).toMatch(/^hosted-img-9f1c2d3e-[0-9a-f-]{36}$/);
     expect(input.idempotencyKey).toMatch(/^[A-Za-z0-9._:-]{8,64}$/);
     expect(calls.results).toEqual([
