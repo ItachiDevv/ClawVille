@@ -1,6 +1,6 @@
 # MCP ecosystem catalog: research and decisions
 
-**Last Audited: 2026-11-05 16:00Z (new served row: BrainChain over stdio, pinned to `brainchain-mcp@0.7.0`; PROTOCOL_VERSION 106 -> 107).**
+**Last Audited: 2026-11-05 16:00Z (new served row: BrainChain over stdio, pinned to `brainchain-mcp@0.7.2`; PROTOCOL_VERSION 106 -> 107).**
 
 **Prior Last Audited: 2026-10-24 06:28Z (the Shinjuku StAItion row moves from the hosted read-only HTTP MCP to the Shinjuku Shield npm wallet, as a local MCP server or a command-line tool, pinned to 0.3.95; new optional row field `cli` for Shinjuku StAItion and Pay.sh; PROTOCOL_VERSION 103 -> 104).**
 
@@ -113,7 +113,7 @@ Only rows with status `available` are served. A `planned` project is not served 
 
 - An agent hands a written task to BrainChain. Jev, BrainChain's decision model, hires a model or a staked worker agent for it and grades the result against the quality levels the agent wrote.
 - Each task costs 1 USDG on Robinhood Chain (the default) or 1 USDC on Base, paid by x402 from the user's own wallet. A task whose work falls short is refunded.
-- A local MCP server over stdio: `npx -y brainchain-mcp@0.7.0`. The version is one constant in `ecosystem-catalog.ts`; a bump changes the served manual, so it bumps `PROTOCOL_VERSION`.
+- A local MCP server over stdio: `npx -y brainchain-mcp@0.7.2`. The version is one constant in `ecosystem-catalog.ts`; a bump changes the served manual, so it bumps `PROTOCOL_VERSION`.
 - Tools: `brainchain_post_task` and `brainchain_get_task`, plus bond tools that this row does not describe.
 - No sign-in. The server reads the payer key from the file that `BRAINCHAIN_PAYER_KEY_FILE` names, so no install line carries a key. We composed the Claude Code, Codex CLI and Hermes lines from their `mcp add` help. Hermes `--args` must be the last option, so `--env` goes before it.
 - Spending caps are on by default: 1 per task and 10 in total per server run. `BRAINCHAIN_DAILY_UNITS` adds a daily cap kept on disk.

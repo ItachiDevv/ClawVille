@@ -87,7 +87,7 @@ const SHINJUKU_SERVER_NAME = 'shinjuku-shielded';
 const SHINJUKU_SHIELD_ARGS = ['-y', '--no-audit', '--no-fund', `shinjuku-shield@${SHINJUKU_SHIELD_VERSION}`, 'mcp'];
 const SHINJUKU_SHIELD_COMMAND = `npx ${SHINJUKU_SHIELD_ARGS.join(' ')}`;
 /** The newest npm version on 2026-11-05. A bump changes the served manual, so it bumps PROTOCOL_VERSION. */
-const BRAINCHAIN_MCP_VERSION = '0.7.0';
+const BRAINCHAIN_MCP_VERSION = '0.7.2';
 const BRAINCHAIN_MCP_ARGS = ['-y', `brainchain-mcp@${BRAINCHAIN_MCP_VERSION}`];
 const BRAINCHAIN_MCP_COMMAND = `npx ${BRAINCHAIN_MCP_ARGS.join(' ')}`;
 const BRAINCHAIN_KEY_ENV = 'BRAINCHAIN_PAYER_KEY_FILE=~/.brainchain/payer.key';

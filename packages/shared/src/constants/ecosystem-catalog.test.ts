@@ -67,7 +67,7 @@ describe('ECOSYSTEM_CATALOG', () => {
 
   test('the BrainChain row is the pinned npm server over stdio, with the key file in every install line', () => {
     const brainchain = servedEcosystemCatalog(API_BASE).find((entry) => entry.id === 'brainchain')!;
-    const command = 'npx -y brainchain-mcp@0.7.0';
+    const command = 'npx -y brainchain-mcp@0.7.2';
     const env = 'BRAINCHAIN_PAYER_KEY_FILE=~/.brainchain/payer.key';
     expect(brainchain.transport).toBe('stdio');
     expect(brainchain.mcpUrl).toBeUndefined();
@@ -76,22 +76,22 @@ describe('ECOSYSTEM_CATALOG', () => {
     expect(brainchain.installs).toEqual([
       { client: 'claude-code', snippet: `claude mcp add brainchain -e ${env} -- ${command}` },
       { client: 'codex-cli', snippet: `codex mcp add brainchain --env ${env} -- ${command}` },
-      { client: 'hermes', snippet: `hermes mcp add brainchain --command npx --env ${env} --args -y brainchain-mcp@0.7.0` },
+      { client: 'hermes', snippet: `hermes mcp add brainchain --command npx --env ${env} --args -y brainchain-mcp@0.7.2` },
       {
         client: 'generic-json',
-        snippet: '{ "mcpServers": { "brainchain": { "command": "npx", "args": ["-y","brainchain-mcp@0.7.0"], "env": {"BRAINCHAIN_PAYER_KEY_FILE":"~/.brainchain/payer.key"} } } }',
+        snippet: '{ "mcpServers": { "brainchain": { "command": "npx", "args": ["-y","brainchain-mcp@0.7.2"], "env": {"BRAINCHAIN_PAYER_KEY_FILE":"~/.brainchain/payer.key"} } } }',
       },
     ]);
     const generic = JSON.parse(brainchain.installs!.find((install) => install.client === 'generic-json')!.snippet) as {
       mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
     };
     expect(generic).toEqual({
-      mcpServers: { brainchain: { command: 'npx', args: ['-y', 'brainchain-mcp@0.7.0'], env: { BRAINCHAIN_PAYER_KEY_FILE: '~/.brainchain/payer.key' } } },
+      mcpServers: { brainchain: { command: 'npx', args: ['-y', 'brainchain-mcp@0.7.2'], env: { BRAINCHAIN_PAYER_KEY_FILE: '~/.brainchain/payer.key' } } },
     });
     // The key itself never appears in a served line, only the file that holds it.
     expect(JSON.stringify(brainchain)).not.toContain('BRAINCHAIN_PAYER_KEY=');
     const versions = JSON.stringify(brainchain).match(/brainchain-mcp@\d+\.\d+\.\d+/g)!;
-    expect(new Set(versions)).toEqual(new Set(['brainchain-mcp@0.7.0']));
+    expect(new Set(versions)).toEqual(new Set(['brainchain-mcp@0.7.2']));
   });
 
   test('the Shinjuku StAItion row is the pinned npm wallet over stdio, with a cli and no MCP URL', () => {
