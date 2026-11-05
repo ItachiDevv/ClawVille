@@ -629,12 +629,13 @@ export const api = {
   // ── Spend rules for paid third-party tools (routes/spend-policy.ts) ──────
   // The human owner writes them; the agent only reads. Null caps = not set.
   getSpendPolicy: () => request<SpendPolicyView>('/api/wallet/spend-policy'),
-  // A raise (a cap set or raised, or a vendor added) needs `proof`: the linked
+  // A raise (a cap set or raised, a vendor added, or more own-key images) needs `proof`: the linked
   // wallet's signature of the challenge message for the exact same values.
   putSpendPolicy: (body: {
     dailyCapUsdCents: number | null;
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
+    studiosKeyImagesPerDay: number;
     proof?: { nonce: string; signature: string };
   }) =>
     request<SpendPolicyView>('/api/wallet/spend-policy', {
@@ -686,6 +687,7 @@ export const api = {
     dailyCapUsdCents: number | null;
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
+    studiosKeyImagesPerDay: number;
   }) =>
     request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>(
       '/api/wallet/spend-policy/challenge',

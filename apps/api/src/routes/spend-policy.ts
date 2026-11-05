@@ -32,7 +32,12 @@ import {
   type HumanGateCopy,
 } from '../middleware/require-human-session';
 import { noStorePrivate } from '../middleware/no-store';
-import { applySpendPolicyChange, readSpendPolicy, spendPolicyInputSchema } from '../services/spend-policy';
+import {
+  applySpendPolicyChange,
+  readSpendPolicy,
+  resolveSpendPolicyValues,
+  spendPolicyInputSchema,
+} from '../services/spend-policy';
 import { issueSpendProofChallenge } from '../services/spend-policy-proof';
 import type { AppContext } from '../types';
 
@@ -92,13 +97,16 @@ spendPolicyRoutes.post(
     if (!parsed.success) {
       return c.json({ error: 'invalid_spend_policy', code: 'invalid_spend_policy', issues: parsed.error.issues }, 400);
     }
-    await activeAvatarId(user.id);
+    const avatarId = await activeAvatarId(user.id);
+    // The message names every value the PUT will save, the own-key image
+    // count included (an absent one keeps the saved value).
+    const values = resolveSpendPolicyValues(parsed.data, await readSpendPolicy(avatarId));
     const owner = await db.query.users.findFirst({
       where: eq(users.id, user.id),
       columns: { linkedWalletPubkey: true },
     });
     if (!owner?.linkedWalletPubkey) return c.json(NEEDS_WALLET_LINK, 403);
-    return c.json({ ...issueSpendProofChallenge(user.id, parsed.data), walletPubkey: owner.linkedWalletPubkey });
+    return c.json({ ...issueSpendProofChallenge(user.id, values), walletPubkey: owner.linkedWalletPubkey });
   },
 );
 

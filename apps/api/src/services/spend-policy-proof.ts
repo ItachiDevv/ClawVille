@@ -54,6 +54,7 @@ export function buildSpendRulesMessage(userId: string, values: SpendPolicyValues
     `daily cap: ${usd(values.dailyCapUsdCents)}`,
     `per-call cap: ${usd(values.perCallCapUsdCents)}`,
     `paid tools: ${vendors.length ? vendors.join(', ') : 'none'}`,
+    `Studios images per day with my own key: ${values.studiosKeyImagesPerDay}`,
     `nonce: ${nonce}`,
   ].join('\n');
 }

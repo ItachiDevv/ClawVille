@@ -22,7 +22,7 @@ mock.module('../studios-images', () => ({
 
 import { HATCHER_ACTION_MENU, HATCHER_ACTION_VERBS } from '@clawville/shared';
 import {
-  formatGenerateImageCapRefusal,
+  formatGenerateImageInFlightRefusal,
   formatGeneratedImageResult,
   npcSimulation,
   parseGenerateImageParams,
@@ -55,7 +55,6 @@ beforeEach(() => {
   sim.npcs.set(bodyId, body);
   sim.npcOverrides.set(bodyId, SESSION);
   sim.agentBotSessions.set(SESSION, { config: { mode: 'avatar', agentId: AGENT, avatarId: AVATAR, boundUserId: 'owner', ledgerCapable: true } });
-  sim.autonomousImageDailyCount.clear();
   sim.autonomousImageInFlight.clear();
   driver.userAgents.set(AGENT, { agentId: AGENT, avatarId: AVATAR, bodyId, lastLesson: null, lastBuildingId: null, isHouse: false });
   resolved = { userId: 'owner', avatarId: AVATAR, agentId: AGENT, ledgerCapable: true };
@@ -81,7 +80,8 @@ describe('generate_image hosted action', () => {
     expect(HATCHER_ACTION_VERBS).toContain('generate_image');
     const item = HATCHER_ACTION_MENU.find((entry) => entry.verb === 'generate_image');
     expect(item?.syntax).toBe('generate_image(prompt="<1..1000 characters; no double quote and no closing parenthesis>")');
-    expect(item?.whenToUse).toContain('at most 3 per UTC day');
+    expect(item?.whenToUse).toContain('inside the images per day they set; one per reply');
+    expect(item?.whenToUse).not.toContain('at most 3');
     expect(prompt()).toContain('generate_image(prompt=');
   });
 
@@ -172,7 +172,7 @@ describe('generate_image hosted action', () => {
       dispatch('[ACTION: generate_image(prompt="fast")]');
       await settle();
       expect(generateCalls.map((c) => c.prompt)).toEqual(['slow']);
-      expect(calls.results).toEqual([formatGenerateImageCapRefusal('in_flight', Date.now())]);
+      expect(calls.results).toEqual([formatGenerateImageInFlightRefusal()]);
       release();
       await settle();
       expect(calls.results[1]).toBe("Studio: image ready at /api/media/m; your human's Studios account paid; your wallet paid nothing.");
@@ -181,24 +181,18 @@ describe('generate_image hosted action', () => {
     }
   });
 
-  test('the daily limit refuses the 4th execution in one UTC day; a refused service call still counts', async () => {
-    generateImpl = async () => ({ ok: false, code: 'over_daily_cap', message: 'This call would pass the daily cap. Nothing was paid.', httpStatus: 402, ledgerId: null });
-    for (let i = 0; i < 3; i++) {
+  test('the executor sets no daily count of its own: every finished image is followed by the next, and the service limits it', async () => {
+    for (let i = 0; i < 6; i++) {
       dispatch(`[ACTION: generate_image(prompt="img ${i}")]`);
       await settle();
     }
-    expect(generateCalls).toHaveLength(3);
-    dispatch('[ACTION: generate_image(prompt="img 4")]');
+    expect(generateCalls).toHaveLength(6);
+    // The human's own limit comes back from the service as one result line.
+    generateImpl = async () => ({ ok: false, code: 'daily_limit', message: 'limit used up', httpStatus: 429, ledgerId: null });
+    dispatch('[ACTION: generate_image(prompt="img 7")]');
     await settle();
-    expect(generateCalls).toHaveLength(3);
-    expect(calls.results.at(-1)).toMatch(
-      /^Studio: generate_image refused \(daily_limit\): at most 3 images per UTC day; next after \d{4}-\d{2}-\d{2}T00:00:00\.000Z\.$/,
-    );
-    // A count from a past UTC day does not block today.
-    sim.autonomousImageDailyCount.set(AVATAR, { day: '2000-01-01', count: 3 });
-    dispatch('[ACTION: generate_image(prompt="new day")]');
-    await settle();
-    expect(generateCalls).toHaveLength(4);
+    expect(generateCalls).toHaveLength(7);
+    expect(calls.results.at(-1)).toBe('Studio: generate_image refused (daily_limit): limit used up');
   });
 
   test('guard drops (house actor, no session, not ledger, other avatar) never call the service and free the slot', async () => {
@@ -218,7 +212,6 @@ describe('generate_image hosted action', () => {
       await settle();
     }
     expect(generateCalls).toEqual([]);
-    expect(sim.autonomousImageDailyCount.has(AVATAR)).toBe(false);
     expect(sim.autonomousImageInFlight.size).toBe(0);
   });
 
@@ -242,7 +235,7 @@ describe('generate_image hosted action', () => {
     });
     expect(refused.startsWith('Studio: generate_image refused (payment_ambiguous): Studios did not confirm')).toBe(true);
     expect(refused).not.toContain('LEDGER_Z');
-    for (const line of [ok, odd, refused, formatGenerateImageCapRefusal('daily_limit', Date.now()), formatGenerateImageCapRefusal('in_flight', 0)]) {
+    for (const line of [ok, odd, refused, formatGenerateImageInFlightRefusal()]) {
       expect(line.length).toBeLessThanOrEqual(200);
     }
   });

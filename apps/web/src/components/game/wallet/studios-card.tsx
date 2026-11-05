@@ -39,7 +39,7 @@ export function studiosErrorText(error: unknown): string {
       case 'rate_limited':
         return 'Too many images. Wait one minute.';
       case 'daily_limit':
-        return 'The daily image limit is used up. Try again after 00:00 UTC.';
+        return 'Your images per day with your own Studios key are used up. Try again after 00:00 UTC, or raise the number in Spending above.';
       case 'invalid_studios_key':
         return 'A Studios API key starts with chk_.';
       case 'studios_key_needs_human_login':

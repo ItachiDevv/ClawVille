@@ -71,11 +71,15 @@ describe('protocol `ecosystem` page', () => {
     expect(page).toContain('their linked wallet signs each change');
   });
 
-  test('v109: the limits the manual states equal the code constants', async () => {
+  test("v109: the limits are the human's own; the manual states the own-key default from code and no fixed ClawVille count", async () => {
     const page = buildEcosystemTopic(API_BASE);
-    const { ACCOUNT_AGENT_IMAGE_DAILY_MAX, ACCOUNT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR } = await import('../studios-images');
-    expect(page).toContain(`An agent makes at most ${ACCOUNT_AGENT_IMAGE_DAILY_MAX} images per UTC day on the human's account (any surface), and the avatar at most ${ACCOUNT_IMAGE_DAILY_MAX} in total.`);
-    expect(page).toContain(`at most ${HOSTED_IMAGE_DAILY_MAX} per UTC day`);
+    const { MEDIA_KEEP_PER_AVATAR } = await import('../studios-images');
+    const { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } = await import('@clawville/shared');
+    expect(page).toContain(`(\`studiosKeyImagesPerDay\` in the spend rules, ${STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT} until they change it)`);
+    expect(page).toContain('ClawVille sets no image count of its own.');
+    expect(page).toContain('`studiosKeyImagesPerDay` and `configured`');
+    expect(page).toContain('or to raise the images per day');
+    expect(page).not.toMatch(/at most \d+ (images )?per UTC day/);
     expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
   });
 

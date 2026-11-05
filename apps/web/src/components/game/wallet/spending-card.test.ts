@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ApiError } from '@/lib/api';
-import { saveErrorText } from './spending-card';
+import { parseImagesPerDay, saveErrorText } from './spending-card';
 
 // A human whose session predates migration 0089 gets 403
 // spend_policy_needs_human_login on the first save. The card must show a plain
@@ -26,6 +26,20 @@ describe('saveErrorText', () => {
       null,
     ]) {
       expect(saveErrorText(err)).not.toMatch(/[a-z]+_[a-z_]+/);
+    }
+  });
+});
+
+describe('parseImagesPerDay', () => {
+  test('accepts whole numbers from 0 to the typo guard', () => {
+    expect(parseImagesPerDay('0')).toEqual({ ok: true, value: 0 });
+    expect(parseImagesPerDay(' 25 ')).toEqual({ ok: true, value: 25 });
+    expect(parseImagesPerDay('1000')).toEqual({ ok: true, value: 1000 });
+  });
+
+  test('refuses empty, decimals, negatives and values above the guard', () => {
+    for (const text of ['', '2.5', '-1', 'ten', '1001', '99999']) {
+      expect(parseImagesPerDay(text).ok).toBe(false);
     }
   });
 });

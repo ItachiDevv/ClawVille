@@ -342,15 +342,13 @@ const COSMETIC_SKU_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-
  * generate_image (MCP hub step 2 phase 2b): one Studios image for the hosted
  * agent's own avatar. It can spend the avatar wallet's USDC inside the human's
  * spend rules (`outbound-x402.ts`: per-call cap, per-avatar daily cap, refuse
- * all when unset). On top of those rules the executor allows at most
- * AUTONOMOUS_IMAGE_DAILY_MAX executions per avatar per UTC day from this
- * process (founder rule: every autonomous money verb has a per-avatar daily
- * cap; prod 2026-10-22 emote-per-decide incident), one per reply, and one in
- * flight per avatar. An execution counts when it reaches the Studios service,
- * whatever the outcome.
+ * all when unset), or the human's own Studios key inside the human's
+ * images-per-day rule (`studios-images.ts`). Those per-avatar daily limits are
+ * the human's own (founder 2026-11-05: ClawVille sets no fixed image count;
+ * the 2026-10-22 rule "every autonomous money verb has a per-avatar daily
+ * cap" is met by them). The executor adds only one per reply and one in
+ * flight per avatar.
  */
-const AUTONOMOUS_IMAGE_DAILY_MAX = 3;
-const AUTONOMOUS_IMAGE_COUNT_MAX = 5_000;
 export const GENERATE_IMAGE_PROMPT_MAX = 1_000;
 /** Exact `prompt="<text>"` grammar: one quoted value, no `"` inside. */
 const GENERATE_IMAGE_PARAM_RE = /^\s*prompt\s*=\s*"([^"]*)"\s*$/;
@@ -387,14 +385,9 @@ export function formatGeneratedImageResult(result: StudiosImageResult): string {
   return `Studio: image ready at ${path}; ${paid}.`;
 }
 
-/** One short line for the agent's next decide prompt about a capped generate_image. */
-export function formatGenerateImageCapRefusal(reason: 'daily_limit' | 'in_flight', nowMs: number): string {
-  if (reason === 'in_flight') {
-    return 'Studio: generate_image refused (in_flight): your last image is still being made; wait for its result.';
-  }
-  const next = new Date(nowMs);
-  next.setUTCHours(24, 0, 0, 0);
-  return `Studio: generate_image refused (daily_limit): at most ${AUTONOMOUS_IMAGE_DAILY_MAX} images per UTC day; next after ${next.toISOString()}.`;
+/** One short line for the agent's next decide prompt while an image is still being made. */
+export function formatGenerateImageInFlightRefusal(): string {
+  return 'Studio: generate_image refused (in_flight): your last image is still being made; wait for its result.';
 }
 
 /** One short line for the agent's next decide prompt. Numbers only, no pubkey. */
@@ -1352,8 +1345,6 @@ class NpcSimulation {
    * Bounded by the number of concurrent settles.
    */
   private autonomousCosmeticBuyInFlight = new Set<string>();
-  /** generate_image executions per avatar for one UTC day (`YYYY-MM-DD`). */
-  private autonomousImageDailyCount = new Map<string, { day: string; count: number }>();
   /** Avatars with a generate_image settle still running; never evicted. */
   private autonomousImageInFlight = new Set<string>();
   private autonomousSalvageLastAdmittedAt = new Map<string, number>();
@@ -3531,9 +3522,7 @@ class NpcSimulation {
    * key (no ClawVille money), or the avatar wallet inside the human's spend
    * rules (refused when unset).
    *   0. synchronously, before any await: refuse while an image for this avatar
-   *      is in flight, or when it already used AUTONOMOUS_IMAGE_DAILY_MAX this
-   *      UTC day; else mark it in flight and count it (released if a guard
-   *      drops before the service call);
+   *      is in flight; else mark it in flight (released when this settle ends);
    *   1. refuse a house actor BEFORE any session resolve (fail closed);
    *   2. re-resolve the live connected session for this exact agentId;
    *   3. require a ledger-authorized session;
@@ -3548,31 +3537,13 @@ class NpcSimulation {
     prompt: string,
   ): Promise<void> {
     const avatarId = attribution.avatarId;
-    const now = Date.now();
-    const day = new Date(now).toISOString().slice(0, 10);
     if (this.autonomousImageInFlight.has(avatarId)) {
       console.warn('[Hatcher] generate_image dropped — an image is in flight');
-      await this.autonomousActionResult(attribution.agentId, avatarId, formatGenerateImageCapRefusal('in_flight', now))
+      await this.autonomousActionResult(attribution.agentId, avatarId, formatGenerateImageInFlightRefusal())
         .catch(() => undefined);
       return;
-    }
-    const prior = this.autonomousImageDailyCount.get(avatarId);
-    const usedToday = prior && prior.day === day ? prior.count : 0;
-    if (usedToday >= AUTONOMOUS_IMAGE_DAILY_MAX) {
-      console.warn(`[Hatcher] generate_image dropped — daily limit (${AUTONOMOUS_IMAGE_DAILY_MAX} per UTC day)`);
-      await this.autonomousActionResult(attribution.agentId, avatarId, formatGenerateImageCapRefusal('daily_limit', now))
-        .catch(() => undefined);
-      return;
-    }
-    if (this.autonomousImageDailyCount.size >= AUTONOMOUS_IMAGE_COUNT_MAX) {
-      // Only past days are evicted, so an eviction never re-opens today's cap.
-      for (const [key, entry] of this.autonomousImageDailyCount) {
-        if (entry.day !== day) this.autonomousImageDailyCount.delete(key);
-      }
     }
     this.autonomousImageInFlight.add(avatarId);
-    this.autonomousImageDailyCount.set(avatarId, { day, count: usedToday + 1 });
-    let keepCount = false;
     try {
       try {
         // Asked directly, not through refusedForHouseActor, so it holds whether
@@ -3603,8 +3574,6 @@ class NpcSimulation {
         console.warn('[Hatcher] generate_image dropped — live agent/avatar binding changed');
         return;
       }
-      // From here the execution counts toward the daily limit, whatever the outcome.
-      keepCount = true;
       const idempotencyKey = `hosted-img-${avatarId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}-${randomUUID()}`;
       let resultLine: string;
       try {
@@ -3615,21 +3584,13 @@ class NpcSimulation {
         if (result.ok && body) body.intentDescription = 'made a Studios image';
       } catch (err) {
         console.warn(`[Hatcher] generate_image failed — ${err instanceof Error ? err.message : String(err)}`);
-        resultLine = 'Studio: generate_image failed (internal_error): the result is unknown; it counts toward the daily limit. Do not retry now.';
+        resultLine = 'Studio: generate_image failed (internal_error): the result is unknown and it may have been paid. Do not retry now.';
       }
       await this.autonomousActionResult(attribution.agentId, avatarId, resultLine);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(`[Hatcher] generate_image dropped — ${reason}`);
     } finally {
-      if (!keepCount) {
-        // A guard dropped it before the service call: give the slot back.
-        const entry = this.autonomousImageDailyCount.get(avatarId);
-        if (entry && entry.day === day) {
-          if (entry.count <= 1) this.autonomousImageDailyCount.delete(avatarId);
-          else entry.count -= 1;
-        }
-      }
       this.autonomousImageInFlight.delete(avatarId);
     }
   }

@@ -153,6 +153,7 @@ describe('GET /api/wallet/spend-policy', () => {
       dailyCapUsdCents: null,
       perCallCapUsdCents: null,
       allowedVendors: [],
+      studiosKeyImagesPerDay: 10,
       configured: false,
       updatedAt: null,
     });
@@ -295,7 +296,16 @@ describe('POST /api/wallet/spend-policy/challenge', () => {
     expect(body.messageToSign).toContain('daily cap: $2.00');
     expect(body.messageToSign).toContain('per-call cap: $0.25');
     expect(body.messageToSign).toContain('paid tools: studios');
+    // Left out of the body: the saved value (here the default) is named.
+    expect(body.messageToSign).toContain('Studios images per day with my own key: 10');
     expect(body.messageToSign).toContain(`nonce: ${body.nonce}`);
+  });
+
+  it('names the own-key image count from the body when it is given', async () => {
+    linkedWallets.set('user-new', 'WalletPubkey1111111111111111111111111111111');
+    const res = await call('POST', { cookie: 'pw-new', path: '/challenge', body: { ...VALID, studiosKeyImagesPerDay: 40 } });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { messageToSign: string }).messageToSign).toContain('Studios images per day with my own key: 40');
   });
 
   it('rejects bad values', async () => {

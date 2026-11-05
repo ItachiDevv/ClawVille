@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { spendPolicyInputSchema, toSpendPolicyView } from '../spend-policy';
+import { resolveSpendPolicyValues, spendPolicyInputSchema, toSpendPolicyView } from '../spend-policy';
 
 describe('spend policy view', () => {
   it('treats a missing row as unset caps and no vendors', () => {
@@ -7,9 +7,17 @@ describe('spend policy view', () => {
       dailyCapUsdCents: null,
       perCallCapUsdCents: null,
       allowedVendors: [],
+      studiosKeyImagesPerDay: 10,
       configured: false,
       updatedAt: null,
     });
+  });
+
+  it('shows the saved own-key image count, or the default when it was never set', () => {
+    const base = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], updatedAt: null };
+    expect(toSpendPolicyView({ ...base, studiosKeyImagesPerDay: 0 }).studiosKeyImagesPerDay).toBe(0);
+    expect(toSpendPolicyView({ ...base, studiosKeyImagesPerDay: 40 }).studiosKeyImagesPerDay).toBe(40);
+    expect(toSpendPolicyView({ ...base, studiosKeyImagesPerDay: null }).studiosKeyImagesPerDay).toBe(10);
   });
 
   it('is configured only when both caps are set', () => {
@@ -28,6 +36,22 @@ describe('spend policy view', () => {
 });
 
 describe('spend policy input', () => {
+  it('takes an optional own-key image count from 0 to 1000 whole', () => {
+    const base = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] };
+    expect(spendPolicyInputSchema.safeParse(base).success).toBe(true);
+    for (const ok of [0, 25, 1000]) expect(spendPolicyInputSchema.safeParse({ ...base, studiosKeyImagesPerDay: ok }).success).toBe(true);
+    for (const bad of [-1, 1001, 2.5, null, '5']) {
+      expect(spendPolicyInputSchema.safeParse({ ...base, studiosKeyImagesPerDay: bad }).success).toBe(false);
+    }
+  });
+
+  it('keeps the current own-key image count when the input leaves it out', () => {
+    const current = toSpendPolicyView({ dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], studiosKeyImagesPerDay: 7, updatedAt: null });
+    const base = { dailyCapUsdCents: 100, perCallCapUsdCents: 10, allowedVendors: [] as 'studios'[] };
+    expect(resolveSpendPolicyValues(base, current).studiosKeyImagesPerDay).toBe(7);
+    expect(resolveSpendPolicyValues({ ...base, studiosKeyImagesPerDay: 3 }, current).studiosKeyImagesPerDay).toBe(3);
+  });
+
   it('accepts unset caps (the human may clear a cap)', () => {
     expect(spendPolicyInputSchema.safeParse({
       dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [],

@@ -16,6 +16,8 @@ export const userSpendPolicies = pgTable('user_spend_policies', {
   dailyCapUsdCents: integer('daily_cap_usd_cents'),
   perCallCapUsdCents: integer('per_call_cap_usd_cents'),
   allowedVendors: text('allowed_vendors').array().notNull().default([]),
+  /** Studios images per UTC day on the human's own key (migration 0092); NULL = the code default. */
+  studiosKeyImagesPerDay: integer('studios_key_images_per_day'),
   updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

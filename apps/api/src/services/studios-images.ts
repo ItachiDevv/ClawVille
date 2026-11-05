@@ -11,23 +11,24 @@
  *
  * Every request first reserves a `vendor_call_requests` row (unique per
  * avatar + idempotency key) under a per-avatar advisory lock, so a retry never
- * bills twice in either mode and the daily limits survive a restart:
- *   - surface 'hosted' (the [ACTION:] verb): HOSTED_IMAGE_DAILY_MAX per avatar
- *     per UTC day, any mode;
- *   - mode 'account' with actor 'agent': ACCOUNT_AGENT_IMAGE_DAILY_MAX per
- *     avatar per UTC day, and mode 'account' for ANY actor:
- *     ACCOUNT_IMAGE_DAILY_MAX (the spend caps do not cover the human's Studios
- *     credits; the total also bounds an agent that holds its owner's
- *     magic-link session and so looks like the human).
- * A retry of a finished request returns the same image; a retry of an
- * unfinished or failed one is `duplicate_request`.
+ * bills twice in either mode. A retry of a finished request returns the same
+ * image; a retry of an unfinished or failed one is `duplicate_request`.
+ *
+ * Limits are the human's own (founder 2026-11-05: each user's agent pays for
+ * its own tools; ClawVille sets no fixed image count). The spend caps bound
+ * the wallet mode. They do not cover the human's Studios credits, so mode
+ * 'account' is bounded by the human's `studiosKeyImagesPerDay` spend rule:
+ * the avatar's mode-'account' requests of this UTC day, ANY actor and surface
+ * (an agent that holds its owner's magic-link session looks like the human),
+ * counted from the same rows under the same lock, so it survives a restart.
  *
  * The image is stored in `avatar_media` (checked png/jpeg/webp bytes only; a
  * reply with only a link is `image_missing`) and served at GET /api/media/:id.
  * Vendor text is untrusted: only the image and our own status leave here.
  */
 
-import { and, avatarMedia, db, desc, eq, inArray, sql, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
+import { and, avatarMedia, db, desc, eq, inArray, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
+import { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type VendorCallFailure } from './outbound-x402';
 import { loadVendorKey } from './vendor-credentials';
 import {
@@ -39,9 +40,6 @@ import {
 } from './vendors/studios';
 
 export const MEDIA_KEEP_PER_AVATAR = 50;
-export const HOSTED_IMAGE_DAILY_MAX = 3;
-export const ACCOUNT_AGENT_IMAGE_DAILY_MAX = 20;
-export const ACCOUNT_IMAGE_DAILY_MAX = 50;
 const ACCOUNT_CALL_TIMEOUT_MS = 120_000;
 
 export type StudiosImageFailure =
@@ -69,7 +67,7 @@ type FailureStatus = 400 | 402 | 403 | 409 | 429 | 502;
 
 const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message: string }> = {
   duplicate_request: { httpStatus: 409, message: 'This Idempotency-Key was already used for a request that did not finish. Do not retry it; use a new key only for a new image.' },
-  daily_limit: { httpStatus: 429, message: 'The daily image limit for this avatar is used up. Try again after 00:00 UTC.' },
+  daily_limit: { httpStatus: 429, message: "Your human's daily limit for images on their own Studios key is used up. Try again after 00:00 UTC, or ask your human to raise it in the wallet panel (Spending)." },
   vendor_unreachable: { httpStatus: 502, message: 'Studios did not answer. Nothing was paid. Try again later.' },
   vendor_refused: { httpStatus: 502, message: 'Studios refused the request before payment. Nothing was paid.' },
   vendor_quote_invalid: { httpStatus: 502, message: 'Studios sent a price ClawVille cannot accept. Nothing was paid.' },
@@ -207,28 +205,17 @@ async function reserveRequest(input: {
       }
       return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
     }
-    const dayStart = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
-    if (input.surface === 'hosted') {
-      const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
-        eq(vendorCallRequests.avatarId, input.avatarId),
-        eq(vendorCallRequests.surface, 'hosted'),
-        sql`${vendorCallRequests.createdAt} >= ${dayStart}`,
-      ));
-      if ((row?.n ?? 0) >= HOSTED_IMAGE_DAILY_MAX) return { kind: 'done', result: failure('daily_limit') };
-    }
     if (input.mode === 'account') {
-      const [row] = await tx.select({
-        total: sql<number>`count(*)::int`,
-        agent: sql<number>`count(*) FILTER (WHERE ${vendorCallRequests.actor} = 'agent')::int`,
-      }).from(vendorCallRequests).where(and(
+      const [rule] = await tx.select({ perDay: userSpendPolicies.studiosKeyImagesPerDay })
+        .from(userSpendPolicies).where(eq(userSpendPolicies.avatarId, input.avatarId)).limit(1);
+      const perDay = rule?.perDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT;
+      const dayStart = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
+      const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
         eq(vendorCallRequests.avatarId, input.avatarId),
         eq(vendorCallRequests.mode, 'account'),
         sql`${vendorCallRequests.createdAt} >= ${dayStart}`,
       ));
-      if ((row?.total ?? 0) >= ACCOUNT_IMAGE_DAILY_MAX) return { kind: 'done', result: failure('daily_limit') };
-      if (input.actor === 'agent' && (row?.agent ?? 0) >= ACCOUNT_AGENT_IMAGE_DAILY_MAX) {
-        return { kind: 'done', result: failure('daily_limit') };
-      }
+      if ((row?.n ?? 0) >= perDay) return { kind: 'done', result: failure('daily_limit') };
     }
     const [created] = await tx.insert(vendorCallRequests).values({
       avatarId: input.avatarId,
@@ -265,7 +252,7 @@ export async function generateStudiosImage(input: {
   prompt: string;
   idempotencyKey: string;
   model?: StudiosImageModel;
-  /** 'hosted' = the [ACTION:] verb, with its own daily limit. Default 'api'. */
+  /** 'hosted' = the [ACTION:] verb (recorded on the request row). Default 'api'. */
   surface?: 'api' | 'hosted';
 }): Promise<StudiosImageResult> {
   const request = buildStudiosImageRequest({ prompt: input.prompt, model: input.model });

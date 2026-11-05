@@ -12,7 +12,10 @@ import { db, eq, sql, userSpendPolicies } from '@clawville/database';
 import {
   SPEND_CAP_MAX_USD_CENTS,
   SPEND_VENDOR_IDS,
+  STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+  STUDIOS_KEY_IMAGES_PER_DAY_MAX,
   isSpendPolicyRaise,
+  type SpendPolicyValues,
   type SpendPolicyView,
   type SpendVendorId,
 } from '@clawville/shared';
@@ -28,6 +31,8 @@ export const spendPolicyInputSchema = z
       .array(z.enum(SPEND_VENDOR_IDS))
       .max(32)
       .transform((vendors) => [...new Set(vendors)]),
+    // Optional: when absent, the saved value (or the default) stays.
+    studiosKeyImagesPerDay: z.number().int().min(0).max(STUDIOS_KEY_IMAGES_PER_DAY_MAX).optional(),
   })
   .strict()
   .refine(
@@ -39,10 +44,16 @@ export const spendPolicyInputSchema = z
 
 export type SpendPolicyInput = z.infer<typeof spendPolicyInputSchema>;
 
+/** The full values: an absent own-key image count keeps the current one. */
+export function resolveSpendPolicyValues(input: SpendPolicyInput, current: SpendPolicyView): SpendPolicyValues {
+  return { ...input, studiosKeyImagesPerDay: input.studiosKeyImagesPerDay ?? current.studiosKeyImagesPerDay };
+}
+
 type PolicyRow = {
   dailyCapUsdCents: number | null;
   perCallCapUsdCents: number | null;
   allowedVendors: string[];
+  studiosKeyImagesPerDay?: number | null;
   updatedAt: Date | string | null;
 };
 
@@ -57,6 +68,7 @@ export function toSpendPolicyView(row: PolicyRow | null | undefined): SpendPolic
     dailyCapUsdCents,
     perCallCapUsdCents,
     allowedVendors,
+    studiosKeyImagesPerDay: row?.studiosKeyImagesPerDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
     configured: dailyCapUsdCents !== null && perCallCapUsdCents !== null,
     updatedAt: updatedAt === null ? null : new Date(updatedAt).toISOString(),
   };
@@ -68,6 +80,7 @@ export async function readSpendPolicy(avatarId: string): Promise<SpendPolicyView
       dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
       perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
       allowedVendors: userSpendPolicies.allowedVendors,
+      studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
       updatedAt: userSpendPolicies.updatedAt,
     })
     .from(userSpendPolicies)
@@ -82,6 +95,7 @@ const policyColumns = {
   dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
   perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
   allowedVendors: userSpendPolicies.allowedVendors,
+  studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
   updatedAt: userSpendPolicies.updatedAt,
 };
 
@@ -91,10 +105,12 @@ async function upsertSpendPolicy(
   userId: string,
   input: SpendPolicyInput,
 ): Promise<SpendPolicyView> {
+  // An undefined studiosKeyImagesPerDay leaves the column unchanged on update.
   const values = {
     dailyCapUsdCents: input.dailyCapUsdCents,
     perCallCapUsdCents: input.perCallCapUsdCents,
     allowedVendors: input.allowedVendors,
+    studiosKeyImagesPerDay: input.studiosKeyImagesPerDay,
     updatedByUserId: userId,
     updatedAt: new Date(),
   };
@@ -153,7 +169,8 @@ export async function applySpendPolicyChange(
       .where(eq(userSpendPolicies.avatarId, avatarId))
       .limit(1);
     const currentView = toSpendPolicyView(current);
-    if (isSpendPolicyRaise(currentView, input)) {
+    const next = resolveSpendPolicyValues(input, currentView);
+    if (isSpendPolicyRaise(currentView, next)) {
       // FOR SHARE conflicts with the wallet-link FOR UPDATE: a wallet change
       // cannot commit between this read and the policy write, so a proof from
       // a wallet that is being replaced cannot save a raise.
@@ -163,7 +180,7 @@ export async function applySpendPolicyChange(
       const walletPubkey = Array.from(ownerRows)[0]?.linked_wallet_pubkey ?? null;
       if (!walletPubkey) return { kind: 'needs_wallet_link' } as const;
       if (!proof) return { kind: 'needs_wallet_proof' } as const;
-      const verdict = verifySpendProof({ userId, values: input, walletPubkey, ...proof });
+      const verdict = verifySpendProof({ userId, values: next, walletPubkey, ...proof });
       if (verdict !== 'ok') return { kind: 'invalid_proof', reason: verdict } as const;
     }
     return { kind: 'saved', view: await upsertSpendPolicy(tx, avatarId, userId, input) } as const;

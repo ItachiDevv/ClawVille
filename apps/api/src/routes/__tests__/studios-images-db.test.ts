@@ -1,16 +1,16 @@
 /**
  * Executed contract of the Studios image service against DATABASE_URL
- * (migrations 0090 + 0091): mode A with the human's own key (Studios is a fake
- * fetch), image storage, GET /api/media/:id, the 50-image limit, the key
- * store (encrypted at rest, last 4 only), the request reservation (a retry
- * never bills twice) and the persistent daily limits.
+ * (migrations 0090 + 0091 + 0092): mode A with the human's own key (Studios is
+ * a fake fetch), image storage, GET /api/media/:id, the 50-image limit, the
+ * key store (encrypted at rest, last 4 only), the request reservation (a retry
+ * never bills twice) and the human's own images-per-day rule for their key.
  *
- * Skips when DATABASE_URL is absent or migration 0091 is not applied.
+ * Skips when DATABASE_URL is absent or migration 0092 is not applied.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
 import * as dbMod from '@clawville/database';
-import { ACCOUNT_AGENT_IMAGE_DAILY_MAX, ACCOUNT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR, generateStudiosImage, listMedia } from '../../services/studios-images';
+import { MEDIA_KEEP_PER_AVATAR, generateStudiosImage, listMedia } from '../../services/studios-images';
 import { deleteVendorKey, loadVendorKey, readVendorKeyStatus, saveVendorKey } from '../../services/vendor-credentials';
 import { mediaRoutes } from '../media';
 
@@ -31,11 +31,14 @@ if (process.env.DATABASE_URL) {
     const t = await db.execute<{ n: number | string }>(
       sql`SELECT COUNT(*)::int AS n FROM information_schema.tables WHERE table_name IN ('avatar_media', 'user_vendor_credentials', 'vendor_call_requests')`,
     );
-    schemaReady = Number(first(t).n) === 3;
+    const c = await db.execute<{ n: number | string }>(
+      sql`SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'user_spend_policies' AND column_name = 'studios_key_images_per_day'`,
+    );
+    schemaReady = Number(first(t).n) === 3 && Number(first(c).n) === 1;
   } catch {
     schemaReady = false;
   }
-  if (!schemaReady) console.warn('[studios-images-db] SKIPPING: migration 0091 is not applied to this DATABASE_URL yet.');
+  if (!schemaReady) console.warn('[studios-images-db] SKIPPING: migrations 0091 + 0092 are not applied to this DATABASE_URL yet.');
 }
 const describeIfSchema = schemaReady ? describe : describe.skip;
 
@@ -58,7 +61,15 @@ describeIfSchema('studios images: executed DB contract', () => {
             ${JSON.stringify({ strength: 1, defence: 1, movement: 1 })}::jsonb, 0, 0, 0, 0, true, false)
           RETURNING id`,
     )).id;
+    // A high own-key image count, so the storage tests are not limited; the
+    // limit test sets its own number.
+    await setImagesPerDay(1000);
   });
+
+  async function setImagesPerDay(n: number | null) {
+    await db.execute(sql`INSERT INTO user_spend_policies (avatar_id, studios_key_images_per_day) VALUES (${avatarId}, ${n})
+      ON CONFLICT (avatar_id) DO UPDATE SET studios_key_images_per_day = EXCLUDED.studios_key_images_per_day`);
+  }
 
   afterEach(() => {
     globalThis.fetch = realFetch;
@@ -70,6 +81,7 @@ describeIfSchema('studios images: executed DB contract', () => {
     await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM avatar_media WHERE avatar_id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM user_vendor_credentials WHERE avatar_id = ${avatarId}`).catch(() => {});
+    await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM avatars WHERE id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM users WHERE id = ${userId}`).catch(() => {});
   });
@@ -154,29 +166,36 @@ describeIfSchema('studios images: executed DB contract', () => {
     expect((await listMedia(avatarId, 1))[0]?.prompt).toBe(`n${MEDIA_KEEP_PER_AVATAR + 2}`);
   });
 
-  it('limits an agent on the human account per UTC day, and keeps counting after the call', async () => {
+  it("limits own-key images per UTC day to the human's own number, for every actor and surface", async () => {
     fakeStudios(200, { data: [{ b64_json: PNG.toString('base64') }] });
     await backdateRequests();
-    for (let i = 0; i < ACCOUNT_AGENT_IMAGE_DAILY_MAX; i += 1) {
-      expect((await generateStudiosImage({ avatarId, actor: 'agent', prompt: `g${i}`, idempotencyKey: `${tag}-g${i}` })).ok).toBe(true);
+    await setImagesPerDay(3);
+    expect((await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'g1', idempotencyKey: `${tag}-g1` })).ok).toBe(true);
+    expect((await generateStudiosImage({ avatarId, actor: 'human', prompt: 'g2', idempotencyKey: `${tag}-g2` })).ok).toBe(true);
+    // A failed call counts too: it reached the human's Studios account.
+    fakeStudios(402, {});
+    expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'g3', idempotencyKey: `${tag}-g3`, surface: 'hosted' }))
+      .toMatchObject({ ok: false, code: 'studios_account_refused' });
+    fakeStudios(200, { data: [{ b64_json: PNG.toString('base64') }] });
+    seen = [];
+    for (const [actor, key] of [['agent', 'over-a'], ['human', 'over-h']] as const) {
+      expect(await generateStudiosImage({ avatarId, actor, prompt: 'over', idempotencyKey: `${tag}-${key}` }))
+        .toMatchObject({ ok: false, code: 'daily_limit', httpStatus: 429 });
     }
-    seen = [];
-    expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'over', idempotencyKey: `${tag}-gover` })).toMatchObject({ ok: false, code: 'daily_limit', httpStatus: 429 });
     expect(seen).toHaveLength(0);
-    // The human is not limited by the agent's count.
-    expect((await generateStudiosImage({ avatarId, actor: 'human', prompt: 'mine', idempotencyKey: `${tag}-hmine` })).ok).toBe(true);
-  });
-
-  it('limits all account-mode images per avatar per UTC day, the human included', async () => {
-    fakeStudios(200, { data: [{ b64_json: PNG.toString('base64') }] });
+    // A finished request still returns its image on a same-key retry.
+    expect((await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'g1', idempotencyKey: `${tag}-g1` })).ok).toBe(true);
+    // The human raises the number: the next image is allowed the same day.
+    await setImagesPerDay(4);
+    expect((await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'g4', idempotencyKey: `${tag}-g4` })).ok).toBe(true);
+    // 0 stops every own-key image; NULL means the default (10).
     await backdateRequests();
-    await db.execute(sql`INSERT INTO vendor_call_requests (avatar_id, vendor, actor, surface, mode, status, idempotency_key)
-      SELECT ${avatarId}, 'studios', 'human', 'api', 'account', 'done', ${`${tag}-fill-`} || g::text
-      FROM generate_series(1, ${ACCOUNT_IMAGE_DAILY_MAX}) AS g`);
-    seen = [];
-    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-hover` })).toMatchObject({ ok: false, code: 'daily_limit' });
-    expect(seen).toHaveLength(0);
+    await setImagesPerDay(0);
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'z', idempotencyKey: `${tag}-z0` })).toMatchObject({ ok: false, code: 'daily_limit' });
+    await setImagesPerDay(null);
+    expect((await generateStudiosImage({ avatarId, actor: 'human', prompt: 'z', idempotencyKey: `${tag}-z1` })).ok).toBe(true);
     await backdateRequests();
+    await setImagesPerDay(1000);
   });
 
   it('a saved key that cannot be read is an error, never a switch to the wallet', async () => {
@@ -195,16 +214,15 @@ describeIfSchema('studios images: executed DB contract', () => {
     expect(seen.every((s) => s.auth === null)).toBe(true);
   });
 
-  it('limits the hosted verb per avatar per UTC day in the database (survives a restart)', async () => {
+  it('sets no ClawVille image count in wallet mode: the own-key number does not apply, the spend rules decide', async () => {
+    // Studios is faked (a 402 without a usable quote), so nothing is paid.
     fakeStudios(402, {});
-    for (let i = 0; i < HOSTED_IMAGE_DAILY_MAX; i += 1) {
+    await setImagesPerDay(0);
+    for (let i = 0; i < 5; i += 1) {
       const r = await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'h', idempotencyKey: `hosted-img-${tag}-${i}`, surface: 'hosted' });
       expect(r).toMatchObject({ ok: false });
       expect(r.ok === false && r.code).not.toBe('daily_limit');
     }
-    seen = [];
-    expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'h', idempotencyKey: `hosted-img-${tag}-x`, surface: 'hosted' }))
-      .toMatchObject({ ok: false, code: 'daily_limit' });
-    expect(seen).toHaveLength(0);
+    expect(seen.length).toBeGreaterThanOrEqual(5);
   });
 });
