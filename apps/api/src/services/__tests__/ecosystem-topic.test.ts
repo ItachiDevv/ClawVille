@@ -71,7 +71,7 @@ describe('protocol `ecosystem` page', () => {
     expect(page).toContain('their linked wallet signs each change');
   });
 
-  test("v109: the limits are the human's own; the manual states the own-key default from code and no fixed ClawVille count", async () => {
+  test("v110: the limits are the human's own; the manual states the own-key default from code and no fixed ClawVille count", async () => {
     const page = buildEcosystemTopic(API_BASE);
     const { MEDIA_KEEP_PER_AVATAR } = await import('../studios-images');
     const { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } = await import('@clawville/shared');

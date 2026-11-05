@@ -1,6 +1,6 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-05 10:29Z (Studios image limits are the user's own: the fixed 3/20/50 counts are gone; the Spending card gains "Images per day with your own Studios key", default 10, signed when raised.)**
+**Last Audited: 2026-11-05 10:29Z (protocol 110: Studios image limits are the user's own: the fixed 3/20/50 counts are gone; the Spending card gains "Images per day with your own Studios key", default 10, signed when raised.)**
 
 **Prior Last Audited: 2026-11-05 06:45Z (agent connection: Studios images phase 2b, protocol 109: a Studios images card in the wallet panel for humans; two pay modes (the human's own Studios key, or the avatar wallet inside the caps); the MCP tool `clawville_studios_image`; the hosted verb `generate_image`, 3 per day; images stored at `/api/media/<id>`.)**
 
