@@ -48,13 +48,25 @@ describe('protocol `ecosystem` page', () => {
 
   test('v108: states the paid Studios image call, its refusals and the no-retry rule', () => {
     const page = buildEcosystemTopic(API_BASE);
-    expect(page).toContain('### Studios images, paid from your avatar wallet');
+    expect(page).toContain('### Studios images');
     expect(page).toContain(`\`POST ${API_BASE}/api/vendors/studios/images\``);
     expect(page).toContain('`Idempotency-Key`');
     for (const code of ['spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'payment_ambiguous']) {
       expect(page).toContain(`\`${code}\``);
     }
     expect(page).toContain('Do NOT retry it.');
+  });
+
+  test('v109: states both pay modes, the MCP tool, the hosted verb and the media path', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain("**Your human's own Studios account.**");
+    expect(page).toContain('Only the human can save or remove the key; an agent cannot.');
+    expect(page).toContain('**Your avatar wallet.**');
+    expect(page).toContain('`clawville_studios_image`');
+    expect(page).toContain('[ACTION: generate_image(prompt="...")]');
+    expect(page).toContain('`mediaPath`');
+    for (const code of ['studios_key_invalid', 'studios_account_refused']) expect(page).toContain(`\`${code}\``);
+    expect(page).not.toContain('imageBase64');
   });
 
   test('renders every served row with its URL, auth and install lines', () => {

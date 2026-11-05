@@ -923,6 +923,15 @@ process.on('uncaughtException', (err) => {
     console.error('[API] x402 auto-reconcile worker failed to start:', err);
   }
 
+  // MCP hub step 2: resolve vendor_spend_ledger rows left 'pending' or
+  // 'ambiguous' from chain evidence only (every 15 min; never pays or retries).
+  try {
+    const { startVendorLedgerReconcile } = await import('./services/vendor-ledger-reconcile');
+    startVendorLedgerReconcile();
+  } catch (err) {
+    console.error('[API] vendor ledger reconcile worker failed to start:', err);
+  }
+
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
   // via LAZY restore (`agent-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds

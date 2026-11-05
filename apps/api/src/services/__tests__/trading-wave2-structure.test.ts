@@ -81,6 +81,9 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
       // seller under the human's spend rules; decrypts only after admission.
       'services/outbound-x402.ts',
       'services/trading-signer.ts',
+      // MCP hub step 2 phase 2b: a human's own vendor API key, AES-256-GCM
+      // via encryptToken/decryptToken; never a wallet key.
+      'services/vendor-credentials.ts',
       'services/wager-program-client.ts',
       'services/wallet-service.ts',
       'services/wallet-withdraw-executor.ts',

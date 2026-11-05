@@ -641,6 +641,40 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  // ── Studios images (routes/vendor-studios.ts, MCP hub step 2) ──────────
+  // Mode A: the human's own Studios key (Studios bills their account).
+  // Mode B: no key; the avatar wallet pays inside the spend rules.
+  studiosImage: (body: { prompt: string }, idempotencyKey: string) =>
+    request<{
+      ok: true;
+      mode: 'wallet' | 'account';
+      mediaId: string;
+      mediaPath: string;
+      ledgerId: string | null;
+      paidUsdCents: number | null;
+      txSignature: string | null;
+    }>('/api/vendors/studios/images', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    }),
+  studiosImages: () =>
+    request<{ images: Array<{ id: string; mediaPath: string; prompt: string; mode: string; actor: string; createdAt: string }> }>(
+      '/api/vendors/studios/images',
+    ),
+  studiosKeyStatus: () =>
+    request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key'),
+  saveStudiosKey: (apiKey: string) =>
+    request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key', {
+      method: 'PUT',
+      body: JSON.stringify({ apiKey }),
+    }),
+  deleteStudiosKey: () =>
+    request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key', {
+      method: 'DELETE',
+    }),
+  /** Absolute URL of a stored image path such as /api/media/<id>. */
+  mediaUrl: (mediaPath: string) => `${API_URL}${mediaPath}`,
   spendPolicyChallenge: (body: {
     dailyCapUsdCents: number | null;
     perCallCapUsdCents: number | null;

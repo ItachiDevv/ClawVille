@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-05 05:08Z (Studios images paid from the avatar wallet, PROTOCOL_VERSION 107 -> 108).** Drift note: the `ecosystem` page gains "Studios images, paid from your avatar wallet" (`POST /api/vendors/studios/images`). No Hatcher verb, param or partner route changes; a Hatcher agent session reaches the route like any agent session (ledger-capable only).
+**Last Audited: 2026-11-05 06:45Z (Studios images phase 2b, PROTOCOL_VERSION 108 -> 109).** Drift note: the `ecosystem` Studios section now describes two pay modes, the MCP tool, the list and key routes, the media path and the account refusals; the `actions` page gains the hosted verb `generate_image(prompt="...")` (whitelisted in `HATCHER_ACTION_VERBS`, refused for house agents, 3 per avatar per UTC day). No Hatcher route or partner contract changed.
+
+**Prior Last Audited: 2026-11-05 05:08Z (Studios images paid from the avatar wallet, PROTOCOL_VERSION 107 -> 108).** Drift note: the `ecosystem` page gains "Studios images, paid from your avatar wallet" (`POST /api/vendors/studios/images`). No Hatcher verb, param or partner route changes; a Hatcher agent session reaches the route like any agent session (ledger-capable only).
 
 **Prior Last Audited: 2026-11-05 04:32Z (spend rules wallet proof, PROTOCOL_VERSION 106 -> 107).** Drift note: the `ecosystem` page's "Spend rules" section adds the linked-wallet signature for a raise and the old-wallet signature for a wallet change. No verb, param, route used by Hatcher, or settlement change.
 

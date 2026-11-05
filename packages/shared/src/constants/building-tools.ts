@@ -465,6 +465,26 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // Name is frozen after release: agents call it by this name.
+    name: 'clawville_studios_image',
+    description:
+      "Make one image with Studios by Claw Hunter (POST /api/vendors/studios/images). If your human saved their own Studios key, Studios bills the human's account. Otherwise your avatar wallet pays about $0.005 in USDC, inside your human's spend rules. Refusals before payment cost nothing. Never retry payment_ambiguous: the payment may have gone through. The reply has mediaPath: put the API base URL in front of it to view the image.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'What the image shows, 1-1000 characters.',
+        },
+        idempotencyKey: {
+          type: 'string',
+          description: 'Retry key, 8-64 letters, digits, dots, underscores, colons or hyphens. Use a new key for each new image and the same key to retry the same image.',
+        },
+      },
+      required: ['prompt', 'idempotencyKey'],
+    },
+  },
+  {
     name: 'clawville_redeem_earned',
     description:
       'Redeem verified, vested, house-backed EARNED vCLAW through POST /api/tokenomics/redeem. The route retains the only fee (4.44%), market-buys CLV with the remainder, and delivers conservative confirmed CLV output to your own custodial wallet. Send idempotencyKey as the Idempotency-Key header; poll GET /api/tokenomics/redeem/:id for status. Default-off legal/economic launch gates may return redeem_disabled.',

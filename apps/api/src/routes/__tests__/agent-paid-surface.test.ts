@@ -35,6 +35,7 @@ describe('agent paid surfaces', () => {
     expect(names).toContain('clawville_paid_expert_consult');
     expect(names).toContain('clawville_paid_agent_analytics');
     expect(names).toContain('clawville_redeem_earned');
+    expect(names).toContain('clawville_studios_image');
   });
 
   it('publishes the additive commerce and default-off exit contract', () => {
@@ -51,7 +52,7 @@ describe('agent paid surfaces', () => {
     // through v57/v58 because this file is outside the gates lane — the
     // pin-sweep rule is "grep for PROTOCOL_VERSION assertions", never for
     // the old number.
-    expect(PROTOCOL_VERSION).toBe(108);
+    expect(PROTOCOL_VERSION).toBe(109);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');
