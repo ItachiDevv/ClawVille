@@ -41,7 +41,7 @@ mock.module('../../services/outbound-x402', () => ({
   },
 }));
 
-const { vendorStudiosRoutes } = await import('../vendor-studios');
+const { vendorStudiosRoutes, resetStudiosRateLimit } = await import('../vendor-studios');
 const app = new Hono();
 app.route('/api/vendors/studios', vendorStudiosRoutes);
 app.onError((err, c) => (err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({ error: 'x' }, 500)));
@@ -53,6 +53,7 @@ function post(body: unknown, key: string | null = 'key-12345678') {
 }
 
 beforeEach(() => {
+  resetStudiosRateLimit();
   calls.length = 0;
   identity = { kind: 'user', userId: 'u1', avatarId: 'a1', agentId: null };
   nextResult = { ok: false, code: 'spend_rules_not_set' };
@@ -90,6 +91,21 @@ describe('POST /api/vendors/studios/images', () => {
       body: { model: 'z-image-turbo', prompt: 'a green crab', n: 1 },
       pin: { vendor: 'studios', payTo: ['HuSiSpcUoUEF4hct1MRsGtNGz8EdBiTs7p2WtJGksLSa'] },
     });
+  });
+
+  it('limits each avatar to 6 calls a minute, and refuses a large body', async () => {
+    for (let i = 0; i < 6; i += 1) expect((await post({ prompt: 'crab' }, `key-0000000${i}`)).status).toBe(403);
+    const limited = await post({ prompt: 'crab' }, 'key-00000099');
+    expect(limited.status).toBe(429);
+    expect(calls).toHaveLength(6);
+    resetStudiosRateLimit();
+    const big = JSON.stringify({ prompt: 'x'.repeat(20 * 1024) });
+    const res = await app.request('/api/vendors/studios/images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'key-big00000', 'Content-Length': String(big.length) },
+      body: big,
+    });
+    expect(res.status).toBe(413);
   });
 
   it('maps a refusal to our own message, never vendor text', async () => {

@@ -25,6 +25,7 @@ export const vendorSpendLedger = pgTable('vendor_spend_ledger', {
   payerWallet: varchar('payer_wallet', { length: 64 }).notNull(),
   network: varchar('network', { length: 100 }).notNull(),
   idempotencyKey: varchar('idempotency_key', { length: 64 }).notNull(),
+  payerSignature: text('payer_signature'),
   txSignature: text('tx_signature'),
   failureReason: text('failure_reason'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

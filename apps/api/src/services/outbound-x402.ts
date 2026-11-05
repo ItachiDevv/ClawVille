@@ -10,10 +10,18 @@
  *     `prepareCustodialExactPayment` adds our own fields and must NOT be used
  *     here; keep the two primitives apart.
  *   - The quote's `payTo` must be one of the vendor's pinned wallets.
+ *   - The seller's `extra.feePayer` becomes the transaction fee payer. It must
+ *     be a valid public key that is NOT our wallet, or our wallet pays fees.
  *   - The caps come from the human's spend rules and the ledger, checked under
  *     the same per-avatar advisory lock as spend-rule writes. The ledger row is
- *     written BEFORE the wallet signs. An unclear outcome is 'ambiguous' and is
- *     never retried automatically; it still counts toward the daily cap.
+ *     written BEFORE the wallet signs, and our wallet's own signature on the
+ *     transaction is stored BEFORE the paid request is sent, so
+ *     `scripts/vendors/vendor-ledger-reconcile.ts` can find the transaction on
+ *     chain later. After the paid request is sent, only a 2xx with valid
+ *     settlement evidence is 'paid'; every other outcome is 'ambiguous' (a 402
+ *     does not prove that nothing settled). Ambiguous rows are never retried
+ *     automatically and count toward the daily cap.
+ *   - The decrypted key lives only for the signing step and is wiped after.
  *   - Vendor text is untrusted. We log status codes only, never vendor bodies.
  */
 
@@ -26,6 +34,8 @@ import {
 } from '@x402/core/http';
 import type { PaymentRequired, PaymentRequirements } from '@x402/core/types';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
+import { VersionedTransaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { and, db, eq, inArray, sql, userSpendPolicies, vendorSpendLedger, wallets } from '@clawville/database';
 import type { SpendVendorId } from '@clawville/shared';
 import { decryptWalletRow } from './keypair-vault';
@@ -37,6 +47,8 @@ export const SOLANA_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const ATOMIC_PER_CENT = 10_000n;
 const QUOTE_TIMEOUT_MS = 30_000;
 const PAID_CALL_TIMEOUT_MS = 120_000;
+/** Largest seller reply we read (an image as base64 is at most 8 MB). */
+const MAX_REPLY_BYTES = 12 * 1024 * 1024;
 
 export interface VendorPin {
   vendor: SpendVendorId;
@@ -66,7 +78,6 @@ export type VendorCallFailure =
   | 'over_daily_cap'
   | 'wallet_missing'
   | 'payment_prepare_failed'
-  | 'payment_refused'
   | 'payment_ambiguous';
 
 export type VendorCallResult =
@@ -75,20 +86,47 @@ export type VendorCallResult =
     ledgerId: string;
     usdcAtomic: string;
     usdCents: number;
+    /** Null when the seller sent no valid settlement evidence (the ledger row is then 'ambiguous'). */
     txSignature: string | null;
     responseJson: unknown;
   }
   | { ok: false; code: VendorCallFailure; ledgerId?: string; httpStatus?: number };
 
+export interface SigningKey {
+  publicKey: string;
+  secretKey: Uint8Array;
+  /** Zero every copy of the decrypted key. */
+  wipe: () => void;
+}
+
+export interface SignedPayment {
+  header: string;
+  /** Our wallet's own signature on the transaction (base58). */
+  payerSignature: string;
+}
+
 export interface OutboundDeps {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
-  loadSigningWallet: (avatarId: string) => Promise<{ publicKey: string; secretKey: Uint8Array } | null>;
+  /** Public key of the avatar wallet. No decrypt. */
+  loadWalletPubkey: (avatarId: string) => Promise<string | null>;
+  /** Decrypt the avatar wallet for ONE signing step. */
+  loadSigningKey: (avatarId: string) => Promise<SigningKey | null>;
   signPayment: (input: {
     paymentRequired: PaymentRequired;
     requirement: PaymentRequirements;
     secretKey: Uint8Array;
     publicKey: string;
-  }) => Promise<string>;
+  }) => Promise<SignedPayment>;
+}
+
+/** True for a base58 string that decodes to exactly `bytes` bytes. */
+export function isBase58Of(value: unknown, bytes: number): value is string {
+  if (typeof value !== 'string' || value.length < 32 || value.length > 100) return false;
+  try {
+    return bs58.decode(value).length === bytes;
+  } catch {
+    return false;
+  }
 }
 
 /** Pick the Solana mainnet USDC `exact` entry. Never by index. */
@@ -104,14 +142,26 @@ export type QuoteCheck =
   | { ok: true; amount: bigint }
   | { ok: false; code: 'vendor_quote_invalid' | 'vendor_pay_to_changed' };
 
-export function checkQuote(requirement: PaymentRequirements, pin: VendorPin): QuoteCheck {
+export function checkQuote(requirement: PaymentRequirements, pin: VendorPin, payerWallet: string): QuoteCheck {
   if (!/^[1-9]\d{0,18}$/.test(String(requirement.amount))) return { ok: false, code: 'vendor_quote_invalid' };
   const amount = BigInt(requirement.amount);
   if (amount > pin.maxCallAtomic) return { ok: false, code: 'vendor_quote_invalid' };
   if (!pin.payTo.includes(requirement.payTo)) return { ok: false, code: 'vendor_pay_to_changed' };
   const feePayer = (requirement.extra as { feePayer?: unknown } | undefined)?.feePayer;
-  if (typeof feePayer !== 'string' || feePayer.length < 32) return { ok: false, code: 'vendor_quote_invalid' };
+  // The fee payer pays the network fee. It must never be our own wallet.
+  if (!isBase58Of(feePayer, 32) || feePayer === payerWallet) return { ok: false, code: 'vendor_quote_invalid' };
   return { ok: true, amount };
+}
+
+/** Our wallet's signature inside a signed x402 SVM payload (base58). */
+export function payerSignatureFromPayload(transactionBase64: string, payerPubkey: string): string {
+  const tx = VersionedTransaction.deserialize(Buffer.from(transactionBase64, 'base64'));
+  const keys = tx.message.staticAccountKeys.map((key) => key.toBase58());
+  const index = keys.indexOf(payerPubkey);
+  if (index < 0 || index >= tx.message.header.numRequiredSignatures) throw new Error('payer is not a signer of the payment');
+  const signature = tx.signatures[index];
+  if (!signature || signature.every((byte) => byte === 0)) throw new Error('payer signature missing');
+  return bs58.encode(signature);
 }
 
 /** Sign the seller's entry exactly as quoted. Nothing is sent here. */
@@ -121,7 +171,7 @@ export async function signThirdPartyExactPayment(input: {
   secretKey: Uint8Array;
   publicKey: string;
   rpcUrl: string;
-}): Promise<string> {
+}): Promise<SignedPayment> {
   const signer = await createKeyPairSignerFromBytes(input.secretKey);
   if (String(signer.address) !== input.publicKey) throw new Error('outbound x402 signer does not match the wallet');
   const client = new x402Client();
@@ -132,21 +182,42 @@ export async function signThirdPartyExactPayment(input: {
     accepts: [input.requirement],
     ...(input.paymentRequired.extensions ? { extensions: input.paymentRequired.extensions } : {}),
   } as PaymentRequired);
-  return encodePaymentSignatureHeader(payload);
+  const transaction = (payload.payload as { transaction?: unknown }).transaction;
+  if (typeof transaction !== 'string') throw new Error('payment payload has no transaction');
+  return {
+    header: encodePaymentSignatureHeader(payload),
+    payerSignature: payerSignatureFromPayload(transaction, input.publicKey),
+  };
 }
 
 function defaultDeps(): OutboundDeps {
   return {
     fetch: (url, init) => fetch(url, init),
-    loadSigningWallet: async (avatarId) => {
+    loadWalletPubkey: async (avatarId) => {
+      const row = await db.query.wallets.findFirst({
+        where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
+        columns: { publicKey: true },
+      });
+      return row?.publicKey ?? null;
+    },
+    loadSigningKey: async (avatarId) => {
       const row = await db.query.wallets.findFirst({
         where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
       });
       if (!row) return null;
       const keypair = await decryptWalletRow(row);
-      const publicKey = keypair.publicKey.toBase58();
-      if (publicKey !== row.publicKey) throw new Error('custodial wallet pubkey mismatch');
-      return { publicKey, secretKey: keypair.secretKey };
+      // web3.js returns a COPY from the secretKey getter; wipe the original too.
+      const original = (keypair as unknown as { _keypair?: { secretKey?: Uint8Array } })._keypair?.secretKey;
+      const secretKey = keypair.secretKey;
+      const wipe = () => {
+        secretKey.fill(0);
+        original?.fill(0);
+      };
+      if (keypair.publicKey.toBase58() !== row.publicKey) {
+        wipe();
+        throw new Error('custodial wallet pubkey mismatch');
+      }
+      return { publicKey: row.publicKey, secretKey, wipe };
     },
     signPayment: async ({ paymentRequired, requirement, secretKey, publicKey }) => {
       // Always mainnet: the vendor quotes Solana mainnet. The rail only picks
@@ -189,15 +260,18 @@ function readPaymentRequired(res: Response): PaymentRequired | null {
   }
 }
 
-function readSettlement(res: Response): { success: boolean; transaction: string | null } | null {
+/** Settlement evidence: success flag and a VALID Solana transaction signature, or nulls. */
+function readSettlement(res: Response): { success: boolean; transaction: string | null } {
   const header = res.headers.get('PAYMENT-RESPONSE');
-  if (!header) return null;
+  if (!header) return { success: false, transaction: null };
   try {
     const settle = decodePaymentResponseHeader(header);
-    const tx = typeof settle.transaction === 'string' && settle.transaction.length > 0 ? settle.transaction : null;
-    return { success: settle.success === true, transaction: tx };
+    return {
+      success: settle.success === true,
+      transaction: isBase58Of(settle.transaction, 64) ? settle.transaction : null,
+    };
   } catch {
-    return null;
+    return { success: false, transaction: null };
   }
 }
 
@@ -267,20 +341,76 @@ async function admit(input: VendorCallInput, requirement: PaymentRequirements, a
   });
 }
 
+/**
+ * Final status of a pending row. A failed write leaves the row 'pending',
+ * which still counts toward the cap; the reconcile script resolves it.
+ */
 async function finish(
   ledgerId: string,
   status: 'paid' | 'failed' | 'ambiguous',
   fields: { txSignature?: string | null; failureReason?: string | null },
 ): Promise<void> {
-  await db
-    .update(vendorSpendLedger)
-    .set({
-      status,
-      txSignature: fields.txSignature ?? null,
-      failureReason: fields.failureReason ?? null,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(vendorSpendLedger.id, ledgerId), inArray(vendorSpendLedger.status, ['pending'])));
+  try {
+    await db
+      .update(vendorSpendLedger)
+      .set({
+        status,
+        txSignature: fields.txSignature ?? null,
+        failureReason: fields.failureReason ?? null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(vendorSpendLedger.id, ledgerId), inArray(vendorSpendLedger.status, ['pending'])));
+  } catch (err) {
+    const code = (err as { code?: string; cause?: { code?: string } })?.code
+      ?? (err as { cause?: { code?: string } })?.cause?.code;
+    if (code === '23505' && fields.txSignature) {
+      // The seller repeated a transaction id that another row already holds.
+      // Do not trust it: keep the money counted as 'ambiguous' for reconcile.
+      try {
+        await db
+          .update(vendorSpendLedger)
+          .set({
+            status: 'ambiguous',
+            txSignature: null,
+            failureReason: `duplicate_tx_from_seller:${fields.txSignature}`,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(vendorSpendLedger.id, ledgerId), inArray(vendorSpendLedger.status, ['pending'])));
+        return;
+      } catch {
+        // fall through to the log below
+      }
+    }
+    console.error(`[outbound-x402] ledger ${ledgerId} final update failed; row stays pending:`, err instanceof Error ? err.message : 'unknown');
+  }
+}
+
+/** Read a JSON reply up to MAX_REPLY_BYTES; null when larger or not JSON. */
+async function readJsonCapped(res: Response): Promise<unknown> {
+  const declared = Number(res.headers.get('content-length') ?? '0');
+  if (declared > MAX_REPLY_BYTES) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  const reader = res.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_REPLY_BYTES) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -309,40 +439,58 @@ export async function callVendorWithAvatarWallet(
   await quoteRes.body?.cancel().catch(() => {});
   const requirement = paymentRequired ? selectSolanaUsdcRequirement(paymentRequired) : null;
   if (!paymentRequired || !requirement) return { ok: false, code: 'vendor_quote_invalid' };
-  const quote = checkQuote(requirement, input.pin);
-  if (!quote.ok) return { ok: false, code: quote.code };
 
-  // 2) Wallet, then admission (caps + ledger row) BEFORE signing.
-  let wallet: { publicKey: string; secretKey: Uint8Array } | null;
+  // 2) Wallet public key (no decrypt), quote checks, then admission (caps +
+  //    ledger row) BEFORE any key is decrypted.
+  let payerWallet: string | null;
   try {
-    wallet = await deps.loadSigningWallet(input.avatarId);
+    payerWallet = await deps.loadWalletPubkey(input.avatarId);
   } catch {
-    wallet = null;
+    payerWallet = null;
   }
-  if (!wallet) return { ok: false, code: 'wallet_missing' };
-  const admission = await admit(input, requirement, quote.amount, wallet.publicKey);
+  if (!payerWallet) return { ok: false, code: 'wallet_missing' };
+  const quote = checkQuote(requirement, input.pin, payerWallet);
+  if (!quote.ok) return { ok: false, code: quote.code };
+  const admission = await admit(input, requirement, quote.amount, payerWallet);
   if (!admission.ok) return admission;
 
-  // 3) Sign the quote as given. Nothing is on the wire if this fails.
-  let paymentHeader: string;
+  // 3) Decrypt for this step only, sign the quote as given, wipe. Nothing is
+  //    on the wire if this fails.
+  let signed: SignedPayment;
+  let key: SigningKey | null = null;
   try {
-    paymentHeader = await deps.signPayment({
+    key = await deps.loadSigningKey(input.avatarId);
+    if (!key || key.publicKey !== payerWallet) throw new Error('signing wallet changed');
+    signed = await deps.signPayment({
       paymentRequired,
       requirement,
-      secretKey: wallet.secretKey,
-      publicKey: wallet.publicKey,
+      secretKey: key.secretKey,
+      publicKey: key.publicKey,
     });
+    if (!isBase58Of(signed.payerSignature, 64)) throw new Error('payer signature missing');
   } catch {
     await finish(admission.ledgerId, 'failed', { failureReason: 'prepare_failed' });
     return { ok: false, code: 'payment_prepare_failed', ledgerId: admission.ledgerId };
   } finally {
-    wallet.secretKey.fill(0);
+    key?.wipe();
   }
 
-  // 4) Paid request. From here on the payment may have settled.
+  // 4) Store our signature BEFORE sending, so the transaction can be found on
+  //    chain later. If this write fails, nothing is sent.
+  try {
+    await db
+      .update(vendorSpendLedger)
+      .set({ payerSignature: signed.payerSignature, updatedAt: new Date() })
+      .where(and(eq(vendorSpendLedger.id, admission.ledgerId), eq(vendorSpendLedger.status, 'pending')));
+  } catch {
+    await finish(admission.ledgerId, 'failed', { failureReason: 'not_sent_ledger_write_failed' });
+    return { ok: false, code: 'payment_prepare_failed', ledgerId: admission.ledgerId };
+  }
+
+  // 5) Paid request. From here on the payment may have settled.
   let paidRes: Response;
   try {
-    paidRes = await postJson(deps.fetch, input.url, input.body, PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': paymentHeader });
+    paidRes = await postJson(deps.fetch, input.url, input.body, PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': signed.header });
   } catch {
     await finish(admission.ledgerId, 'ambiguous', { failureReason: 'no_response_after_payment' });
     console.warn(`[outbound-x402] ${input.pin.vendor} ${input.tool}: no response after payment; ledger ${admission.ledgerId} ambiguous`);
@@ -353,31 +501,30 @@ export async function callVendorWithAvatarWallet(
   if (paidRes.ok) {
     let json: unknown = null;
     try {
-      json = await paidRes.json();
+      json = await readJsonCapped(paidRes);
     } catch {
       json = null;
     }
-    await finish(admission.ledgerId, 'paid', {
-      txSignature: settlement?.transaction ?? null,
-      failureReason: settlement ? null : 'no_settlement_header',
+    const proven = settlement.success && settlement.transaction !== null;
+    await finish(admission.ledgerId, proven ? 'paid' : 'ambiguous', {
+      txSignature: settlement.transaction,
+      failureReason: proven ? null : 'no_valid_settlement_evidence',
     });
     return {
       ok: true,
       ledgerId: admission.ledgerId,
       usdcAtomic: quote.amount.toString(),
       usdCents: admission.usdCents,
-      txSignature: settlement?.transaction ?? null,
+      txSignature: proven ? settlement.transaction : null,
       responseJson: json,
     };
   }
 
+  // Any non-2xx after sending (a 402 included) does not prove that nothing
+  // settled: keep the reservation as 'ambiguous' for the reconcile script.
   await paidRes.body?.cancel().catch(() => {});
-  if (paidRes.status === 402 && !settlement?.transaction) {
-    await finish(admission.ledgerId, 'failed', { failureReason: 'vendor_refused_payment' });
-    return { ok: false, code: 'payment_refused', ledgerId: admission.ledgerId, httpStatus: 402 };
-  }
   await finish(admission.ledgerId, 'ambiguous', {
-    txSignature: settlement?.transaction ?? null,
+    txSignature: settlement.transaction,
     failureReason: `http_${paidRes.status}_after_payment`,
   });
   console.warn(`[outbound-x402] ${input.pin.vendor} ${input.tool}: HTTP ${paidRes.status} after payment; ledger ${admission.ledgerId} ambiguous`);

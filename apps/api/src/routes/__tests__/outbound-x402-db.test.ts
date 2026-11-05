@@ -7,6 +7,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { encodePaymentRequiredHeader } from '@x402/core/http';
+import { randomBytes } from 'node:crypto';
+import bs58 from 'bs58';
 import * as dbMod from '@clawville/database';
 import { SOLANA_MAINNET, callVendorWithAvatarWallet, type OutboundDeps } from '../../services/outbound-x402';
 import { writeSpendPolicy } from '../../services/spend-policy';
@@ -15,6 +17,8 @@ import { STUDIOS_MAX_CALL_ATOMIC, STUDIOS_PAY_TO } from '../../services/vendors/
 const { db, sql } = dbMod;
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const PIN = { vendor: 'studios' as const, payTo: STUDIOS_PAY_TO, maxCallAtomic: STUDIOS_MAX_CALL_ATOMIC };
+const PAYER = '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin';
+const sig64 = () => bs58.encode(randomBytes(64));
 
 function first<T>(rows: Iterable<T>): T {
   const row = Array.from(rows)[0];
@@ -59,6 +63,7 @@ describeIfSchema('outbound x402: executed DB contract', () => {
   let avatarId = '';
   let paidCalls = 0;
   let signCalls = 0;
+  let wipes = 0;
 
   function deps(paid: () => Response | Promise<Response>, quote: () => Response = () => quoteResponse()): Partial<OutboundDeps> {
     return {
@@ -68,10 +73,11 @@ describeIfSchema('outbound x402: executed DB contract', () => {
         paidCalls += 1;
         return paid();
       },
-      loadSigningWallet: async () => ({ publicKey: 'PayerWallet111111111111111111111111111111111', secretKey: new Uint8Array(64).fill(7) }),
+      loadWalletPubkey: async () => PAYER,
+      loadSigningKey: async () => ({ publicKey: PAYER, secretKey: new Uint8Array(64).fill(7), wipe: () => { wipes += 1; } }),
       signPayment: async () => {
         signCalls += 1;
-        return 'signed-payment-header';
+        return { header: 'signed-payment-header', payerSignature: sig64() };
       },
     };
   }
@@ -89,6 +95,9 @@ describeIfSchema('outbound x402: executed DB contract', () => {
   const statusOf = async (ledgerId: string) => first(await db.execute<{ status: string; tx_signature: string | null }>(
     sql`SELECT status, tx_signature FROM vendor_spend_ledger WHERE id = ${ledgerId}`,
   ));
+  const payerSigOf = async (ledgerId: string) => first(await db.execute<{ payer_signature: string | null }>(
+    sql`SELECT payer_signature FROM vendor_spend_ledger WHERE id = ${ledgerId}`,
+  )).payer_signature;
 
   beforeAll(async () => {
     userId = first(await db.execute<{ id: string }>(
@@ -106,6 +115,7 @@ describeIfSchema('outbound x402: executed DB contract', () => {
   beforeEach(async () => {
     paidCalls = 0;
     signCalls = 0;
+    wipes = 0;
     await db.execute(sql`DELETE FROM vendor_spend_ledger WHERE avatar_id = ${avatarId}`);
     await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
   });
@@ -127,11 +137,14 @@ describeIfSchema('outbound x402: executed DB contract', () => {
 
   it('pays once, records paid with the settlement tx, and refuses the same key again', async () => {
     await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 100, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
-    const result = await call('pay', deps(() => settledResponse(200, { data: [{ url: 'https://cdn.example/x.png' }] }, `${tag}tx1`)));
-    expect(result).toMatchObject({ ok: true, usdcAtomic: '5000', usdCents: 1, txSignature: `${tag}tx1` });
+    const tx1 = sig64();
+    const result = await call('pay', deps(() => settledResponse(200, { data: [{ url: 'https://cdn.example/x.png' }] }, tx1)));
+    expect(result).toMatchObject({ ok: true, usdcAtomic: '5000', usdCents: 1, txSignature: tx1 });
     if (!result.ok) throw new Error('expected ok');
-    expect(await statusOf(result.ledgerId)).toEqual({ status: 'paid', tx_signature: `${tag}tx1` });
-    const again = await call('pay', deps(() => settledResponse(200, {}, `${tag}tx2`)));
+    expect(await statusOf(result.ledgerId)).toEqual({ status: 'paid', tx_signature: tx1 });
+    expect(await payerSigOf(result.ledgerId)).not.toBeNull();
+    expect(wipes).toBe(1);
+    const again = await call('pay', deps(() => settledResponse(200, {}, sig64())));
     expect(again).toMatchObject({ ok: false, code: 'duplicate_request', ledgerId: result.ledgerId });
     expect(paidCalls).toBe(1);
   });
@@ -149,38 +162,66 @@ describeIfSchema('outbound x402: executed DB contract', () => {
     expect(result).toEqual({ ok: false, code: 'vendor_pay_to_changed' });
   });
 
-  it('counts paid and ambiguous rows toward the daily cap, but not failed rows', async () => {
+  it('counts a 402 after sending as ambiguous, and failed signing as failed (not counted)', async () => {
     // Daily cap 1 cent = 10000 atomic = two calls of 5000.
     await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 1, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
+    const failedSign = await call('s1', { ...deps(() => settledResponse(200, {}, sig64())), signPayment: async () => { throw new Error('rpc down'); } });
+    expect(failedSign).toMatchObject({ ok: false, code: 'payment_prepare_failed' });
+    if (failedSign.ok || !failedSign.ledgerId) throw new Error('expected ledger row');
+    expect((await statusOf(failedSign.ledgerId)).status).toBe('failed');
+    expect(wipes).toBe(1);
+
     const refused = await call('f1', deps(() => settledResponse(402, {}, null)));
-    expect(refused).toMatchObject({ ok: false, code: 'payment_refused' });
+    expect(refused).toMatchObject({ ok: false, code: 'payment_ambiguous', httpStatus: 402 });
     if (refused.ok || !refused.ledgerId) throw new Error('expected ledger row');
-    expect((await statusOf(refused.ledgerId)).status).toBe('failed');
+    expect((await statusOf(refused.ledgerId)).status).toBe('ambiguous');
 
-    const unclear = await call('u1', deps(() => settledResponse(500, {}, null)));
-    expect(unclear).toMatchObject({ ok: false, code: 'payment_ambiguous' });
-    if (unclear.ok || !unclear.ledgerId) throw new Error('expected ledger row');
-    expect((await statusOf(unclear.ledgerId)).status).toBe('ambiguous');
+    expect((await call('p1', deps(() => settledResponse(200, {}, sig64())))).ok).toBe(true);
+    expect(await call('p2', deps(() => settledResponse(200, {}, sig64())))).toEqual({ ok: false, code: 'over_daily_cap' });
+  });
 
-    expect((await call('p1', deps(() => settledResponse(200, {}, `${tag}tx3`)))).ok).toBe(true);
-    expect(await call('p2', deps(() => settledResponse(200, {}, `${tag}tx4`)))).toEqual({ ok: false, code: 'over_daily_cap' });
+  it('returns the image but records ambiguous when a 2xx has no valid settlement proof', async () => {
+    await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 100, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
+    for (const [key, tx] of [['n1', null], ['n2', 'not-a-signature']] as const) {
+      const result = await call(key, deps(() => settledResponse(200, { data: [{ url: 'https://cdn.example/y.png' }] }, tx)));
+      expect(result).toMatchObject({ ok: true, txSignature: null });
+      if (!result.ok) throw new Error('expected ok');
+      expect(await statusOf(result.ledgerId)).toEqual({ status: 'ambiguous', tx_signature: null });
+    }
+  });
+
+  it('refuses a quote that names our own wallet as fee payer, before any decrypt', async () => {
+    await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 100, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
+    const own = () => new Response('{}', {
+      status: 402,
+      headers: {
+        'PAYMENT-REQUIRED': encodePaymentRequiredHeader({
+          x402Version: 2,
+          resource: { url: 'https://mystudios.fun/api/v1/images/generations' },
+          accepts: [{ scheme: 'exact', network: SOLANA_MAINNET, amount: '5000', asset: USDC, payTo: STUDIOS_PAY_TO[0]!, maxTimeoutSeconds: 300, extra: { feePayer: PAYER } }],
+        } as never),
+      },
+    });
+    expect(await call('fee', deps(() => settledResponse(200, {}, sig64()), own))).toEqual({ ok: false, code: 'vendor_quote_invalid' });
+    expect(signCalls).toBe(0);
+    expect(wipes).toBe(0);
   });
 
   it('marks a timeout after payment as ambiguous, and a 402 that names a tx as ambiguous', async () => {
     await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 100, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
     const timeout = await call('t1', deps(() => { throw new Error('timeout'); }));
     expect(timeout).toMatchObject({ ok: false, code: 'payment_ambiguous' });
-    const settledThenRefused = await call('t2', deps(() => settledResponse(402, {}, `${tag}tx5`)));
+    const tx5 = sig64();
+    const settledThenRefused = await call('t2', deps(() => settledResponse(402, {}, tx5)));
     expect(settledThenRefused).toMatchObject({ ok: false, code: 'payment_ambiguous' });
     if (settledThenRefused.ok || !settledThenRefused.ledgerId) throw new Error('expected ledger row');
-    expect(await statusOf(settledThenRefused.ledgerId)).toEqual({ status: 'ambiguous', tx_signature: `${tag}tx5` });
+    expect(await statusOf(settledThenRefused.ledgerId)).toEqual({ status: 'ambiguous', tx_signature: tx5 });
   });
 
   it('admits only what the daily cap allows under concurrent calls', async () => {
     // Daily cap 1 cent = exactly two calls of 5000 atomic.
     await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 1, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
-    let n = 0;
-    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => call(`c${i}`, deps(() => settledResponse(200, {}, `${tag}c${n++}`)))));
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => call(`c${i}`, deps(() => settledResponse(200, {}, sig64())))));
     expect(results.filter((r) => r.ok)).toHaveLength(2);
     expect(results.filter((r) => !r.ok && r.code === 'over_daily_cap')).toHaveLength(4);
     const total = first(await db.execute<{ total: string }>(

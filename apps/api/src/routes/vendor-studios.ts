@@ -14,7 +14,9 @@
  */
 
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
+import { createRateLimiter } from '../middleware/rate-limit';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
@@ -35,6 +37,15 @@ import {
 export const vendorStudiosRoutes = new Hono<ActivityAuthContext>();
 vendorStudiosRoutes.use('*', sessionMiddleware, noStorePrivate);
 
+// Each call costs an unpaid request to Studios and a ledger transaction, so a
+// looping agent is slowed down per avatar before any of that happens.
+const studiosRateLimiter = createRateLimiter({ maxPerWindow: 6, windowMs: 60_000 });
+
+/** Test-only: reset the per-avatar limiter between cases. */
+export function resetStudiosRateLimit(): void {
+  studiosRateLimiter.reset();
+}
+
 const idempotencyKeySchema = z.string().trim().regex(/^[A-Za-z0-9._:-]{8,64}$/);
 const bodySchema = z.object({
   prompt: z.string().trim().min(1).max(STUDIOS_PROMPT_MAX),
@@ -53,11 +64,18 @@ const FAILURE: Record<VendorCallFailure, { status: 400 | 402 | 403 | 409 | 502; 
   over_daily_cap: { status: 402, message: 'This call would pass the daily cap. Nothing was paid.' },
   wallet_missing: { status: 403, message: 'This avatar has no wallet. Nothing was paid.' },
   payment_prepare_failed: { status: 502, message: 'The payment could not be signed. Nothing was paid. Try again later.' },
-  payment_refused: { status: 402, message: 'Studios refused the payment. Nothing was paid. The wallet may not hold enough USDC.' },
-  payment_ambiguous: { status: 502, message: 'The payment may have gone through, but no image came back. Do not retry; it counts toward the daily cap until support checks it.' },
+  payment_ambiguous: { status: 502, message: 'Studios did not confirm the result. The payment may have gone through (for example, the wallet may not hold enough USDC, or the reply was lost). Do not retry; it counts toward the daily cap until it is checked on chain.' },
 };
 
-vendorStudiosRoutes.post('/images', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+vendorStudiosRoutes.post(
+  '/images',
+  bodyLimit({
+    maxSize: 16 * 1024,
+    onError: (c) => c.json({ error: 'payload_too_large', code: 'payload_too_large' }, 413),
+  }),
+  requireAuthOrAgentSession,
+  requireNonGuestIdentity,
+  async (c) => {
   const identity = c.get('identity');
   if (identity.kind === 'agent' && identity.ledgerCapable !== true) {
     return c.json({ error: 'agent_session_not_ledger_authorized', code: 'agent_session_not_ledger_authorized' }, 403);
@@ -73,6 +91,10 @@ vendorStudiosRoutes.post('/images', requireAuthOrAgentSession, requireNonGuestId
   const body = bodySchema.safeParse(await c.req.json().catch(() => null));
   if (!body.success) {
     return c.json({ error: 'invalid_request', code: 'invalid_request', issues: body.error.issues }, 400);
+  }
+
+  if (!studiosRateLimiter.check(identity.avatarId)) {
+    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many image calls. Wait one minute.' }, 429);
   }
 
   const request = buildStudiosImageRequest(body.data);
@@ -101,4 +123,5 @@ vendorStudiosRoutes.post('/images', requireAuthOrAgentSession, requireNonGuestId
     imageBase64: image?.imageBase64 ?? null,
     note: image ? null : 'Studios was paid but sent no readable image. Contact support with the ledgerId.',
   });
-});
+  },
+);

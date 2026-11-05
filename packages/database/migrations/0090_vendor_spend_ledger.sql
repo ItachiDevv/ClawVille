@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS "vendor_spend_ledger" (
   "payer_wallet" varchar(64) NOT NULL,
   "network" varchar(100) NOT NULL,
   "idempotency_key" varchar(64) NOT NULL,
+  -- Our wallet's own signature on the payment transaction, stored BEFORE the
+  -- paid request is sent, so a reconcile can find the transaction on chain.
+  "payer_signature" text,
   "tx_signature" text,
   "failure_reason" text,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,

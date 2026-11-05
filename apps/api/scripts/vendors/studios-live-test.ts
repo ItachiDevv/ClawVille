@@ -15,6 +15,7 @@
  * Never prints a key or vendor text.
  */
 
+import postgres from 'postgres';
 import { db, sql } from '@clawville/database';
 import { callVendorWithAvatarWallet } from '../../src/services/outbound-x402';
 import { writeSpendPolicy } from '../../src/services/spend-policy';
@@ -56,10 +57,23 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  // In-code budget: every non-failed Studios row of this avatar counts.
+  // One dedicated connection holds a session advisory lock until the call ends.
+  const lockConn = postgres(process.env.DATABASE_URL!, { max: 1, prepare: false });
+  try {
+    await lockConn`SELECT pg_advisory_lock(hashtextextended('studios-live-test-budget', 0))`;
+    return await runLocked(avatarId, owner.user_id);
+  } finally {
+    await lockConn`SELECT pg_advisory_unlock(hashtextextended('studios-live-test-budget', 0))`.catch(() => {});
+    await lockConn.end();
+  }
+}
+
+async function runLocked(avatarId: string, ownerUserId: string): Promise<number> {
+  // In-code budget: every live-test row of ANY avatar counts, failed rows
+  // too (a failed row may still hide money that moved).
   const spent = BigInt(Array.from(await db.execute<{ total: string }>(sql`
     SELECT COALESCE(SUM(usdc_atomic), 0)::text AS total FROM vendor_spend_ledger
-    WHERE avatar_id = ${avatarId} AND vendor = 'studios' AND status <> 'failed'`))[0]?.total ?? '0');
+    WHERE vendor = 'studios' AND idempotency_key LIKE 'live-test-%'`))[0]?.total ?? '0');
   const worstCase = STUDIOS_MAX_CALL_ATOMIC < PER_CALL_ATOMIC_LIMIT ? STUDIOS_MAX_CALL_ATOMIC : PER_CALL_ATOMIC_LIMIT;
   if (spent + worstCase > TEST_BUDGET_ATOMIC) {
     console.error(`refused: test budget used (${spent} of ${TEST_BUDGET_ATOMIC} atomic)`);
@@ -67,7 +81,7 @@ async function main(): Promise<number> {
   }
 
   if (process.argv.includes('--seed-test-rules')) {
-    await writeSpendPolicy(avatarId, owner.user_id, {
+    await writeSpendPolicy(avatarId, ownerUserId, {
       dailyCapUsdCents: 100,
       perCallCapUsdCents: Number(PER_CALL_ATOMIC_LIMIT / 10_000n),
       allowedVendors: ['studios'],
@@ -75,6 +89,20 @@ async function main(): Promise<number> {
     console.log('seeded test spend rules: daily 100 cents, per call 1 cent, studios');
   }
 
+  const seeded = process.argv.includes('--seed-test-rules');
+  try {
+    return await callOnce(avatarId);
+  } finally {
+    if (seeded) {
+      // Leave no spending rule behind: an agent bound to this avatar must not
+      // keep spending after the test.
+      await writeSpendPolicy(avatarId, ownerUserId, { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] });
+      console.log('reset test spend rules to unset');
+    }
+  }
+}
+
+async function callOnce(avatarId: string): Promise<number> {
   const request = buildStudiosImageRequest({ prompt: 'A small green cartoon crab waving, flat colors, white background' });
   const result = await callVendorWithAvatarWallet({
     avatarId,
