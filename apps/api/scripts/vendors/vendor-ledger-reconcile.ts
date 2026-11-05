@@ -5,7 +5,11 @@
  * --apply.
  *
  * Usage (inside the api container, from /app/apps/api):
- *   bun scripts/vendors/vendor-ledger-reconcile.ts [--older-than-minutes 15] [--apply]
+ *   bun scripts/vendors/vendor-ledger-reconcile.ts [--older-than-minutes 15] [--include-exhausted] [--apply]
+ *
+ * --include-exhausted also checks rows that the automatic pass dropped after
+ * MAX_RECONCILE_ATTEMPTS, or that are still backing off (for example after an
+ * RPC outage).
  *
  * Prints ids, statuses and transaction signatures only.
  */
@@ -24,7 +28,8 @@ async function main(): Promise<number> {
     return 2;
   }
   const apply = process.argv.includes('--apply');
-  const decisions = await reconcileVendorLedger({ apply, olderThanMinutes: olderThan, limit: 100 });
+  const includeExhausted = process.argv.includes('--include-exhausted');
+  const decisions = await reconcileVendorLedger({ apply, olderThanMinutes: olderThan, limit: 100, includeExhausted });
   console.log(`rows checked: ${decisions.length}${apply ? ' (apply)' : ' (dry run)'}`);
   for (const d of decisions) console.log(JSON.stringify(d));
   return 0;

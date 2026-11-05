@@ -1,6 +1,22 @@
 import { describe, expect, test } from 'bun:test';
 import { ApiError } from '@/lib/api';
-import { studiosErrorText } from './studios-card';
+import { keepsRequestKey, studiosErrorText } from './studios-card';
+
+describe('keepsRequestKey', () => {
+  test('keeps the request key after an uncertain outcome, so a retry cannot pay twice', () => {
+    for (const code of ['duplicate_request', 'rate_limited', 'payment_ambiguous', 'image_missing', 'invalid_request']) {
+      expect(keepsRequestKey(new ApiError(code, 409, code))).toBe(true);
+    }
+    expect(keepsRequestKey(new Error('network'))).toBe(true);
+    expect(keepsRequestKey(new ApiError('Bad gateway', 502))).toBe(true);
+  });
+
+  test('drops the key only after a final refusal that charged nothing', () => {
+    for (const code of ['spend_rules_not_set', 'over_daily_cap', 'studios_account_refused', 'daily_limit', 'vendor_refused']) {
+      expect(keepsRequestKey(new ApiError(code, 403, code))).toBe(false);
+    }
+  });
+});
 
 // The Studios card shows plain text for every refusal; never a raw API code.
 

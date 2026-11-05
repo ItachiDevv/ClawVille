@@ -10,7 +10,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
 import * as dbMod from '@clawville/database';
-import { ACCOUNT_AGENT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR, generateStudiosImage, listMedia } from '../../services/studios-images';
+import { ACCOUNT_AGENT_IMAGE_DAILY_MAX, ACCOUNT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR, generateStudiosImage, listMedia } from '../../services/studios-images';
 import { deleteVendorKey, loadVendorKey, readVendorKeyStatus, saveVendorKey } from '../../services/vendor-credentials';
 import { mediaRoutes } from '../media';
 
@@ -73,6 +73,11 @@ describeIfSchema('studios images: executed DB contract', () => {
     await db.execute(sql`DELETE FROM avatars WHERE id = ${avatarId}`).catch(() => {});
     await db.execute(sql`DELETE FROM users WHERE id = ${userId}`).catch(() => {});
   });
+
+  /** Move this avatar's request rows to an earlier UTC day (the daily limits start fresh). */
+  async function backdateRequests() {
+    await db.execute(sql`UPDATE vendor_call_requests SET created_at = now() - interval '2 days' WHERE avatar_id = ${avatarId}`);
+  }
 
   function fakeStudios(status: number, body: unknown) {
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -140,6 +145,7 @@ describeIfSchema('studios images: executed DB contract', () => {
   it('keeps only the newest images per avatar', async () => {
     fakeStudios(200, { data: [{ b64_json: PNG.toString('base64') }] });
     for (let i = 0; i < MEDIA_KEEP_PER_AVATAR + 3; i += 1) {
+      if (i % 20 === 0) await backdateRequests();
       const r = await generateStudiosImage({ avatarId, actor: 'human', prompt: `n${i}`, idempotencyKey: `${tag}-k${i}` });
       expect(r.ok).toBe(true);
     }
@@ -150,10 +156,8 @@ describeIfSchema('studios images: executed DB contract', () => {
 
   it('limits an agent on the human account per UTC day, and keeps counting after the call', async () => {
     fakeStudios(200, { data: [{ b64_json: PNG.toString('base64') }] });
-    const used = Number(first(await db.execute<{ n: number | string }>(
-      sql`SELECT COUNT(*)::int AS n FROM vendor_call_requests WHERE avatar_id = ${avatarId} AND actor = 'agent' AND mode = 'account'`,
-    )).n);
-    for (let i = used; i < ACCOUNT_AGENT_IMAGE_DAILY_MAX; i += 1) {
+    await backdateRequests();
+    for (let i = 0; i < ACCOUNT_AGENT_IMAGE_DAILY_MAX; i += 1) {
       expect((await generateStudiosImage({ avatarId, actor: 'agent', prompt: `g${i}`, idempotencyKey: `${tag}-g${i}` })).ok).toBe(true);
     }
     seen = [];
@@ -161,6 +165,18 @@ describeIfSchema('studios images: executed DB contract', () => {
     expect(seen).toHaveLength(0);
     // The human is not limited by the agent's count.
     expect((await generateStudiosImage({ avatarId, actor: 'human', prompt: 'mine', idempotencyKey: `${tag}-hmine` })).ok).toBe(true);
+  });
+
+  it('limits all account-mode images per avatar per UTC day, the human included', async () => {
+    fakeStudios(200, { data: [{ b64_json: PNG.toString('base64') }] });
+    await backdateRequests();
+    await db.execute(sql`INSERT INTO vendor_call_requests (avatar_id, vendor, actor, surface, mode, status, idempotency_key)
+      SELECT ${avatarId}, 'studios', 'human', 'api', 'account', 'done', ${`${tag}-fill-`} || g::text
+      FROM generate_series(1, ${ACCOUNT_IMAGE_DAILY_MAX}) AS g`);
+    seen = [];
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-hover` })).toMatchObject({ ok: false, code: 'daily_limit' });
+    expect(seen).toHaveLength(0);
+    await backdateRequests();
   });
 
   it('a saved key that cannot be read is an error, never a switch to the wallet', async () => {

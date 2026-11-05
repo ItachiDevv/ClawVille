@@ -8,7 +8,7 @@
  *   GET    /api/vendors/studios/images  the avatar's newest images.
  *   GET    /api/vendors/studios/key     whether a key is saved (last 4 only).
  *   POST   /api/vendors/studios/key/challenge  a message for the human's
- *          linked wallet to sign (`{ action: 'save', last4 }` or
+ *          linked wallet to sign (`{ action: 'save', last4, sha256 }` or
  *          `{ action: 'remove' }`). Human only.
  *   PUT    /api/vendors/studios/key     save the human's own key, with the
  *          wallet `proof`. Human only.
@@ -42,7 +42,7 @@ import {
   type HumanGateCopy,
 } from '../middleware/require-human-session';
 import { noStorePrivate } from '../middleware/no-store';
-import { issueVendorKeyChallenge, verifyVendorKeyProof } from '../services/spend-policy-proof';
+import { issueVendorKeyChallenge, vendorKeyRef, verifyVendorKeyProof } from '../services/spend-policy-proof';
 import { generateStudiosImage, listMedia } from '../services/studios-images';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
 import { STUDIOS_IMAGE_MODELS, STUDIOS_PROMPT_MAX } from '../services/vendors/studios';
@@ -137,7 +137,7 @@ const removeBodySchema = z.object({
   proof: z.object({ nonce: z.string().min(1).max(128), signature: z.string().min(1).max(128) }).strict().optional(),
 }).strict();
 const challengeSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('save'), last4: z.string().regex(/^[A-Za-z0-9_-]{4}$/) }).strict(),
+  z.object({ action: z.literal('save'), last4: z.string().regex(/^[A-Za-z0-9_-]{4}$/), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
   z.object({ action: z.literal('remove') }).strict(),
 ]);
 
@@ -172,8 +172,8 @@ vendorStudiosRoutes.post('/key/challenge', smallBody, refuseAgentHeader(KEY_GATE
   await activeAvatarId(user.id);
   const wallet = await linkedWallet(user.id);
   if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
-  const last4 = body.data.action === 'save' ? body.data.last4 : null;
-  return c.json({ ...issueVendorKeyChallenge(user.id, 'studios', body.data.action, last4), walletPubkey: wallet });
+  const key = body.data.action === 'save' ? { last4: body.data.last4, sha256: body.data.sha256 } : null;
+  return c.json({ ...issueVendorKeyChallenge(user.id, 'studios', body.data.action, key), walletPubkey: wallet });
 });
 
 vendorStudiosRoutes.put('/key', smallBody, refuseAgentHeader(KEY_GATE), requireAuth, requireHumanSessionOrigin(KEY_GATE), requireNonGuestUser, async (c) => {
@@ -190,7 +190,7 @@ vendorStudiosRoutes.put('/key', smallBody, refuseAgentHeader(KEY_GATE), requireA
     userId: user.id,
     vendor: 'studios',
     action: 'save',
-    last4: body.data.apiKey.slice(-4),
+    key: vendorKeyRef(body.data.apiKey),
     nonce: body.data.proof.nonce,
     signature: body.data.proof.signature,
     walletPubkey: wallet,
@@ -211,7 +211,7 @@ vendorStudiosRoutes.delete('/key', smallBody, refuseAgentHeader(KEY_GATE), requi
     userId: user.id,
     vendor: 'studios',
     action: 'remove',
-    last4: null,
+    key: null,
     nonce: body.data.proof.nonce,
     signature: body.data.proof.signature,
     walletPubkey: wallet,

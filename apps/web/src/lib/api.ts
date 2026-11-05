@@ -665,7 +665,7 @@ export const api = {
   studiosKeyStatus: () =>
     request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key'),
   /** A message for the linked wallet to sign before a key save or remove. */
-  studiosKeyChallenge: (body: { action: 'save'; last4: string } | { action: 'remove' }) =>
+  studiosKeyChallenge: (body: { action: 'save'; last4: string; sha256: string } | { action: 'remove' }) =>
     request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>('/api/vendors/studios/key/challenge', {
       method: 'POST',
       body: JSON.stringify(body),

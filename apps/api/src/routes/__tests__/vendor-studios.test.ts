@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import bs58 from 'bs58';
+import { createHash } from 'crypto';
 import nacl from 'tweetnacl';
 import * as realDatabase from '@clawville/database';
 import * as realAgentAuth from '../../middleware/require-auth-or-agent';
@@ -109,8 +110,14 @@ function putKey(opts: { cookie?: string; agent?: string; apiKey: string; proof?:
   return keyRequest('PUT', '/key', { ...opts, body: { apiKey: opts.apiKey, ...(opts.proof ? { proof: opts.proof } : {}) } });
 }
 
+const KEY_A = 'chk_abcdefghijklmnop1234';
+/** The save challenge body for a key, as the browser builds it. */
+function saveRef(key: string) {
+  return { action: 'save' as const, last4: key.slice(-4), sha256: createHash('sha256').update(key).digest('hex') };
+}
+
 /** Ask a challenge and sign it with `signer` (the linked wallet by default). */
-async function signedProof(body: { action: 'save'; last4: string } | { action: 'remove' }, signer = humanWallet): Promise<Proof> {
+async function signedProof(body: ReturnType<typeof saveRef> | { action: 'remove' }, signer = humanWallet): Promise<Proof> {
   const res = await keyRequest('POST', '/key/challenge', { cookie: 'pw', body });
   expect(res.status).toBe(200);
   const challenge = await res.json() as { nonce: string; messageToSign: string; walletPubkey: string };
@@ -214,20 +221,23 @@ describe('Studios key routes (human only, linked wallet signs)', () => {
   });
 
   it('refuses a proof from another wallet, for another key, for another action, or used twice', async () => {
-    const otherSigner = await signedProof({ action: 'save', last4: '1234' }, otherWallet);
+    const otherSigner = await signedProof(saveRef(KEY_A), otherWallet);
     expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: otherSigner })).status).toBe(401);
-    const otherKey = await signedProof({ action: 'save', last4: '9999' });
+    const otherKey = await signedProof(saveRef('chk_zzzzzzzzzzzzzzzz9999'));
     expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: otherKey })).status).toBe(401);
     const removeProof = await signedProof({ action: 'remove' });
     expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: removeProof })).status).toBe(401);
-    const good = await signedProof({ action: 'save', last4: '1234' });
+    // Same last 4 characters, another key: the signed digest does not match.
+    const sameSuffix = await signedProof(saveRef(KEY_A));
+    expect((await putKey({ cookie: 'pw', apiKey: 'chk_ZZZZZZZZZZZZZZZZ1234', proof: sameSuffix })).status).toBe(401);
+    const good = await signedProof(saveRef(KEY_A));
     expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: good })).status).toBe(200);
     expect((await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof: good })).status).toBe(401);
     expect(savedKeys).toHaveLength(1);
   });
 
   it('saves a well-formed key for the human active avatar and returns only the last 4', async () => {
-    const proof = await signedProof({ action: 'save', last4: '1234' });
+    const proof = await signedProof(saveRef(KEY_A));
     const res = await putKey({ cookie: 'pw', apiKey: 'chk_abcdefghijklmnop1234', proof });
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -240,7 +250,7 @@ describe('Studios key routes (human only, linked wallet signs)', () => {
     let res = await keyRequest('DELETE', '/key', { cookie: 'pw', body: {} });
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'studios_key_needs_wallet_proof' });
-    const saveProof = await signedProof({ action: 'save', last4: '1234' });
+    const saveProof = await signedProof(saveRef(KEY_A));
     expect((await keyRequest('DELETE', '/key', { cookie: 'pw', body: { proof: saveProof } })).status).toBe(401);
     const proof = await signedProof({ action: 'remove' });
     res = await keyRequest('DELETE', '/key', { cookie: 'pw', body: { proof } });

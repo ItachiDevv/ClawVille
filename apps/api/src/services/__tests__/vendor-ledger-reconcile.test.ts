@@ -4,7 +4,7 @@ import { decideRow, type ChainReader } from '../vendor-ledger-reconcile';
 const CREATED = '2026-11-05T06:00:00Z';
 const createdSec = Date.parse(CREATED) / 1000;
 const row = (over: Partial<Parameters<typeof decideRow>[1]> = {}) => ({
-  id: 'r1', status: 'ambiguous' as const, payer_wallet: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin', payer_signature: 'OURSIG', created_at: CREATED, reconcile_attempts: 0, ...over,
+  id: 'r1', status: 'ambiguous' as const, payer_wallet: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin', payer_signature: 'OURSIG', created_at: CREATED, signed_at: '2026-11-05T06:00:02Z', reconcile_attempts: 0, ...over,
 });
 
 function chain(pages: Array<Array<{ signature: string; blockTime: number | null }>>, txs: Record<string, { signatures: string[]; failed: boolean }>): ChainReader & { reads: string[] } {
@@ -52,6 +52,19 @@ describe('decideRow', () => {
     const shortHistory = [[{ signature: 'T1', blockTime: createdSec + 5 }], []];
     expect(await decideRow(chain(shortHistory, { T1: { signatures: ['FEE', 'OTHER'], failed: false } }), row()))
       .toEqual({ id: 'r1', to: 'unchanged', reason: 'history_incomplete' });
+  });
+
+  it('a payment that lands late after a slow signing is still found (the window starts at signed_at)', async () => {
+    const late = [[
+      { signature: 'T1', blockTime: createdSec + 900 },
+      { signature: 'OLD', blockTime: createdSec - 600 },
+    ]];
+    const signedLate = row({ signed_at: new Date((createdSec + 860) * 1000).toISOString() });
+    expect(await decideRow(chain(late, { T1: { signatures: ['FEE', 'OURSIG'], failed: false } }), signedLate))
+      .toEqual({ id: 'r1', to: 'paid', tx: 'T1' });
+    // A row from before migration 0091 (no signed_at) reads every newer transaction.
+    expect(await decideRow(chain(late, { T1: { signatures: ['FEE', 'OURSIG'], failed: false } }), row({ signed_at: null })))
+      .toEqual({ id: 'r1', to: 'paid', tx: 'T1' });
   });
 
   it('reads only transactions inside the landing window', async () => {

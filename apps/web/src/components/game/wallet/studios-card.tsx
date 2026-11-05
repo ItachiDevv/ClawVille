@@ -61,7 +61,7 @@ export function studiosErrorText(error: unknown): string {
       case 'vendor_pay_to_changed':
         return 'Studios is not available now, or its price changed. Nothing was paid.';
       case 'duplicate_request':
-        return 'This image request was already sent once and did not finish. Change the text to make a new image.';
+        return 'This image is still being made, or its request did not finish. Wait a minute and check your recent images; press again to check. Change the text to make a new image.';
       case 'image_missing':
         return 'Studios sent no readable image.';
       case 'payload_too_large':
@@ -81,12 +81,29 @@ function newIdempotencyKey(): string {
   return `web-${random}`.slice(0, 64);
 }
 
-/** True when the server answered with a refusal code (the request key is spent). */
-function serverAnswered(error: unknown): boolean {
-  return error instanceof ApiError && typeof error.code === 'string';
+/**
+ * Refusals where the server recorded the request as finished and nothing was
+ * charged: the next click may use a new request key. After any other outcome
+ * (a lost reply, duplicate_request, rate_limited, payment_ambiguous,
+ * image_missing) the card keeps the key, so a retry of the same text returns
+ * the first result instead of paying again.
+ */
+const FINAL_NOTHING_CHARGED = new Set([
+  'spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'vendor_unreachable',
+  'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed', 'wallet_missing', 'payment_prepare_failed',
+  'studios_key_invalid', 'studios_account_refused', 'daily_limit',
+]);
+
+export function keepsRequestKey(error: unknown): boolean {
+  return !(error instanceof ApiError && typeof error.code === 'string' && FINAL_NOTHING_CHARGED.has(error.code));
 }
 
-async function signKeyChange(body: { action: 'save'; last4: string } | { action: 'remove' }) {
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function signKeyChange(body: { action: 'save'; last4: string; sha256: string } | { action: 'remove' }) {
   const challenge = await api.studiosKeyChallenge(body);
   const signed = await signMessageWithSolanaWallet(challenge.messageToSign, challenge.walletPubkey);
   return { nonce: challenge.nonce, signature: signed.signatureBase58 };
@@ -126,9 +143,8 @@ export function StudiosCard() {
     },
     onError: (err, request) => {
       setError(err);
-      if (err instanceof ApiError && err.code === 'payment_ambiguous') setBlockedPrompt(request.prompt);
-      // A refusal spends the key; a lost reply keeps it for an exact retry.
-      if (serverAnswered(err)) setPending(null);
+      if (err instanceof ApiError && (err.code === 'payment_ambiguous' || err.code === 'image_missing')) setBlockedPrompt(request.prompt);
+      if (!keepsRequestKey(err)) setPending(null);
       queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
     },
   });
@@ -136,7 +152,7 @@ export function StudiosCard() {
     mutationFn: async (key: string) => {
       // Check the shape before the wallet is asked to sign anything.
       if (!/^chk_[A-Za-z0-9_-]{16,128}$/.test(key)) throw new ApiError('invalid_studios_key', 400, 'invalid_studios_key');
-      return api.saveStudiosKey(key, await signKeyChange({ action: 'save', last4: key.slice(-4) }));
+      return api.saveStudiosKey(key, await signKeyChange({ action: 'save', last4: key.slice(-4), sha256: await sha256Hex(key) }));
     },
     onMutate: () => setError(null),
     onSuccess: (status) => {

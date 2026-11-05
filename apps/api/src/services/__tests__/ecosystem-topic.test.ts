@@ -73,8 +73,8 @@ describe('protocol `ecosystem` page', () => {
 
   test('v109: the limits the manual states equal the code constants', async () => {
     const page = buildEcosystemTopic(API_BASE);
-    const { ACCOUNT_AGENT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR } = await import('../studios-images');
-    expect(page).toContain(`An agent makes at most ${ACCOUNT_AGENT_IMAGE_DAILY_MAX} images per UTC day on the human's account`);
+    const { ACCOUNT_AGENT_IMAGE_DAILY_MAX, ACCOUNT_IMAGE_DAILY_MAX, HOSTED_IMAGE_DAILY_MAX, MEDIA_KEEP_PER_AVATAR } = await import('../studios-images');
+    expect(page).toContain(`An agent makes at most ${ACCOUNT_AGENT_IMAGE_DAILY_MAX} images per UTC day on the human's account (any surface), and the avatar at most ${ACCOUNT_IMAGE_DAILY_MAX} in total.`);
     expect(page).toContain(`at most ${HOSTED_IMAGE_DAILY_MAX} per UTC day`);
     expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
   });

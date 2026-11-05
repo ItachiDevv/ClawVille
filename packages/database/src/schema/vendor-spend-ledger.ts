@@ -30,6 +30,8 @@ export const vendorSpendLedger = pgTable('vendor_spend_ledger', {
   failureReason: text('failure_reason'),
   reconcileAttempts: integer('reconcile_attempts').notNull().default(0),
   reconcileNextAt: timestamp('reconcile_next_at', { withTimezone: true }),
+  /** Set with payer_signature, before the paid request is sent. */
+  signedAt: timestamp('signed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({

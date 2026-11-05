@@ -12,7 +12,7 @@
  * `wallet-link-challenge.ts` (single API node). TTL 120 s.
  */
 
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import type { SpendPolicyValues } from '@clawville/shared';
@@ -93,23 +93,36 @@ export function verifySpendProof(input: {
  * Saving or removing a vendor API key (MCP hub step 2 phase 2b) uses the same
  * proof: the key decides whose account pays, and a magic-link session alone
  * does not prove a human. The message names the account, the vendor, the
- * action and the last 4 characters of the key; never the key itself.
+ * action, the last 4 characters of the key and the SHA-256 of the whole key
+ * (so a signature for one key never saves another); never the key itself.
  */
 export type VendorKeyAction = 'save' | 'remove';
+export interface VendorKeyRef {
+  last4: string;
+  /** Lowercase hex SHA-256 of the whole key. */
+  sha256: string;
+}
 
-export function buildVendorKeyMessage(userId: string, vendor: string, action: VendorKeyAction, last4: string | null, nonce: string): string {
+/** The reference a save proof names; the browser computes the same value. */
+export function vendorKeyRef(key: string): VendorKeyRef {
+  return { last4: key.slice(-4), sha256: createHash('sha256').update(key, 'utf8').digest('hex') };
+}
+
+export function buildVendorKeyMessage(userId: string, vendor: string, action: VendorKeyAction, key: VendorKeyRef | null, nonce: string): string {
   return [
     'ClawVille paid tool key',
     `account: ${userId}`,
     `tool: ${vendor}`,
-    action === 'save' ? `action: use my own ${vendor} key ending ${last4 ?? ''}` : `action: remove my ${vendor} key`,
+    action === 'save'
+      ? `action: use my own ${vendor} key ending ${key?.last4 ?? ''}\nkey sha256: ${key?.sha256 ?? ''}`
+      : `action: remove my ${vendor} key`,
     `nonce: ${nonce}`,
   ].join('\n');
 }
 
-export function issueVendorKeyChallenge(userId: string, vendor: string, action: VendorKeyAction, last4: string | null): SpendProofChallenge {
+export function issueVendorKeyChallenge(userId: string, vendor: string, action: VendorKeyAction, key: VendorKeyRef | null): SpendProofChallenge {
   const nonce = bs58.encode(randomBytes(32));
-  const message = buildVendorKeyMessage(userId, vendor, action, last4, nonce);
+  const message = buildVendorKeyMessage(userId, vendor, action, key, nonce);
   const expiresAtMs = Date.now() + NONCE_TTL_MS;
   nonces.set(nonce, { userId, message, expiresAt: expiresAtMs });
   return { nonce, expiresAt: new Date(expiresAtMs).toISOString(), messageToSign: message };
@@ -120,13 +133,13 @@ export function verifyVendorKeyProof(input: {
   userId: string;
   vendor: string;
   action: VendorKeyAction;
-  last4: string | null;
+  key: VendorKeyRef | null;
   nonce: string;
   signature: string;
   walletPubkey: string;
 }): SpendProofResult {
   return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
-    buildVendorKeyMessage(input.userId, input.vendor, input.action, input.last4, input.nonce));
+    buildVendorKeyMessage(input.userId, input.vendor, input.action, input.key, input.nonce));
 }
 
 function verifyMessage(userId: string, nonce: string, signature: string, walletPubkey: string, expected: string): SpendProofResult {

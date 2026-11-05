@@ -14,8 +14,11 @@
  *     so a later landing is impossible);
  *   - anything unclear (RPC error, a transaction the RPC cannot return, an
  *     empty or short history, scan limit) -> unchanged.
- * Only transactions inside the landing window are fetched, so a busy wallet
- * costs a few signature pages, not hundreds of transaction reads. A row left
+ * Only transactions inside the landing window (from created_at to signed_at +
+ * 420 s; the transaction's blockhash is fetched before signed_at and expires
+ * within about 90 s) are fetched, so a busy wallet costs a few signature
+ * pages, not hundreds of transaction reads. A row without signed_at (written
+ * before migration 0091) reads every newer transaction. A row left
  * unchanged backs off (15 min doubling, at most 24 h) and is dropped from the
  * automatic pass after MAX_RECONCILE_ATTEMPTS (manual review; it still counts
  * toward that day's cap).
@@ -36,6 +39,7 @@ type Row = {
   payer_wallet: string;
   payer_signature: string | null;
   created_at: string;
+  signed_at: string | null;
   reconcile_attempts: number;
 };
 
@@ -71,6 +75,9 @@ export async function decideRow(chain: ChainReader, row: Row): Promise<Reconcile
       : { id: row.id, to: 'unchanged', reason: 'ambiguous_without_payer_signature' };
   }
   const createdSec = Math.floor(new Date(row.created_at).getTime() / 1000);
+  const windowEndSec = row.signed_at
+    ? Math.floor(new Date(row.signed_at).getTime() / 1000) + LANDING_WINDOW_SECONDS
+    : Number.POSITIVE_INFINITY;
   let unreadInWindow = false;
   let before: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -85,7 +92,7 @@ export async function decideRow(chain: ChainReader, row: Row): Promise<Reconcile
           : { id: row.id, to: 'failed', reason: 'not_landed' };
       }
       // Newer than the landing window: cannot be our payment; skip unread.
-      if (info.blockTime !== null && info.blockTime > createdSec + LANDING_WINDOW_SECONDS) continue;
+      if (info.blockTime !== null && info.blockTime > windowEndSec) continue;
       const tx = await chain.transaction(info.signature);
       if (!tx) {
         unreadInWindow = true;
@@ -107,18 +114,22 @@ export async function reconcileVendorLedger(options: {
   olderThanMinutes?: number;
   limit?: number;
   chain?: ChainReader;
+  /** Operator run only: also rows past MAX_RECONCILE_ATTEMPTS or still backing off. */
+  includeExhausted?: boolean;
 }): Promise<ReconcileDecision[]> {
+  const scheduled = options.includeExhausted
+    ? sql`TRUE`
+    : sql`reconcile_attempts < ${MAX_RECONCILE_ATTEMPTS} AND (reconcile_next_at IS NULL OR reconcile_next_at <= now())`;
   const olderThan = Math.max(options.olderThanMinutes ?? 15, MIN_RECONCILE_AGE_MINUTES);
   const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
   const chain = options.chain
     ?? connectionChainReader(process.env.SOLANA_MAINNET_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com');
   const rows = Array.from(await db.execute<Row>(sql`
-    SELECT id, status, payer_wallet, payer_signature, created_at::text, reconcile_attempts
+    SELECT id, status, payer_wallet, payer_signature, created_at::text, signed_at::text, reconcile_attempts
     FROM vendor_spend_ledger
     WHERE status IN ('pending', 'ambiguous')
       AND created_at < now() - make_interval(mins => ${olderThan})
-      AND reconcile_attempts < ${MAX_RECONCILE_ATTEMPTS}
-      AND (reconcile_next_at IS NULL OR reconcile_next_at <= now())
+      AND ${scheduled}
     ORDER BY COALESCE(reconcile_next_at, created_at)
     LIMIT ${limit}`));
   const decisions: ReconcileDecision[] = [];

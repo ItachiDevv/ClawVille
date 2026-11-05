@@ -15,8 +15,10 @@
  *   - surface 'hosted' (the [ACTION:] verb): HOSTED_IMAGE_DAILY_MAX per avatar
  *     per UTC day, any mode;
  *   - mode 'account' with actor 'agent': ACCOUNT_AGENT_IMAGE_DAILY_MAX per
- *     avatar per UTC day (the spend caps do not cover the human's Studios
- *     credits, so this bounds an agent loop on the human's account).
+ *     avatar per UTC day, and mode 'account' for ANY actor:
+ *     ACCOUNT_IMAGE_DAILY_MAX (the spend caps do not cover the human's Studios
+ *     credits; the total also bounds an agent that holds its owner's
+ *     magic-link session and so looks like the human).
  * A retry of a finished request returns the same image; a retry of an
  * unfinished or failed one is `duplicate_request`.
  *
@@ -39,6 +41,7 @@ import {
 export const MEDIA_KEEP_PER_AVATAR = 50;
 export const HOSTED_IMAGE_DAILY_MAX = 3;
 export const ACCOUNT_AGENT_IMAGE_DAILY_MAX = 20;
+export const ACCOUNT_IMAGE_DAILY_MAX = 50;
 const ACCOUNT_CALL_TIMEOUT_MS = 120_000;
 
 export type StudiosImageFailure =
@@ -213,14 +216,19 @@ async function reserveRequest(input: {
       ));
       if ((row?.n ?? 0) >= HOSTED_IMAGE_DAILY_MAX) return { kind: 'done', result: failure('daily_limit') };
     }
-    if (input.mode === 'account' && input.actor === 'agent') {
-      const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
+    if (input.mode === 'account') {
+      const [row] = await tx.select({
+        total: sql<number>`count(*)::int`,
+        agent: sql<number>`count(*) FILTER (WHERE ${vendorCallRequests.actor} = 'agent')::int`,
+      }).from(vendorCallRequests).where(and(
         eq(vendorCallRequests.avatarId, input.avatarId),
         eq(vendorCallRequests.mode, 'account'),
-        eq(vendorCallRequests.actor, 'agent'),
         sql`${vendorCallRequests.createdAt} >= ${dayStart}`,
       ));
-      if ((row?.n ?? 0) >= ACCOUNT_AGENT_IMAGE_DAILY_MAX) return { kind: 'done', result: failure('daily_limit') };
+      if ((row?.total ?? 0) >= ACCOUNT_IMAGE_DAILY_MAX) return { kind: 'done', result: failure('daily_limit') };
+      if (input.actor === 'agent' && (row?.agent ?? 0) >= ACCOUNT_AGENT_IMAGE_DAILY_MAX) {
+        return { kind: 'done', result: failure('daily_limit') };
+      }
     }
     const [created] = await tx.insert(vendorCallRequests).values({
       avatarId: input.avatarId,

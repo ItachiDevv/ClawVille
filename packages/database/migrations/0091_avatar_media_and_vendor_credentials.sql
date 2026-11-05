@@ -20,7 +20,8 @@
 --
 -- vendor_spend_ledger gains reconcile_attempts / reconcile_next_at so the
 -- reconcile worker backs off a row it cannot resolve instead of selecting it
--- again every pass.
+-- again every pass, and signed_at (set with payer_signature, before sending)
+-- so the reconcile landing window starts at the signature, not at admission.
 -- Additive and idempotent; safe for the CI migration runner to re-check.
 
 CREATE TABLE IF NOT EXISTS "avatar_media" (
@@ -96,3 +97,4 @@ CREATE INDEX IF NOT EXISTS "vendor_call_requests_avatar_created_idx"
 
 ALTER TABLE "vendor_spend_ledger" ADD COLUMN IF NOT EXISTS "reconcile_attempts" integer DEFAULT 0 NOT NULL;
 ALTER TABLE "vendor_spend_ledger" ADD COLUMN IF NOT EXISTS "reconcile_next_at" timestamp with time zone;
+ALTER TABLE "vendor_spend_ledger" ADD COLUMN IF NOT EXISTS "signed_at" timestamp with time zone;

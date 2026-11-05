@@ -480,7 +480,7 @@ export async function callVendorWithAvatarWallet(
   try {
     await db
       .update(vendorSpendLedger)
-      .set({ payerSignature: signed.payerSignature, updatedAt: new Date() })
+      .set({ payerSignature: signed.payerSignature, signedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(vendorSpendLedger.id, admission.ledgerId), eq(vendorSpendLedger.status, 'pending')));
   } catch {
     await finish(admission.ledgerId, 'failed', { failureReason: 'not_sent_ledger_write_failed' });
