@@ -59,7 +59,7 @@ export default function SpendCapPrompt() {
       >
         <h2 className="text-base font-bold text-white">Set your agent&apos;s spend caps</h2>
         <p className="text-xs text-white/70 leading-relaxed">
-          Your agent can use paid tools, such as image generation. Until you set caps, it cannot pay for any tool.
+          Your agent can use paid tools, such as image generation. Until you set caps, it cannot pay for any tool. Your own linked wallet (Phantom, Solflare or Backpack) approves the caps; link it in the wallet panel first.
         </p>
         <SpendingCard onSaved={close} />
         <button

@@ -25,3 +25,24 @@ export interface SpendPolicyView {
 export function isSpendVendorId(value: string): value is SpendVendorId {
   return (SPEND_VENDOR_IDS as readonly string[]).includes(value);
 }
+
+/** The three values a human sets. Same shape as the PUT body. */
+export interface SpendPolicyValues {
+  dailyCapUsdCents: number | null;
+  perCallCapUsdCents: number | null;
+  allowedVendors: readonly string[];
+}
+
+/**
+ * True when `next` lets the agent spend more than `current` (phase 1b): a cap
+ * goes from unset to set, a cap goes up, or a vendor is added. A raise needs a
+ * signature from the human's linked wallet; a lower or equal change does not.
+ * Setting a cap to unset (null) is a lower change: an unset cap refuses every
+ * paid call.
+ */
+export function isSpendPolicyRaise(current: SpendPolicyValues, next: SpendPolicyValues): boolean {
+  const capRaised = (from: number | null, to: number | null) => to !== null && (from === null || to > from);
+  if (capRaised(current.dailyCapUsdCents, next.dailyCapUsdCents)) return true;
+  if (capRaised(current.perCallCapUsdCents, next.perCallCapUsdCents)) return true;
+  return next.allowedVendors.some((vendor) => !current.allowedVendors.includes(vendor));
+}

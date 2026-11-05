@@ -39,6 +39,13 @@ describe('protocol `ecosystem` page', () => {
     expect(page).toContain('`403 spend_policy_human_only`');
   });
 
+  test('v107: states that a raise needs the human linked wallet and that lowering does not', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain("your human's own linked wallet (Phantom, Solflare or Backpack) signs the new values");
+    expect(page).toContain('Lowering a cap needs no signature.');
+    expect(page).toContain('changing it later needs a signature from the old wallet');
+  });
+
   test('renders every served row with its URL, auth and install lines', () => {
     const page = buildEcosystemTopic(API_BASE);
     for (const entry of servedEcosystemCatalog(API_BASE)) {

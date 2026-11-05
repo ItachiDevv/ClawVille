@@ -629,15 +629,27 @@ export const api = {
   // ── Spend rules for paid third-party tools (routes/spend-policy.ts) ──────
   // The human owner writes them; the agent only reads. Null caps = not set.
   getSpendPolicy: () => request<SpendPolicyView>('/api/wallet/spend-policy'),
+  // A raise (a cap set or raised, or a vendor added) needs `proof`: the linked
+  // wallet's signature of the challenge message for the exact same values.
   putSpendPolicy: (body: {
     dailyCapUsdCents: number | null;
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
+    proof?: { nonce: string; signature: string };
   }) =>
     request<SpendPolicyView>('/api/wallet/spend-policy', {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  spendPolicyChallenge: (body: {
+    dailyCapUsdCents: number | null;
+    perCallCapUsdCents: number | null;
+    allowedVendors: SpendVendorId[];
+  }) =>
+    request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>(
+      '/api/wallet/spend-policy/challenge',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 
   /**
    * Move the caller's OWN deposited SOL/USDC/CLV out of their custodial

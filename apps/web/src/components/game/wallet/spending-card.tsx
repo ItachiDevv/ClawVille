@@ -9,8 +9,9 @@
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { SPEND_CAP_MAX_USD_CENTS, type SpendVendorId } from '@clawville/shared';
+import { SPEND_CAP_MAX_USD_CENTS, isSpendPolicyRaise, type SpendVendorId } from '@clawville/shared';
 import { api, ApiError } from '@/lib/api';
+import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { centsToUsdText, parseUsdToCents } from '@/lib/usd-cents';
 
@@ -22,7 +23,15 @@ const VENDOR_LABELS: Record<SpendVendorId, string> = {
 
 /** Plain text for a failed save. Branches on the API `code`, never on raw text. */
 export function saveErrorText(error: unknown): string {
+  // The wallet's own messages are plain text written for people.
+  if (error instanceof WalletSignError) return error.message;
   if (error instanceof ApiError) {
+    if (error.code === 'spend_policy_needs_wallet_link') {
+      return 'Link your own wallet first (below). Your linked wallet must approve higher caps.';
+    }
+    if (error.code === 'spend_policy_needs_wallet_proof' || error.code === 'spend_policy_invalid_wallet_proof') {
+      return 'Your linked wallet must approve higher caps. Approve the signature in your wallet and try again.';
+    }
     if (error.code === 'spend_policy_needs_human_login') {
       return 'For your safety, sign out and sign in again in this browser. Then save your spend rules.';
     }
@@ -64,7 +73,14 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
   }, [policy]);
 
   const save = useMutation({
-    mutationFn: api.putSpendPolicy,
+    mutationFn: async (next: { dailyCapUsdCents: number | null; perCallCapUsdCents: number | null; allowedVendors: SpendVendorId[] }) => {
+      const current = policy ?? { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] };
+      if (!isSpendPolicyRaise(current, next)) return api.putSpendPolicy(next);
+      // A raise needs the human's own linked wallet to sign the exact values.
+      const challenge = await api.spendPolicyChallenge(next);
+      const signed = await signMessageWithSolanaWallet(challenge.messageToSign, challenge.walletPubkey);
+      return api.putSpendPolicy({ ...next, proof: { nonce: challenge.nonce, signature: signed.signatureBase58 } });
+    },
     onSuccess: (next) => {
       queryClient.setQueryData(SPEND_POLICY_QUERY_KEY, next);
       onSaved?.();
@@ -97,6 +113,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
         <p className="text-xs text-white/70 leading-relaxed">
           Some tools your agent can use cost money. Your agent pays them from your in-game wallet,
           only inside the caps you set here. Only you can change these rules; your agent can only read them.
+          To set or raise a cap, your own linked wallet signs to approve it. Lowering a cap needs no signature.
         </p>
         {!signedIn ? (
           <p className="text-xs text-white/60">Sign in to set spend rules for your agent.</p>

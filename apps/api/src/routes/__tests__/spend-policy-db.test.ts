@@ -9,7 +9,10 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as dbMod from '@clawville/database';
-import { readSpendPolicy, writeSpendPolicy } from '../../services/spend-policy';
+import nacl from 'tweetnacl';
+import bs58 from 'bs58';
+import { applySpendPolicyChange, readSpendPolicy, writeSpendPolicy } from '../../services/spend-policy';
+import { issueSpendProofChallenge } from '../../services/spend-policy-proof';
 
 const { db, sql } = dbMod;
 
@@ -126,6 +129,50 @@ describeIfSchema('spend rules: executed DB contract', () => {
     ];
     for (const statement of bad) {
       expect(await failureCode(() => db.execute(statement))).toBe('23514');
+    }
+  });
+
+  it('needs a linked wallet and its signature to raise, never to lower', async () => {
+    await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
+    await db.execute(sql`UPDATE users SET linked_wallet_pubkey = NULL WHERE id = ${userId}`);
+    const raise = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios' as const] };
+
+    expect(await applySpendPolicyChange(avatarId, userId, raise, null)).toEqual({ kind: 'needs_wallet_link' });
+
+    const wallet = nacl.sign.keyPair();
+    const walletPubkey = bs58.encode(wallet.publicKey);
+    await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${walletPubkey} WHERE id = ${userId}`);
+    expect(await applySpendPolicyChange(avatarId, userId, raise, null)).toEqual({ kind: 'needs_wallet_proof' });
+
+    const challenge = issueSpendProofChallenge(userId, raise);
+    const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), wallet.secretKey));
+    const saved = await applySpendPolicyChange(avatarId, userId, raise, { nonce: challenge.nonce, signature });
+    expect(saved.kind).toBe('saved');
+    expect(await readSpendPolicy(avatarId)).toMatchObject({ dailyCapUsdCents: 500, perCallCapUsdCents: 50, configured: true });
+
+    // The same proof cannot be replayed.
+    const replay = await applySpendPolicyChange(avatarId, userId, { ...raise, dailyCapUsdCents: 900 }, { nonce: challenge.nonce, signature });
+    expect(replay).toEqual({ kind: 'invalid_proof', reason: 'invalid_challenge' });
+
+    // Lower and equal changes save without a proof.
+    expect((await applySpendPolicyChange(avatarId, userId, { ...raise, dailyCapUsdCents: 100 }, null)).kind).toBe('saved');
+    expect((await applySpendPolicyChange(avatarId, userId, { ...raise, dailyCapUsdCents: 100 }, null)).kind).toBe('saved');
+    expect(await readSpendPolicy(avatarId)).toMatchObject({ dailyCapUsdCents: 100 });
+  });
+
+  it('never lets an unchecked write become a raise under a concurrent lower change', async () => {
+    for (let round = 0; round < 8; round += 1) {
+      await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: [] });
+      const [same, lower] = await Promise.all([
+        applySpendPolicyChange(avatarId, userId, { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: [] }, null),
+        applySpendPolicyChange(avatarId, userId, { dailyCapUsdCents: 100, perCallCapUsdCents: 50, allowedVendors: [] }, null),
+      ]);
+      expect(lower.kind).toBe('saved');
+      const view = await readSpendPolicy(avatarId);
+      // Either the equal write ran first (then the lower one wins), or it ran
+      // second and was refused as a raise. The cap is never back at 500.
+      expect(view.dailyCapUsdCents).toBe(100);
+      expect(['saved', 'needs_wallet_proof', 'needs_wallet_link']).toContain(same.kind);
     }
   });
 

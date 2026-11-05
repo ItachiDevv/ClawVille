@@ -8,13 +8,15 @@
  */
 
 import { z } from 'zod';
-import { db, eq, userSpendPolicies } from '@clawville/database';
+import { db, eq, sql, userSpendPolicies, users } from '@clawville/database';
 import {
   SPEND_CAP_MAX_USD_CENTS,
   SPEND_VENDOR_IDS,
+  isSpendPolicyRaise,
   type SpendPolicyView,
   type SpendVendorId,
 } from '@clawville/shared';
+import { verifySpendProof } from './spend-policy-proof';
 
 const capSchema = z.number().int().min(0).max(SPEND_CAP_MAX_USD_CENTS).nullable();
 
@@ -74,29 +76,95 @@ export async function readSpendPolicy(avatarId: string): Promise<SpendPolicyView
   return toSpendPolicyView(row);
 }
 
-/** Human-only writer. The caller has already proved the user owns `avatarId`. */
-export async function writeSpendPolicy(
+type Executor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
+
+const policyColumns = {
+  dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
+  perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
+  allowedVendors: userSpendPolicies.allowedVendors,
+  updatedAt: userSpendPolicies.updatedAt,
+};
+
+async function upsertSpendPolicy(
+  executor: Executor,
   avatarId: string,
   userId: string,
   input: SpendPolicyInput,
 ): Promise<SpendPolicyView> {
-  const now = new Date();
   const values = {
     dailyCapUsdCents: input.dailyCapUsdCents,
     perCallCapUsdCents: input.perCallCapUsdCents,
     allowedVendors: input.allowedVendors,
     updatedByUserId: userId,
-    updatedAt: now,
+    updatedAt: new Date(),
   };
-  const [row] = await db
+  const [row] = await executor
     .insert(userSpendPolicies)
     .values({ avatarId, ...values })
     .onConflictDoUpdate({ target: userSpendPolicies.avatarId, set: values })
-    .returning({
-      dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
-      perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
-      allowedVendors: userSpendPolicies.allowedVendors,
-      updatedAt: userSpendPolicies.updatedAt,
-    });
+    .returning(policyColumns);
   return toSpendPolicyView(row);
+}
+
+/**
+ * Unchecked writer, for tests and fixtures only. Routes use
+ * `applySpendPolicyChange`, which checks the raise rule.
+ */
+export async function writeSpendPolicy(
+  avatarId: string,
+  userId: string,
+  input: SpendPolicyInput,
+): Promise<SpendPolicyView> {
+  return upsertSpendPolicy(db, avatarId, userId, input);
+}
+
+export interface SpendProofInput {
+  nonce: string;
+  signature: string;
+}
+
+export type SpendPolicyChangeResult =
+  | { kind: 'saved'; view: SpendPolicyView }
+  | { kind: 'needs_wallet_link' }
+  | { kind: 'needs_wallet_proof' }
+  | { kind: 'invalid_proof'; reason: 'invalid_challenge' | 'invalid_signature' };
+
+/**
+ * Human-only writer with the phase 1b raise rule. The caller has already proved
+ * that `userId` owns `avatarId` through a human session.
+ *
+ * One transaction holds a per-avatar advisory lock, reads the saved values,
+ * and decides whether `input` is a raise (see `isSpendPolicyRaise`). A raise
+ * needs a signature from the user's linked wallet over the exact new values.
+ * A lower or equal change saves without one. The lock stops a concurrent lower
+ * change from turning an unchecked write into a raise.
+ */
+export async function applySpendPolicyChange(
+  avatarId: string,
+  userId: string,
+  input: SpendPolicyInput,
+  proof: SpendProofInput | null,
+): Promise<SpendPolicyChangeResult> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend-policy:${avatarId}`}, 0))`);
+    const [current] = await tx
+      .select(policyColumns)
+      .from(userSpendPolicies)
+      .where(eq(userSpendPolicies.avatarId, avatarId))
+      .limit(1);
+    const currentView = toSpendPolicyView(current);
+    if (isSpendPolicyRaise(currentView, input)) {
+      const [owner] = await tx
+        .select({ linkedWalletPubkey: users.linkedWalletPubkey })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      const walletPubkey = owner?.linkedWalletPubkey ?? null;
+      if (!walletPubkey) return { kind: 'needs_wallet_link' } as const;
+      if (!proof) return { kind: 'needs_wallet_proof' } as const;
+      const verdict = verifySpendProof({ userId, values: input, walletPubkey, ...proof });
+      if (verdict !== 'ok') return { kind: 'invalid_proof', reason: verdict } as const;
+    }
+    return { kind: 'saved', view: await upsertSpendPolicy(tx, avatarId, userId, input) } as const;
+  });
 }
