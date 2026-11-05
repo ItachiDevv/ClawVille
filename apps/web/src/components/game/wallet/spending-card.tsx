@@ -20,6 +20,20 @@ const VENDOR_LABELS: Record<SpendVendorId, string> = {
   studios: 'Studios by Claw Hunter (images and video)',
 };
 
+/** Plain text for a failed save. Branches on the API `code`, never on raw text. */
+export function saveErrorText(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.code === 'spend_policy_needs_human_login') {
+      return 'For your safety, sign out and sign in again in this browser. Then save your spend rules.';
+    }
+    if (error.code === 'spend_policy_human_only') {
+      return 'Only you can change spend rules, from your own browser sign-in.';
+    }
+    if (error.status === 400) return 'Check the amounts and try again.';
+  }
+  return 'Saving failed. Try again.';
+}
+
 export function useHumanSpendPolicy() {
   const { data: auth } = useAuthMe();
   const signedIn = !!auth?.user && !auth.user.isGuest;
@@ -137,7 +151,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
             </fieldset>
             {(formError || save.isError) && (
               <p className="text-xs text-red-300">
-                {formError ?? (save.error instanceof ApiError ? save.error.message : 'Saving failed. Try again.')}
+                {formError ?? saveErrorText(save.error)}
               </p>
             )}
             <button

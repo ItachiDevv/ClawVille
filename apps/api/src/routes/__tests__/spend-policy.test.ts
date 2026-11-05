@@ -171,7 +171,7 @@ describe('PUT /api/wallet/spend-policy', () => {
     for (const opts of [{ agent: 'agent-session' }, { agent: 'agent-session', cookie: 'pw-new' }]) {
       const res = await call('PUT', { ...opts, body: VALID });
       expect(res.status).toBe(403);
-      expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only' });
+      expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only', code: 'spend_policy_human_only' });
     }
     expect(writes).toHaveLength(0);
   });
@@ -179,7 +179,7 @@ describe('PUT /api/wallet/spend-policy', () => {
   it('refuses a cookie that an agent got through the session exchange', async () => {
     const res = await call('PUT', { cookie: 'exchanged-set', body: VALID });
     expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only' });
+    expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only', code: 'spend_policy_human_only' });
     expect(writes).toHaveLength(0);
   });
 
@@ -187,7 +187,7 @@ describe('PUT /api/wallet/spend-policy', () => {
     for (const cookie of ['legacy-new', 'guest-session']) {
       const res = await call('PUT', { cookie, body: VALID });
       expect(res.status).toBe(403);
-      expect(await res.json()).toMatchObject({ error: 'spend_policy_needs_human_login' });
+      expect(await res.json()).toMatchObject({ error: 'spend_policy_needs_human_login', code: 'spend_policy_needs_human_login' });
     }
     expect(writes).toHaveLength(0);
   });

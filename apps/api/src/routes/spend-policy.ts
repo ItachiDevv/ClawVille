@@ -47,6 +47,7 @@ const HUMAN_SESSION_ORIGINS = new Set<SessionCreatedVia>(['password', 'magic_lin
 
 const HUMAN_ONLY = {
   error: 'spend_policy_human_only',
+  code: 'spend_policy_human_only',
   message: 'Only the human owner can change spend rules. Ask your human to set them in the ClawVille wallet panel.',
 } as const;
 
@@ -64,6 +65,7 @@ spendPolicyRoutes.put(
     if (createdVia === null || !HUMAN_SESSION_ORIGINS.has(createdVia)) {
       return c.json({
         error: 'spend_policy_needs_human_login',
+        code: 'spend_policy_needs_human_login',
         message: 'Sign in again in your browser, then change your spend rules.',
       }, 403);
     }
