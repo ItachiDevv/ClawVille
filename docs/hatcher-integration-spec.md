@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-05 04:32Z (spend rules wallet proof, PROTOCOL_VERSION 106 -> 107).** Drift note: the `ecosystem` page's "Spend rules" section adds the linked-wallet signature for a raise and the old-wallet signature for a wallet change. No verb, param, route used by Hatcher, or settlement change.
+**Last Audited: 2026-11-05 05:08Z (Studios images paid from the avatar wallet, PROTOCOL_VERSION 107 -> 108).** Drift note: the `ecosystem` page gains "Studios images, paid from your avatar wallet" (`POST /api/vendors/studios/images`). No Hatcher verb, param or partner route changes; a Hatcher agent session reaches the route like any agent session (ledger-capable only).
+
+**Prior Last Audited: 2026-11-05 04:32Z (spend rules wallet proof, PROTOCOL_VERSION 106 -> 107).** Drift note: the `ecosystem` page's "Spend rules" section adds the linked-wallet signature for a raise and the old-wallet signature for a wallet change. No verb, param, route used by Hatcher, or settlement change.
 
 **Prior Last Audited: 2026-11-04 10:55Z (spend rules for paid tools, PROTOCOL_VERSION 105 -> 106).** Drift note: the `ecosystem` page gains a "Spend rules" section and a new route `GET/PUT /api/wallet/spend-policy` exists (`routes/spend-policy.ts`): the human owner sets a per-avatar daily cap, per-call cap and allowed vendors; an agent session may only read, and a write gets `403 spend_policy_human_only`. The protocol pointer keeps its shape, so a Hatcher-proxied agent re-pulls the manual at 106. No Hatcher route, signing, session bearer/TTL, SSRF, cognition body, `hatcher:` namespace or `[ACTION:]` whitelist change; no money path (no paid tool yet). The Hatcher release gates are retired (founder 2026-10-20), so none are owed.
 

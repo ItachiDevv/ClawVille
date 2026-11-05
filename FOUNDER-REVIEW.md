@@ -592,6 +592,7 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Where:** staging -> `https://staging.clawville.world/game`, signed in as a non-guest user. The prompt shows after the one-time backup modal; the card is in the wallet panel (wallet chip or My Agent settings).
 - **Feedback wanted:** is the prompt early and clear enough; are dollars per day + per call the right two limits; wording.
 - Session claw-2.0, 2026-11-04.
+- **Phase 2a (2026-11-05, staging):** the first paid call. One live Studios image ($0.005) from the test avatar wallet inside your $1 test cap; the result (image, ledger row, chain transaction) is in deploy-status.md. Feedback wanted: is half a cent per image with your caps the right first experience; the web form comes next.
 - **Phase 1b (2026-11-05, staging):** setting or raising a cap now opens your wallet (Phantom, Solflare or Backpack) to sign; link the wallet first in the wallet panel. Look at: the sign step, the 'link your wallet first' message, and lowering a cap with no signature. Old sessions see 'sign out and sign in again' on the first save. A lost linked wallet needs support (no change button yet).
 
 ### Reconcile ops view (LIVE on prod)

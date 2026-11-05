@@ -75,6 +75,7 @@ import { skillsRoutes } from './routes/skills';
 import { ecosystemRoutes } from './routes/ecosystem';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
+import { vendorStudiosRoutes } from './routes/vendor-studios';
 // Tokenomics E1/E2 — internal, admin-only EARNED import/verifier/claw-back.
 // Service + route are independently gated by TOKENOMICS_EARN_ENABLED.
 import { tokenomicsEarnRoutes } from './routes/tokenomics-earn';
@@ -378,6 +379,8 @@ app.route('/api/skills', skillsRoutes);
 app.route('/api/ecosystem', ecosystemRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
+// Paid third-party tools, avatar wallet under the human's spend rules (MCP hub step 2 phase 2).
+app.route('/api/vendors/studios', vendorStudiosRoutes);
 app.route('/api/admin/tokenomics/earn', tokenomicsEarnRoutes);
 app.route('/api/tokenomics/redeem', tokenomicsRedeemRoutes);
 app.route('/api/dashboard', dashboardRoutes);

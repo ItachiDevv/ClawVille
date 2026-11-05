@@ -46,6 +46,17 @@ describe('protocol `ecosystem` page', () => {
     expect(page).toContain('changing it later needs a signature from the old wallet');
   });
 
+  test('v108: states the paid Studios image call, its refusals and the no-retry rule', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain('### Studios images, paid from your avatar wallet');
+    expect(page).toContain(`\`POST ${API_BASE}/api/vendors/studios/images\``);
+    expect(page).toContain('`Idempotency-Key`');
+    for (const code of ['spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'payment_ambiguous']) {
+      expect(page).toContain(`\`${code}\``);
+    }
+    expect(page).toContain('Do NOT retry it.');
+  });
+
   test('renders every served row with its URL, auth and install lines', () => {
     const page = buildEcosystemTopic(API_BASE);
     for (const entry of servedEcosystemCatalog(API_BASE)) {
