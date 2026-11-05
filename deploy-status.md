@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-05 03:40Z (session claw-2.0). **PROD = `2b3c5fa36` (promotion #24, PR #335, VERIFIED 03:38Z): 2026-10-26 audit fault fixes + user spend rules (PROTOCOL_VERSION 106, migration 0089).** **STAGING API + WEB = `d07940051`** (branch tip moved with docs only). SCHEMA: synced.
+Last Audited: 2026-11-05 04:39Z (session claw-2.0). **STAGING = spend rules phase 1b (linked wallet signs every raise; wallet change needs the old wallet; PROTOCOL_VERSION 107), PUSHED 04:39Z, VERIFICATION PENDING (DEPLOY LOG 2026-11-05 04:39Z).** **PROD = `2b3c5fa36` (promotion #24).** SCHEMA: synced (no migration).
+
+Prior - Last Audited: 2026-11-05 03:40Z (session claw-2.0). **PROD = `2b3c5fa36` (promotion #24, PR #335, VERIFIED 03:38Z): 2026-10-26 audit fault fixes + user spend rules (PROTOCOL_VERSION 106, migration 0089).** **STAGING API + WEB = `d07940051`** (branch tip moved with docs only). SCHEMA: synced.
 
 Prior - Last Audited: 2026-11-04 11:19Z (session claw-2.0). **STAGING API + WEB = `d07940051`, VERIFIED 11:38Z: user spend rules (DEPLOY LOG 2026-11-04 11:19Z).** **PROD = `b22947b36` (promotion #23).** SCHEMA: prod-migration-pending 0089.
 
@@ -714,6 +716,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-05 04:39Z (session claw-2.0) - spend rules phase 1b on staging (PROTOCOL_VERSION 107), VERIFICATION PENDING
+- **What changed:** a magic link passes through the agent, so a sign-in alone does not prove a human (founder go 2026-11-04 to strengthen). A raise of the spend rules (a cap set or raised, or a vendor added) now needs the linked wallet's signature over the exact values (`POST /api/wallet/spend-policy/challenge`, `services/spend-policy-proof.ts`); `applySpendPolicyChange` decides the raise under a per-avatar advisory lock and reads the linked wallet FOR SHARE. The wallet-link routes take the human-session gate (`middleware/require-human-session.ts`); changing a linked wallet answers 409 until the current wallet signs. Web: the Spending card asks the wallet to sign a raise and shows plain text for every refusal (also the raw `spend_policy_needs_human_login` text that prod shows today). Manual and Nori line; PROTOCOL_VERSION 106 -> 107.
+- **What broke / found:** Codex 1b review CHANGES REQUIRED (P2): the raise read the linked wallet without a lock, so a concurrent wallet change could let a proof from the replaced wallet save; fixed with FOR SHARE plus a DB regression. Open gap (documented): with no wallet linked yet, the first link wins.
+- **Local evidence:** services lane 4208 pass 0 fail (42 isolated OK); route lane 637 pass 0 fail (43 isolated OK); database tests skipped locally (the local Postgres did not answer) and run in the CI route lane; api + web tsc 0; web build 0; shared 186/0; coupling gate 0; doc-path check passed.
+- **Who it is for:** every human who sets caps (they need a linked wallet now); agents read the rule in the manual.
+- **SCHEMA:** synced (no migration).
+- **PARITY:** human path: PUT /api/wallet/spend-policy + POST /challenge (Spending card, wallet signature), POST /api/wallet/link; agent path: GET /api/wallet/spend-policy (read only by design) + manual Spend rules (PV 107); binds to the active avatar or the agent session's bound avatar.
 
 ### 2026-11-05 03:40Z (session claw-2.0) - PROMOTION #24 (PR #335, merge `2b3c5fa36`), VERIFIED
 - **What shipped:** the 2026-10-26 audit fault fixes (`e28917fba`: support tickets relay through the shared Telegram sender and keep the bot token and ticket text out of logs; reconcile and alert fixes) and user spend rules phase 1 (`d07940051`, PROTOCOL_VERSION 106, migration 0089). Founder go 2026-11-04.
