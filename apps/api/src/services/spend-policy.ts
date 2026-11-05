@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { db, eq, sql, userSpendPolicies, users } from '@clawville/database';
+import { db, eq, sql, userSpendPolicies } from '@clawville/database';
 import {
   SPEND_CAP_MAX_USD_CENTS,
   SPEND_VENDOR_IDS,
@@ -154,12 +154,13 @@ export async function applySpendPolicyChange(
       .limit(1);
     const currentView = toSpendPolicyView(current);
     if (isSpendPolicyRaise(currentView, input)) {
-      const [owner] = await tx
-        .select({ linkedWalletPubkey: users.linkedWalletPubkey })
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-      const walletPubkey = owner?.linkedWalletPubkey ?? null;
+      // FOR SHARE conflicts with the wallet-link FOR UPDATE: a wallet change
+      // cannot commit between this read and the policy write, so a proof from
+      // a wallet that is being replaced cannot save a raise.
+      const ownerRows = await tx.execute<{ linked_wallet_pubkey: string | null }>(
+        sql`SELECT linked_wallet_pubkey FROM users WHERE id = ${userId} FOR SHARE`,
+      );
+      const walletPubkey = Array.from(ownerRows)[0]?.linked_wallet_pubkey ?? null;
       if (!walletPubkey) return { kind: 'needs_wallet_link' } as const;
       if (!proof) return { kind: 'needs_wallet_proof' } as const;
       const verdict = verifySpendProof({ userId, values: input, walletPubkey, ...proof });

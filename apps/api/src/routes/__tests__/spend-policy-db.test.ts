@@ -176,6 +176,37 @@ describeIfSchema('spend rules: executed DB contract', () => {
     }
   });
 
+  it('refuses a proof from a wallet that a concurrent change replaces', async () => {
+    await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
+    const walletA = nacl.sign.keyPair();
+    const pubA = bs58.encode(walletA.publicKey);
+    const pubB = bs58.encode(nacl.sign.keyPair().publicKey);
+    await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${pubA} WHERE id = ${userId}`);
+    const raise = { dailyCapUsdCents: 700, perCallCapUsdCents: 70, allowedVendors: ['studios' as const] };
+    const challenge = issueSpendProofChallenge(userId, raise);
+    const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), walletA.secretKey));
+
+    // A wallet change holds the row lock (as POST /api/wallet/link does) ...
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let markLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { markLocked = resolve; });
+    const change = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT linked_wallet_pubkey FROM users WHERE id = ${userId} FOR UPDATE`);
+      markLocked();
+      await gate;
+      await tx.execute(sql`UPDATE users SET linked_wallet_pubkey = ${pubB} WHERE id = ${userId}`);
+    });
+    await locked;
+    // ... while the raise signed by wallet A starts. It must wait, then see B.
+    const raised = applySpendPolicyChange(avatarId, userId, raise, { nonce: challenge.nonce, signature });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    release();
+    await change;
+    expect(await raised).toEqual({ kind: 'invalid_proof', reason: 'invalid_signature' });
+    expect(await readSpendPolicy(avatarId)).toMatchObject({ dailyCapUsdCents: null, configured: false });
+  });
+
   it('stores the session origin label', async () => {
     const id = `${tag}-session`;
     await db.execute(

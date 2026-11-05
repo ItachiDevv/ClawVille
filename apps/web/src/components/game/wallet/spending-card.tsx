@@ -85,6 +85,11 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
       queryClient.setQueryData(SPEND_POLICY_QUERY_KEY, next);
       onSaved?.();
     },
+    // The server decides what a raise is. After a refusal, reload the saved
+    // rules so the next try compares against fresh values.
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: SPEND_POLICY_QUERY_KEY });
+    },
   });
 
   const submit = () => {
