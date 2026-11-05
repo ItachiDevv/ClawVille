@@ -387,7 +387,7 @@ avatarRoutes.post('/', async (c) => {
     //    ships when everything above succeeded. Lucia's
     //    createSessionCookie honors NODE_ENV (SameSite=None+Secure in
     //    prod, Lax+insecure in dev).
-    const session = await lucia.createSession(ownerId, {});
+    const session = await lucia.createSession(ownerId, { createdVia: 'avatar_create' });
     const cookie = lucia.createSessionCookie(session.id);
     c.header('Set-Cookie', cookie.serialize(), { append: true });
 

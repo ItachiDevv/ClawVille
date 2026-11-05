@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 
 const originalToken = process.env.ITACHI_DEBUG_BOT_TOKEN;
 const originalChatId = process.env.ITACHI_DEBUG_CHAT_ID;
@@ -216,5 +216,88 @@ describe('alert-error Telegram delivery', () => {
     globalThis.fetch = (async (_input, _init): Promise<Response> =>
       new Response('ok', { status: 200 })) as typeof fetch;
     expect(await sendTelegramText('delivered')).toBe(true);
+  });
+});
+
+describe('alertError rate limit', () => {
+  // The file sets fake credentials at load time, so restore the values from before it.
+  const saved = { token: originalToken, chat: originalChatId, env: originalClawvilleEnv };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  beforeEach(() => {
+    process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
+    process.env.CLAWVILLE_ENV = 'staging';
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    restore('ITACHI_DEBUG_BOT_TOKEN', saved.token);
+    restore('ITACHI_DEBUG_CHAT_ID', saved.chat);
+    restore('CLAWVILLE_ENV', saved.env);
+  });
+
+  it('keeps the window after an undelivered page and reports every lost page on the next one', async () => {
+    const texts: string[] = [];
+    let accept = false;
+    globalThis.fetch = (async (_input, init): Promise<Response> => {
+      texts.push(String((JSON.parse(String(init?.body)) as { text: string }).text));
+      return new Response('nope', { status: accept ? 200 : 429 });
+    }) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    const now = spyOn(Date, 'now');
+    try {
+      const params = { severity: 'warning' as const, source: 'rate-test', message: 'same text' };
+      now.mockReturnValue(1_000_000);
+      await alertError(params);
+      // Same window: no new request, so a failing channel is not hammered.
+      await alertError(params);
+      await alertError(params);
+      await alertError(params);
+      expect(texts).toHaveLength(1);
+      accept = true;
+      now.mockReturnValue(1_000_000 + 61_000);
+      await alertError(params);
+      expect(texts).toHaveLength(2);
+      // 1 undelivered page + 3 suppressed calls.
+      expect(texts[1]).toContain('(+4 more since the last page)');
+    } finally {
+      now.mockRestore();
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+});
+
+describe('sendTelegramText undelivered text', () => {
+  const saved = { token: originalToken, chat: originalChatId };
+  beforeEach(() => {
+    process.env.ITACHI_DEBUG_BOT_TOKEN = 'test-token';
+    process.env.ITACHI_DEBUG_CHAT_ID = 'test-chat';
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    // Never leak test credentials into later files of a shared test process.
+    if (saved.token === undefined) delete process.env.ITACHI_DEBUG_BOT_TOKEN;
+    else process.env.ITACHI_DEBUG_BOT_TOKEN = saved.token;
+    if (saved.chat === undefined) delete process.env.ITACHI_DEBUG_CHAT_ID;
+    else process.env.ITACHI_DEBUG_CHAT_ID = saved.chat;
+  });
+
+  it('keeps user text out of the logs when logUndeliveredText is false', async () => {
+    globalThis.fetch = (async (_input, _init): Promise<Response> =>
+      new Response('bad request', { status: 400 })) as typeof fetch;
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(await sendTelegramText('private ticket text', { logUndeliveredText: false })).toBe(false);
+      const logged = [...warn.mock.calls, ...log.mock.calls].flat().map(String).join(' ');
+      expect(logged).not.toContain('private ticket text');
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
   });
 });

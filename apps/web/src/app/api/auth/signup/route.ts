@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       name: name || email.split('@')[0],
     });
 
-    const session = await lucia.createSession(userId, {});
+    const session = await lucia.createSession(userId, { createdVia: 'password' });
     await setSessionCookie(session.id);
 
     return json({ success: true });

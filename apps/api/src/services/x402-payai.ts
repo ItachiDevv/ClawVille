@@ -567,29 +567,25 @@ export interface VerifyAndSettleResult {
   raw: { verify?: VerifyResponse; settle?: SettleResponse };
 }
 
-const FREE_TIER_EXHAUSTED_RE =
-  /(?:^|[^a-z0-9_])free_tier_exhausted(?:[^a-z0-9_]|$)/i;
-const INSUFFICIENT_CREDITS_RE =
-  /(?:^|[^a-z0-9_])insufficient_credits(?:[^a-z0-9_]|$)/i;
+/**
+ * PayAI credit-gate rejections, matched with `_` word boundaries so
+ * `not_free_tier_exhausted` or `free_tier_exhausted_maybe` never match.
+ * - free_tier_exhausted (2026-07-22 incident): PayAI's pricing contract says the
+ *   gate "stops settling new payments" (https://docs.payai.network/x402/facilitators/pricing).
+ * - insufficient_credits (2026-10-10 incident): PayAI does not document when this
+ *   check runs. Evidence for "before broadcast": the chain scans of the prod rows
+ *   that closed reconcile_no_money after it found no transfer.
+ * Both also count as provider-wide for the circuit breaker. PayAI documents free
+ * credits per receiving wallet and per API-key account; for paid credits the
+ * scope is not documented, and the error names the payTo wallet.
+ */
+const CREDIT_GATE_REASONS: readonly string[] = ['free_tier_exhausted', 'insufficient_credits'];
+const CREDIT_GATE_PATTERNS = CREDIT_GATE_REASONS.map((reason) =>
+  new RegExp(`(?:^|[^a-z0-9_])${reason}(?:[^a-z0-9_]|$)`, 'i'));
 
-const PRE_BROADCAST_SETTLE_REASONS = [
-  {
-    // 2026-07-22 incident: rejected at PayAI's documented quota/credit gate
-    // before submission. Contract: https://docs.payai.network/x402/facilitators/pricing
-    reason: 'free_tier_exhausted',
-    pattern: FREE_TIER_EXHAUSTED_RE,
-  },
-  {
-    // 2026-10-10 incident: the paid-credit form of the same gate ("stops
-    // settling new payments" per the pricing contract above). The chain scans
-    // of every row it rejected on prod found no transfer.
-    reason: 'insufficient_credits',
-    pattern: INSUFFICIENT_CREDITS_RE,
-  },
-] as const;
-
-/** Credit-gate reasons. Credits belong to the API-key account, so they are provider-wide. */
-const CREDIT_GATE_REASONS: readonly unknown[] = ['free_tier_exhausted', 'insufficient_credits'];
+function mentionsCreditGate(text: string): boolean {
+  return CREDIT_GATE_PATTERNS.some((pattern) => pattern.test(text));
+}
 
 /**
  * Settle rejections that are proven to be decided before the facilitator can
@@ -597,8 +593,7 @@ const CREDIT_GATE_REASONS: readonly unknown[] = ['free_tier_exhausted', 'insuffi
  * facilitator-attested output, not independent proof that no broadcast happened.
  */
 function isPreBroadcastSettleReason(reason: string | null | undefined): boolean {
-  return typeof reason === 'string'
-    && PRE_BROADCAST_SETTLE_REASONS.some(({ pattern }) => pattern.test(reason));
+  return typeof reason === 'string' && mentionsCreditGate(reason);
 }
 
 /**
@@ -632,8 +627,8 @@ export function isFacilitatorLevelFailure(error: unknown): boolean {
     return true;
   }
   if (
-    CREDIT_GATE_REASONS.includes(candidate.invalidReason)
-    || CREDIT_GATE_REASONS.includes(candidate.errorReason)
+    (typeof candidate.invalidReason === 'string' && CREDIT_GATE_REASONS.includes(candidate.invalidReason))
+    || (typeof candidate.errorReason === 'string' && CREDIT_GATE_REASONS.includes(candidate.errorReason))
   ) {
     return true;
   }
@@ -642,12 +637,15 @@ export function isFacilitatorLevelFailure(error: unknown): boolean {
       /^Facilitator (?:verify|settle) failed \((\d{3})\):/.exec(error.message);
     if (plainStatus) {
       const status = Number(plainStatus[1]);
-      return status >= 500 && status <= 599;
+      if (status >= 500 && status <= 599) return true;
+      // Only a plain settle 402 (a non-JSON credit-gate body) may name a credit
+      // gate; every other plain 4xx stays payment-specific.
+      return /^Facilitator settle failed \(402\):/.test(error.message)
+        && mentionsCreditGate(error.message);
     }
+    return mentionsCreditGate(error.message);
   }
-  return error instanceof Error
-    && (FREE_TIER_EXHAUSTED_RE.test(error.message)
-      || INSUFFICIENT_CREDITS_RE.test(error.message));
+  return false;
 }
 
 /** Lazily-built facilitator client, memoized by resolved URL + non-secret auth

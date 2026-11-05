@@ -46,7 +46,11 @@ export const inferenceUsageReporterSeams = {
   snapshotProvider: (): InferenceUsageSnapshot =>
     getInferenceRouter().usageSnapshot(),
   statsProvider: (): EndpointStats[] => getInferenceRouter().stats(),
-  sender: async (text: string): Promise<void> => { await sendTelegramText(text); },
+  // Throws when Telegram did not accept the page, so every caller keeps its
+  // pending state (the snapshot delta, the offline/recovery transition).
+  sender: async (text: string): Promise<void> => {
+    if (!(await sendTelegramText(text))) throw new Error('Telegram did not accept the report');
+  },
 };
 
 let started = false;

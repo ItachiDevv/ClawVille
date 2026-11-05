@@ -54,6 +54,12 @@ declare module 'lucia' {
       name: string | null;
       avatar_url: string | null;
     };
+    /** Session origin (`sessions.created_via`, migration 0089). Mirrors
+     *  `SessionCreatedVia` in `apps/api/src/lib/auth.ts`; human-only API
+     *  routes refuse NULL and agent-made origins. */
+    DatabaseSessionAttributes: {
+      createdVia: 'password' | 'magic_link' | 'avatar_create' | 'guest' | 'agent_exchange' | null;
+    };
   }
 }
 

@@ -21,6 +21,7 @@ import { vrmPathForSpecies } from '@/lib/three/arena-npcs';
 import { useNpcStore, PLAYER_NPC_ID } from '@/stores/npc';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
+import SpendCapPrompt from '@/components/game/wallet/spend-cap-prompt';
 import LocationConfigModal from '@/components/game/location-config-modal';
 import TutorialOverlay from '@/components/game/tutorial-overlay';
 import ToastNotifications from '@/components/game/toast-notifications';
@@ -684,6 +685,7 @@ export default function GamePage() {
         />
       )}
       <FirstTimeBackupModal />
+      <SpendCapPrompt />
       <SkillBuilderModal />
       <LandOfficeModal />
       <QuestBoardModal />

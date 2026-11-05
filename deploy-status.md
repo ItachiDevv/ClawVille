@@ -14,7 +14,11 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-02 22:35Z (session hydra). **Promotion #22 (PR #333, `5c301780c`) merged to prod; staging carries the follow-up re-bump of burned Hydra asset URLs (VRM `?v=3`, halo `?v=2`); promotion #23 next (DEPLOY LOG 2026-11-02).** SCHEMA: synced.
+Last Audited: 2026-11-04 11:19Z (session claw-2.0). **STAGING API + WEB = `d07940051`, VERIFIED 11:38Z: user spend rules, phase 1 of MCP hub step 2 (PROTOCOL_VERSION 106; migration 0089 applied on the staging DB) (DEPLOY LOG 2026-11-04 11:19Z).** **PROD = `b22947b36` (promotion #23).** SCHEMA: prod-migration-pending: `packages/database/migrations/0089_user_spend_policies.sql`. Promotion needs the founder's go.
+
+Prior - Last Audited: 2026-11-04 02:27Z (session claw-2.0). **STAGING API + WEB = `e28917fba`, VERIFIED: 2026-10-26 audit faults closed** (support ticket relay through the shared Telegram sender with ticket text kept out of logs; reconcile capture pages roll up; a once-per-day page when operator rows fill the sweep cap; alertError keeps its retry window and reports suppressed counts; usage reporter keeps pending state on an undelivered page; one PayAI credit-gate list; API only, no schema, env, route or PROTOCOL_VERSION change; DEPLOY LOG 2026-11-04 02:27Z). **PROD = `b22947b36` (promotion #23).** SCHEMA: synced. Promotion needs the founder's go.
+
+Prior - Last Audited: 2026-11-02 23:08Z (session hydra). **PROD = `b22947b36` (promotion #23, PR #334, VERIFIED 23:07Z): Hydra NPC + halo look (promotion #22, PROTOCOL 105) with re-bumped asset URLs (VRM `?v=3`, halo `?v=2`). Staging = `7a121e1d6`.** Founder look check owed. SCHEMA: synced.
 
 Prior - Last Audited: 2026-11-01 11:34Z (session hydra). **Staging = `cca95a4b5` (`feat/hydra-npc`: mirrored face, black earpiece cups, halo shells `lib/three/hydra-halo.ts`, VRM `?v=2`), VERIFIED on staging 11:33Z (web lane needed a solo retrigger); founder look check owed.**
 
@@ -708,6 +712,30 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-04 11:19Z (session claw-2.0) - user spend rules on staging (phase 1 of MCP hub step 2, PROTOCOL_VERSION 106), VERIFIED
+- **Staging evidence (11:38Z):** CI run 41820029908 success (gates, migrate, deploy); both app containers `SOURCE_COMMIT=d0794005184a7cd22a257d36cf793c8b46964598`; api `/health` 200; web `/game` 200 and renders for a guest with 0 console errors; staging DB has `sessions.created_via`, an empty `user_spend_policies` and its 3 CHECK constraints; unauthenticated GET 401; PUT with an agent session header 403 `spend_policy_human_only`; onboarding smoke 14/14 PASS (served manual version 106); served bundles contain the prompt code. Not checked: the signed-in prompt and Spending card in a browser (founder eyes, FOUNDER-REVIEW entry). Staging disk 87% after the flip (10 GB free).
+- **What changed:** migration 0089 adds `user_spend_policies` (one row per avatar: daily cap, per-call cap, allowed vendors; CHECK 0..100000 cents, per-call <= daily) and nullable `sessions.created_via`. `GET /api/wallet/spend-policy` (human or the avatar's agent, read only); `PUT` for a human session only (agent header refused, `agent_exchange` origin refused, guest and pre-0089 NULL origins asked to sign in again). Every Lucia session creator (API and the two Next.js auth routes) labels its origin. Web: Spending card in the wallet panel and a setup prompt on /game for a signed-in human with unset caps. Manual section "Spend rules", Nori line, PROTOCOL_VERSION 105 -> 106. No money moves: no route spends against these rules yet (phase 2).
+- **What broke / found:** Codex r1 CHANGES REQUIRED (agent-to-cookie exchange bypass, agent header next to a cookie, a throwing storage getter, tests mocking the gates); all fixed with real-middleware and Postgres tests. Codex r2 CHANGES REQUIRED: the Next.js login and signup routes stored NULL origins; fixed in `a17ed8846`. Known gap (documented): an agent that opens its human's magic link itself gets a `magic_link` session.
+- **Local evidence:** services lane 4421 tests + 42 isolated files, 0 fail; route lane with Postgres 721 pass, 0 fail; spend-policy DB test 5/5 on a CI-migrated DB; web tests 11/0; api + web tsc 0; web build exit 0; coupling gate exit 0.
+- **Who it is for:** every signed-in human (sets the agent's spend caps); every agent (reads them before a paid tool call).
+- **SCHEMA:** prod-migration-pending: `0089_user_spend_policies.sql` (additive; CI migration gate applies it on promotion).
+- **PARITY:** human path: PUT /api/wallet/spend-policy (Spending card, setup prompt); agent path: GET /api/wallet/spend-policy (read only by design, the owner sets the rules); binds to the session's active avatar or the agent session's bound avatar.
+
+### 2026-11-04 02:27Z (session claw-2.0) - 2026-10-26 audit faults closed on staging (`e28917fba`), VERIFIED
+- **What changed:** `routes/support.ts` relays tickets through `sendTelegramText` with `logUndeliveredText: false` (its own fetch logged the raw error with the bot-token URL; this path is still on prod). `x402-auto-reconcile.ts`: captured counts roll up so a lost capture page is re-sent; a once-per-24h page when manual + indeterminate rows fill the 50-row sweep cap. `alert-error.ts`: an undelivered page keeps the 60 s window as the retry delay and its count is reported on the next page (the "+N more" line was dead). `inference-usage-reporter.ts`: the default sender throws on an undelivered page. `x402-payai.ts`: one credit-gate list; a plain-text settle 402 that names a credit gate counts toward the breaker and stays ambiguous. ARCHITECTURE.md corrects the overstated 2026-10-26 PayAI facts.
+- **What broke + fix:** the first push (`49cadb292`) failed the money gate: the new alert-error suites restored fake Telegram credentials (saved after the file set them), so a later shared-process test (`mainnet-read-sites-failover`) saw a Telegram fetch. `e28917fba` restores the pre-file values. Product code was not at fault.
+- **Evidence:** Codex VERDICT: APPROVED (2nd pass, read by me). Local CI money lane: 4415 shared tests pass, 42 isolated files pass; tsc 0; coupling gate passes. CI run 41758613957 all jobs green. Both staging containers `e28917fba`; `/health` matches; onboarding smoke 14/14; `/game` renders with 0 console errors (about 30 s load after the web rebuild).
+- **Prod note:** agent-pay settles resumed on 2026-10-26 (37-56 per day, read-only prod query), so the PayAI credits were added.
+- **Who it is for:** ops (no token or ticket text in logs, no lost money pages).
+- **SCHEMA:** synced.
+
+### 2026-11-02 23:08Z (session hydra) - promotion #23 ON PROD (`b22947b36`, PR #334): Hydra asset re-bump, VERIFIED
+- **What changed:** staging `7a121e1d6` promoted. Prod web + api `SOURCE_COMMIT` = `b22947b36` (old web container gone 23:07Z); api `/health` commit `b22947b36`.
+- **Verification (after the flip only):** `hydra-w30k.vrm?v=3` 200 1,071,988 B, `hydra-halo-suit.webp?v=2` 200 91,836 B, `hydra-halo-hot.webp?v=2` 200 8,748 B, all `cf-cache-status: MISS` (fresh). Staging before promotion: same sizes, bundle carries `?v=3`. In-world halo pixels still need the founder's eyes (FOUNDER-REVIEW.md).
+- **What broke:** nothing in this promotion. Promotion #22 (`5c301780c`) was live 22:38-23:07Z with burned URLs, so Hydra's model could fail to load for that period at the PoP that cached the 404.
+- **Who it's for:** players and agents who see Hydra in the prod world.
+- SCHEMA: synced.
 
 ### 2026-11-02 22:35Z (session hydra) - promotion #22 (PR #333, merge `5c301780c`) + STAGING push: burned Hydra asset URLs re-bumped (VRM `?v=3`, halo masks `?v=2`)
 - **What changed:** promotion #22 merged staging `915cb8676` (Hydra coin-analyst NPC, PROTOCOL 105, mirrored face, halo shells) to master; all 4 gates, `migrate` and `deploy` jobs passed. Follow-up staging push bumps `/avatars/hydra-w30k.vrm?v=2` -> `?v=3` and `hydra-halo-{suit,hot}.webp?v=1` -> `?v=2` in `agent-model-registry.ts`, `hydra-halo.ts`, `preview/hermes/page.tsx` and the cold-load ledger test; registry `preview` path fixed from the missing `hydra-turnaround/openai/front.png` to `openai-v2/front.png`.

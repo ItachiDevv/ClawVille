@@ -49,6 +49,7 @@ import { parcelDisplayName, parseParcelCode } from '@clawville/shared';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { useWalletBalances } from '@/hooks/use-wallet-balances';
+import { SpendingCard } from './spending-card';
 import { useGameStore } from '@/stores/game';
 import { claimQuestsAfterStep } from '@/stores/quest';
 import {
@@ -88,6 +89,7 @@ export function WalletPanel({ variant = 'section' }: { variant?: 'section' | 'mo
     <div className={variant === 'modal' ? 'space-y-4' : 'space-y-3'}>
       <CustodialWalletCard address={custodial} />
       {custodial && <WithdrawCard custodialAddress={custodial} />}
+      <SpendingCard />
       <LinkedWalletCard />
     </div>
   );

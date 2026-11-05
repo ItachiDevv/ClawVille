@@ -40,8 +40,8 @@ interface AdvisoryRunResult {
   sweep?: BulkReconcileResult;
 }
 
-/** Resolves false when the page was not delivered; any other value counts as delivered. */
-type SummarySender = (text: string) => Promise<boolean | void>;
+/** Resolves true only when the page was delivered. */
+type SummarySender = (text: string) => Promise<boolean>;
 
 export interface X402AutoReconcileDeps {
   runSweep?: typeof runBulkReconcileSweep;
@@ -118,7 +118,10 @@ let autoInterval: ReturnType<typeof setInterval> | null = null;
 let autoGeneration = 0;
 let lastManualFingerprint = '';
 let pendingClosedNoMoney = 0;
+let pendingCaptured = 0;
+let pendingCapturedUsdCents = 0;
 let lastNoMoneyAlertMs: number | null = null;
+let lastCapBlockedAlertMs: number | null = null;
 
 function manualAlertRows(result: BulkReconcileResult, nowMs: number): string[] {
   return result.verdicts
@@ -132,6 +135,28 @@ function manualAlertRows(result: BulkReconcileResult, nowMs: number): string[] {
     .sort();
 }
 
+/**
+ * The sweep takes the oldest rows first. When every selected row needs an
+ * operator, newer rows never get a turn, so page that once per window.
+ */
+async function maybeSendCapBlocked(
+  result: BulkReconcileResult,
+  send: SummarySender,
+  nowMs: number,
+  maxRows: number,
+): Promise<boolean> {
+  const { selected, manual, indeterminate } = result.summary;
+  if (selected < maxRows || manual + indeterminate < selected) return false;
+  if (lastCapBlockedAlertMs !== null && nowMs - lastCapBlockedAlertMs < NO_MONEY_ROLLUP_MS) return false;
+  const delivered = await send(
+    `auto-reconcile: all ${selected} selected rows need an operator ` +
+      `(${manual} manual, ${indeterminate} indeterminate); newer reconcile rows wait. ` +
+      'Resolve them with the operator CLI.',
+  );
+  if (delivered) lastCapBlockedAlertMs = nowMs;
+  return delivered;
+}
+
 async function maybeSendSummary(
   result: BulkReconcileResult,
   send: SummarySender,
@@ -141,28 +166,33 @@ async function maybeSendSummary(
   const manualRows = manualAlertRows(result, nowMs);
   const fingerprint = manualRows.join(',');
   pendingClosedNoMoney += result.summary.closedNoMoney;
+  pendingCaptured += result.summary.captured;
+  pendingCapturedUsdCents += result.summary.capturedUsdCents;
   // A no-money close moves no money, so on its own it pages once per window.
   // A capture or a new manual set pages at once and carries the rolled-up count.
+  // Captures roll up too, so an undelivered capture page is sent again.
   const noMoneyDue = pendingClosedNoMoney > 0
     && (lastNoMoneyAlertMs === null || nowMs - lastNoMoneyAlertMs >= NO_MONEY_ROLLUP_MS);
   const manualChanged = manualRows.length > 0 && fingerprint !== lastManualFingerprint;
-  if (result.summary.captured === 0 && !noMoneyDue && !manualChanged) {
+  if (pendingCaptured === 0 && !noMoneyDue && !manualChanged) {
     if (manualRows.length === 0) lastManualFingerprint = '';
     return false;
   }
   const closedNoMoney = pendingClosedNoMoney;
   const delivered = await send(
-    `auto-reconcile: captured ${result.summary.captured} ` +
-      `($${(result.summary.capturedUsdCents / 100).toFixed(2)}), ` +
+    `auto-reconcile: captured ${pendingCaptured} ` +
+      `($${(pendingCapturedUsdCents / 100).toFixed(2)}), ` +
       `closed ${closedNoMoney} no-money, ` +
       `${manualRows.length} manual`,
   );
   // An undelivered page keeps the rolled-up count and the old manual set, so
   // the next sweep tries again.
-  if (delivered === false) return false;
+  if (!delivered) return false;
   lastManualFingerprint = fingerprint;
   if (closedNoMoney > 0) lastNoMoneyAlertMs = nowMs;
   pendingClosedNoMoney = 0;
+  pendingCaptured = 0;
+  pendingCapturedUsdCents = 0;
   return true;
 }
 
@@ -227,6 +257,7 @@ export async function runX402AutoReconcilePass(
     let alerted = false;
     try {
       alerted = await maybeSendSummary(locked.sweep, send, now());
+      alerted = (await maybeSendCapBlocked(locked.sweep, send, now().getTime(), config.maxRows)) || alerted;
     } catch (error) {
       // sendTelegramText is never-throw, but preserve that contract for injected
       // test/alternate senders too.
@@ -286,13 +317,11 @@ export function stopX402AutoReconcile(): void {
   autoInterval = null;
 }
 
-/** Test-only state reset without exporting mutable internals. */
-export function resetX402AutoReconcileAlertDedupeForTests(): void {
-  resetAlertState();
-}
-
 function resetAlertState(): void {
   lastManualFingerprint = '';
   pendingClosedNoMoney = 0;
+  pendingCaptured = 0;
+  pendingCapturedUsdCents = 0;
   lastNoMoneyAlertMs = null;
+  lastCapBlockedAlertMs = null;
 }

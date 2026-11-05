@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
       return error('Invalid email or password', 401);
     }
 
-    const session = await lucia.createSession(user.id, {});
+    const session = await lucia.createSession(user.id, { createdVia: 'password' });
     await setSessionCookie(session.id);
 
     return json({ success: true });

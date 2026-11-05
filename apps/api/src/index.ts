@@ -174,6 +174,7 @@ import { walletLinkRoutes } from './routes/wallet-link';
 // WALLET_WITHDRAW_ENABLED; the route itself refuses with a typed 503 while
 // the flag is unset, so this static import is dark-safe.
 import { walletWithdrawRoutes } from './routes/wallet-withdraw';
+import { spendPolicyRoutes } from './routes/spend-policy';
 import { tradingFloorRoutes } from './routes/trading-floor';
 import { adminTradingRoutes } from './routes/admin-trading';
 import { floorArenaRoutes } from './routes/floor-arena';
@@ -523,6 +524,10 @@ app.route('/api/wallet/link', walletLinkRoutes);
 // executor — see services/wallet-withdraw-executor.ts) · GET /api/wallet/
 // balances (read-only custodial SOL+USDC+CLV, live regardless of the flag).
 // LEDGER-UNTOUCHED — on-chain custody assets only, never avatars.clawTokens.
+// Spend rules for paid third-party tools (MCP hub step 2): GET for the human or
+// the avatar's agent, PUT for the human owner only. Mounted before the generic
+// /api/wallet routes.
+app.route('/api/wallet/spend-policy', spendPolicyRoutes);
 app.route('/api/wallet', walletWithdrawRoutes);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.

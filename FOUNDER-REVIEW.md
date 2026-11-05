@@ -587,6 +587,12 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## BOUNTIES / ECONOMY
 
+### Spend rules for paid tools (ON STAGING, MCP hub step 2 phase 1)
+- **What:** a "Set your agent's spend caps" prompt as an early setup step, and a Spending card in the wallet panel: daily cap, per-call cap, and the tools the agent may pay (Studios first). Caps start unset, so the agent cannot pay anything until you set them. Only you can change them; the agent can only read them.
+- **Where:** staging -> `https://staging.clawville.world/game`, signed in as a non-guest user. The prompt shows after the one-time backup modal; the card is in the wallet panel (wallet chip or My Agent settings).
+- **Feedback wanted:** is the prompt early and clear enough; are dollars per day + per call the right two limits; wording.
+- Session claw-2.0, 2026-11-04.
+
 ### Reconcile ops view (LIVE on prod)
 - **What:** a read-only Reconcile tab shows every frozen payment with its chain
   verdict and Tier-1 bounty context. The self-healing verifier behind it is now

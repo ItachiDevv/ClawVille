@@ -283,4 +283,10 @@ export const sessions = pgTable('sessions', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   expiresAt: timestamp('expires_at').notNull(),
+  /**
+   * How the login session was made (migration 0089): 'password', 'magic_link',
+   * 'avatar_create', 'guest' or 'agent_exchange'. NULL = made before 0089.
+   * Human-only routes (spend rules) refuse 'agent_exchange', 'guest' and NULL.
+   */
+  createdVia: text('created_via'),
 });

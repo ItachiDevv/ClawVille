@@ -82,7 +82,7 @@ describeIfDb('activities party routes (requires DATABASE_URL)', () => {
       })
       .returning({ id: avatars.id });
 
-    const session = await lucia.createSession(user.id, {});
+    const session = await lucia.createSession(user.id, { createdVia: 'password' });
     return {
       avatarId: avatar.id,
       displayName,

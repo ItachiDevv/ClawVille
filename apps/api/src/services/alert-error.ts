@@ -34,8 +34,9 @@ function shouldSend(key: string): { send: boolean; suppressedCount: number } {
   const existing = rateLimiter.get(key);
 
   if (!existing || now - existing.firstAt > WINDOW_MS) {
+    // Carry the count that the previous window suppressed into this page.
     rateLimiter.set(key, { firstAt: now, suppressed: 0 });
-    return { send: true, suppressedCount: 0 };
+    return { send: true, suppressedCount: existing?.suppressed ?? 0 };
   }
 
   existing.suppressed += 1;
@@ -49,16 +50,29 @@ export interface AlertErrorParams {
   context?: Record<string, unknown>;
 }
 
+export interface SendTelegramOptions {
+  /**
+   * Log the message text when it is not delivered (default true). Set false
+   * for user-written text, such as a support ticket, that must stay out of logs.
+   */
+  logUndeliveredText?: boolean;
+}
+
 /**
  * Send raw plain text through the itachi-debug Telegram bot. Never throws.
  * Resolves true only when Telegram accepted the message.
  */
-export async function sendTelegramText(text: string): Promise<boolean> {
+export async function sendTelegramText(
+  text: string,
+  options: SendTelegramOptions = {},
+): Promise<boolean> {
+  const logText = options.logUndeliveredText !== false;
   const { token, chatId } = telegramCreds();
   if (!token || !chatId) {
-    console.warn('[alert-error] Telegram credentials not configured, skipping send', {
-      text: redactBotToken(text, token),
-    });
+    console.warn(
+      '[alert-error] Telegram credentials not configured, skipping send',
+      logText ? { text: redactBotToken(text, token) } : {},
+    );
     return false;
   }
 
@@ -76,7 +90,9 @@ export async function sendTelegramText(text: string): Promise<boolean> {
       console.warn(
         `[alert-error] Telegram send rejected (${res.status}): ${redactBotToken(await res.text(), token).slice(0, 200)}`,
       );
-      console.log('[alert-error] Telegram rejected message fallback:', redactBotToken(text, token));
+      if (logText) {
+        console.log('[alert-error] Telegram rejected message fallback:', redactBotToken(text, token));
+      }
       return false;
     }
     return true;
@@ -140,15 +156,6 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     return;
   }
 
-  const { token, chatId } = telegramCreds();
-  if (!token || !chatId) {
-    console.warn('[alert-error] Telegram credentials not configured, skipping alert', {
-      source,
-      message: redactBotToken(message, token),
-    });
-    return;
-  }
-
   const key = `${source}::${message}`;
   const { send, suppressedCount } = shouldSend(key);
   if (!send) return;
@@ -170,8 +177,13 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     lines.push('```');
   }
   if (suppressedCount > 0) {
-    lines.push(`_(+${suppressedCount} more in last 60s)_`);
+    lines.push(`_(+${suppressedCount} more since the last page)_`);
   }
 
-  await sendTelegramText(lines.join('\n'));
+  // An undelivered page keeps its window (the retry delay) and returns its
+  // carried count plus itself to the window, so the next page reports them.
+  if (!(await sendTelegramText(lines.join('\n')))) {
+    const entry = rateLimiter.get(key);
+    if (entry) entry.suppressed += suppressedCount + 1;
+  }
 }

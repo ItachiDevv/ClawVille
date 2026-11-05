@@ -250,6 +250,22 @@ describe('PayAI verify-to-settle sequencing against the in-repo mock facilitator
     expect(requestPaths).toEqual(['/verify', '/settle']);
   });
 
+  it('counts a plain-text settle 402 credit gate toward the breaker but keeps it ambiguous', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-plain-402-credits'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: null,
+      failureReason: 'facilitator_settle_error',
+      facilitatorFailure: 'unavailable',
+    });
+    expect(result.noBroadcast).toBeUndefined();
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
+
   it('matches an allowlisted typed rejection through its message when errorReason is absent', async () => {
     const result = await verifyAndSettle({
       paymentHeader: paymentHeader('settle-rejected-free-tier-message'),

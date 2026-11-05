@@ -241,6 +241,10 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
       say(`POST /settle → generic HTTP 503 with quota text network=${network}`);
       return c.json({ error: 'free_tier_exhausted' }, 503);
     }
+    if (directive === 'settle-plain-402-credits') {
+      say(`POST /settle → plain-text HTTP 402 credit gate network=${network}`);
+      return c.text('insufficient_credits: Your credit balance is too low for this payment.', 402);
+    }
     if (directive === 'settle-error') {
       say(`POST /settle → HTTP 500 (forced) network=${network}`);
       return c.json({ error: 'mock_forced_settlement_error' }, 500);

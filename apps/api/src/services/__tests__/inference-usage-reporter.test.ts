@@ -466,3 +466,23 @@ describe('inference box status watcher', () => {
     expect(sender).not.toHaveBeenCalled();
   });
 });
+
+describe('default Telegram sender', () => {
+  it('throws when Telegram does not accept the page, so callers keep their pending state', async () => {
+    const token = process.env.ITACHI_DEBUG_BOT_TOKEN;
+    const chat = process.env.ITACHI_DEBUG_CHAT_ID;
+    delete process.env.ITACHI_DEBUG_BOT_TOKEN;
+    delete process.env.ITACHI_DEBUG_CHAT_ID;
+    const warn = console.warn;
+    console.warn = () => undefined;
+    try {
+      await expect(originalSender('probe')).rejects.toThrow('Telegram did not accept the report');
+    } finally {
+      console.warn = warn;
+      if (token === undefined) delete process.env.ITACHI_DEBUG_BOT_TOKEN;
+      else process.env.ITACHI_DEBUG_BOT_TOKEN = token;
+      if (chat === undefined) delete process.env.ITACHI_DEBUG_CHAT_ID;
+      else process.env.ITACHI_DEBUG_CHAT_ID = chat;
+    }
+  });
+});

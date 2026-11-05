@@ -192,7 +192,7 @@ async function main() {
         const sessionId =
           crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
         const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
-        await tx.insert(sessions).values({ id: sessionId, userId, expiresAt });
+        await tx.insert(sessions).values({ id: sessionId, userId, expiresAt, createdVia: 'password' });
         return { userId, avatarId, sessionId };
       });
 

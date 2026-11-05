@@ -352,7 +352,7 @@ authRoutes.post('/signup', async (c) => {
     name: name || email.split('@')[0],
   });
 
-  const session = await lucia.createSession(userId, {});
+  const session = await lucia.createSession(userId, { createdVia: 'password' });
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
@@ -480,7 +480,7 @@ authRoutes.post('/login', async (c) => {
     throw new HTTPException(401, { message: 'Invalid email or password' });
   }
 
-  const session = await lucia.createSession(user.id, {});
+  const session = await lucia.createSession(user.id, { createdVia: 'password' });
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
@@ -944,7 +944,7 @@ authRoutes.get('/enter', async (c) => {
   // `apps/api/src/lib/auth.ts`).
   let createdSessionId: string | null = null;
   try {
-    const session = await lucia.createSession(consumed.userId, {});
+    const session = await lucia.createSession(consumed.userId, { createdVia: 'magic_link' });
     const cookie = lucia.createSessionCookie(session.id);
     c.header('Set-Cookie', cookie.serialize());
     createdSessionId = session.id;
@@ -1089,7 +1089,7 @@ authRoutes.post('/milady-session-exchange', async (c) => {
   }
 
   // Create a Lucia session for the bound owner
-  const session = await lucia.createSession(user.id, {});
+  const session = await lucia.createSession(user.id, { createdVia: 'agent_exchange' });
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
@@ -1313,7 +1313,7 @@ authRoutes.post('/guest', async (c) => {
 
   // Lucia session cookie — same attributes as signup/login (sameSite +
   // secure flags driven by NODE_ENV via lib/auth.ts).
-  const session = await lucia.createSession(userId, {});
+  const session = await lucia.createSession(userId, { createdVia: 'guest' });
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
