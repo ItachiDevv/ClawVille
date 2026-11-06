@@ -39,7 +39,7 @@ export function studiosErrorText(error: unknown): string {
       case 'rate_limited':
         return 'Too many images. Wait one minute.';
       case 'awaiting_approval':
-        return 'This image waits in Approvals below, because this browser sign-in cannot prove it is you. Approve it there, or sign out and sign in again to make images directly.';
+        return '"Ask me before each payment" is on, so this image waits in Approvals below. Approve it there with your linked wallet.';
       case 'approval_pending_limit':
         return 'Five requests already wait in Approvals. Approve or decline them first.';
       case 'daily_limit':
@@ -137,8 +137,8 @@ export function StudiosCard() {
     },
     onSuccess: (result) => {
       setPending(null);
-      // A browser sign-in from before the approval rule counts as the agent,
-      // so with "ask me before each payment" on its image waits in Approvals.
+      // With "ask me before each payment" on, every image waits in Approvals
+      // (below) until the linked wallet signs the approval.
       if ('status' in result) {
         setError(new ApiError('awaiting_approval', 202, 'awaiting_approval'));
         queryClient.invalidateQueries({ queryKey: STUDIOS_APPROVALS_QUERY_KEY });

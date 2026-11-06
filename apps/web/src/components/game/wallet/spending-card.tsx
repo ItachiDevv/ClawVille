@@ -44,7 +44,7 @@ export function saveErrorText(error: unknown): string {
   if (error instanceof WalletSignError) return error.message;
   if (error instanceof ApiError) {
     if (error.code === 'spend_policy_needs_wallet_link') {
-      return 'Link your own wallet first (below). Your linked wallet must approve higher caps.';
+      return 'Link your own wallet first (below). Your linked wallet must approve higher caps, and it signs each payment you approve.';
     }
     if (error.code === 'spend_policy_needs_wallet_proof' || error.code === 'spend_policy_invalid_wallet_proof') {
       return 'Your linked wallet must approve higher caps. Approve the signature in your wallet and try again.';
@@ -232,9 +232,9 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
               <span className="space-y-1">
                 <span className="block font-semibold">Ask me before each payment</span>
                 <span className="block text-white/55 leading-relaxed">
-                  Each paid image your agent asks for waits in Approvals (below) until you approve or decline it.
-                  It expires after 15 minutes. Images you make yourself do not wait. Turning this off needs your
-                  linked wallet to sign.
+                  Each paid image (your agent&apos;s and your own) waits in Approvals (below) until you approve it
+                  with your linked wallet, or decline it. It expires after 15 minutes. Turning this on needs a
+                  linked wallet; turning it off needs your linked wallet to sign.
                 </span>
               </span>
             </label>

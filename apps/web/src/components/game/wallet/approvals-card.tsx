@@ -3,10 +3,13 @@
 /**
  * "Ask me before each payment" (founder go 2026-11-06).
  *
- * ApprovalsCard (wallet panel): every paid-tool request of the agent that
- * waits for the human, with Approve and Decline. The prompt is the agent's
- * own text, so it is untrusted: it renders as plain React text only (never
- * HTML, never markdown, never a link).
+ * ApprovalsCard (wallet panel): every paid-tool request that waits for the
+ * human (the agent's, and the human's own from the Studios images card), with
+ * Approve and Decline. Approve asks the server for a challenge and the human's
+ * linked wallet signs it (a session cookie alone never approves a payment);
+ * Decline needs no signature. The prompt is the agent's own text, so it is
+ * untrusted: it renders as plain React text only (never HTML, never markdown,
+ * never a link).
  *
  * ApprovalNotice (/game): a small pill while a request waits; it opens the
  * wallet panel. Both read GET /api/vendors/studios/approvals (human session
@@ -18,6 +21,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { VendorCallApprovalView } from '@clawville/shared';
 import { api, ApiError } from '@/lib/api';
+import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
 import { STUDIOS_APPROVALS_QUERY_KEY, useHumanSpendPolicy } from './spending-card';
@@ -42,8 +46,17 @@ export function approvalPriceText(item: Pick<VendorCallApprovalView, 'mode' | 'm
 
 /** Plain text for a failed approve or decline. Branches on the API code only. */
 export function approvalErrorText(error: unknown): string {
+  // The wallet's own messages are plain text written for people.
+  if (error instanceof WalletSignError) return error.message;
   if (error instanceof ApiError) {
     switch (error.code) {
+      case 'studios_approval_needs_wallet_link':
+        return 'Link your own wallet in the wallet panel first. It signs each payment you approve.';
+      case 'studios_approval_needs_wallet_proof':
+      case 'studios_approval_invalid_wallet_proof':
+        return 'Your wallet signature did not match. Try again and approve the request in your wallet.';
+      case 'approval_terms_changed':
+        return 'The request or its price limit changed. Nothing was paid. Approve it again.';
       case 'approval_expired':
         return 'This request expired. Nothing was paid.';
       case 'approval_not_awaiting':
@@ -102,9 +115,13 @@ export function ApprovalsCard() {
     queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
   };
   const decide = useMutation({
-    mutationFn: async (input: { requestId: string; approve: boolean }) => (
-      input.approve ? api.approveStudiosRequest(input.requestId) : api.declineStudiosRequest(input.requestId)
-    ),
+    mutationFn: async (input: { requestId: string; approve: boolean }) => {
+      if (!input.approve) return api.declineStudiosRequest(input.requestId);
+      // Approving a payment: the human's linked wallet signs this one request.
+      const challenge = await api.studiosApprovalChallenge(input.requestId);
+      const signed = await signMessageWithSolanaWallet(challenge.messageToSign, challenge.walletPubkey);
+      return api.approveStudiosRequest(input.requestId, { nonce: challenge.nonce, signature: signed.signatureBase58 });
+    },
     onMutate: (input) => setErrors((current) => {
       const next = { ...current };
       delete next[input.requestId];
@@ -131,12 +148,12 @@ export function ApprovalsCard() {
           <p className="text-xs text-red-300">{approvalErrorText(query.error)}</p>
         ) : approvals.length === 0 ? (
           <p className="text-xs text-white/60">
-            No payment waits for you. With &quot;Ask me before each payment&quot; on (Spending, above), each paid image your agent asks for waits here.
+            No payment waits for you. With &quot;Ask me before each payment&quot; on (Spending, above), each paid image waits here until you approve it with your linked wallet.
           </p>
         ) : (
           approvals.map((item) => (
             <div key={item.requestId} className="rounded-md border border-white/15 bg-black/30 p-3 space-y-2" data-testid="approval-item">
-              <p className="text-xs text-white/55">Your agent asks for a Studios image:</p>
+              <p className="text-xs text-white/55">{item.surface === 'hosted' ? 'Your agent asks' : 'A request asks'} for a Studios image:</p>
               {/* Agent text: plain text only. */}
               <p className="text-sm text-white whitespace-pre-wrap break-words" data-testid="approval-prompt">{item.prompt}</p>
               <p className="text-xs text-white/70">{approvalPriceText(item)}</p>
@@ -149,7 +166,7 @@ export function ApprovalsCard() {
                   onClick={() => decide.mutate({ requestId: item.requestId, approve: true })}
                   className="min-h-[44px] rounded-md bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-sm font-bold text-white"
                 >
-                  {busyId === item.requestId && decide.variables?.approve ? 'Making...' : 'Approve'}
+                  {busyId === item.requestId && decide.variables?.approve ? 'Approving...' : 'Approve'}
                 </button>
                 <button
                   type="button"

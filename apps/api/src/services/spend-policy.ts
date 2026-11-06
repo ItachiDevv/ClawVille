@@ -182,6 +182,14 @@ export async function applySpendPolicyChange(
       .limit(1);
     const currentView = toSpendPolicyView(current);
     const next = resolveSpendPolicyValues(input, currentView);
+    // "Ask me before each payment" needs the linked wallet: it signs each
+    // approval, so with no wallet nobody could ever approve a payment.
+    if (next.requireApproval && !currentView.requireApproval) {
+      const ownerRows = await tx.execute<{ linked_wallet_pubkey: string | null }>(
+        sql`SELECT linked_wallet_pubkey FROM users WHERE id = ${userId} FOR SHARE`,
+      );
+      if (!Array.from(ownerRows)[0]?.linked_wallet_pubkey) return { kind: 'needs_wallet_link' } as const;
+    }
     if (isSpendPolicyRaise(currentView, next)) {
       // FOR SHARE conflicts with the wallet-link FOR UPDATE: a wallet change
       // cannot commit between this read and the policy write, so a proof from

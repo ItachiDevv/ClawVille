@@ -241,6 +241,9 @@ describe('v112: "Ask me before each payment" in the served manual and Nori', () 
     expect(page).toContain('Do not send it again.');
     expect(page).toContain('Only your human can approve or decline it');
     expect(page).toContain('`403 studios_approval_human_only`');
+    expect(page).toContain("Approving needs a signature from your human's linked wallet");
+    expect(page).toContain('A session cookie alone never approves');
+    expect(page).toContain("your human's own web form too");
     expect(page).toContain('`approval_pending_limit`');
     expect(page).not.toContain('—');
   });
@@ -260,6 +263,7 @@ describe('v112: "Ask me before each payment" in the served manual and Nori', () 
     const lines = townGuide.knowledge.filter((entry) => entry.includes('Ask me before each payment'));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('Approvals');
+    expect(lines[0]).toContain('linked wallet');
     expect(lines[0]).not.toContain('—');
   });
 });

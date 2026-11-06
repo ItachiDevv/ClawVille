@@ -17,8 +17,10 @@ import {
   declineStudiosRequest,
   generateStudiosImage,
   listAwaitingApprovals,
+  readApprovalTerms,
   readStudiosRequest,
 } from '../../services/studios-images';
+import { promptSha256 } from '../../services/spend-policy-proof';
 import { applySpendPolicyChange, readSpendPolicy, writeSpendPolicy } from '../../services/spend-policy';
 import { SOLANA_MAINNET } from '../../services/outbound-x402';
 import { deleteVendorKey, saveVendorKey } from '../../services/vendor-credentials';
@@ -101,6 +103,13 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     return Number(first(await db.execute<{ n: number | string }>(sql`SELECT COUNT(*)::int AS n FROM vendor_spend_ledger WHERE avatar_id = ${avatarId}`)).n);
   }
 
+  /** Approve with the terms the linked wallet signs (the route verifies the signature). */
+  async function approve(requestId: string) {
+    const read = await readApprovalTerms(avatarId, requestId);
+    if (!read.ok) return { result: read.result, surface: null };
+    return approveStudiosRequest({ avatarId, userId, requestId, terms: read.terms });
+  }
+
   async function waitingRequest(opts: { surface?: 'api' | 'hosted'; prompt?: string } = {}) {
     const r = await generateStudiosImage({ avatarId, actor: 'agent', prompt: opts.prompt ?? 'a crab', idempotencyKey: key(), surface: opts.surface });
     if (r.ok || r.code !== 'awaiting_approval') throw new Error(`expected awaiting_approval, got ${JSON.stringify(r)}`);
@@ -171,10 +180,43 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     expect(Number(n)).toBe(1);
   });
 
-  it('a request the human made does not wait', async () => {
+  it('a request from the human web form waits too (a cookie cannot prove the human pressed the button)', async () => {
     const r = await generateStudiosImage({ avatarId, actor: 'human', prompt: 'mine', idempotencyKey: key() });
-    expect(r).toMatchObject({ ok: true, mode: 'account' });
+    expect(r).toMatchObject({ ok: false, code: 'awaiting_approval', httpStatus: 202 });
+    expect(vendorCalls).toBe(0);
+  });
+
+  it('the signed terms name the request, the payer, the amount and the prompt hash; other terms refuse', async () => {
+    const r = await waitingRequest({ prompt: 'exact prompt' });
+    const read = await readApprovalTerms(avatarId, r.requestId);
+    expect(read).toEqual({ ok: true, terms: { avatarId, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('exact prompt') } });
+    if (!read.ok) throw new Error('expected terms');
+    const other = { ...read.terms, promptSha256: promptSha256('another prompt') };
+    expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: other })).result).toMatchObject({ ok: false, code: 'approval_terms_changed' });
+    expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: { ...read.terms, mode: 'wallet', maxUsdCents: 25 } })).result).toMatchObject({ ok: false, code: 'approval_terms_changed' });
+    expect(await statusOf(r.requestId)).toBe('awaiting_approval');
+    expect(vendorCalls).toBe(0);
+  });
+
+  it('an approve after UTC midnight counts on the day it ran (limit 1)', async () => {
+    await setRule({ requireApproval: true, perDay: 1 });
+    // Queued "yesterday at 23:59", approved today: it is today's one image.
+    const a = await waitingRequest();
+    await db.execute(sql`UPDATE vendor_call_requests SET created_at = date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 minute' WHERE id = ${a.requestId}`);
+    expect((await approve(a.requestId)).result).toMatchObject({ ok: true });
+    expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'second today', idempotencyKey: key() })).toMatchObject({ ok: false, code: 'daily_limit' });
     expect(vendorCalls).toBe(1);
+  });
+
+  it('approve counts this request with the ones that already ran today', async () => {
+    await setRule({ requireApproval: true, perDay: 1 });
+    const a = await waitingRequest();
+    // One own-key image already ran today (for example made while the rule was off).
+    await db.execute(sql`INSERT INTO vendor_call_requests (avatar_id, vendor, actor, surface, mode, status, idempotency_key)
+      VALUES (${avatarId}, 'studios', 'human', 'api', 'account', 'done', ${key()})`);
+    expect((await approve(a.requestId)).result).toMatchObject({ ok: false, code: 'daily_limit' });
+    expect(await statusOf(a.requestId)).toBe('awaiting_approval');
+    expect(vendorCalls).toBe(0);
   });
 
   it('with the rule off, an agent request runs at once (no change for anyone who did not turn it on)', async () => {
@@ -185,7 +227,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
 
   it('approve runs the same pipeline once; the status read then shows the image', async () => {
     const r = await waitingRequest();
-    const { result, surface } = await approveStudiosRequest({ avatarId, userId, requestId: r.requestId });
+    const { result, surface } = await approve(r.requestId);
     expect(surface).toBe('api');
     expect(result).toMatchObject({ ok: true, mode: 'account' });
     expect(vendorCalls).toBe(1);
@@ -196,7 +238,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     const decided = first(await db.execute<{ decided_by_user_id: string }>(sql`SELECT decided_by_user_id FROM vendor_call_requests WHERE id = ${r.requestId}`));
     expect(decided.decided_by_user_id).toBe(userId);
     // A same-key retry by the agent now returns the finished image, no new call.
-    expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId })).result).toMatchObject({ ok: false, code: 'approval_not_awaiting' });
+    expect((await approve(r.requestId)).result).toMatchObject({ ok: false, code: 'approval_not_awaiting' });
     expect(vendorCalls).toBe(1);
   });
 
@@ -204,8 +246,8 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     fakeStudiosImage(50);
     const r = await waitingRequest();
     const [a, b] = await Promise.all([
-      approveStudiosRequest({ avatarId, userId, requestId: r.requestId }),
-      approveStudiosRequest({ avatarId, userId, requestId: r.requestId }),
+      approve(r.requestId),
+      approve(r.requestId),
     ]);
     const codes = [a.result, b.result].map((x) => (x.ok ? 'ok' : x.code)).sort();
     expect(codes).toEqual(['approval_not_awaiting', 'ok']);
@@ -219,7 +261,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     expect(await declineStudiosRequest({ avatarId, userId, requestId: r.requestId })).toMatchObject({ ok: true, status: 'declined' });
     expect(await statusOf(r.requestId)).toBe('declined');
     expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'no', idempotencyKey: idem })).toMatchObject({ ok: false, code: 'approval_declined' });
-    expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId })).result).toMatchObject({ ok: false, code: 'approval_not_awaiting' });
+    expect((await approve(r.requestId)).result).toMatchObject({ ok: false, code: 'approval_not_awaiting' });
     expect(await declineStudiosRequest({ avatarId, userId, requestId: r.requestId })).toMatchObject({ ok: false, result: { code: 'approval_not_awaiting' } });
     expect(vendorCalls).toBe(0);
   });
@@ -229,7 +271,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     const r = await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'late', idempotencyKey: idem });
     if (r.ok || r.code !== 'awaiting_approval') throw new Error('expected awaiting');
     await db.execute(sql`UPDATE vendor_call_requests SET expires_at = now() - interval '1 second' WHERE id = ${r.requestId}`);
-    expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId })).result).toMatchObject({ ok: false, code: 'approval_expired' });
+    expect((await approve(r.requestId)).result).toMatchObject({ ok: false, code: 'approval_expired' });
     expect(await readStudiosRequest(avatarId, r.requestId)).toMatchObject({ status: 'expired' });
     expect(await listAwaitingApprovals(avatarId)).toEqual([]);
     expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'late', idempotencyKey: idem })).toMatchObject({ ok: false, code: 'approval_expired' });
@@ -252,7 +294,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     expect(await generateStudiosImage({ avatarId, actor: 'agent', prompt: 'third', idempotencyKey: key() })).toMatchObject({ ok: false, code: 'daily_limit' });
     // The human lowers the limit to 0 before approving: refused, nothing called, still waiting.
     await setRule({ requireApproval: true, perDay: 0 });
-    expect((await approveStudiosRequest({ avatarId, userId, requestId: a.requestId })).result).toMatchObject({ ok: false, code: 'daily_limit' });
+    expect((await approve(a.requestId)).result).toMatchObject({ ok: false, code: 'daily_limit' });
     expect(await statusOf(a.requestId)).toBe('awaiting_approval');
     expect(vendorCalls).toBe(0);
     // A declined request does not use up the day.
@@ -264,7 +306,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
   it('refuses at approve when the payer changed (the key was removed)', async () => {
     const r = await waitingRequest();
     await deleteVendorKey(avatarId, 'studios');
-    expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId })).result).toMatchObject({ ok: false, code: 'approval_mode_changed' });
+    expect((await approve(r.requestId)).result).toMatchObject({ ok: false, code: 'approval_mode_changed' });
     expect(await statusOf(r.requestId)).toBe('awaiting_approval');
     expect(vendorCalls).toBe(0);
     expect(await declineStudiosRequest({ avatarId, userId, requestId: r.requestId })).toMatchObject({ ok: true });
@@ -286,17 +328,41 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     // A fake avatar wallet (public key only; it is never decrypted here).
     await db.execute(sql`INSERT INTO wallets (subject_type, subject_id, public_key, encrypted_secret_key, encryption_iv, encryption_tag)
       VALUES ('avatar', ${avatarId}, ${`${tag}FakePubkey`}, 'x', 'x', 'x')`);
-    // The human lowers the caps before approving: the quote is above the new per-call cap.
+    // Signed at "at most $0.10", then the human lowers the caps: the quote is above the new per-call cap.
+    const signed = await readApprovalTerms(avatarId, r.requestId);
+    if (!signed.ok) throw new Error('expected terms');
+    expect(signed.terms).toMatchObject({ mode: 'wallet', maxUsdCents: 10 });
     await setRule({ requireApproval: true, daily: 0, perCall: 0, vendors: ['studios'] });
     fakeStudiosQuote();
-    const { result } = await approveStudiosRequest({ avatarId, userId, requestId: r.requestId });
+    const { result } = await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: signed.terms });
     expect(result).toMatchObject({ ok: false, code: 'over_per_call_cap' });
     expect(vendorCalls).toBe(1); // the unpaid quote only
     expect(await ledgerRows()).toBe(0);
     expect(await readStudiosRequest(avatarId, r.requestId)).toMatchObject({ status: 'failed', code: 'over_per_call_cap' });
   });
 
-  it('turning the rule on needs no signature; turning it off needs the linked wallet', async () => {
+  it('wallet mode: a quote above the signed amount pays nothing', async () => {
+    await deleteVendorKey(avatarId, 'studios');
+    await setRule({ requireApproval: true, daily: 100, perCall: 10, vendors: ['studios'] });
+    const r = await waitingRequest();
+    await db.execute(sql`INSERT INTO wallets (subject_type, subject_id, public_key, encrypted_secret_key, encryption_iv, encryption_tag)
+      VALUES ('avatar', ${avatarId}, ${`${tag}FakePubkey2`}, 'x', 'x', 'x') ON CONFLICT DO NOTHING`);
+    fakeStudiosQuote();
+    const read = await readApprovalTerms(avatarId, r.requestId);
+    if (!read.ok) throw new Error('expected terms');
+    // The human signed for at most $0.00; Studios quotes $0.005.
+    const { result } = await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: { ...read.terms, maxUsdCents: 0 } });
+    expect(result).toMatchObject({ ok: false, code: 'vendor_quote_invalid' });
+    expect(await ledgerRows()).toBe(0);
+  });
+
+  it('turning the rule on needs a linked wallet but no signature; turning it off needs the linked wallet signature', async () => {
+    await db.execute(sql`UPDATE users SET linked_wallet_pubkey = NULL WHERE id = ${userId}`);
+    await setRule({ requireApproval: false });
+    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[] };
+    // With no linked wallet nobody could approve, so turning it on is refused.
+    expect(await applySpendPolicyChange(avatarId, userId, { ...unset, requireApproval: true }, null)).toEqual({ kind: 'needs_wallet_link' });
+    expect(await readSpendPolicy(avatarId)).toMatchObject({ requireApproval: false });
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${`${tag}LinkedWallet`} WHERE id = ${userId}`);
     await setRule({ requireApproval: false });
     const base = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[] };
@@ -312,7 +378,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     const r = await waitingRequest();
     const other = '00000000-0000-4000-8000-000000000000';
     expect(await readStudiosRequest(other, r.requestId)).toBeNull();
-    expect((await approveStudiosRequest({ avatarId: other, userId, requestId: r.requestId })).result).toMatchObject({ ok: false, code: 'approval_not_found' });
+    expect((await approveStudiosRequest({ avatarId: other, userId, requestId: r.requestId, terms: { avatarId: other, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('a crab') } })).result).toMatchObject({ ok: false, code: 'approval_not_found' });
     expect(await declineStudiosRequest({ avatarId: other, userId, requestId: r.requestId })).toMatchObject({ ok: false, result: { code: 'approval_not_found' } });
     expect(await statusOf(r.requestId)).toBe('awaiting_approval');
   });

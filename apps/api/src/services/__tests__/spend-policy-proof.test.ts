@@ -4,8 +4,12 @@ import bs58 from 'bs58';
 import { isSpendPolicyRaise } from '@clawville/shared';
 import {
   _resetSpendProofNoncesForTest,
+  buildApprovalMessage,
   buildSpendRulesMessage,
+  issueApprovalChallenge,
   issueSpendProofChallenge,
+  promptSha256,
+  verifyApprovalProof,
   verifySpendProof,
 } from '../spend-policy-proof';
 
@@ -95,5 +99,39 @@ describe('isSpendPolicyRaise', () => {
     expect(isSpendPolicyRaise(asking, asking)).toBe(false);
     // On while a cap goes down: still not a raise.
     expect(isSpendPolicyRaise(VALUES, { ...asking, dailyCapUsdCents: 100 })).toBe(false);
+  });
+});
+
+describe('approval proof ("ask me before each payment")', () => {
+  const TERMS = {
+    avatarId: 'avatar-1',
+    requestId: 'req-1',
+    mode: 'wallet' as const,
+    maxUsdCents: 10,
+    promptSha256: promptSha256('a crab'),
+  };
+
+  it('names the account, avatar, request, payer, the most it costs and the prompt hash', () => {
+    expect(buildApprovalMessage('user-1', TERMS, 'NONCE')).toBe(
+      `ClawVille payment approval\naccount: user-1\navatar: avatar-1\nrequest: req-1\ntool: Studios image\npays: my agent wallet, at most $0.10\nprompt sha256: ${promptSha256('a crab')}\nnonce: NONCE`,
+    );
+    expect(buildApprovalMessage('user-1', { ...TERMS, mode: 'account', maxUsdCents: null }, 'N'))
+      .toContain('pays: my own Studios key (my Studios credits)');
+  });
+
+  it('accepts the linked wallet once, and refuses another wallet, other terms or a replay', () => {
+    const challenge = issueApprovalChallenge('user-1', TERMS);
+    expect(verifyApprovalProof({ userId: 'user-1', terms: TERMS, nonce: challenge.nonce, signature: sign(challenge.messageToSign, other.secretKey), walletPubkey })).toBe('invalid_signature');
+    const second = issueApprovalChallenge('user-1', TERMS);
+    expect(verifyApprovalProof({ userId: 'user-1', terms: { ...TERMS, maxUsdCents: 25 }, nonce: second.nonce, signature: sign(second.messageToSign), walletPubkey })).toBe('invalid_challenge');
+    const third = issueApprovalChallenge('user-1', TERMS);
+    const input = { userId: 'user-1', terms: TERMS, nonce: third.nonce, signature: sign(third.messageToSign), walletPubkey };
+    expect(verifyApprovalProof(input)).toBe('ok');
+    expect(verifyApprovalProof(input)).toBe('invalid_challenge');
+  });
+
+  it('a spend-rules challenge never approves a payment', () => {
+    const challenge = issueSpendProofChallenge('user-1', VALUES);
+    expect(verifyApprovalProof({ userId: 'user-1', terms: TERMS, nonce: challenge.nonce, signature: sign(challenge.messageToSign), walletPubkey })).toBe('invalid_challenge');
   });
 });

@@ -144,6 +144,62 @@ export function verifyVendorKeyProof(input: {
     buildVendorKeyMessage(input.userId, input.vendor, input.action, input.key, input.nonce));
 }
 
+/**
+ * Approving one waiting paid-tool request ("ask me before each payment", lead
+ * decision 2026-11-06 after the Codex review): a magic link passes through the
+ * agent, so a session cookie alone never approves a payment. The human's linked
+ * wallet signs a message that names the account, the avatar, the request, who
+ * pays and the most it can cost, and the SHA-256 of the prompt.
+ */
+export interface ApprovalTerms {
+  avatarId: string;
+  requestId: string;
+  mode: 'wallet' | 'account';
+  /** Wallet mode: the most the call may cost; the approve enforces it. Null in account mode. */
+  maxUsdCents: number | null;
+  /** Lowercase hex SHA-256 of the prompt as stored. */
+  promptSha256: string;
+}
+
+export function promptSha256(prompt: string): string {
+  return createHash('sha256').update(prompt, 'utf8').digest('hex');
+}
+
+export function buildApprovalMessage(userId: string, terms: ApprovalTerms, nonce: string): string {
+  return [
+    'ClawVille payment approval',
+    `account: ${userId}`,
+    `avatar: ${terms.avatarId}`,
+    `request: ${terms.requestId}`,
+    'tool: Studios image',
+    terms.mode === 'account'
+      ? 'pays: my own Studios key (my Studios credits)'
+      : `pays: my agent wallet, at most ${usd(terms.maxUsdCents ?? 0)}`,
+    `prompt sha256: ${terms.promptSha256}`,
+    `nonce: ${nonce}`,
+  ].join('\n');
+}
+
+export function issueApprovalChallenge(userId: string, terms: ApprovalTerms): SpendProofChallenge {
+  const nonce = bs58.encode(randomBytes(32));
+  const message = buildApprovalMessage(userId, terms, nonce);
+  const expiresAtMs = Date.now() + NONCE_TTL_MS;
+  nonces.set(nonce, { userId, message, expiresAt: expiresAtMs });
+  return { nonce, expiresAt: new Date(expiresAtMs).toISOString(), messageToSign: message };
+}
+
+/** Consume the nonce and verify the linked wallet signed THESE terms for THIS user. */
+export function verifyApprovalProof(input: {
+  userId: string;
+  terms: ApprovalTerms;
+  nonce: string;
+  signature: string;
+  walletPubkey: string;
+}): SpendProofResult {
+  return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
+    buildApprovalMessage(input.userId, input.terms, input.nonce));
+}
+
 function verifyMessage(userId: string, nonce: string, signature: string, walletPubkey: string, expected: string): SpendProofResult {
   const entry = nonces.get(nonce);
   if (!entry) return 'invalid_challenge';

@@ -10,8 +10,11 @@
  *          avatar (agent or human): status, and the image path when done.
  *   GET    /api/vendors/studios/approvals  the requests that wait for the
  *          human ("ask me before each payment"). Human only.
- *   POST   /api/vendors/studios/approvals/:id/approve  run one waiting
- *          request now (every cap and limit checked again). Human only.
+ *   POST   /api/vendors/studios/approvals/:id/challenge  the message for
+ *          the human's linked wallet to sign for ONE waiting request. Human only.
+ *   POST   /api/vendors/studios/approvals/:id/approve  body `{ proof }`: run
+ *          one waiting request now (every cap and limit checked again). Human
+ *          only, and only with the linked wallet's signature over the challenge.
  *   POST   /api/vendors/studios/approvals/:id/decline  decline it; nothing
  *          is called or paid. Human only.
  *   GET    /api/vendors/studios/key     whether a key is saved (last 4 only).
@@ -30,9 +33,12 @@
  * all through `services/studios-images.ts`. The key routes are human-only by
  * design: the human chooses whose account pays, and the linked wallet signs
  * each change (a magic-link session alone does not prove a human).
- * "Ask me before each payment": an agent request answers 202
- * `awaiting_approval` and the agent reads `GET /requests/:id`; approve and
- * decline are human-only by design (the owner decides each payment), like the
+ * "Ask me before each payment": every image request (the human's web form
+ * too) answers 202 `awaiting_approval` and the agent reads `GET /requests/:id`;
+ * approve needs the linked wallet's signature (a magic link passes through the
+ * agent, so a cookie alone never approves); decline needs only the human
+ * session (it spends nothing). Both are human-only by design (the owner
+ * decides each payment), like the
  * spend-rules write.
  */
 
@@ -56,13 +62,20 @@ import {
 } from '../middleware/require-human-session';
 import type { SessionCreatedVia } from '../lib/auth';
 import { noStorePrivate } from '../middleware/no-store';
-import { issueVendorKeyChallenge, vendorKeyRef, verifyVendorKeyProof } from '../services/spend-policy-proof';
+import {
+  issueApprovalChallenge,
+  issueVendorKeyChallenge,
+  vendorKeyRef,
+  verifyApprovalProof,
+  verifyVendorKeyProof,
+} from '../services/spend-policy-proof';
 import {
   approveStudiosRequest,
   declineStudiosRequest,
   generateStudiosImage,
   listAwaitingApprovals,
   listMedia,
+  readApprovalTerms,
   readStudiosRequest,
 } from '../services/studios-images';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
@@ -111,10 +124,10 @@ vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requir
     return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many image calls. Wait one minute.' }, 429);
   }
 
-  // A cookie session counts as the human only when a human sign-in made it.
-  // An agent can trade its session for its owner's cookie ('agent_exchange'),
-  // and a session from before migration 0089 has no origin: both count as
-  // the agent, so "ask me before each payment" cannot be bypassed that way.
+  // The recorded actor: a cookie counts as the human only when a human
+  // sign-in made it ('agent_exchange' and pre-0089 sessions count as the
+  // agent). It does not decide the wait: with "ask me before each payment" on,
+  // every request waits for the linked wallet's signature.
   const createdVia = (c.get('session') as { createdVia?: SessionCreatedVia | null } | null | undefined)?.createdVia ?? null;
   const humanPressed = identity.kind === 'user' && createdVia !== null && HUMAN_SESSION_ORIGINS.has(createdVia);
   const result = await generateStudiosImage({
@@ -233,14 +246,60 @@ vendorStudiosRoutes.get('/approvals', ...approvalGate, async (c) => {
   return c.json({ approvals: await listAwaitingApprovals(await activeAvatarId(user.id)) });
 });
 
-vendorStudiosRoutes.post('/approvals/:id/approve', ...approvalGate, async (c) => {
+const APPROVAL_NEEDS_WALLET_LINK = {
+  error: 'studios_approval_needs_wallet_link',
+  code: 'studios_approval_needs_wallet_link',
+  message: 'Link your own wallet in the wallet panel first. It signs each payment you approve.',
+} as const;
+const APPROVAL_NEEDS_WALLET_PROOF = {
+  error: 'studios_approval_needs_wallet_proof',
+  code: 'studios_approval_needs_wallet_proof',
+  message: 'Approving a payment needs a signature from your linked wallet. Ask POST /api/vendors/studios/approvals/<id>/challenge first.',
+} as const;
+const APPROVAL_INVALID_WALLET_PROOF = {
+  error: 'studios_approval_invalid_wallet_proof',
+  code: 'studios_approval_invalid_wallet_proof',
+  message: 'The wallet signature did not match. Ask for a new challenge and sign again.',
+} as const;
+const approveBodySchema = z.object({
+  proof: z.object({ nonce: z.string().min(32).max(64), signature: z.string().min(80).max(100) }).strict(),
+}).strict();
+
+vendorStudiosRoutes.post('/approvals/:id/challenge', smallBody, ...approvalGate, async (c) => {
   const user = c.get('user') as { id: string };
   const id = requestIdSchema.safeParse(c.req.param('id'));
   if (!id.success) return c.json({ error: 'approval_not_found', code: 'approval_not_found' }, 404);
+  const avatarId = await activeAvatarId(user.id);
+  const wallet = await linkedWallet(user.id);
+  if (!wallet) return c.json(APPROVAL_NEEDS_WALLET_LINK, 403);
+  const read = await readApprovalTerms(avatarId, id.data);
+  if (!read.ok) return c.json({ error: read.result.code, code: read.result.code, message: read.result.message }, read.result.httpStatus);
+  return c.json({ ...issueApprovalChallenge(user.id, read.terms), walletPubkey: wallet });
+});
+
+vendorStudiosRoutes.post('/approvals/:id/approve', smallBody, ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'approval_not_found', code: 'approval_not_found' }, 404);
+  const body = approveBodySchema.safeParse(await c.req.json().catch(() => ({})));
   // No per-minute limiter here: the agent's own calls already used it, and
   // at most 5 requests can wait, so the human's clicks are bounded.
   const avatarId = await activeAvatarId(user.id);
-  const { result, surface } = await approveStudiosRequest({ avatarId, userId: user.id, requestId: id.data });
+  const wallet = await linkedWallet(user.id);
+  if (!wallet) return c.json(APPROVAL_NEEDS_WALLET_LINK, 403);
+  if (!body.success) return c.json(APPROVAL_NEEDS_WALLET_PROOF, 403);
+  // The terms are read again now; the signature must cover exactly these.
+  const read = await readApprovalTerms(avatarId, id.data);
+  if (!read.ok) return c.json({ error: read.result.code, code: read.result.code, message: read.result.message }, read.result.httpStatus);
+  const verdict = verifyApprovalProof({
+    userId: user.id,
+    terms: read.terms,
+    nonce: body.data.proof.nonce,
+    signature: body.data.proof.signature,
+    walletPubkey: wallet,
+  });
+  if (verdict !== 'ok') return c.json(APPROVAL_INVALID_WALLET_PROOF, 401);
+  const { result, surface } = await approveStudiosRequest({ avatarId, userId: user.id, requestId: id.data, terms: read.terms });
   if (surface === 'hosted') {
     const { formatGeneratedImageResult } = await import('../services/npc-simulation');
     await tellHostedAgent(user.id, avatarId, formatGeneratedImageResult(result));

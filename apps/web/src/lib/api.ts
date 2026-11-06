@@ -689,7 +689,13 @@ export const api = {
   // human. Human session only (an agent session gets 403).
   studiosApprovals: () =>
     request<{ approvals: VendorCallApprovalView[] }>('/api/vendors/studios/approvals'),
-  approveStudiosRequest: (requestId: string) =>
+  /** The message the linked wallet signs to approve ONE waiting request. */
+  studiosApprovalChallenge: (requestId: string) =>
+    request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>(
+      `/api/vendors/studios/approvals/${encodeURIComponent(requestId)}/challenge`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
+  approveStudiosRequest: (requestId: string, proof: { nonce: string; signature: string }) =>
     request<{
       ok: true;
       mode: 'wallet' | 'account';
@@ -698,7 +704,10 @@ export const api = {
       ledgerId: string | null;
       paidUsdCents: number | null;
       txSignature: string | null;
-    }>(`/api/vendors/studios/approvals/${encodeURIComponent(requestId)}/approve`, { method: 'POST' }),
+    }>(`/api/vendors/studios/approvals/${encodeURIComponent(requestId)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ proof }),
+    }),
   declineStudiosRequest: (requestId: string) =>
     request<{ requestId: string; status: 'declined' }>(
       `/api/vendors/studios/approvals/${encodeURIComponent(requestId)}/decline`,

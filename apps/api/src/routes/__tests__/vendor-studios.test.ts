@@ -79,10 +79,13 @@ mock.module('../../services/studios-images', () => ({
     decisions.push({ kind: 'list', avatarId });
     return [];
   },
-  approveStudiosRequest: async (input: { avatarId: string; userId: string; requestId: string }) => {
-    decisions.push({ kind: 'approve', ...input });
+  approveStudiosRequest: async (input: { avatarId: string; userId: string; requestId: string; terms: { mode: string } }) => {
+    decisions.push({ kind: 'approve', avatarId: input.avatarId, userId: input.userId, requestId: input.requestId, signedMode: input.terms.mode });
     return { result: nextResult, surface: 'api' };
   },
+  readApprovalTerms: async (avatarId: string, requestId: string) => (requestId === REQ
+    ? { ok: true, terms: { avatarId, requestId, mode: 'wallet', maxUsdCents: 10, promptSha256: 'a'.repeat(64) } }
+    : { ok: false, result: { ok: false, code: 'approval_not_found', message: 'none', httpStatus: 404, ledgerId: null } }),
   declineStudiosRequest: async (input: { avatarId: string; userId: string; requestId: string }) => {
     decisions.push({ kind: 'decline', ...input });
     return { ok: true, requestId: input.requestId, status: 'declined', surface: 'api' };
@@ -304,16 +307,31 @@ describe('"Ask me before each payment": the request side', () => {
   });
 });
 
-function approvalRequest(method: 'GET' | 'POST', path: string, opts: { cookie?: string; agent?: string } = {}) {
-  const headers: Record<string, string> = {};
+function approvalRequest(method: 'GET' | 'POST', path: string, opts: { cookie?: string; agent?: string; body?: unknown } = {}) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.cookie) headers.Cookie = `auth_session=${opts.cookie}`;
   if (opts.agent) headers[realAgentAuth.AGENT_SESSION_HEADER] = opts.agent;
-  return app.request(`/api/vendors/studios${path}`, { method, headers });
+  return app.request(`/api/vendors/studios${path}`, { method, headers, ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }) });
 }
+
+/** Ask the approve challenge for REQ and sign it with `signer` (the linked wallet by default). */
+async function approvalProof(signer = humanWallet): Promise<Proof & { messageToSign: string }> {
+  const res = await approvalRequest('POST', `/approvals/${REQ}/challenge`, { cookie: 'pw', body: {} });
+  expect(res.status).toBe(200);
+  const challenge = await res.json() as { nonce: string; messageToSign: string; walletPubkey: string };
+  expect(challenge.walletPubkey).toBe(linkedWalletPubkey!);
+  const signature = nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), signer.secretKey);
+  return { nonce: challenge.nonce, signature: bs58.encode(signature), messageToSign: challenge.messageToSign };
+}
+
+const approveWith = (proof?: Proof) => approvalRequest('POST', `/approvals/${REQ}/approve`, {
+  cookie: 'pw',
+  body: proof ? { proof: { nonce: proof.nonce, signature: proof.signature } } : {},
+});
 
 describe('"Ask me before each payment": approve and decline are human-only', () => {
   it('refuses an agent header, an agent-exchanged cookie and no session, before any decision', async () => {
-    for (const path of ['/approvals', `/approvals/${REQ}/approve`, `/approvals/${REQ}/decline`]) {
+    for (const path of ['/approvals', `/approvals/${REQ}/challenge`, `/approvals/${REQ}/approve`, `/approvals/${REQ}/decline`]) {
       const method = path === '/approvals' ? 'GET' : 'POST';
       for (const opts of [{ agent: 'x' }, { agent: 'x', cookie: 'pw' }, { cookie: 'exchanged' }]) {
         const res = await approvalRequest(method, path, opts);
@@ -325,28 +343,65 @@ describe('"Ask me before each payment": approve and decline are human-only', () 
     expect(decisions).toHaveLength(0);
   });
 
-  it('lists, approves and declines for the human active avatar', async () => {
+  it('the challenge names the account, avatar, request, payer, the most it costs and the prompt hash', async () => {
+    const { messageToSign } = await approvalProof();
+    expect(messageToSign).toContain('ClawVille payment approval');
+    expect(messageToSign).toContain('account: u1');
+    expect(messageToSign).toContain('avatar: avatar-of-user');
+    expect(messageToSign).toContain(`request: ${REQ}`);
+    expect(messageToSign).toContain('pays: my agent wallet, at most $0.10');
+    expect(messageToSign).toContain(`prompt sha256: ${'a'.repeat(64)}`);
+    expect(messageToSign).toMatch(/\nnonce: \S+$/);
+  });
+
+  it('a session cookie alone never approves: no signature, a wrong wallet, a replayed nonce', async () => {
+    nextResult = { ok: true, mode: 'wallet', mediaId: 'm1', mediaPath: '/api/media/m1', ledgerId: 'l1', paidUsdCents: 1, txSignature: 'tx1' };
+    let res = await approveWith();
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'studios_approval_needs_wallet_proof' });
+    res = await approveWith(await approvalProof(otherWallet));
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ code: 'studios_approval_invalid_wallet_proof' });
+    const good = await approvalProof();
+    expect((await approveWith(good)).status).toBe(200);
+    res = await approveWith(good);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ code: 'studios_approval_invalid_wallet_proof' });
+    expect(decisions.filter((d) => d.kind === 'approve')).toHaveLength(1);
+  });
+
+  it('needs a linked wallet for the challenge and the approve', async () => {
+    linkedWalletPubkey = null;
+    for (const path of [`/approvals/${REQ}/challenge`, `/approvals/${REQ}/approve`]) {
+      const res = await approvalRequest('POST', path, { cookie: 'pw', body: {} });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'studios_approval_needs_wallet_link' });
+    }
+    expect(decisions).toHaveLength(0);
+  });
+
+  it('lists, approves with the signature and declines with the session for the human active avatar', async () => {
     expect((await approvalRequest('GET', '/approvals', { cookie: 'pw' })).status).toBe(200);
     nextResult = { ok: true, mode: 'wallet', mediaId: 'm1', mediaPath: '/api/media/m1', ledgerId: 'l1', paidUsdCents: 1, txSignature: 'tx1' };
-    const approved = await approvalRequest('POST', `/approvals/${REQ}/approve`, { cookie: 'pw' });
+    const approved = await approveWith(await approvalProof());
     expect(approved.status).toBe(200);
     expect(await approved.json()).toEqual(nextResult);
     const declined = await approvalRequest('POST', `/approvals/${REQ}/decline`, { cookie: 'pw' });
     expect(await declined.json()).toEqual({ requestId: REQ, status: 'declined' });
     expect(decisions).toEqual([
       { kind: 'list', avatarId: 'avatar-of-user' },
-      { kind: 'approve', avatarId: 'avatar-of-user', userId: 'u1', requestId: REQ },
+      { kind: 'approve', avatarId: 'avatar-of-user', userId: 'u1', requestId: REQ, signedMode: 'wallet' },
       { kind: 'decline', avatarId: 'avatar-of-user', userId: 'u1', requestId: REQ },
     ]);
   });
 
   it('returns an approve refusal with its code and status, and refuses a bad id without a decision', async () => {
     nextResult = { ok: false, code: 'approval_expired', message: 'expired', httpStatus: 409, ledgerId: null };
-    const res = await approvalRequest('POST', `/approvals/${REQ}/approve`, { cookie: 'pw' });
+    const res = await approveWith(await approvalProof());
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'approval_expired' });
     decisions.length = 0;
-    expect((await approvalRequest('POST', '/approvals/not-a-uuid/approve', { cookie: 'pw' })).status).toBe(404);
+    expect((await approvalRequest('POST', '/approvals/not-a-uuid/approve', { cookie: 'pw', body: {} })).status).toBe(404);
     expect(decisions).toHaveLength(0);
   });
 });

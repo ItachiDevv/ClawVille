@@ -15,12 +15,13 @@
  * image; a retry of an unfinished or failed one is `duplicate_request`.
  *
  * "Ask me before each payment" (founder go 2026-11-06, migration 0093): when
- * the human turns `requireApproval` on, a request whose actor is the agent
- * runs only the checks that need no vendor call, then its row waits as
- * `awaiting_approval` for 15 minutes. Nothing is called, signed or paid. The
- * human approves (`approveStudiosRequest`: the SAME pipeline, every cap and
- * limit checked again at that moment) or declines it; nobody answering makes
- * it `expired` (lazily, on the next read or write of that avatar's rows).
+ * the human turns `requireApproval` on, EVERY request (any actor, any
+ * surface, the human's own web form too) runs only the checks that need no
+ * vendor call, then its row waits as `awaiting_approval` for 15 minutes.
+ * Nothing is called, signed or paid. The human approves with a signature from
+ * their linked wallet (`approveStudiosRequest`: the SAME pipeline, every cap
+ * and limit checked again at that moment) or declines it; nobody answering
+ * makes it `expired` (lazily, on the next read or write of that avatar's rows).
  *
  * Limits are the human's own (founder 2026-11-05: each user's agent pays for
  * its own tools; ClawVille sets no fixed image count). The spend caps bound
@@ -29,15 +30,16 @@
  * the avatar's mode-'account' requests of this UTC day, ANY actor and surface
  * (an agent that holds its owner's magic-link session looks like the human),
  * counted from the same rows under the same lock, so it survives a restart.
- * A waiting request counts (it is reserved); a declined or expired one does
- * not (it never reached Studios).
+ * A request counts on the UTC day it ran (an approved one on its approve
+ * day); a waiting request counts as a reservation; a declined or expired one
+ * does not (it never reached Studios).
  *
  * The image is stored in `avatar_media` (checked png/jpeg/webp bytes only; a
  * reply with only a link is `image_missing`) and served at GET /api/media/:id.
  * Vendor text is untrusted: only the image and our own status leave here.
  */
 
-import { and, asc, avatarMedia, db, desc, eq, inArray, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
+import { and, asc, avatarMedia, db, desc, eq, inArray, or, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
 import {
   SPEND_APPROVAL_MAX_AWAITING,
   SPEND_APPROVAL_TTL_MS,
@@ -47,6 +49,7 @@ import {
 } from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type VendorCallFailure } from './outbound-x402';
 import { toSpendPolicyView } from './spend-policy';
+import { promptSha256, type ApprovalTerms } from './spend-policy-proof';
 import { loadVendorKey } from './vendor-credentials';
 import {
   STUDIOS_IMAGE_MODELS,
@@ -76,7 +79,8 @@ export type StudiosImageFailure =
   | 'approval_expired'
   | 'approval_not_found'
   | 'approval_not_awaiting'
-  | 'approval_mode_changed';
+  | 'approval_mode_changed'
+  | 'approval_terms_changed';
 
 /** The request waits for the human (HTTP 202). Nothing was called or paid. */
 export interface StudiosImageAwaiting {
@@ -131,6 +135,7 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message
   approval_expired: { httpStatus: 409, message: 'Nobody approved this request within 15 minutes, so it expired. Nothing was called or paid.' },
   approval_not_found: { httpStatus: 404, message: 'There is no such image request for this avatar.' },
   approval_not_awaiting: { httpStatus: 409, message: 'This request does not wait for approval any more: it was already approved, declined or finished.' },
+  approval_terms_changed: { httpStatus: 409, message: 'The request or its price limit changed after the signature. Nothing was paid. Approve it again and sign the new message.' },
   approval_mode_changed: { httpStatus: 409, message: 'The Studios key was saved or removed after this request was made, so a different account would pay now. Nothing was paid. Decline it; your agent can send a new request.' },
 };
 
@@ -246,19 +251,28 @@ async function expireOverdue(executor: Executor, avatarId: string): Promise<void
 
 const DAY_START = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
 
+const EXECUTED_STATUSES: VendorCallStatus[] = ['pending', 'done', 'failed'];
+
 /**
- * The avatar's own-key requests of this UTC day that count toward the human's
- * per-day rule. `executedOnly`: only rows that reached (or are reaching)
- * Studios; else also the waiting ones (a reservation).
+ * The avatar's own-key requests that count toward the human's per-day rule for
+ * this UTC day. A request counts on the day it RAN: `decided_at` for an
+ * approved request (approved at 00:01, it counts for the new day even when it
+ * was made at 23:59), else `created_at`. `includeWaiting`: also every request
+ * that still waits, whatever day it was made (a reservation; it expires in 15
+ * minutes). Declined and expired requests never reached Studios and never count.
  */
-async function ownKeyRequestsToday(executor: Executor, avatarId: string, opts: { executedOnly: boolean; exceptId?: string }): Promise<number> {
-  const statuses: VendorCallStatus[] = opts.executedOnly ? ['pending', 'done', 'failed'] : ['awaiting_approval', 'pending', 'done', 'failed'];
+async function ownKeyRequestsToday(executor: Executor, avatarId: string, opts: { includeWaiting: boolean; exceptId?: string }): Promise<number> {
   const [row] = await executor.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
     eq(vendorCallRequests.avatarId, avatarId),
     eq(vendorCallRequests.mode, 'account'),
-    inArray(vendorCallRequests.status, statuses),
-    sql`${vendorCallRequests.createdAt} >= ${DAY_START}`,
     opts.exceptId ? sql`${vendorCallRequests.id} <> ${opts.exceptId}` : sql`true`,
+    or(
+      and(
+        inArray(vendorCallRequests.status, EXECUTED_STATUSES),
+        sql`coalesce(${vendorCallRequests.decidedAt}, ${vendorCallRequests.createdAt}) >= ${DAY_START}`,
+      ),
+      opts.includeWaiting ? eq(vendorCallRequests.status, 'awaiting_approval') : sql`false`,
+    ),
   ));
   return row?.n ?? 0;
 }
@@ -356,13 +370,15 @@ async function reserveRequest(input: {
     const policy = await readPolicyRow(tx, input.avatarId);
     if (input.mode === 'account') {
       const perDay = policy.studiosKeyImagesPerDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT;
-      if (await ownKeyRequestsToday(tx, input.avatarId, { executedOnly: false }) >= perDay) {
+      if (await ownKeyRequestsToday(tx, input.avatarId, { includeWaiting: true }) >= perDay) {
         return { kind: 'done', result: failure('daily_limit') };
       }
     }
-    // "Ask me before each payment": only the agent's requests wait. A request
-    // the human made (the human pressed the button) runs now.
-    if (input.actor === 'agent' && policy.requireApproval) {
+    // "Ask me before each payment": EVERY request waits, the human's own web
+    // form too (lead decision 2026-11-06, Codex review): a magic link passes
+    // through the agent, so a cookie cannot prove the human pressed the
+    // button. Only a signature from the linked wallet approves a payment.
+    if (policy.requireApproval) {
       if (input.mode === 'wallet') {
         const refused = await walletPrecheck(tx, input.avatarId, policy);
         if (refused) return { kind: 'done', result: failure(refused) };
@@ -429,8 +445,13 @@ async function runReservedRequest(input: {
   model: StudiosImageModel | undefined;
   idempotencyKey: string;
   key: string | null;
+  /** Approve only: the most the human signed for (wallet mode); a higher quote pays nothing. */
+  maxCallAtomic?: bigint;
 }): Promise<StudiosImageResult> {
   const request = buildStudiosImageRequest({ prompt: input.prompt, model: input.model });
+  const maxCallAtomic = input.maxCallAtomic !== undefined && input.maxCallAtomic < STUDIOS_MAX_CALL_ATOMIC
+    ? input.maxCallAtomic
+    : STUDIOS_MAX_CALL_ATOMIC;
   const { requestId } = input;
 
   if (input.key) {
@@ -447,7 +468,7 @@ async function runReservedRequest(input: {
   const paid = await callVendorWithAvatarWallet({
     avatarId: input.avatarId,
     actor: input.actor,
-    pin: { vendor: 'studios', payTo: STUDIOS_PAY_TO, maxCallAtomic: STUDIOS_MAX_CALL_ATOMIC },
+    pin: { vendor: 'studios', payTo: STUDIOS_PAY_TO, maxCallAtomic },
     tool: 'images.generations',
     idempotencyKey: input.idempotencyKey,
     url: request.url,
@@ -561,18 +582,62 @@ async function lockAwaitingRow(tx: Executor, avatarId: string, requestId: string
 
 export type StudiosDecision = { result: StudiosImageResult; surface: 'api' | 'hosted' | null };
 
+/** The most a wallet-mode request may cost, from the current spend rules. */
+function walletMaxCents(policy: ReturnType<typeof toSpendPolicyView>): number {
+  return Math.min(policy.perCallCapUsdCents ?? 0, STUDIOS_MAX_CALL_CENTS);
+}
+
 /**
- * The human approves one waiting request (human session only; the route
- * checks it). Under the avatar's lock: the row must still wait and not be
- * expired, the payer must be the same as when it was made (a key saved or
- * removed since then refuses), and the own-key day limit is checked again. The
+ * The terms the human's linked wallet signs to approve one waiting request:
+ * the avatar, the request, who pays, the most it can cost now, and the SHA-256
+ * of the prompt. Refuses a request that does not wait any more.
+ */
+export async function readApprovalTerms(avatarId: string, requestId: string): Promise<{ ok: true; terms: ApprovalTerms } | { ok: false; result: StudiosImageRefusal }> {
+  await expireOverdue(db, avatarId);
+  const [row] = await db.select({
+    status: vendorCallRequests.status,
+    mode: vendorCallRequests.mode,
+    prompt: vendorCallRequests.prompt,
+  }).from(vendorCallRequests).where(and(
+    eq(vendorCallRequests.id, requestId),
+    eq(vendorCallRequests.avatarId, avatarId),
+    eq(vendorCallRequests.vendor, 'studios'),
+  )).limit(1);
+  if (!row) return { ok: false, result: failure('approval_not_found') };
+  if (row.status === 'expired') return { ok: false, result: failure('approval_expired') };
+  if (row.status !== 'awaiting_approval' || row.prompt === null) return { ok: false, result: failure('approval_not_awaiting') };
+  const mode = row.mode === 'account' ? 'account' : 'wallet';
+  return {
+    ok: true,
+    terms: {
+      avatarId,
+      requestId,
+      mode,
+      maxUsdCents: mode === 'account' ? null : walletMaxCents(await readPolicyRow(db, avatarId)),
+      promptSha256: promptSha256(row.prompt),
+    },
+  };
+}
+
+/**
+ * The human approves one waiting request. The route has verified the linked
+ * wallet's signature over `terms` (`readApprovalTerms`, `verifyApprovalProof`);
+ * a session alone never gets here. Under the avatar's lock: the row must still
+ * wait and not be expired, its mode and prompt must equal the signed terms,
+ * the payer must be the same as when it was made (a key saved or removed since
+ * then refuses), and the own-key day limit is checked again, counting this
+ * request on today (the day it runs). In wallet mode the call may cost at most
+ * the signed amount. The
  * row then becomes 'pending' in the same transaction, so a second approve
  * click finds it not waiting and pays nothing. The SAME pipeline as a direct
  * request runs next; the wallet mode checks every cap again with the real
  * price (`admit`), writes the ledger row before signing, and never retries an
  * ambiguous payment.
  */
-export async function approveStudiosRequest(input: { avatarId: string; userId: string; requestId: string }): Promise<StudiosDecision> {
+export async function approveStudiosRequest(input: { avatarId: string; userId: string; requestId: string; terms: ApprovalTerms }): Promise<StudiosDecision> {
+  if (input.terms.requestId !== input.requestId || input.terms.avatarId !== input.avatarId) {
+    return { result: failure('approval_terms_changed'), surface: null };
+  }
   const key = await loadKeyOrInvalid(input.avatarId);
   if (key === undefined) return { result: failure('studios_key_invalid'), surface: null };
   const currentMode = key ? 'account' : 'wallet';
@@ -581,10 +646,15 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
     const found = await lockAwaitingRow(tx, input.avatarId, input.requestId);
     if (!found.ok) return found;
     const { row } = found;
+    if (row.mode !== input.terms.mode || promptSha256(row.prompt!) !== input.terms.promptSha256) {
+      return { ok: false as const, result: failure('approval_terms_changed') };
+    }
     if (row.mode !== currentMode) return { ok: false as const, result: failure('approval_mode_changed') };
     if (row.mode === 'account') {
       const policy = await readPolicyRow(tx, input.avatarId);
-      if (await ownKeyRequestsToday(tx, input.avatarId, { executedOnly: true, exceptId: row.id }) >= policy.studiosKeyImagesPerDay) {
+      // This request counts too, on today: the requests that already ran today plus this one.
+      const ranToday = await ownKeyRequestsToday(tx, input.avatarId, { includeWaiting: false, exceptId: row.id });
+      if (ranToday + 1 > policy.studiosKeyImagesPerDay) {
         return { ok: false as const, result: failure('daily_limit') };
       }
     }
@@ -610,6 +680,7 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
     model: storedModel(row.model),
     idempotencyKey: row.idempotencyKey,
     key,
+    maxCallAtomic: input.terms.mode === 'wallet' ? BigInt(input.terms.maxUsdCents ?? 0) * ATOMIC_PER_CENT : undefined,
   });
   return { result, surface: row.surface === 'hosted' ? 'hosted' : 'api' };
 }
@@ -650,7 +721,7 @@ export async function listAwaitingApprovals(avatarId: string): Promise<VendorCal
     eq(vendorCallRequests.status, 'awaiting_approval'),
   )).orderBy(asc(vendorCallRequests.createdAt)).limit(SPEND_APPROVAL_MAX_AWAITING * 2);
   const policy = await readPolicyRow(db, avatarId);
-  const walletMax = Math.min(policy.perCallCapUsdCents ?? 0, STUDIOS_MAX_CALL_CENTS);
+  const walletMax = walletMaxCents(policy);
   return rows.map((r) => ({
     requestId: r.id,
     vendor: 'studios',

@@ -26,6 +26,16 @@ let api: typeof import('@/lib/api').api;
 let originalApi: Record<string, unknown> = {};
 
 const REQ = '11111111-2222-4333-8444-555555555555';
+const LINKED = 'LinkedWallet1111111111111111111111111111111';
+const signed: string[] = [];
+/** A browser wallet that signs as the linked wallet. */
+const fakeWallet = {
+  connect: async () => ({ publicKey: { toString: () => LINKED } }),
+  signMessage: async (bytes: Uint8Array) => {
+    signed.push(new TextDecoder().decode(bytes));
+    return { signature: new Uint8Array(64).fill(7) };
+  },
+};
 let requireApproval = false;
 let approvals: Array<Record<string, unknown>> = [];
 const log: Array<{ fn: string; arg: unknown }> = [];
@@ -60,7 +70,7 @@ beforeAll(async () => {
   cards = await import('./approvals-card');
   ({ SpendingCard } = await import('./spending-card'));
   const mutableApi = api as unknown as Record<string, unknown>;
-  const names = ['me', 'getSpendPolicy', 'putSpendPolicy', 'spendPolicyChallenge', 'studiosApprovals', 'approveStudiosRequest', 'declineStudiosRequest', 'studiosImages'];
+  const names = ['me', 'getSpendPolicy', 'putSpendPolicy', 'spendPolicyChallenge', 'studiosApprovals', 'studiosApprovalChallenge', 'approveStudiosRequest', 'declineStudiosRequest', 'studiosImages'];
   originalApi = Object.fromEntries(names.map((n) => [n, mutableApi[n]]));
   mutableApi.me = async () => ({ user: { id: 'user-1', isGuest: false } });
   mutableApi.getSpendPolicy = async () => policyView();
@@ -74,8 +84,12 @@ beforeAll(async () => {
     throw new Error('no wallet in tests');
   };
   mutableApi.studiosApprovals = async () => ({ approvals });
-  mutableApi.approveStudiosRequest = async (id: string) => {
-    log.push({ fn: 'approve', arg: id });
+  mutableApi.studiosApprovalChallenge = async (id: string) => {
+    log.push({ fn: 'challenge-approval', arg: id });
+    return { nonce: 'N'.repeat(44), expiresAt: new Date().toISOString(), messageToSign: `ClawVille payment approval\nrequest: ${id}`, walletPubkey: LINKED };
+  };
+  mutableApi.approveStudiosRequest = async (id: string, proof: unknown) => {
+    log.push({ fn: 'approve', arg: { id, proof } });
     approvals = [];
     return { ok: true, mode: 'account', mediaId: 'm', mediaPath: '/api/media/m', ledgerId: null, paidUsdCents: null, txSignature: null };
   };
@@ -90,6 +104,8 @@ beforeAll(async () => {
 beforeEach(() => {
   requireApproval = true;
   log.length = 0;
+  signed.length = 0;
+  (testWindow as unknown as { solana?: unknown }).solana = fakeWallet;
   approvals = [{
     requestId: REQ,
     vendor: 'studios',
@@ -165,12 +181,23 @@ describe('ApprovalsCard', () => {
     expect(container?.textContent).toContain('14 min left');
   });
 
-  test('Approve sends the request id, then the list is empty', async () => {
+  test('Approve asks the linked wallet to sign this request, sends the signature, then the list is empty', async () => {
     await mount(createElement(cards.ApprovalsCard));
     await click(button('Approve'));
-    expect(log).toEqual([{ fn: 'approve', arg: REQ }]);
+    expect(log.map((l) => l.fn)).toEqual(['challenge-approval', 'approve']);
+    expect(signed).toEqual([`ClawVille payment approval\nrequest: ${REQ}`]);
+    expect(log[1]?.arg).toMatchObject({ id: REQ, proof: { nonce: 'N'.repeat(44) } });
+    expect((log[1]?.arg as { proof: { signature: string } }).proof.signature.length).toBeGreaterThan(80);
     expect(container?.querySelector('[data-testid="approval-item"]')).toBeNull();
     expect(container?.textContent).toContain('No payment waits for you.');
+  });
+
+  test('with no browser wallet, Approve sends nothing and says why', async () => {
+    (testWindow as unknown as { solana?: unknown }).solana = undefined;
+    await mount(createElement(cards.ApprovalsCard));
+    await click(button('Approve'));
+    expect(log.map((l) => l.fn)).toEqual(['challenge-approval']);
+    expect(container?.textContent).toContain('No Solana wallet detected');
   });
 
   test('Decline sends the request id', async () => {
