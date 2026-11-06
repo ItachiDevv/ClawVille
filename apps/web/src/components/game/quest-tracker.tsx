@@ -19,6 +19,7 @@ import { detectIsMobile, useIsMobile } from '@/hooks/use-is-mobile';
 import { bottomPromptOffset, useBottomPromptOwner } from '@/hooks/use-bottom-prompt-slot';
 import { useGameStore } from '@/stores/game';
 import { ApprovalTrackerSlot } from '@/components/game/wallet/approval-notice';
+import { MOBILE_ROW_MAX_WIDTH_CSS } from '@/lib/hud/hud-layout';
 
 const TUTORIAL_KEY = 'clawville-tutorial-seen';
 const QUEST_INTRO_KEY = 'clawville-quest-intro-seen';
@@ -383,7 +384,10 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
       // The "ask me before each payment" notice shares this row, right of the
       // pill and top-aligned with it, so it never covers the tracker, collapsed
       // or expanded (the list grows down beside it); see approval-notice.tsx.
-      <div className={`fixed top-[7.75rem] left-1/2 -translate-x-1/2 w-max flex items-start gap-2 ${mobileZ}`}>
+      <div
+        className={`fixed top-[7.75rem] left-1/2 -translate-x-1/2 w-max flex items-start gap-2 ${mobileZ}`}
+        style={{ maxWidth: MOBILE_ROW_MAX_WIDTH_CSS }}
+      >
         <QuestPanel
           expanded={expanded}
           onToggle={() => setExpanded((e) => !e)}
@@ -481,7 +485,9 @@ function QuestPanel({
   })();
 
   return (
-    <div className={mobile ? 'w-[220px] max-w-[75vw]' : 'w-full'}>
+    // min-w-0: in the touch row the pill may shrink below 220 px to keep the
+    // row clear of the side columns (see MOBILE_ROW_SIDE_RESERVE_PX).
+    <div className={mobile ? 'w-[220px] max-w-[75vw] min-w-0' : 'w-full'}>
       {/* S6 — ONE claw-panel: unframed header on top, scroll body under a
           divider. Was two stacked rounded panels that read as "duplicate boxes",
           and the active quest rendered both in the header AND the list. Now the

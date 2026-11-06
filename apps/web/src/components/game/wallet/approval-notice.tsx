@@ -26,6 +26,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
+import { MOBILE_ROW_MAX_WIDTH_CSS } from '@/lib/hud/hud-layout';
 import { STUDIOS_APPROVALS_QUERY_KEY, useHumanSpendPolicy } from './spending-card';
 
 const POLL_MS = 30_000;
@@ -108,6 +109,8 @@ export function ApprovalNotice() {
       onClick={openWallet}
       data-testid="approval-notice"
       className={`fixed left-1/2 -translate-x-1/2 z-[48] min-h-[44px] rounded-full border border-amber-300/50 bg-amber-500/90 text-slate-950 font-bold shadow-lg ${isMobile ? 'top-[7.75rem] px-4 text-xs' : 'top-[8.5rem] px-5 text-sm'}`}
+      // Touch: the tracker's place, with the same side reserve as its row.
+      style={isMobile ? { maxWidth: MOBILE_ROW_MAX_WIDTH_CSS } : undefined}
     >
       {label}
     </button>
