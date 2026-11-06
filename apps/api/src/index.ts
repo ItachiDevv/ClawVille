@@ -76,6 +76,8 @@ import { ecosystemRoutes } from './routes/ecosystem';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
 import { vendorStudiosRoutes } from './routes/vendor-studios';
+import { vendorStudiosOAuthRoutes } from './routes/vendor-studios-oauth';
+import { STUDIOS_OAUTH_CLIENT_METADATA_PATH, buildStudiosClientMetadata } from './services/vendors/studios-oauth';
 import { mediaRoutes } from './routes/media';
 // Tokenomics E1/E2 — internal, admin-only EARNED import/verifier/claw-back.
 // Service + route are independently gated by TOKENOMICS_EARN_ENABLED.
@@ -297,6 +299,13 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
   }
 });
 
+// Studios sign-in: Client ID Metadata Document (MCP hub phase 3c). Its URL is
+// the OAuth client_id; Studios fetches it to read our redirect URI. Public.
+app.get(STUDIOS_OAUTH_CLIENT_METADATA_PATH, (c) => {
+  c.header('Cache-Control', 'public, max-age=300');
+  return c.json(buildStudiosClientMetadata());
+});
+
 // ---------------------------------------------------------------------------
 // ERC-8004-ready agent registration files (off-chain tier)
 // ---------------------------------------------------------------------------
@@ -381,6 +390,9 @@ app.route('/api/ecosystem', ecosystemRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
 // Paid third-party tools, avatar wallet under the human's spend rules (MCP hub step 2 phase 2).
+// Studios sign-in (OAuth) routes, mounted BEFORE the parent prefix so its
+// session middleware does not run twice on these paths (MCP hub phase 3c).
+app.route('/api/vendors/studios/oauth', vendorStudiosOAuthRoutes);
 app.route('/api/vendors/studios', vendorStudiosRoutes);
 // Images made by paid tools, served by unguessable id (MCP hub step 2 phase 2b).
 app.route('/api/media', mediaRoutes);

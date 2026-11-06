@@ -84,6 +84,9 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
       // MCP hub step 2 phase 2b: a human's own vendor API key, AES-256-GCM
       // via encryptToken/decryptToken; never a wallet key.
       'services/vendor-credentials.ts',
+      // MCP hub phase 3c: Studios sign-in tokens + PKCE verifier,
+      // AES-256-GCM via encryptToken/decryptToken; never a wallet key.
+      'services/vendors/studios-oauth.ts',
       'services/wager-program-client.ts',
       'services/wallet-service.ts',
       'services/wallet-withdraw-executor.ts',
