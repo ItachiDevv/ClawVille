@@ -20,10 +20,12 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, type StudiosAccepted, type StudiosOperationDone, type StudiosRequestView } from '@/lib/api';
 import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
+import { useAvatar } from '@/hooks/use-avatar';
 import { STUDIOS_APPROVALS_QUERY_KEY, useHumanSpendPolicy } from './spending-card';
 import { StudiosPaySection, STUDIOS_OAUTH_QUERY, useStudiosReturnStore } from './studios-pay-mode';
 import { CharacterForm, RecastForm, VideoForm } from './studios-forms';
 import { StudiosMediaGallery, StudiosSigninMediaList } from './studios-media';
+import { readStudiosSlot, studiosSlotId, useStudiosRequestStore } from './studios-request-store';
 
 export const KEY_QUERY = ['studios-key'] as const;
 export const IMAGES_QUERY = ['studios-images'] as const;
@@ -328,18 +330,32 @@ type StudiosSend = (body: Record<string, unknown>, key: string) => Promise<Studi
 /**
  * The shared request flow of one form. `submit(body)` sends the body with the
  * key of that exact input; the state says what the form shows.
+ *
+ * The open request (key, request id) and the blocked input live in
+ * `studios-request-store.ts` per avatar and operation, outside the modal's
+ * life and across a reload of the tab: closing the wallet panel after a 202
+ * and sending the same input again reuses the same key, so the server returns
+ * the same request and never charges twice. On mount a restored open request
+ * is read again until it ends.
  */
 export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend) {
   const queryClient = useQueryClient();
   const { signedIn } = useHumanSpendPolicy();
-  const [last, setLast] = useState<{ media: StudiosResultItem[]; note: string } | null>(null);
-  const [error, setError] = useState<unknown>(null);
+  const { data: avatar } = useAvatar();
+  const avatarId = (avatar as { id?: string } | null | undefined)?.id ?? null;
+  const slotId = avatarId ? studiosSlotId(avatarId, operation) : null;
+  const ensureLoaded = useStudiosRequestStore((st) => st.ensureLoaded);
+  const update = useStudiosRequestStore((st) => st.update);
+  useEffect(() => ensureLoaded(), [ensureLoaded]);
+  const slot = useStudiosRequestStore((st) => readStudiosSlot(st.slots, slotId));
   // The request key for the current input. A retry after a lost reply, or a
   // click while the request waits or runs, reuses it, so the server returns
   // the same request instead of paying again.
-  const [pending, setPending] = useState<StudiosPendingRequest | null>(null);
+  const pending = slot.pending;
   // After an outcome that may have charged, the same input cannot be sent again.
-  const [blockedInput, setBlockedInput] = useState<string | null>(null);
+  const blockedInput = slot.blockedInput;
+  const [last, setLast] = useState<{ media: StudiosResultItem[]; note: string } | null>(null);
+  const [error, setError] = useState<unknown>(null);
 
   // After a 202 the request ends in the background: read it until it ends.
   const openRequestId = pending?.requestId ?? null;
@@ -355,43 +371,47 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
     : null;
 
   useEffect(() => {
-    if (!outcome || !pending) return;
+    if (!outcome || !pending || !slotId) return;
     // The request ended: show the result and drop the key (the next click is a new request).
     if (outcome.kind === 'done') {
       setError(null);
       setLast({ media: outcome.media, note: outcome.note });
+      update(slotId, { pending: null });
     } else {
       setError(new ApiError(outcome.code, 200, outcome.code));
-      if (outcome.blockInput) setBlockedInput(pending.input);
+      update(slotId, outcome.blockInput ? { pending: null, blockedInput: pending.input } : { pending: null });
     }
-    setPending(null);
     queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
-  }, [outcome, pending, queryClient]);
+  }, [outcome, pending, slotId, update, queryClient]);
 
   const make = useMutation({
-    mutationFn: (vars: { request: StudiosPendingRequest; body: Record<string, unknown> }) => send(vars.body, vars.request.key),
+    mutationFn: (vars: { slotId: string; request: StudiosPendingRequest; body: Record<string, unknown> }) => send(vars.body, vars.request.key),
     onMutate: () => {
       setError(null);
       setLast(null);
     },
-    onSuccess: (result, { request }) => {
+    // These run even when the form unmounted meanwhile (the modal closed):
+    // the store keeps what the server answered.
+    onSuccess: (result, vars) => {
       // "Ask me before each payment" (202 awaiting_approval), a long job or
       // any sign-in request (202 running): keep the key and the request id
       // until the request ends.
       if ('status' in result) {
-        setPending({ ...request, requestId: result.requestId });
+        update(vars.slotId, { pending: { ...vars.request, requestId: result.requestId } });
         setError(new ApiError(result.status, 202, result.status));
         if (result.status === 'awaiting_approval') queryClient.invalidateQueries({ queryKey: STUDIOS_APPROVALS_QUERY_KEY });
         return;
       }
-      setPending(null);
+      update(vars.slotId, { pending: null });
       setLast(studiosDoneResult(operation, result));
       queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
     },
-    onError: (err, { request }) => {
+    onError: (err, vars) => {
       setError(err);
-      if (err instanceof ApiError && typeof err.code === 'string' && MAY_HAVE_CHARGED.has(err.code)) setBlockedInput(request.input);
-      if (!keepsRequestKey(err)) setPending(null);
+      if (err instanceof ApiError && typeof err.code === 'string' && MAY_HAVE_CHARGED.has(err.code)) {
+        update(vars.slotId, { blockedInput: vars.request.input });
+      }
+      if (!keepsRequestKey(err)) update(vars.slotId, { pending: null });
       queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
     },
   });
@@ -401,14 +421,16 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
   const waitingApproval = open && (requestQuery.data
     ? requestQuery.data.status === 'awaiting_approval'
     : error instanceof ApiError && error.code === 'awaiting_approval');
+  // A request restored after the modal reopened (or a reload) says what it waits for.
+  const shownError = error ?? (open ? new ApiError(waitingApproval ? 'awaiting_approval' : 'running', 202, waitingApproval ? 'awaiting_approval' : 'running') : null);
 
   const submit = (body: Record<string, unknown>) => {
-    if (open || make.isPending) return;
+    if (open || make.isPending || !slotId) return;
     const input = studiosInputFingerprint(body);
     if (blockedInput !== null && blockedInput === input) return;
     const request = studiosRequestFor(pending, operation, input, newIdempotencyKey);
-    setPending(request);
-    make.mutate({ request, body });
+    update(slotId, { pending: request });
+    make.mutate({ slotId, request, body });
   };
 
   return {
@@ -418,10 +440,12 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
     sending: make.isPending,
     open,
     waitingApproval,
+    /** The button stays off: sending, waiting or running, or the avatar is not loaded yet. */
+    busy: make.isPending || open || slotId === null,
     /** Keep the section open while a request is in use. */
     inUse: make.isPending || open,
     last,
-    error,
+    error: shownError,
   };
 }
 
@@ -593,7 +617,7 @@ function ImageForm({ state }: { state: StudiosRequestState }) {
       <button
         type="button"
         onClick={() => state.submit(body)}
-        disabled={state.sending || state.open || text.length === 0 || blocked}
+        disabled={state.busy || text.length === 0 || blocked}
         className="w-full min-h-[44px] rounded-md bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-sm font-bold text-white"
       >
         {submitLabel(state, blocked, 'Make image')}

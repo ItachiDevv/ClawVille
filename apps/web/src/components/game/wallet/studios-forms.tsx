@@ -245,7 +245,7 @@ export function VideoForm({ state, mode, perCallCapUsdCents }: { state: StudiosR
           <p>Studios bills your Studios credits.</p>
         )}
       </div>
-      <button type="button" onClick={() => state.submit(body)} disabled={state.sending || state.open || !ready || blocked} className={submitClass}>
+      <button type="button" onClick={() => state.submit(body)} disabled={state.busy || !ready || blocked} className={submitClass}>
         {submitLabel(state, blocked, 'Make video')}
       </button>
       <StudiosRequestResult state={state} />
@@ -326,7 +326,7 @@ export function CharacterForm({ state }: { state: StudiosRequestState }) {
         Studios bills your Studios credits. The Studios menu gives no price for character shots; Studios shows it in your account.
       </p>
       {body === null && <p className="text-xs text-white/60">Write a text, tick &quot;pick at random&quot;, or choose an image.</p>}
-      <button type="button" onClick={() => body && state.submit(body)} disabled={state.sending || state.open || body === null || blocked} className={submitClass}>
+      <button type="button" onClick={() => body && state.submit(body)} disabled={state.busy || body === null || blocked} className={submitClass}>
         {submitLabel(state, blocked, 'Make character shots')}
       </button>
       <StudiosRequestResult state={state} />
@@ -450,7 +450,7 @@ export function RecastForm({ state }: { state: StudiosRequestState }) {
           {price === null ? 'The Studios menu gives no price for this preset.' : `Price: $${price.toFixed(2)} of your Studios credits.`}
         </p>
       )}
-      <button type="button" onClick={() => body && state.submit(body)} disabled={state.sending || state.open || body === null || blocked} className={submitClass}>
+      <button type="button" onClick={() => body && state.submit(body)} disabled={state.busy || body === null || blocked} className={submitClass}>
         {submitLabel(state, blocked, 'Make recast clip')}
       </button>
       <StudiosRequestResult state={state} />

@@ -33,6 +33,8 @@ export const STUDIOS_ACCOUNT_QUERY = ['studios-signin-account'] as const;
 
 /** Where the Studios sign-in page lives. The browser goes nowhere else. */
 const STUDIOS_ORIGIN = 'https://mystudios.fun';
+/** The Studios sign-in page (`STUDIOS_OAUTH_AUTHORIZE_URL` on the API). */
+const STUDIOS_AUTHORIZE_PATH = '/connect/authorize';
 
 export const PAY_MODE_CHOICES: ReadonlyArray<{ mode: StudiosPayMode; label: string; can: string }> = [
   { mode: 'wallet', label: 'My agent wallet (USDC)', can: 'Images and videos. Your agent wallet pays in USDC, only inside your spend caps.' },
@@ -217,7 +219,7 @@ export function usdOrUnknown(value: number | null): string {
   return value === null ? 'Studios did not say' : `$${value.toFixed(2)}`;
 }
 
-/** Only a Studios https page; anything else is refused before the tab moves. */
+/** Only the Studios https sign-in page, with no user info; anything else is refused before the tab moves. */
 export function checkedAuthorizeUrl(raw: string): string {
   let url: URL;
   try {
@@ -225,7 +227,12 @@ export function checkedAuthorizeUrl(raw: string): string {
   } catch {
     throw new ApiError('studios_signin_bad_redirect', 0, 'studios_signin_bad_redirect');
   }
-  if (url.origin !== STUDIOS_ORIGIN) throw new ApiError('studios_signin_bad_redirect', 0, 'studios_signin_bad_redirect');
+  const ok = url.protocol === 'https:'
+    && url.origin === STUDIOS_ORIGIN
+    && url.pathname === STUDIOS_AUTHORIZE_PATH
+    && url.username === ''
+    && url.password === '';
+  if (!ok) throw new ApiError('studios_signin_bad_redirect', 0, 'studios_signin_bad_redirect');
   return url.toString();
 }
 

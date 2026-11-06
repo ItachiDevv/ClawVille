@@ -25,6 +25,7 @@ let card: typeof import('./studios-card');
 let payMode: typeof import('./studios-pay-mode');
 let forms: typeof import('./studios-forms');
 let media: typeof import('./studios-media');
+let store: typeof import('./studios-request-store');
 let useGameStore: typeof import('@/stores/game').useGameStore;
 let api: typeof import('@/lib/api').api;
 let ApiError: typeof import('@/lib/api').ApiError;
@@ -110,6 +111,7 @@ beforeAll(async () => {
   payMode = await import('./studios-pay-mode');
   forms = await import('./studios-forms');
   media = await import('./studios-media');
+  store = await import('./studios-request-store');
   payMode.studiosNavigation.go = (url: string) => {
     navigated.push(url);
   };
@@ -118,7 +120,7 @@ beforeAll(async () => {
     'me', 'getSpendPolicy', 'putSpendPolicy', 'spendPolicyChallenge', 'studiosKeyStatus', 'studiosOAuthStatus',
     'studiosOAuthChallenge', 'studiosOAuthStart', 'studiosOAuthUnlink', 'studiosSigninAccount', 'studiosSigninMedia',
     'studiosImages', 'studiosOptions', 'studiosImage', 'studiosVideo', 'studiosCharacter', 'studiosRecast', 'studiosRequest',
-    'mediaDeleteChallenge', 'deleteMedia', 'studiosApprovals',
+    'mediaDeleteChallenge', 'deleteMedia', 'studiosApprovals', 'getMyAvatar',
   ];
   originalApi = Object.fromEntries(names.map((n) => [n, m[n]]));
   const challenge = (label: string) => ({ nonce: 'N'.repeat(44), expiresAt: new Date().toISOString(), messageToSign: label, walletPubkey: LINKED });
@@ -181,6 +183,7 @@ beforeAll(async () => {
     return { deleted: true, mediaId: id };
   };
   m.studiosApprovals = async () => ({ approvals: [] });
+  m.getMyAvatar = async () => ({ avatar: { id: 'avatar-1', name: 'Crab' } });
 });
 
 beforeEach(() => {
@@ -196,6 +199,8 @@ beforeEach(() => {
   (testWindow as unknown as { solana?: unknown }).solana = fakeWallet;
   useGameStore.setState({ walletLinkModalOpen: false });
   payMode.useStudiosReturnStore.getState().clear();
+  testWindow.sessionStorage.clear();
+  store.resetStudiosRequestStoreForTests();
 });
 
 afterEach(async () => {
@@ -384,6 +389,22 @@ describe('Studios sign-in', () => {
     expect(calls('account')).toEqual([]);
   });
 
+  test('the tab moves only to the https Studios sign-in page with no user info', () => {
+    expect(payMode.checkedAuthorizeUrl('https://mystudios.fun/connect/authorize?state=s')).toBe('https://mystudios.fun/connect/authorize?state=s');
+    for (const bad of [
+      'https://mystudios.fun/other?state=s',
+      'https://mystudios.fun/connect/authorize/x',
+      'https://user:pass@mystudios.fun/connect/authorize',
+      'https://user@mystudios.fun/connect/authorize',
+      'http://mystudios.fun/connect/authorize',
+      'https://mystudios.fun.evil.example/connect/authorize',
+      'javascript:alert(1)',
+      'not a url',
+    ]) {
+      expect(() => payMode.checkedAuthorizeUrl(bad)).toThrow();
+    }
+  });
+
   test('every return reason has its own plain message; an unknown one has a safe default', () => {
     const reasons = [
       'invalid_request', 'invalid_state', 'state_used', 'state_expired', 'wrong_user', 'wrong_issuer', 'denied',
@@ -528,6 +549,106 @@ describe('forms', () => {
     await settle();
     expect(container?.textContent).toContain('may have charged');
     expect(button('Change the input to make a new request').disabled).toBe(true);
+  });
+});
+
+describe('open requests outlive the wallet modal', () => {
+  async function remount(): Promise<void> {
+    await act(async () => root?.unmount());
+    container?.remove();
+    root = null;
+    await mount(createElement(card.StudiosCard));
+  }
+
+  test('after a 202, closing and reopening keeps the key and the request id; the request is read again and nothing is sent twice', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    await mount(createElement(card.StudiosCard));
+    await openSection('Video');
+    await type(field('Describe the video'), 'a crab');
+    await click(button('Make video'));
+    const first = calls('video')[0]!.arg as { key: string };
+    const saved = store.readStudiosSlot(store.useStudiosRequestStore.getState().slots, 'avatar-1:video').pending;
+    expect(saved).toMatchObject({ key: first.key, requestId: REQ });
+
+    log.length = 0;
+    await remount();
+    // The section is open again on its own, says it runs, and reads the request.
+    expect(button('Running...').disabled).toBe(true);
+    expect(container?.textContent).toContain('Studios is working on it.');
+    expect(calls('poll').map((l) => l.arg)).toEqual([REQ]);
+    await click(button('Running...'));
+    expect(calls('video')).toEqual([]);
+
+    // A reload of the tab (memory gone): sessionStorage brings it back.
+    store.resetStudiosRequestStoreForTests();
+    log.length = 0;
+    await remount();
+    expect(button('Running...').disabled).toBe(true);
+    expect(calls('poll').map((l) => l.arg)).toEqual([REQ]);
+
+    // It ends: the slot is cleared, and a new send gets a new key.
+    requestView = { requestId: REQ, operation: 'video', status: 'done', mode: 'account', mediaPath: `/api/media/${MEDIA_VID}`, media: [], code: null };
+    await act(async () => {
+      await client!.refetchQueries({ queryKey: ['studios-request', REQ] });
+    });
+    await settle();
+    expect(store.readStudiosSlot(store.useStudiosRequestStore.getState().slots, 'avatar-1:video').pending).toBeNull();
+    expect(testWindow.sessionStorage.getItem(store.STUDIOS_REQUESTS_STORAGE_KEY)).toBeNull();
+  });
+
+  test('a lost reply, then close and reopen: the same input reuses the same key', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    postAnswer = async () => {
+      throw new Error('network');
+    };
+    await mount(createElement(card.StudiosCard));
+    await openSection('Image');
+    await type(field('Describe the image'), 'a crab');
+    await click(button('Make image'));
+    await remount();
+    await openSection('Image');
+    await type(field('Describe the image'), 'a crab');
+    await click(button('Make image'));
+    const keys = calls('image').map((l) => (l.arg as { key: string }).key);
+    expect(keys.length).toBe(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  test('an outcome that may have charged stays blocked after reopening', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    requestView = { requestId: REQ, operation: 'video', status: 'failed', mode: 'account', mediaPath: null, media: [], code: 'outcome_unknown' };
+    await mount(createElement(card.StudiosCard));
+    await openSection('Video');
+    await type(field('Describe the video'), 'a crab');
+    await click(button('Make video'));
+    await settle();
+    await remount();
+    await openSection('Video');
+    await type(field('Describe the video'), 'a crab');
+    expect(button('Change the input to make a new request').disabled).toBe(true);
+  });
+
+  test('a sessionStorage that throws: the flow still works in memory', async () => {
+    const throwing = { get: () => { throw new Error('denied'); }, configurable: true };
+    Object.defineProperty(testWindow, 'sessionStorage', throwing);
+    try {
+      payModeSaved = 'key';
+      keyLinked = true;
+      await mount(createElement(card.StudiosCard));
+      await openSection('Video');
+      await type(field('Describe the video'), 'a crab');
+      await click(button('Make video'));
+      expect(button('Running...').disabled).toBe(true);
+      await remount();
+      expect(button('Running...').disabled).toBe(true);
+      expect(calls('video').length).toBe(1);
+    } finally {
+      Reflect.deleteProperty(testWindow, 'sessionStorage');
+    }
+    expect(() => testWindow.sessionStorage.getItem('x')).not.toThrow();
   });
 });
 
