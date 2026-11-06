@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-06 07:20Z (session claw-2.0). **STAGING API + WEB = `abd98eb83`, VERIFIED 07:07Z: emote hotbar below every modal (`HUD_Z.hotbar` 110 -> 47) and PROTOCOL_VERSION 111 (the manual names the /game spend-cap prompt); phone + iPad sweep of the spend-cap prompt and the wallet panel done (DEPLOY LOG 2026-11-06 07:20Z).** SCHEMA: prod-migration-pending: 0090, 0091, 0092.
+Last Audited: 2026-11-06 11:48Z (session claw-2.0). **PROD = `c0be4c3e6` (promotion #25, PR #337, VERIFIED 11:42Z): spend rules phase 1b, Studios phases 2a + 2b, user-owned Studios image limits, emote hotbar below every modal (PROTOCOL_VERSION 111, migrations 0090 + 0091 + 0092).** Staging = `93aac9ce3` (same code). SCHEMA: synced.
+
+Prior - Last Audited: 2026-11-06 07:20Z (session claw-2.0). **STAGING API + WEB = `abd98eb83`, VERIFIED 07:07Z: emote hotbar below every modal (`HUD_Z.hotbar` 110 -> 47) and PROTOCOL_VERSION 111 (the manual names the /game spend-cap prompt); phone + iPad sweep of the spend-cap prompt and the wallet panel done (DEPLOY LOG 2026-11-06 07:20Z).** SCHEMA: prod-migration-pending: 0090, 0091, 0092.
 
 Prior - Last Audited: 2026-11-05 11:38Z (session claw-2.0). **STAGING API + WEB = `0c43294cb`, VERIFIED 11:36Z: Studios image limits are the user's own (no fixed ClawVille counts; Spending card field "Images per day with your own Studios key", default 10, signed when raised; PROTOCOL_VERSION 110, migration 0092) (DEPLOY LOG 2026-11-05 11:38Z). Before that, `bc89e1336` VERIFIED 08:00Z: phase 2b, Studios images card in the wallet panel, the human's own Studios key (linked wallet signs each change), stored images at `/api/media/<id>`, MCP tool `clawville_studios_image`, hosted verb `generate_image` (PROTOCOL_VERSION 109, migration 0091) (DEPLOY LOG 2026-11-05 08:05Z).** **PROD = `2b3c5fa36` (promotion #24).** SCHEMA: prod-migration-pending: `packages/database/migrations/0090_vendor_spend_ledger.sql`, `packages/database/migrations/0091_avatar_media_and_vendor_credentials.sql`, `packages/database/migrations/0092_spend_policy_studios_key_images.sql`.
 
@@ -722,6 +724,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-06 11:48Z (session claw-2.0) - promotion #25 to prod (PR #337, `c0be4c3e6`), VERIFIED
+- **What changed:** staging `93aac9ce3` promoted to master on the founder's "go". Ships spend rules phase 1b (PROTOCOL 107), Studios phase 2a (108, migration 0090), phase 2b (109, migration 0091), user-owned Studios image limits (110, migration 0092) and the hotbar layer fix (111).
+- **Before merge:** local coupling gate on `2b3c5fa36..93aac9ce3` exit 0 with no `[skip-nori-update]` waiver (the range updates `town-guide.ts`); migrations 0090-0092 additive only (CREATE TABLE / ADD COLUMN IF NOT EXISTS); prod api env has `VANITY_ENCRYPTION_KEY` and `AGENT_PAY_RPC_URL` (presence only; `SOLANA_MAINNET_RPC_URL` is unset on prod and the code falls back to the agent-pay rail RPC). PR checks 4/4 green.
+- **What broke + fix:** nothing broke. The Chrome-extension FPS read was 1 on prod AND staging; that browser runs on the laptop (Iris Xe) with an idle display, and a plain page gave 233 rAF/s with no long tasks, so the stall was its display, not the game. Re-measured with headless Chrome (GPU on) on itachi222 (RTX 3080).
+- **Verified:** prod run 42211003007: gates, migrate, deploy all success. Both prod containers `SOURCE_COMMIT=c0be4c3e6` at 11:42Z; `/health` ok with that commit. Prod DB (read-only, inside the api container) has `vendor_spend_ledger`, `avatar_media`, `user_vendor_credentials`, `vendor_call_requests`, `user_spend_policies.studios_key_images_per_day`, `vendor_spend_ledger.reconcile_attempts`. Api source `PROTOCOL_VERSION = 111`. Web bundle: the hotbar chunk has `z-[47]` and no `z-[110]`; the Spending field string is present. `/api/wallet/spend-policy` and `POST /api/vendors/studios/images` answer 401 without a session. Prod `/game` as a guest: the Chrome screenshot shows the world, the HUD and the town sign; headless 60/60/60/60 FPS, no console errors.
+- **NOT verified:** a signed-in prod check of the Spending + Studios cards, a live Studios call on prod, a real phone, real-iPad safe-area insets.
+- **Who it's for:** every signed-in human (spend caps prompt + wallet cards) and every agent (Studios verb + MCP tool under the spend rules).
+- **SCHEMA:** synced.
 
 ### 2026-11-06 07:20Z (session claw-2.0) - emote hotbar below every modal; PROTOCOL_VERSION 111; phone + iPad sweep, VERIFIED
 - **What changed (`6eff38ce1`, `abd98eb83`):** the phone/iPad sweep of the wallet cards (owed since phase 1b) found the 4-slot emote hotbar at z-[110] drawn OVER the z-[95] spend-cap prompt on a 390x844 phone, covering the "Images per day with your own Studios key" field; at 110 it sat above every modal (z-50 dialogs, z-[100] backup / daily-login / agent-connect), a bug since 2026-04-29. `HUD_Z.hotbar` (`apps/web/src/lib/hud/hud-layout.ts`) and the hotbar class move to 47: above the joysticks and the z-45 prompt pills, below every modal. The `ecosystem` manual page now names the /game spend-cap prompt ("Set later" hides it for the browser session); PROTOCOL_VERSION 110 -> 111, new v111 test, pins moved.
