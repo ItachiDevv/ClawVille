@@ -4,11 +4,17 @@
  * is built, where the price comes from, which per-day count bounds it, how
  * much media it may store, and how its reply is read.
  *
- *   image            wallet (x402) + key. The phase 2b behaviour, unchanged.
- *   video            wallet (x402) + key. Studios holds the call open up to
+ *   image            wallet (x402) + key + sign-in. The phase 2b behaviour, unchanged.
+ *   video            wallet (x402) + key + sign-in. Studios holds the call open up to
  *                    5 minutes, so it runs in the background runner.
- *   character_shots  key only (Studios takes no x402 on /images/characters).
- *   recast           key only; asynchronous (start, then poll the job).
+ *   character_shots  key + sign-in (Studios takes no x402 on /images/characters).
+ *   recast           key + sign-in; asynchronous (start, then poll the job).
+ *
+ * Row modes (`vendor_call_requests.mode`): 'wallet', 'account' (the saved
+ * Studios key; the human's pay mode 'key') and 'signin' (the Studios sign-in,
+ * phase 3c: the Studios MCP tools, `vendors/studios-signin.ts`). In sign-in
+ * mode EVERY operation is a job in the background runner (a create tool may
+ * answer with a job id only).
  *
  * Price source: in wallet mode the x402 quote, checked against the human's
  * per-call cap, the signed amount and the operation's hard ceiling below. In
@@ -38,7 +44,17 @@ import {
   parseStudiosImage,
 } from './studios';
 
-export type StudiosMode = 'wallet' | 'account';
+export type StudiosMode = 'wallet' | 'account' | 'signin';
+
+/** Read a stored row mode; anything unknown is treated as the wallet (the old default). */
+export function rowMode(value: string | null | undefined): StudiosMode {
+  return value === 'account' || value === 'signin' ? value : 'wallet';
+}
+
+/** True when the request runs in the background runner: a long operation, or any sign-in request. */
+export function isLongJob(op: { long: boolean }, mode: StudiosMode): boolean {
+  return op.long || mode === 'signin';
+}
 
 /** The only host ClawVille downloads Studios results from (docs.md names no other). */
 export const STUDIOS_ORIGIN = 'https://mystudios.fun';
@@ -236,8 +252,8 @@ export interface StudiosOperationDef {
   /** Runs in the background runner (the route answers 202 'running'). */
   long: boolean;
   schema: z.ZodType<StudiosParams, z.ZodTypeDef, unknown>;
-  /** wallet = the x402 quote (with `maxCallAtomic` as the ceiling); account = the human's Studios credits. */
-  priceSource: { wallet: 'x402_quote' | null; account: 'studios_credits' };
+  /** wallet = the x402 quote (with `maxCallAtomic` as the ceiling); account and signin = the human's Studios credits. */
+  priceSource: { wallet: 'x402_quote' | null; account: 'studios_credits'; signin: 'studios_credits' };
   /** Hard ceiling for one x402 call; null when the operation has no wallet mode. */
   maxCallAtomic: bigint | null;
   limit: { field: LimitField; defaultPerDay: number; modes: readonly StudiosMode[] };
@@ -289,13 +305,14 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
   image: {
     id: 'image',
     label: 'image',
-    modes: ['wallet', 'account'],
+    modes: ['wallet', 'account', 'signin'],
     long: false,
     schema: imageParamsSchema,
-    priceSource: { wallet: 'x402_quote', account: 'studios_credits' },
+    priceSource: { wallet: 'x402_quote', account: 'studios_credits', signin: 'studios_credits' },
     maxCallAtomic: STUDIOS_MAX_CALL_ATOMIC,
-    // Images keep the phase 2b rule: the count bounds the human's own key only.
-    limit: { field: 'studiosKeyImagesPerDay', defaultPerDay: STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT, modes: ['account'] },
+    // Images keep the phase 2b rule: the count bounds the human's own Studios
+    // credits only (their key, and since phase 3c their sign-in), not the wallet.
+    limit: { field: 'studiosKeyImagesPerDay', defaultPerDay: STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT, modes: ['account', 'signin'] },
     hostedPerDay: null,
     reserveBytes: () => IMAGE_MAX_BYTES,
     replyMaxBytes: REPLY_12_MB,
@@ -315,12 +332,12 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
   video: {
     id: 'video',
     label: 'video',
-    modes: ['wallet', 'account'],
+    modes: ['wallet', 'account', 'signin'],
     long: true,
     schema: videoParamsSchema,
-    priceSource: { wallet: 'x402_quote', account: 'studios_credits' },
+    priceSource: { wallet: 'x402_quote', account: 'studios_credits', signin: 'studios_credits' },
     maxCallAtomic: STUDIOS_VIDEO_MAX_CALL_ATOMIC,
-    limit: { field: 'studiosVideosPerDay', defaultPerDay: STUDIOS_VIDEOS_PER_DAY_DEFAULT, modes: ['wallet', 'account'] },
+    limit: { field: 'studiosVideosPerDay', defaultPerDay: STUDIOS_VIDEOS_PER_DAY_DEFAULT, modes: ['wallet', 'account', 'signin'] },
     hostedPerDay: 2,
     reserveBytes: () => VIDEO_MAX_BYTES,
     replyMaxBytes: 1 * MB,
@@ -352,12 +369,12 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
   character_shots: {
     id: 'character_shots',
     label: 'character shots',
-    modes: ['account'],
+    modes: ['account', 'signin'],
     long: false,
     schema: characterParamsSchema,
-    priceSource: { wallet: null, account: 'studios_credits' },
+    priceSource: { wallet: null, account: 'studios_credits', signin: 'studios_credits' },
     maxCallAtomic: null,
-    limit: { field: 'studiosCharacterShotsPerDay', defaultPerDay: STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT, modes: ['wallet', 'account'] },
+    limit: { field: 'studiosCharacterShotsPerDay', defaultPerDay: STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT, modes: ['wallet', 'account', 'signin'] },
     hostedPerDay: 3,
     // The shots asked for, plus the sheet Studios renders as the anchor.
     reserveBytes: (p) => IMAGE_MAX_BYTES * (((p as CharacterParams).shots?.length ?? 1) + 1),
@@ -402,12 +419,12 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
   recast: {
     id: 'recast',
     label: 'recast',
-    modes: ['account'],
+    modes: ['account', 'signin'],
     long: true,
     schema: recastParamsSchema,
-    priceSource: { wallet: null, account: 'studios_credits' },
+    priceSource: { wallet: null, account: 'studios_credits', signin: 'studios_credits' },
     maxCallAtomic: null,
-    limit: { field: 'studiosRecastsPerDay', defaultPerDay: STUDIOS_RECASTS_PER_DAY_DEFAULT, modes: ['wallet', 'account'] },
+    limit: { field: 'studiosRecastsPerDay', defaultPerDay: STUDIOS_RECASTS_PER_DAY_DEFAULT, modes: ['wallet', 'account', 'signin'] },
     hostedPerDay: 1,
     reserveBytes: () => VIDEO_MAX_BYTES,
     replyMaxBytes: 1 * MB,

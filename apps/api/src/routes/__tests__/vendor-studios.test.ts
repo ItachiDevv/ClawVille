@@ -94,12 +94,22 @@ mock.module('../../services/studios-images', () => ({
     decisions.push({ kind: 'decline', ...input });
     return { ok: true, requestId: input.requestId, status: 'declined', surface: 'api' };
   },
+  readStudiosSigninAccount: async (avatarId: string) => {
+    signinReads.push({ kind: 'account', avatarId });
+    return nextSigninRead ?? { ok: true, account: { balanceUsd: 1.5, freeUsageLeft: 2, connectionSpendLeftUsd: 0.5, readable: true } };
+  },
+  listStudiosSigninMedia: async (avatarId: string, query: Record<string, unknown>) => {
+    signinReads.push({ kind: 'media', avatarId, query });
+    return nextSigninRead ?? { ok: true, media: { items: [{ id: 'm1', kind: 'image', description: 'a crab', state: null }], nextCursor: null } };
+  },
   readStudiosRequest: async (avatarId: string, requestId: string) => {
     decisions.push({ kind: 'read', avatarId, requestId });
     return avatarId === 'a1' && requestId === REQ ? { requestId, status: 'awaiting_approval', mode: 'wallet' } : null;
   },
 }));
 const opCalls: Array<Record<string, unknown>> = [];
+const signinReads: Array<Record<string, unknown>> = [];
+let nextSigninRead: unknown = null;
 let nextOpResult: unknown = { ok: false, code: 'running', httpStatus: 202, message: 'running', ledgerId: null, requestId: REQ };
 mock.module('../../services/studios-menus', () => ({
   readStudiosMenu: async (menu: string) => (menu === 'recast-presets' ? { presets: [{ id: 'recast-x-wan', priceUsd: 1 }] } : null),
@@ -117,7 +127,7 @@ mock.module('../../services/vendor-credentials', () => ({
   },
 }));
 
-const { vendorStudiosRoutes, resetStudiosRateLimit } = await import('../vendor-studios');
+const { vendorStudiosRoutes, resetStudiosRateLimit, resetStudiosSigninReadRateLimit } = await import('../vendor-studios');
 const app = new Hono();
 app.route('/api/vendors/studios', vendorStudiosRoutes);
 app.onError((err, c) => (err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({ error: 'x' }, 500)));
@@ -159,6 +169,9 @@ async function signedProof(body: ReturnType<typeof saveRef> | { action: 'remove'
 
 beforeEach(() => {
   resetStudiosRateLimit();
+  resetStudiosSigninReadRateLimit();
+  signinReads.length = 0;
+  nextSigninRead = null;
   calls.length = 0;
   savedKeys.length = 0;
   deletedKeys.length = 0;
@@ -472,5 +485,46 @@ describe('GET /api/vendors/studios/requests/:id', () => {
     identity = { kind: 'agent', userId: 'u2', avatarId: 'a2', agentId: 'g2', ledgerCapable: true };
     expect((await approvalRequest('GET', `/requests/${REQ}`)).status).toBe(404);
     expect((await approvalRequest('GET', '/requests/x')).status).toBe(404);
+  });
+});
+
+describe('GET /api/vendors/studios/signin/account and /signin/media (free sign-in reads)', () => {
+  it('serve the human session and an agent session of the same avatar (no ledger capability needed; nothing is spent)', async () => {
+    const account = await app.request('/api/vendors/studios/signin/account');
+    expect(account.status).toBe(200);
+    expect(await account.json()).toEqual({ balanceUsd: 1.5, freeUsageLeft: 2, connectionSpendLeftUsd: 0.5, readable: true });
+    identity = { kind: 'agent', userId: 'u1', avatarId: 'a7', agentId: 'g1', ledgerCapable: false };
+    const media = await app.request('/api/vendors/studios/signin/media?kind=video&limit=5&cursor=c-1');
+    expect(media.status).toBe(200);
+    expect(await media.json()).toEqual({ items: [{ id: 'm1', kind: 'image', description: 'a crab', state: null }], nextCursor: null });
+    expect(signinReads).toEqual([
+      { kind: 'account', avatarId: 'a1' },
+      { kind: 'media', avatarId: 'a7', query: { kind: 'video', limit: 5, cursor: 'c-1' } },
+    ]);
+  });
+
+  it('refuse a bad query before any read, answer our refusal codes, and limit 12 reads a minute per avatar', async () => {
+    for (const q of ['kind=gif', 'limit=0', 'limit=49', 'cursor=a%20b', 'other=1']) {
+      expect((await app.request(`/api/vendors/studios/signin/media?${q}`)).status).toBe(400);
+    }
+    expect(signinReads).toHaveLength(0);
+    nextSigninRead = { ok: false, code: 'studios_signin_missing', httpStatus: 404, message: 'No Studios sign-in is linked to this avatar.' };
+    const missing = await app.request('/api/vendors/studios/signin/account');
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({ code: 'studios_signin_missing' });
+    nextSigninRead = { ok: false, code: 'studios_signin_broken', httpStatus: 409, message: 'The Studios sign-in stopped working.' };
+    expect((await app.request('/api/vendors/studios/signin/media')).status).toBe(409);
+    nextSigninRead = null;
+    resetStudiosSigninReadRateLimit();
+    for (let i = 0; i < 12; i += 1) expect((await app.request('/api/vendors/studios/signin/account')).status).toBe(200);
+    const limited = await app.request('/api/vendors/studios/signin/media');
+    expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ code: 'rate_limited' });
+  });
+
+  it('refuse a caller with no session', async () => {
+    identity = null;
+    expect((await app.request('/api/vendors/studios/signin/account')).status).toBe(401);
+    expect(signinReads).toHaveLength(0);
   });
 });

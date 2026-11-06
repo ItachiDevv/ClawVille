@@ -36,10 +36,18 @@ export function studiosErrorText(error: unknown): string {
         return 'Your saved Studios API key does not work. Save it again below.';
       case 'studios_account_refused':
         return 'Studios refused the call on your Studios account (for example, no credits left).';
+      case 'studios_key_missing':
+        return 'You chose your own Studios key to pay, but no key is saved. Nothing was paid.';
+      case 'studios_signin_missing':
+        return 'You chose your Studios sign-in to pay, but you are not signed in with Studios. Nothing was paid.';
+      case 'studios_signin_broken':
+        return 'Your Studios sign-in stopped working. Sign in with Studios again. Nothing was paid.';
       case 'rate_limited':
         return 'Too many images. Wait one minute.';
       case 'awaiting_approval':
         return '"Ask me before each payment" is on, so this image waits in Approvals below. Approve it there with your linked wallet.';
+      case 'running':
+        return 'Studios is making this image on your Studios account (Studios sign-in). It appears in your recent images when it is ready.';
       case 'approval_pending_limit':
         return 'Five requests already wait in Approvals. Approve or decline them first.';
       case 'daily_limit':
@@ -96,6 +104,7 @@ const FINAL_NOTHING_CHARGED = new Set([
   'spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'vendor_unreachable',
   'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed', 'wallet_missing', 'payment_prepare_failed',
   'studios_key_invalid', 'studios_account_refused', 'daily_limit',
+  'studios_key_missing', 'studios_signin_missing', 'studios_signin_broken',
 ]);
 
 export function keepsRequestKey(error: unknown): boolean {
@@ -138,15 +147,17 @@ export function StudiosCard() {
     onSuccess: (result) => {
       setPending(null);
       // With "ask me before each payment" on, every image waits in Approvals
-      // (below) until the linked wallet signs the approval.
+      // (below) until the linked wallet signs the approval. With the Studios
+      // sign-in, the image is a Studios job that finishes in the background.
       if ('status' in result) {
-        setError(new ApiError('awaiting_approval', 202, 'awaiting_approval'));
-        queryClient.invalidateQueries({ queryKey: STUDIOS_APPROVALS_QUERY_KEY });
+        setError(new ApiError(result.status, 202, result.status));
+        if (result.status === 'awaiting_approval') queryClient.invalidateQueries({ queryKey: STUDIOS_APPROVALS_QUERY_KEY });
+        else queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
         return;
       }
       setLast({
         mediaPath: result.mediaPath,
-        note: result.mode === 'account'
+        note: result.mode !== 'wallet'
           ? 'Made with your Studios account.'
           : `Paid from your agent wallet: ${((result.paidUsdCents ?? 0) / 100).toFixed(2)} USD.`,
       });

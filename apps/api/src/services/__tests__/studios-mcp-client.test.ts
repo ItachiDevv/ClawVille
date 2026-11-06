@@ -211,6 +211,20 @@ describe('studios MCP client', () => {
     expect((err as StudiosMcpError).code).toBe('studios_mcp_rpc_error');
     expect((err as StudiosMcpError).rpcCode).toBe(-32602);
     expect((err as Error).message).not.toContain('ignore');
+    // On or after the tools/call send: Studios may have run the tool.
+    expect((err as StudiosMcpError).toolCallSent).toBe(true);
+  });
+
+  it('marks toolCallSent false when the session setup failed (the tool never ran)', async () => {
+    serverProtocol = '2099-01-01';
+    const setup = await callStudiosTool({ avatarId: 'a1', endpoint, getToken: tokenSource(['good']).getToken }, 'create_image', { prompt: 'x' }).catch((e) => e);
+    expect(setup).toBeInstanceOf(StudiosMcpError);
+    expect((setup as StudiosMcpError).toolCallSent).toBe(false);
+    serverProtocol = '2025-06-18';
+    validTokens = new Set();
+    const unauthorized = await callStudiosTool({ avatarId: 'a1', endpoint, getToken: tokenSource(['bad', 'worse']).getToken }, 'create_image', { prompt: 'x' }).catch((e) => e);
+    expect((unauthorized as StudiosMcpError).code).toBe('studios_mcp_unauthorized');
+    expect((unauthorized as StudiosMcpError).toolCallSent).toBe(false);
   });
 
   it('reports a tool-level failure as isError: true', async () => {

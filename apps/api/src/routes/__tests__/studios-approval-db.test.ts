@@ -373,9 +373,11 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     fakeStudiosQuote();
     const { result } = await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: signed.terms });
     expect(result).toMatchObject({ ok: false, code: 'over_per_call_cap' });
-    expect(vendorCalls).toBe(1); // the unpaid quote only
+    // The checks that spend nothing run again at approve, before the row runs:
+    // no quote is asked and the request keeps waiting (the human can decline it).
+    expect(vendorCalls).toBe(0);
     expect(await ledgerRows()).toBe(0);
-    expect(await readStudiosRequest(avatarId, r.requestId)).toMatchObject({ status: 'failed', code: 'over_per_call_cap' });
+    expect(await readStudiosRequest(avatarId, r.requestId)).toMatchObject({ status: 'awaiting_approval' });
   });
 
   it('wallet mode: a quote above the signed amount pays nothing', async () => {

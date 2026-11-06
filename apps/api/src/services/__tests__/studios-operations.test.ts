@@ -31,11 +31,11 @@ const WEBM = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16, 1)]);
 
 describe('operation registry', () => {
-  it('modes per operation: image + video take wallet or key; character shots + recast key only', () => {
-    expect(STUDIOS_OPERATIONS.image.modes).toEqual(['wallet', 'account']);
-    expect(STUDIOS_OPERATIONS.video.modes).toEqual(['wallet', 'account']);
-    expect(STUDIOS_OPERATIONS.character_shots.modes).toEqual(['account']);
-    expect(STUDIOS_OPERATIONS.recast.modes).toEqual(['account']);
+  it('modes per operation: image + video take wallet, key or sign-in; character shots + recast key or sign-in', () => {
+    expect(STUDIOS_OPERATIONS.image.modes).toEqual(['wallet', 'account', 'signin']);
+    expect(STUDIOS_OPERATIONS.video.modes).toEqual(['wallet', 'account', 'signin']);
+    expect(STUDIOS_OPERATIONS.character_shots.modes).toEqual(['account', 'signin']);
+    expect(STUDIOS_OPERATIONS.recast.modes).toEqual(['account', 'signin']);
     expect(STUDIOS_OPERATIONS.character_shots.maxCallAtomic).toBeNull();
     expect(STUDIOS_OPERATIONS.recast.maxCallAtomic).toBeNull();
     expect(STUDIOS_OPERATIONS.video.long).toBe(true);
@@ -314,6 +314,17 @@ describe('hosted verbs: grammar and result lines', () => {
     expect(stopLines[2]).toContain('Do not retry; it counts toward the daily cap until it is checked on chain.');
     expect(stopLines[3]).toContain('Do not retry; ask your human to check their Studios My Media and credits.');
     lines.push(...stopLines);
+    // Sign-in mode: a hosted generate_image is a job (running first, then the operation shape).
+    const signinLines = [
+      formatGeneratedImageResult({ ok: false, code: 'running', httpStatus: 202, message: 'x', ledgerId: null, requestId: 'r1' }),
+      formatGeneratedImageResult({
+        ok: true, operation: 'image', requestId: 'r1', mode: 'signin', mediaId: null, mediaPath: null, media: [], vendorMediaId: 'mm1',
+        note: 'media_not_copied', ledgerId: null, paidUsdCents: null, txSignature: null,
+      }),
+    ];
+    expect(signinLines[0]).toContain('your image is being made');
+    expect(signinLines[1]).toContain('My Media');
+    lines.push(...signinLines);
     for (const line of lines) {
       expect(line.length).toBeLessThanOrEqual(200);
       expect(line).not.toContain('SECRET');

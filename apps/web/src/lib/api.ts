@@ -638,6 +638,8 @@ export const api = {
     allowedVendors: SpendVendorId[];
     studiosKeyImagesPerDay: number;
     requireApproval: boolean;
+    /** Who pays for Studios calls; absent keeps the saved choice. Any change needs `proof`. */
+    studiosPayMode?: 'wallet' | 'key' | 'signin' | null;
     proof?: { nonce: string; signature: string };
   }) =>
     request<SpendPolicyView>('/api/wallet/spend-policy', {
@@ -652,13 +654,15 @@ export const api = {
   studiosImage: (body: { prompt: string }, idempotencyKey: string) =>
     request<{
       ok: true;
-      mode: 'wallet' | 'account';
+      mode: 'wallet' | 'account' | 'signin';
       mediaId: string;
       mediaPath: string;
       ledgerId: string | null;
       paidUsdCents: number | null;
       txSignature: string | null;
-    } | { status: 'awaiting_approval'; requestId: string; expiresAt: string; message: string }>('/api/vendors/studios/images', {
+    } | { status: 'awaiting_approval'; requestId: string; expiresAt: string; message: string }
+      // Studios sign-in: the image is a Studios job (read GET /requests/:id).
+      | { status: 'running'; requestId: string; message: string }>('/api/vendors/studios/images', {
       method: 'POST',
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(body),
@@ -721,6 +725,7 @@ export const api = {
     allowedVendors: SpendVendorId[];
     studiosKeyImagesPerDay: number;
     requireApproval: boolean;
+    studiosPayMode?: 'wallet' | 'key' | 'signin' | null;
   }) =>
     request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>(
       '/api/wallet/spend-policy/challenge',

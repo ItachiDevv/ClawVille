@@ -15,6 +15,18 @@
  *          prices, option values only), cached 10 minutes.
  *   GET    /api/vendors/studios/requests/:id  one Studios request of this
  *          avatar (agent or human): status, and the media paths when done.
+ *   GET    /api/vendors/studios/signin/account  through the human's Studios
+ *          sign-in (phase 3c): balance in USD, free usage left, this
+ *          connection's spend left today. Free; no request row.
+ *   GET    /api/vendors/studios/signin/media?kind&limit&cursor  the human's
+ *          Studios My Media: id, kind, short description (vendor text, plain
+ *          data, at most 200 characters), ready/problem. Free; no request row.
+ *          Both: human session or agent session of the same avatar; 404
+ *          `studios_signin_missing`, 409 `studios_signin_broken`.
+ *   Who pays (phase 3c): the human's `studiosPayMode` in the spend rules
+ *          (wallet, key or signin; not chosen = key if saved, else wallet).
+ *          In sign-in mode every POST above answers 202 `running` (also an
+ *          image) and the runner calls the Studios MCP tools.
  *   GET    /api/vendors/studios/approvals  the requests that wait for the
  *          human ("ask me before each payment"). Human only.
  *   POST   /api/vendors/studios/approvals/:id/challenge  the message for
@@ -37,7 +49,8 @@
  * panel, Studios card); agent path = the same routes with the agent session
  * header (ledger-capable for POST), the MCP tools `clawville_studios_image`,
  * `clawville_studios_video`, `clawville_studios_character`,
- * `clawville_studios_recast`, `clawville_studios_options` and the hosted
+ * `clawville_studios_recast`, `clawville_studios_options`,
+ * `clawville_studios_account` (the two sign-in reads) and the hosted
  * `[ACTION:]` verbs `generate_image`, `generate_video`, `make_character`,
  * `recast_character`, all through `services/studios-images.ts`. The key routes are human-only by
  * design: the human chooses whose account pays, and the linked wallet signs
@@ -84,12 +97,16 @@ import {
   generateStudiosImage,
   listAwaitingApprovals,
   listMedia,
+  listStudiosSigninMedia,
   readApprovalTerms,
   readStudiosRequest,
+  readStudiosSigninAccount,
   requestStudiosOperation,
   type StudiosImageResult,
   type StudiosOperationResult,
+  type StudiosSigninReadFailure,
 } from '../services/studios-images';
+import { signinMediaQuerySchema } from '../services/vendors/studios-signin';
 import { readStudiosMenu } from '../services/studios-menus';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
 import {
@@ -211,6 +228,38 @@ vendorStudiosRoutes.get('/options/:menu', requireAuthOrAgentSession, async (c) =
   const data = await readStudiosMenu(menu as StudiosMenuId);
   if (!data) return c.json({ error: 'vendor_unreachable', code: 'vendor_unreachable', message: 'Studios did not answer. Try again later.' }, 502);
   return c.json({ menu, ...data });
+});
+
+// Each read sends the human's sign-in token to Studios once: limited per avatar.
+const signinReadRateLimiter = createRateLimiter({ maxPerWindow: 12, windowMs: 60_000 });
+
+/** Test-only: reset the per-avatar read limiter between cases. */
+export function resetStudiosSigninReadRateLimit(): void {
+  signinReadRateLimiter.reset();
+}
+
+function readRefusal(c: Context, failure: StudiosSigninReadFailure): Response {
+  return c.json({ error: failure.code, code: failure.code, message: failure.message }, failure.httpStatus);
+}
+
+vendorStudiosRoutes.get('/signin/account', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  if (!signinReadRateLimiter.check(identity.avatarId)) {
+    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios reads. Wait one minute.' }, 429);
+  }
+  const read = await readStudiosSigninAccount(identity.avatarId);
+  return read.ok ? c.json(read.account) : readRefusal(c, read);
+});
+
+vendorStudiosRoutes.get('/signin/media', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const query = signinMediaQuerySchema.safeParse(c.req.query());
+  if (!query.success) return c.json({ error: 'invalid_request', code: 'invalid_request', issues: query.error.issues }, 400);
+  if (!signinReadRateLimiter.check(identity.avatarId)) {
+    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios reads. Wait one minute.' }, 429);
+  }
+  const read = await listStudiosSigninMedia(identity.avatarId, query.data);
+  return read.ok ? c.json(read.media) : readRefusal(c, read);
 });
 
 vendorStudiosRoutes.get('/images', requireAuthOrAgentSession, async (c) => {

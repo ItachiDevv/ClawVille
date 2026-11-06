@@ -59,9 +59,9 @@ describe('protocol `ecosystem` page', () => {
 
   test('v109: states both pay modes, the MCP tool, the hosted verb and the media path', () => {
     const page = buildEcosystemTopic(API_BASE);
-    expect(page).toContain("**Your human's own Studios account.**");
+    expect(page).toContain("**`key`: your human's own Studios API key.**");
     expect(page).toContain('Only the human can save or remove the key, and their linked wallet signs each change; an agent cannot.');
-    expect(page).toContain('**Your avatar wallet.**');
+    expect(page).toContain('**`wallet`: your avatar wallet.**');
     expect(page).toContain('`clawville_studios_image`');
     expect(page).toContain('[ACTION: generate_image(prompt="...")]');
     expect(page).toContain('`mediaPath`');
@@ -77,7 +77,7 @@ describe('protocol `ecosystem` page', () => {
     const { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } = await import('@clawville/shared');
     expect(page).toContain(`(\`studiosKeyImagesPerDay\` in the spend rules, ${STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT} until they change it)`);
     expect(page).toContain('ClawVille sets no image count of its own.');
-    expect(page).toContain('`studiosKeyImagesPerDay`, `studiosVideosPerDay`, `studiosCharacterShotsPerDay`, `studiosRecastsPerDay`, `requireApproval` and `configured`');
+    expect(page).toContain('`studiosKeyImagesPerDay`, `studiosVideosPerDay`, `studiosCharacterShotsPerDay`, `studiosRecastsPerDay`, `requireApproval`, `studiosPayMode` and `configured`');
     expect(page).toContain('or to raise the images, videos, character shots or recasts per day');
     expect(page).not.toMatch(/at most \d+ (images )?per UTC day/);
     expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);

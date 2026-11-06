@@ -371,6 +371,7 @@ describe('plain-text helpers', () => {
     expect(cards.timeLeftText('2026-11-06T12:00:30.000Z', now)).toBe('Less than 1 minute left');
     expect(cards.timeLeftText('2026-11-06T11:59:00.000Z', now)).toBe('Expired');
     expect(cards.approvalPriceText({ mode: 'account', maxUsdCents: null })).toBe('Your Studios key pays (your Studios credits).');
+    expect(cards.approvalPriceText({ mode: 'signin', maxUsdCents: null })).toBe('Your Studios sign-in pays (your Studios credits).');
     expect(cards.approvalPriceText({ mode: 'wallet', maxUsdCents: 25 })).toContain('$0.25');
   });
 });

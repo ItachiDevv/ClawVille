@@ -5,7 +5,7 @@
  * every paid call is refused until the human chooses a cap.
  */
 
-import { boolean, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, integer, pgTable, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
 import { avatars } from './avatars';
 import { users } from './users';
 
@@ -24,6 +24,8 @@ export const userSpendPolicies = pgTable('user_spend_policies', {
   studiosVideosPerDay: integer('studios_videos_per_day'),
   studiosCharacterShotsPerDay: integer('studios_character_shots_per_day'),
   studiosRecastsPerDay: integer('studios_recasts_per_day'),
+  /** Who pays for a Studios call (migration 0096): 'wallet' | 'key' | 'signin'; NULL = the saved key if any, else the wallet. */
+  studiosPayMode: varchar('studios_pay_mode', { length: 16 }),
   updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

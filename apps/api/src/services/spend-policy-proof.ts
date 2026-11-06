@@ -15,7 +15,7 @@
 import { createHash, randomBytes } from 'crypto';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
-import type { SpendPolicyValues, StudiosOperationId } from '@clawville/shared';
+import type { SpendPolicyValues, StudiosOperationId, StudiosPayMode } from '@clawville/shared';
 
 const NONCE_TTL_MS = 120 * 1000;
 const MAX_NONCES = 10_000;
@@ -45,6 +45,13 @@ function usd(cents: number | null): string {
   return cents === null ? 'not set' : `$${(cents / 100).toFixed(2)}`;
 }
 
+const PAY_MODE_LABELS: Record<StudiosPayMode | 'default', string> = {
+  default: 'my own Studios key if I saved one, else my agent wallet',
+  wallet: 'my agent wallet',
+  key: 'my own Studios key',
+  signin: 'my Studios sign-in',
+};
+
 /** The EXACT UTF-8 text the linked wallet signs. */
 export function buildSpendRulesMessage(userId: string, values: SpendPolicyValues, nonce: string): string {
   const vendors = [...values.allowedVendors].sort();
@@ -59,6 +66,7 @@ export function buildSpendRulesMessage(userId: string, values: SpendPolicyValues
     `Studios character shots per day: ${values.studiosCharacterShotsPerDay}`,
     `Studios recasts per day: ${values.studiosRecastsPerDay}`,
     `ask me before each payment: ${values.requireApproval ? 'yes' : 'no'}`,
+    `Studios pays with: ${PAY_MODE_LABELS[values.studiosPayMode ?? 'default']}`,
     `nonce: ${nonce}`,
   ].join('\n');
 }
@@ -160,7 +168,8 @@ export interface ApprovalTerms {
   requestId: string;
   /** The Studios operation that runs (phase 3b). */
   operation: StudiosOperationId;
-  mode: 'wallet' | 'account';
+  /** 'account' = the saved Studios key; 'signin' = the Studios sign-in; 'wallet' = the avatar wallet (x402). */
+  mode: 'wallet' | 'account' | 'signin';
   /** Wallet mode: the most the call may cost; the approve enforces it. Null in account mode. */
   maxUsdCents: number | null;
   /** Lowercase hex SHA-256 of the prompt as stored. */
@@ -169,8 +178,10 @@ export interface ApprovalTerms {
   paramsSha256: string | null;
   /**
    * Account mode: the SHA-256 of the saved Studios key when the request was
-   * made (the same digest as the key-save proof; never the key). Null in
-   * wallet mode. A key replaced since then refuses at approve.
+   * made (the same digest as the key-save proof; never the key). Signin
+   * mode: the SHA-256 of the sign-in link id (`studiosSignInDigest`; a new
+   * sign-in gets a new link id). Null in wallet mode. A key replaced or a new
+   * sign-in since then refuses at approve.
    */
   credentialSha256: string | null;
 }
@@ -195,7 +206,9 @@ export function buildApprovalMessage(userId: string, terms: ApprovalTerms, nonce
     `tool: Studios ${OPERATION_LABELS[terms.operation] ?? 'unknown'}`,
     terms.mode === 'account'
       ? `pays: my own Studios key (my Studios credits), key sha256: ${terms.credentialSha256 ?? 'none'}`
-      : `pays: my agent wallet, at most ${usd(terms.maxUsdCents ?? 0)}`,
+      : terms.mode === 'signin'
+        ? `pays: my Studios sign-in (my Studios credits), sign-in sha256: ${terms.credentialSha256 ?? 'none'}`
+        : `pays: my agent wallet, at most ${usd(terms.maxUsdCents ?? 0)}`,
     `prompt sha256: ${terms.promptSha256}`,
     ...(terms.paramsSha256 === null ? [] : [`settings sha256: ${terms.paramsSha256}`]),
     `nonce: ${nonce}`,

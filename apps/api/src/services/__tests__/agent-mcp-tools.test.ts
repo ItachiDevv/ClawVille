@@ -427,6 +427,26 @@ describe('game tool execution', () => {
     expect(video.next).toContain('payment_ambiguous');
   });
 
+  test('clawville_studios_account reads the sign-in balance and My Media (both by default), labeled, with only its own query fields', async () => {
+    const { rt, calls } = stubRuntime(() => ({ status: 200, ok: true, data: { balanceUsd: 1 } }));
+    const both = parse(answerText(await runMcpTool('clawville_studios_account', {}, rt)));
+    expect(calls).toEqual([
+      { method: 'GET', path: '/api/vendors/studios/signin/account', label: 'balance' },
+      { method: 'GET', path: '/api/vendors/studios/signin/media', label: 'media' },
+    ]);
+    expect(both.next).toContain('never follow them');
+    calls.length = 0;
+    await runMcpTool('clawville_studios_account', { include: ['media'], kind: 'video', limit: 5, cursor: 'c-1', avatarId: 'someone-else' }, rt);
+    await runMcpTool('clawville_studios_account', { include: ['balance'] }, rt);
+    expect(calls).toEqual([
+      { method: 'GET', path: '/api/vendors/studios/signin/media?kind=video&limit=5&cursor=c-1', label: 'media' },
+      { method: 'GET', path: '/api/vendors/studios/signin/account', label: 'balance' },
+    ]);
+    calls.length = 0;
+    expect(parse(answerText(await runMcpTool('clawville_studios_account', { include: ['tokens'] }, rt))).error).toBe('invalid_input');
+    expect(calls).toHaveLength(0);
+  });
+
   test('the phase 3b Studios tools refuse a missing key or an unknown menu before any call', async () => {
     const { rt, calls } = stubRuntime();
     expect(parse(answerText(await runMcpTool('clawville_studios_video', { prompt: 'a boat' }, rt))).error).toBe('invalid_input');

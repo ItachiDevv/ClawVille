@@ -113,14 +113,17 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
         studiosCharacterShotsPerDay: STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT,
         studiosRecastsPerDay: STUDIOS_RECASTS_PER_DAY_DEFAULT,
         requireApproval: false,
+        studiosPayMode: null,
       };
-      // This card does not edit the per-class Studios counts (migration 0095):
-      // the PUT leaves them out, so the server keeps the saved values.
+      // This card does not edit the per-class Studios counts (migration 0095)
+      // or the Studios pay mode (migration 0096): the PUT leaves them out, so
+      // the server keeps the saved values.
       const compared = {
         ...next,
         studiosVideosPerDay: current.studiosVideosPerDay,
         studiosCharacterShotsPerDay: current.studiosCharacterShotsPerDay,
         studiosRecastsPerDay: current.studiosRecastsPerDay,
+        studiosPayMode: current.studiosPayMode,
       };
       if (!isSpendPolicyRaise(current, compared)) return api.putSpendPolicy(next);
       // A raise (turning "ask me before each payment" off is one) needs the

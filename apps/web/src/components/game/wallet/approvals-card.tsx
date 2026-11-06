@@ -48,6 +48,7 @@ export function approvalOperationText(operation: VendorCallApprovalView['operati
 
 export function approvalPriceText(item: Pick<VendorCallApprovalView, 'mode' | 'maxUsdCents'>): string {
   if (item.mode === 'account') return 'Your Studios key pays (your Studios credits).';
+  if (item.mode === 'signin') return 'Your Studios sign-in pays (your Studios credits).';
   const cents = item.maxUsdCents ?? 0;
   return `Your agent wallet pays, at most $${(cents / 100).toFixed(2)} (the price comes when you approve).`;
 }
@@ -71,7 +72,7 @@ export function approvalErrorText(error: unknown): string {
       case 'approval_not_found':
         return 'This request does not wait any more. Nothing new was paid.';
       case 'approval_mode_changed':
-        return 'You saved or removed your Studios key after this request was made. Nothing was paid. Decline it.';
+        return 'Who pays changed after this request was made (your pay mode, your Studios key or your Studios sign-in). Nothing was paid. Decline it.';
       case 'studios_approval_needs_human_login':
         return 'For your safety, sign out and sign in again in this browser. Then approve or decline.';
       case 'studios_approval_human_only':

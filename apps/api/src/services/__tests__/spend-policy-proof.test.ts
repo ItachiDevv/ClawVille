@@ -16,7 +16,7 @@ import {
 const wallet = nacl.sign.keyPair();
 const other = nacl.sign.keyPair();
 const walletPubkey = bs58.encode(wallet.publicKey);
-const VALUES = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios'], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false };
+const VALUES = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios'], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false, studiosPayMode: null };
 
 function sign(message: string, secretKey = wallet.secretKey): string {
   return bs58.encode(nacl.sign.detached(new TextEncoder().encode(message), secretKey));
@@ -27,9 +27,9 @@ beforeEach(() => _resetSpendProofNoncesForTest());
 describe('buildSpendRulesMessage', () => {
   it('names the account, each value and the nonce in readable text', () => {
     expect(buildSpendRulesMessage('user-1', VALUES, 'NONCE')).toBe(
-      'ClawVille spend rules\naccount: user-1\ndaily cap: $5.00\nper-call cap: $0.50\npaid tools: studios\nStudios images per day with my own key: 10\nStudios videos per day: 2\nStudios character shots per day: 5\nStudios recasts per day: 1\nask me before each payment: no\nnonce: NONCE',
+      'ClawVille spend rules\naccount: user-1\ndaily cap: $5.00\nper-call cap: $0.50\npaid tools: studios\nStudios images per day with my own key: 10\nStudios videos per day: 2\nStudios character shots per day: 5\nStudios recasts per day: 1\nask me before each payment: no\nStudios pays with: my own Studios key if I saved one, else my agent wallet\nnonce: NONCE',
     );
-    expect(buildSpendRulesMessage('user-1', { dailyCapUsdCents: null, perCallCapUsdCents: 0, allowedVendors: [], studiosKeyImagesPerDay: 0, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: true }, 'N'))
+    expect(buildSpendRulesMessage('user-1', { dailyCapUsdCents: null, perCallCapUsdCents: 0, allowedVendors: [], studiosKeyImagesPerDay: 0, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: true, studiosPayMode: null }, 'N'))
       .toContain('daily cap: not set\nper-call cap: $0.00\npaid tools: none');
   });
 });
@@ -78,7 +78,7 @@ describe('verifySpendProof', () => {
 });
 
 describe('isSpendPolicyRaise', () => {
-  const none = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as string[], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false };
+  const none = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as string[], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false, studiosPayMode: null };
   it('counts set-from-unset, a higher cap and an added vendor as a raise', () => {
     expect(isSpendPolicyRaise(none, { ...none, dailyCapUsdCents: 0 })).toBe(true);
     expect(isSpendPolicyRaise(VALUES, { ...VALUES, perCallCapUsdCents: 51 })).toBe(true);
@@ -95,12 +95,12 @@ describe('isSpendPolicyRaise', () => {
   it('counts equal, lower and cleared values as not a raise', () => {
     expect(isSpendPolicyRaise(VALUES, VALUES)).toBe(false);
     expect(isSpendPolicyRaise(VALUES, { ...VALUES, dailyCapUsdCents: 100 })).toBe(false);
-    expect(isSpendPolicyRaise(VALUES, { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false })).toBe(false);
+    expect(isSpendPolicyRaise(VALUES, { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false, studiosPayMode: null })).toBe(false);
     expect(isSpendPolicyRaise(VALUES, { ...VALUES, studiosKeyImagesPerDay: 0 })).toBe(false);
     expect(isSpendPolicyRaise(none, none)).toBe(false);
   });
   it('counts turning off ask-me-before-each-payment as a raise, and turning it on as not one', () => {
-    const asking = { ...VALUES, requireApproval: true };
+    const asking = { ...VALUES, requireApproval: true, studiosPayMode: null };
     expect(isSpendPolicyRaise(asking, VALUES)).toBe(true);
     expect(isSpendPolicyRaise(VALUES, asking)).toBe(false);
     expect(isSpendPolicyRaise(asking, asking)).toBe(false);

@@ -10,7 +10,9 @@
  * fails typed. Replies may be `application/json` or `text/event-stream`.
  *
  * The raw tool `result` object goes back to the caller, which maps each tool's
- * fields to our own (a later task). Tool output is untrusted: it is never
+ * fields to our own (`studios-signin.ts`; the pipeline in `studios-images.ts`).
+ * A failure on or after the `tools/call` send carries `toolCallSent`, so the
+ * caller never says "nothing was paid" for a call Studios may have run. Tool output is untrusted: it is never
  * logged and never relayed as-is to a model. `tools/list` is not used to build
  * any menu; `listToolNamesForVerification` exists only for an ops check / test.
  *
@@ -74,12 +76,19 @@ export class StudiosMcpError extends Error {
   readonly httpStatus: number | null;
   /** JSON-RPC error code from Studios (a number only, never its message). */
   readonly rpcCode: number | null;
-  constructor(code: StudiosMcpErrorCode, detail: { httpStatus?: number; rpcCode?: number } = {}) {
+  /**
+   * True when the failure came on or after the `tools/call` send: Studios may
+   * have run (and billed) the tool. False: the session setup failed, or
+   * Studios answered 401, so the tool did not run.
+   */
+  readonly toolCallSent: boolean;
+  constructor(code: StudiosMcpErrorCode, detail: { httpStatus?: number | null; rpcCode?: number | null; toolCallSent?: boolean } = {}) {
     super(ERROR_MESSAGES[code]);
     this.name = 'StudiosMcpError';
     this.code = code;
     this.httpStatus = detail.httpStatus ?? null;
     this.rpcCode = detail.rpcCode ?? null;
+    this.toolCallSent = detail.toolCallSent ?? false;
   }
 }
 
@@ -404,8 +413,14 @@ export async function callStudiosTool(
     throw new TypeError('callStudiosTool: arguments must be an object');
   }
   return withSession(options, async (session) => {
-    const result = await session.request('tools/call', { name, arguments: args });
-    return { isError: result.isError === true, result };
+    try {
+      const result = await session.request('tools/call', { name, arguments: args });
+      return { isError: result.isError === true, result };
+    } catch (err) {
+      // A 401 (Unauthorized) passes on for the one refresh: the tool did not run.
+      if (!(err instanceof StudiosMcpError)) throw err;
+      throw new StudiosMcpError(err.code, { httpStatus: err.httpStatus, rpcCode: err.rpcCode, toolCallSent: true });
+    }
   });
 }
 

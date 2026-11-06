@@ -389,6 +389,8 @@ export function formatGeneratedImageResult(result: StudiosImageResult): string {
   if (!result.ok && result.code === 'awaiting_approval') {
     return 'Studio: generate_image waits for your human to approve it in the wallet panel (it expires in 15 minutes); nothing was paid yet. Do not send another generate_image until your human answers.';
   }
+  // Sign-in mode: the image is a Studios job (running first, then the operation shape).
+  if ((!result.ok && result.code === 'running') || (result.ok && 'operation' in result)) return formatStudiosJobLine('image', result);
   if (!result.ok) return formatStudiosRefusalLine('generate_image', result.code, result.message);
   const path = /^\/api\/media\/[A-Za-z0-9-]{1,64}$/.test(result.mediaPath) ? result.mediaPath : 'your media list';
   const cents = typeof result.paidUsdCents === 'number' && Number.isFinite(result.paidUsdCents)
@@ -3685,7 +3687,7 @@ class NpcSimulation {
       const idempotencyKey = `hosted-img-${avatarId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}-${randomUUID()}`;
       const result = await this.autonomousImageGenerate({ avatarId, actor: 'agent', prompt, idempotencyKey, surface: 'hosted' });
       if (!result.ok) console.warn(`[Hatcher] generate_image not made — ${result.code}`);
-      return { line: formatGeneratedImageResult(result), intent: result.ok ? 'made a Studios image' : null };
+      return { line: formatGeneratedImageResult(result), intent: result.ok ? 'made a Studios image' : result.code === 'running' ? 'started a Studios image' : null };
     });
   }
 

@@ -113,12 +113,14 @@ export function buildStudiosClientMetadata() {
 export type StudiosOAuthErrorCode =
   | 'studios_oauth_not_linked'
   | 'studios_oauth_relink_required'
+  | 'studios_oauth_link_changed'
   | 'studios_oauth_exchange_failed'
   | 'studios_oauth_unavailable';
 
 const ERROR_MESSAGES: Record<StudiosOAuthErrorCode, string> = {
   studios_oauth_not_linked: 'No Studios sign-in is linked to this avatar.',
   studios_oauth_relink_required: 'The Studios sign-in stopped working. The human must sign in with Studios again.',
+  studios_oauth_link_changed: 'The human signed in with Studios again after this request was made.',
   studios_oauth_exchange_failed: 'Studios refused the sign-in.',
   studios_oauth_unavailable: 'Studios did not answer. Try again later.',
 };
@@ -495,6 +497,25 @@ export async function completeStudiosSignIn(input: {
 // Status, access token, unlink
 // ---------------------------------------------------------------------------
 
+/**
+ * The digest a Studios request keeps of the sign-in it was made with
+ * (`vendor_call_requests.credential_sha256`, signed in the approval): SHA-256
+ * of the link id. A new sign-in gets a new link id; a token refresh does not.
+ */
+export function studiosSignInDigest(linkId: string): string {
+  return createHash('sha256').update(`studios-signin:${linkId}`, 'utf8').digest('hex');
+}
+
+/** The link id and state of this avatar's sign-in (no token is read), or null. */
+export async function readStudiosSignInLink(avatarId: string): Promise<{ linkId: string; status: 'active' | 'broken' } | null> {
+  const row = await db.query.userVendorOAuthLinks.findFirst({
+    where: linkRow(avatarId),
+    columns: { linkId: true, status: true },
+  });
+  if (!row) return null;
+  return { linkId: row.linkId, status: row.status === 'broken' ? 'broken' : 'active' };
+}
+
 export interface StudiosOAuthStatus {
   linked: boolean;
   status: 'active' | 'broken' | null;
@@ -552,6 +573,7 @@ type Claim =
   | { kind: 'claimed'; claim: RefreshClaim; refreshToken: string }
   | { kind: 'wait' }
   | { kind: 'broken' }
+  | { kind: 'link_changed' }
   | { kind: 'not_linked' };
 
 /**
@@ -560,12 +582,21 @@ type Claim =
  * `rejectedToken`: the token Studios just answered 401 to. If the stored token
  * is still that one, it is refreshed even when it has time left; if another
  * caller already replaced it, the new one is returned without a network call.
+ *
+ * `acceptLink`: a Studios request is bound to the sign-in it was made with.
+ * When the stored link id fails this check (the human signed in again), the
+ * token is not returned (`studios_oauth_link_changed`).
  */
-export async function getAccessToken(avatarId: string, options: { rejectedToken?: string } = {}): Promise<string> {
+export async function getAccessToken(
+  avatarId: string,
+  options: { rejectedToken?: string; acceptLink?: (linkId: string) => boolean } = {},
+): Promise<string> {
   const deadline = Date.now() + REFRESH_WAIT_MS;
+  const accepted = (linkId: string) => !options.acceptLink || options.acceptLink(linkId);
   for (;;) {
     const row = await db.query.userVendorOAuthLinks.findFirst({ where: linkRow(avatarId) });
     if (!row) throw new StudiosOAuthError('studios_oauth_not_linked');
+    if (!accepted(row.linkId)) throw new StudiosOAuthError('studios_oauth_link_changed');
     if (row.status === 'broken') throw new StudiosOAuthError('studios_oauth_relink_required');
     if (row.status === 'active') {
       const token = freshAccess(row, options.rejectedToken);
@@ -578,6 +609,7 @@ export async function getAccessToken(avatarId: string, options: { rejectedToken?
     const claim = await db.transaction(async (tx): Promise<Claim> => {
       const [locked] = await tx.select().from(userVendorOAuthLinks).where(linkRow(avatarId)).for('update');
       if (!locked) return { kind: 'not_linked' };
+      if (!accepted(locked.linkId)) return { kind: 'link_changed' };
       if (locked.status === 'broken') return { kind: 'broken' };
       if (locked.status === 'refreshing') {
         const started = locked.refreshStartedAt?.getTime() ?? 0;
@@ -605,6 +637,7 @@ export async function getAccessToken(avatarId: string, options: { rejectedToken?
     });
 
     if (claim.kind === 'not_linked') throw new StudiosOAuthError('studios_oauth_not_linked');
+    if (claim.kind === 'link_changed') throw new StudiosOAuthError('studios_oauth_link_changed');
     if (claim.kind === 'broken') throw new StudiosOAuthError('studios_oauth_relink_required');
     if (claim.kind === 'token') return claim.token;
     if (claim.kind === 'wait') {

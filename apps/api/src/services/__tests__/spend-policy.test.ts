@@ -12,6 +12,7 @@ describe('spend policy view', () => {
       studiosCharacterShotsPerDay: 5,
       studiosRecastsPerDay: 1,
       requireApproval: false,
+      studiosPayMode: null,
       configured: false,
       updatedAt: null,
     });

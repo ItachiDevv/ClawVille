@@ -11,6 +11,18 @@
  *   - mode 'wallet' (B): no key saved. The avatar wallet pays with x402 inside
  *     the human's spend rules (`outbound-x402.ts`). Only image and video take
  *     x402; character shots and recast refuse with `operation_needs_studios_key`.
+ *   - mode 'signin' (C, phase 3c): the human's Studios sign-in (OAuth). Every
+ *     operation runs as a Studios MCP tool (`vendors/studios-signin.ts`,
+ *     `vendors/studios-mcp-client.ts`) in the background runner, then
+ *     `get_job` polling. Studios bills the human's Studios credits and keeps
+ *     the result in their My Media; ClawVille copies it only from Studios' own
+ *     host. The row keeps SHA-256 of the sign-in link id (never a token).
+ *
+ * Who pays is the human's choice (`studiosPayMode` in the spend rules,
+ * migration 0096): 'wallet', 'key' (row mode 'account') or 'signin'; not
+ * chosen = the saved key if any, else the wallet. A chosen mode that is not
+ * usable refuses (`studios_key_missing`, `studios_signin_missing`,
+ * `studios_signin_broken`); it never falls back to another payer.
  *
  * Every request first reserves a `vendor_call_requests` row (unique per
  * avatar + idempotency key) under a per-avatar advisory lock, so a retry never
@@ -57,6 +69,19 @@ import {
 } from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type LedgerTx, type VendorCallFailure } from './outbound-x402';
 import { policyColumns, toSpendPolicyView } from './spend-policy';
+import { StudiosMcpError, callStudiosTool, type StudiosMcpClientOptions } from './vendors/studios-mcp-client';
+import { StudiosOAuthError, getAccessToken, readStudiosSignInLink, studiosSignInDigest } from './vendors/studios-oauth';
+import {
+  buildSigninToolCall,
+  mapSigninAccount,
+  mapSigninMedia,
+  readSigninReply,
+  toolPayload,
+  type SigninJob,
+  type SigninMedia,
+  type StudiosSigninAccountView,
+  type StudiosSigninMediaView,
+} from './vendors/studios-signin';
 import { promptSha256, vendorKeyRef, type ApprovalTerms } from './spend-policy-proof';
 import { loadVendorKey } from './vendor-credentials';
 import { STUDIOS_IMAGE_MODELS, STUDIOS_PAY_TO, type StudiosImageModel } from './vendors/studios';
@@ -69,9 +94,12 @@ import {
   type MediaKind,
 } from './studios-media';
 import {
+  STUDIOS_CHARACTER_SHOTS,
   STUDIOS_OPERATIONS,
   canonicalJson,
+  isLongJob,
   perDayLimit,
+  rowMode,
   readRecastPoll,
   readRecastStart,
   recastPollUrl,
@@ -95,6 +123,11 @@ export type StudiosImageFailure =
   | VendorCallFailure
   | 'studios_key_invalid'
   | 'studios_key_changed'
+  | 'studios_key_missing'
+  | 'studios_signin_missing'
+  | 'studios_signin_broken'
+  | 'studios_signin_changed'
+  | 'signin_option_unsupported'
   | 'studios_account_refused'
   | 'operation_needs_studios_key'
   | 'image_missing'
@@ -139,7 +172,7 @@ export interface StudiosRunning {
 /** A finished image (phase 2b shape, unchanged). */
 export interface StudiosImageSuccess {
   ok: true;
-  mode: 'wallet' | 'account';
+  mode: 'wallet' | 'account' | 'signin';
   mediaId: string;
   /** Path on the ClawVille API (prefix the API base URL). */
   mediaPath: string;
@@ -155,26 +188,30 @@ export interface StudiosMediaItem {
   mediaPath: string;
 }
 
-/** A finished video, character-shot or recast request. */
+/** A finished video, character-shot or recast request, or a sign-in request of any operation (an image too). */
 export interface StudiosOperationSuccess {
   ok: true;
-  operation: Exclude<StudiosOperationId, 'image'>;
+  operation: StudiosOperationId;
   requestId: string;
-  mode: 'wallet' | 'account';
+  mode: 'wallet' | 'account' | 'signin';
   /** The first stored item; null when nothing was copied (see `note`). */
   mediaId: string | null;
   mediaPath: string | null;
   media: StudiosMediaItem[];
-  /** Key mode: the item in the human's Studios My Media (reference only). */
+  /** Key and sign-in mode: the item in the human's Studios My Media (reference only). */
   vendorMediaId: string | null;
-  /** 'media_not_copied': Studios made it (key mode, it is in My Media) but ClawVille could not copy it. */
+  /** 'media_not_copied': Studios made it (key or sign-in mode, it is in My Media) but ClawVille could not copy it. */
   note: 'media_not_copied' | null;
   ledgerId: string | null;
   paidUsdCents: number | null;
   txSignature: string | null;
 }
 
-export type StudiosImageResult = StudiosImageSuccess | StudiosImageRefusal | StudiosImageAwaiting;
+/**
+ * An image request's answer. In sign-in mode the image is a job: 'running'
+ * first, and a retry of the finished request returns the operation shape.
+ */
+export type StudiosImageResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning;
 export type StudiosOperationResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning;
 
 /** A refusal or failure with our own code and message. */
@@ -184,10 +221,10 @@ type FailureStatus = 400 | 402 | 403 | 404 | 409 | 413 | 429 | 502;
 
 const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message: string }> = {
   duplicate_request: { httpStatus: 409, message: 'This Idempotency-Key was already used for a request that did not finish. Do not retry it; use a new key only for a new image.' },
-  daily_limit: { httpStatus: 429, message: "Your human's daily limit for images on their own Studios key is used up. Try again after 00:00 UTC, or ask your human to raise it in the wallet panel (Spending)." },
+  daily_limit: { httpStatus: 429, message: "Your human's daily limit for images on their own Studios account (key or sign-in) is used up. Try again after 00:00 UTC, or ask your human to raise it in the wallet panel (Spending)." },
   hosted_daily_cap: { httpStatus: 429, message: 'Your hosted agent reached its own daily cap for this Studios action. Try again after 00:00 UTC.' },
   media_quota_full: { httpStatus: 413, message: 'Your avatar media storage is full (500 MB). Nothing was called or paid. Ask your human to delete old media in ClawVille first.' },
-  operation_needs_studios_key: { httpStatus: 403, message: "This Studios action works only with your human's own Studios key (Studios takes no wallet payment for it). Nothing was paid. Ask your human to save their Studios key in the wallet panel." },
+  operation_needs_studios_key: { httpStatus: 403, message: "This Studios action works only on your human's own Studios account, with their Studios key or their Studios sign-in (Studios takes no wallet payment for it). Nothing was paid. Ask your human to choose one." },
   vendor_unreachable: { httpStatus: 502, message: 'Studios did not answer. Nothing was paid. Try again later.' },
   vendor_refused: { httpStatus: 502, message: 'Studios refused the request before payment. Nothing was paid.' },
   vendor_quote_invalid: { httpStatus: 502, message: 'Studios sent a price ClawVille cannot accept. Nothing was paid.' },
@@ -201,6 +238,11 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message
   payment_ambiguous: { httpStatus: 502, message: 'Studios did not confirm the result. The payment may have gone through (for example, the wallet may not hold enough USDC, or the reply was lost). Do not retry; it counts toward the daily cap until it is checked on chain.' },
   studios_key_invalid: { httpStatus: 403, message: 'The saved Studios API key does not work. Ask your human to save it again in the wallet panel. Nothing was paid.' },
   studios_key_changed: { httpStatus: 409, message: 'The saved Studios key changed after this request was made, so it was not sent. Nothing was paid. Send a new request.' },
+  studios_key_missing: { httpStatus: 403, message: 'Your human chose their own Studios key to pay, but no key is saved. Nothing was paid. Ask your human to save the key or choose another way to pay.' },
+  studios_signin_missing: { httpStatus: 403, message: 'Your human chose their Studios sign-in to pay, but no Studios sign-in is linked. Nothing was paid. Ask your human to sign in with Studios or choose another way to pay.' },
+  studios_signin_broken: { httpStatus: 403, message: 'The Studios sign-in stopped working. Nothing was paid. Ask your human to sign in with Studios again.' },
+  studios_signin_changed: { httpStatus: 409, message: 'Your human signed in with Studios again after this request was made, so it was not sent. Nothing was paid. Send a new request.' },
+  signin_option_unsupported: { httpStatus: 400, message: 'This setting does not work with the Studios sign-in (a character model, quality or resolution, or a recast of a clip by URL). Nothing was called or paid. Leave it out.' },
   studios_account_refused: { httpStatus: 402, message: "Studios refused the call on your human's Studios account (for example, no credits left). ClawVille paid nothing." },
   image_missing: { httpStatus: 502, message: 'Studios sent no readable image. Do not retry; contact support with the ledgerId if one is shown.' },
   media_missing: { httpStatus: 502, message: 'Studios sent no media that ClawVille could store. Do not retry; contact support with the ledgerId if one is shown.' },
@@ -216,7 +258,7 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message
   approval_not_found: { httpStatus: 404, message: 'There is no such Studios request for this avatar.' },
   approval_not_awaiting: { httpStatus: 409, message: 'This request does not wait for approval any more: it was already approved, declined or finished.' },
   approval_terms_changed: { httpStatus: 409, message: 'The request or its price limit changed after the signature. Nothing was paid. Approve it again and sign the new message.' },
-  approval_mode_changed: { httpStatus: 409, message: 'The Studios key was saved or removed after this request was made, so a different account would pay now. Nothing was paid. Decline it; your agent can send a new request.' },
+  approval_mode_changed: { httpStatus: 409, message: 'Who pays changed after this request was made (the pay mode, the Studios key or the Studios sign-in), so a different account would pay now. Nothing was paid. Decline it; your agent can send a new request.' },
 };
 
 const DAILY_LIMIT_MESSAGES: Record<Exclude<StudiosOperationId, 'image'>, string> = {
@@ -272,7 +314,7 @@ export function decodeImage(base64: string): { bytes: Buffer; mime: string } | n
 
 async function storeMediaBytes(input: {
   avatarId: string;
-  mode: 'wallet' | 'account';
+  mode: StudiosMode;
   actor: 'human' | 'agent';
   prompt: string;
   ledgerId: string | null;
@@ -315,7 +357,7 @@ const KIND_OF: Record<StudiosOperationId, MediaKind> = { image: 'image', video: 
  */
 async function storeSources(input: {
   avatarId: string;
-  mode: 'wallet' | 'account';
+  mode: StudiosMode;
   actor: 'human' | 'agent';
   prompt: string;
   ledgerId: string | null;
@@ -409,6 +451,19 @@ async function expireOverdue(executor: Executor, avatarId: string): Promise<void
 const DAY_START = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
 
 const EXECUTED_STATUSES: VendorCallStatus[] = ['pending', 'running', 'done', 'failed', 'ambiguous'];
+/**
+ * Failure codes that say nothing was paid or charged: such a failed row does
+ * not count toward a per-day rule. Every other failed row (outcome_unknown,
+ * result_lost, media_missing, image_missing, job_timeout, ...) may have paid
+ * and still counts.
+ */
+const NOT_CHARGED_FAILURES: StudiosImageFailure[] = [
+  'spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'wallet_missing',
+  'vendor_unreachable', 'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed', 'payment_prepare_failed',
+  'studios_key_invalid', 'studios_key_changed', 'studios_key_missing', 'studios_account_refused',
+  'studios_signin_missing', 'studios_signin_broken', 'studios_signin_changed', 'signin_option_unsupported',
+  'operation_needs_studios_key', 'interrupted_not_paid', 'job_failed', 'media_quota_full', 'daily_limit', 'hosted_daily_cap',
+];
 const UNFINISHED_STATUSES: VendorCallStatus[] = ['awaiting_approval', 'pending', 'running'];
 
 /**
@@ -417,12 +472,13 @@ const UNFINISHED_STATUSES: VendorCallStatus[] = ['awaiting_approval', 'pending',
  * approved request, else `created_at`. `includeWaiting`: also every request
  * that still waits, whatever day it was made (a reservation; it expires in 15
  * minutes). Declined and expired requests never reached Studios and never
- * count. `mode` limits the count to one mode (images: the human's own key);
- * `surface` to one surface (the hosted verb's own cap).
+ * count. `modes` limits the count to these modes (images: the human's own
+ * Studios credits, key and sign-in); `surface` to one surface (the hosted
+ * verb's own cap).
  */
 async function requestsToday(executor: Executor, avatarId: string, opts: {
   operation: StudiosOperationId;
-  mode?: StudiosMode;
+  modes?: readonly StudiosMode[];
   surface?: 'api' | 'hosted';
   includeWaiting: boolean;
   exceptId?: string;
@@ -430,12 +486,13 @@ async function requestsToday(executor: Executor, avatarId: string, opts: {
   const [row] = await executor.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
     eq(vendorCallRequests.avatarId, avatarId),
     eq(vendorCallRequests.operation, opts.operation),
-    opts.mode ? eq(vendorCallRequests.mode, opts.mode) : sql`true`,
+    opts.modes ? inArray(vendorCallRequests.mode, [...opts.modes]) : sql`true`,
     opts.surface ? eq(vendorCallRequests.surface, opts.surface) : sql`true`,
     opts.exceptId ? sql`${vendorCallRequests.id} <> ${opts.exceptId}` : sql`true`,
     or(
       and(
         inArray(vendorCallRequests.status, EXECUTED_STATUSES),
+        sql`NOT (${vendorCallRequests.status} = 'failed' AND coalesce(${vendorCallRequests.failureCode}, '') IN (${sql.join(NOT_CHARGED_FAILURES.map((c) => sql`${c}`), sql`, `)}))`,
         sql`coalesce(${vendorCallRequests.decidedAt}, ${vendorCallRequests.createdAt}) >= ${DAY_START}`,
       ),
       opts.includeWaiting ? eq(vendorCallRequests.status, 'awaiting_approval') : sql`false`,
@@ -462,10 +519,10 @@ async function dayLimitRefusal(executor: Executor, input: {
   const { op } = input;
   const perDay = perDayLimit(op, input.mode, input.policy);
   if (perDay !== null) {
-    // Images count the human's own key only (phase 2b); the other classes count both modes.
+    // Images count the human's own Studios credits only (key and sign-in); the other classes count every mode.
     const used = await requestsToday(executor, input.avatarId, {
       operation: op.id,
-      mode: op.limit.modes.length === 1 ? op.limit.modes[0] : undefined,
+      modes: op.limit.modes,
       includeWaiting: input.includeWaiting,
       exceptId: input.exceptId,
     });
@@ -534,8 +591,9 @@ async function successFromRow(executor: Executor, row: RequestRow): Promise<Stud
     ? await executor.select({ usdCents: vendorSpendLedger.usdCents, txSignature: vendorSpendLedger.txSignature })
       .from(vendorSpendLedger).where(eq(vendorSpendLedger.id, row.ledgerId)).limit(1)
     : [];
-  const mode = row.mode === 'account' ? 'account' : 'wallet';
-  if (row.operation === 'image') {
+  const mode = rowMode(row.mode);
+  // A sign-in image is a job with the operation shape (it may be done without a copy).
+  if (row.operation === 'image' && mode !== 'signin') {
     if (!row.mediaId) return failure('duplicate_request', row.ledgerId);
     return {
       ok: true,
@@ -550,7 +608,7 @@ async function successFromRow(executor: Executor, row: RequestRow): Promise<Stud
   const media = mediaItemsOf(row.result);
   return {
     ok: true,
-    operation: row.operation as Exclude<StudiosOperationId, 'image'>,
+    operation: operationOf(row).id,
     requestId: row.id,
     mode,
     mediaId: media[0]?.mediaId ?? null,
@@ -596,7 +654,7 @@ async function reserveRequest(input: {
   op: StudiosOperationDef;
   params: StudiosParams;
   idempotencyKey: string;
-  /** Account mode: SHA-256 of the saved key, bound to the request (never the key). */
+  /** Account mode: SHA-256 of the saved key; signin mode: of the sign-in link id. Bound to the request (never a secret). */
   credentialSha256: string | null;
 }): Promise<Reservation> {
   const { op } = input;
@@ -633,6 +691,15 @@ async function reserveRequest(input: {
     if (await overMediaQuota(tx, input.avatarId, op.reserveBytes(input.params))) {
       return { kind: 'done', result: failure('media_quota_full') };
     }
+    // Every check that spends nothing (with the day counts and the quota above)
+    // runs before any row exists, for every operation and mode: a long job must
+    // not answer 202 'running' and then fail in the runner on a rule that was
+    // already broken (staging 2026-11-06: a wallet video with no caps). The
+    // payment path checks again with the price.
+    if (input.mode === 'wallet') {
+      const refused = await walletPrecheck(tx, input.avatarId, policy);
+      if (refused) return { kind: 'done', result: failure(refused) };
+    }
     const base = {
       avatarId: input.avatarId,
       vendor: 'studios',
@@ -652,10 +719,6 @@ async function reserveRequest(input: {
     // through the agent, so a cookie cannot prove the human pressed the
     // button. Only a signature from the linked wallet approves a payment.
     if (policy.requireApproval) {
-      if (input.mode === 'wallet') {
-        const refused = await walletPrecheck(tx, input.avatarId, policy);
-        if (refused) return { kind: 'done', result: failure(refused) };
-      }
       const [waiting] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
         eq(vendorCallRequests.avatarId, input.avatarId),
         eq(vendorCallRequests.status, 'awaiting_approval'),
@@ -672,8 +735,8 @@ async function reserveRequest(input: {
     const [created] = await tx.insert(vendorCallRequests).values({
       ...base,
       leaseOwner: owner,
-      // A long job is 'running' from the start, with a lease its runner renews.
-      ...(op.long ? { status: 'running', leaseUntil: new Date(Date.now() + JOB_LEASE_MS) } : {}),
+      // A long job (and every sign-in job) is 'running' from the start, with a lease its runner renews.
+      ...(isLongJob(op, input.mode) ? { status: 'running', leaseUntil: new Date(Date.now() + JOB_LEASE_MS) } : {}),
     }).returning({ id: vendorCallRequests.id });
     if (!created) throw new Error('vendor_call_requests insert returned no row');
     return { kind: 'new', requestId: created.id, owner };
@@ -688,7 +751,7 @@ async function reserveRequest(input: {
 async function finishRequest<T extends StudiosOperationResult>(
   claim: JobClaim,
   result: T,
-  extra: { result?: unknown; vendorMediaId?: string | null; status?: 'done' | 'failed' | 'ambiguous' } = {},
+  extra: { result?: unknown; vendorMediaId?: string | null; vendorJobId?: string | null; status?: 'done' | 'failed' | 'ambiguous' } = {},
 ): Promise<T> {
   await db.update(vendorCallRequests).set({
     status: extra.status ?? (result.ok ? 'done' : 'failed'),
@@ -697,6 +760,7 @@ async function finishRequest<T extends StudiosOperationResult>(
     failureCode: result.ok ? null : result.code,
     ...(extra.result !== undefined ? { result: extra.result } : {}),
     ...(extra.vendorMediaId !== undefined ? { vendorMediaId: extra.vendorMediaId } : {}),
+    ...(extra.vendorJobId !== undefined ? { vendorJobId: extra.vendorJobId } : {}),
     leaseUntil: null,
     updatedAt: new Date(),
   }).where(and(
@@ -749,15 +813,17 @@ async function finishOperation(input: {
   ledgerId: string | null;
   paidUsdCents: number | null;
   txSignature: string | null;
+  /** Sign-in mode: our references to Studios (job ids, My Media ids), kept on the row. */
+  references?: { signinJobIds: string[]; studiosMediaIds: string[] };
 }): Promise<StudiosOperationResult> {
   // Wallet mode: nothing stored means the paid result is lost (Studios keeps
-  // no copy of an x402 call). Key mode: Studios keeps it in My Media.
+  // no copy of an x402 call). Key and sign-in mode: Studios keeps it in My Media.
   if (input.media.length === 0 && input.mode === 'wallet') {
     return finishRequest({ requestId: input.requestId, owner: input.owner }, failure('media_missing', input.ledgerId));
   }
   const success: StudiosOperationSuccess = {
     ok: true,
-    operation: input.op.id as Exclude<StudiosOperationId, 'image'>,
+    operation: input.op.id,
     requestId: input.requestId,
     mode: input.mode,
     mediaId: input.media[0]?.mediaId ?? null,
@@ -770,7 +836,7 @@ async function finishOperation(input: {
     txSignature: input.txSignature,
   };
   return finishRequest({ requestId: input.requestId, owner: input.owner }, success, {
-    result: { media: input.media.map(({ slot, mediaId }) => ({ slot, mediaId })) },
+    result: { media: input.media.map(({ slot, mediaId }) => ({ slot, mediaId })), ...(input.references ?? {}) },
     vendorMediaId: input.vendorMediaId,
   });
 }
@@ -927,23 +993,312 @@ function keySha(key: string | null): string | null {
   return key ? vendorKeyRef(key).sha256 : null;
 }
 
+/** Who pays for this avatar's next Studios call, or the refusal. */
+export type StudiosPayer =
+  | { ok: true; mode: 'wallet'; key: null; credentialSha256: null }
+  | { ok: true; mode: 'account'; key: string; credentialSha256: string }
+  | { ok: true; mode: 'signin'; key: null; credentialSha256: string }
+  | { ok: false; code: 'studios_key_invalid' | 'studios_key_missing' | 'studios_signin_missing' | 'studios_signin_broken' };
+
 /**
- * Run one 'running' row to its end (video or recast). Called by the runner
- * right after the reservation or the approve, and by its recovery pass for a
- * recast that already has a job id. `key` is the key the request was made or
- * approved with; when absent it is loaded again and must still be the key the
- * row was made with (the credential digest is bound to the request).
+ * The payer the human chose (`studiosPayMode`, migration 0096). Not chosen:
+ * the saved key if any, else the wallet (the phase 2b rule). A chosen mode
+ * that is not usable refuses; it never falls back to another payer. Called
+ * for a new request, again at approve, and (the digest) by the runner.
+ */
+export async function resolveStudiosPayer(avatarId: string): Promise<StudiosPayer> {
+  const policy = await readPolicyRow(db, avatarId);
+  const choice = policy.studiosPayMode;
+  if (choice === 'wallet') return { ok: true, mode: 'wallet', key: null, credentialSha256: null };
+  if (choice === 'signin') {
+    const link = await readStudiosSignInLink(avatarId);
+    if (!link) return { ok: false, code: 'studios_signin_missing' };
+    if (link.status === 'broken') return { ok: false, code: 'studios_signin_broken' };
+    return { ok: true, mode: 'signin', key: null, credentialSha256: studiosSignInDigest(link.linkId) };
+  }
+  // 'key' or not chosen. A saved key that cannot be read is an error, never a
+  // silent switch to the wallet: the human chose their own account.
+  const key = await loadKeyOrInvalid(avatarId);
+  if (key === undefined) return { ok: false, code: 'studios_key_invalid' };
+  if (key) return { ok: true, mode: 'account', key, credentialSha256: keySha(key)! };
+  if (choice === 'key') return { ok: false, code: 'studios_key_missing' };
+  return { ok: true, mode: 'wallet', key: null, credentialSha256: null };
+}
+
+/** Test seam: the Studios MCP endpoint for sign-in calls (a loopback mock in tests only; the client refuses any other override). */
+export const studiosSigninClient: { endpoint?: string; timeoutMs?: number } = {};
+
+/**
+ * Client options bound to the sign-in this request was made with: the token
+ * is read only while the stored link id still has this digest.
+ */
+function signinClientOptions(avatarId: string, credentialSha256: string, timeoutMs: number): StudiosMcpClientOptions {
+  return {
+    avatarId,
+    timeoutMs: studiosSigninClient.timeoutMs ?? timeoutMs,
+    ...(studiosSigninClient.endpoint ? { endpoint: studiosSigninClient.endpoint } : {}),
+    getToken: (id, options) => getAccessToken(id, {
+      ...options,
+      acceptLink: (linkId) => studiosSignInDigest(linkId) === credentialSha256,
+    }),
+  };
+}
+
+export type StudiosSigninReadFailure = {
+  ok: false;
+  code: 'studios_signin_missing' | 'studios_signin_broken' | 'vendor_unreachable' | 'vendor_refused' | 'vendor_reply_unreadable';
+  httpStatus: 404 | 409 | 502;
+  message: string;
+};
+
+const READ_FAILURES: Record<StudiosSigninReadFailure['code'], Omit<StudiosSigninReadFailure, 'ok' | 'code'>> = {
+  studios_signin_missing: { httpStatus: 404, message: 'No Studios sign-in is linked to this avatar. The human can sign in with Studios.' },
+  studios_signin_broken: { httpStatus: 409, message: 'The Studios sign-in stopped working. The human must sign in with Studios again.' },
+  vendor_unreachable: { httpStatus: 502, message: 'Studios did not answer. Try again later.' },
+  vendor_refused: { httpStatus: 502, message: 'Studios refused this read. Try again later.' },
+  vendor_reply_unreadable: { httpStatus: 502, message: 'Studios sent a reply that ClawVille could not read.' },
+};
+
+function readFailure(code: StudiosSigninReadFailure['code']): StudiosSigninReadFailure {
+  return { ok: false, code, ...READ_FAILURES[code] };
+}
+
+/**
+ * One free read through the human's Studios sign-in (`get_account` or
+ * `list_media`; Studios never charges them). No request row: nothing is
+ * spent. Returns the tool's data object, or our refusal.
+ */
+async function signinRead(avatarId: string, tool: 'get_account' | 'list_media', args: Record<string, unknown>): Promise<{ ok: true; payload: Record<string, unknown> } | StudiosSigninReadFailure> {
+  try {
+    const reply = await callStudiosTool({
+      avatarId,
+      timeoutMs: studiosSigninClient.timeoutMs ?? 20_000,
+      ...(studiosSigninClient.endpoint ? { endpoint: studiosSigninClient.endpoint } : {}),
+    }, tool, args);
+    if (reply.isError) return readFailure('vendor_refused');
+    const payload = toolPayload(reply.result);
+    return payload ? { ok: true, payload } : readFailure('vendor_reply_unreadable');
+  } catch (err) {
+    if (err instanceof StudiosOAuthError) {
+      if (err.code === 'studios_oauth_not_linked') return readFailure('studios_signin_missing');
+      if (err.code === 'studios_oauth_relink_required') return readFailure('studios_signin_broken');
+      return readFailure('vendor_unreachable');
+    }
+    if (err instanceof StudiosMcpError) {
+      if (err.code === 'studios_mcp_unauthorized') return readFailure('studios_signin_broken');
+      if (err.code === 'studios_mcp_bad_response' || err.code === 'studios_mcp_rpc_error') return readFailure('vendor_reply_unreadable');
+      return readFailure('vendor_unreachable');
+    }
+    throw err;
+  }
+}
+
+/** The human's Studios account through their sign-in: balance, free usage left, this connection's spend left today. */
+export async function readStudiosSigninAccount(avatarId: string): Promise<{ ok: true; account: StudiosSigninAccountView } | StudiosSigninReadFailure> {
+  const read = await signinRead(avatarId, 'get_account', {});
+  return read.ok ? { ok: true, account: mapSigninAccount(read.payload) } : read;
+}
+
+/** The human's Studios My Media through their sign-in: ids, kinds, short descriptions (untrusted plain data), states. */
+export async function listStudiosSigninMedia(
+  avatarId: string,
+  query: { kind?: 'image' | 'video'; limit?: number; cursor?: string },
+): Promise<{ ok: true; media: StudiosSigninMediaView } | StudiosSigninReadFailure> {
+  const args: Record<string, unknown> = {};
+  if (query.kind) args.kind = query.kind;
+  if (query.limit !== undefined) args.limit = query.limit;
+  if (query.cursor) args.cursor = query.cursor;
+  const read = await signinRead(avatarId, 'list_media', args);
+  if (!read.ok) return read;
+  const media = mapSigninMedia(read.payload);
+  return media ? { ok: true, media } : readFailure('vendor_reply_unreadable');
+}
+
+/**
+ * Our code for a create tool call that threw. Only a failure BEFORE the
+ * `tools/call` send (the token, the session setup, a 401) or a JSON-RPC
+ * "method not found" / "invalid params" answer says nothing was paid; every
+ * other failure after the send may have billed the human's credits.
+ */
+function signinSendFailure(err: unknown): StudiosImageFailure {
+  if (err instanceof StudiosOAuthError) {
+    if (err.code === 'studios_oauth_not_linked') return 'studios_signin_missing';
+    if (err.code === 'studios_oauth_relink_required') return 'studios_signin_broken';
+    if (err.code === 'studios_oauth_link_changed') return 'studios_signin_changed';
+    return 'vendor_unreachable';
+  }
+  if (err instanceof StudiosMcpError) {
+    if (!err.toolCallSent) return err.code === 'studios_mcp_unauthorized' ? 'studios_signin_broken' : 'vendor_unreachable';
+    if (err.code === 'studios_mcp_rpc_error' && (err.rpcCode === -32601 || err.rpcCode === -32602)) return 'vendor_refused';
+  }
+  return 'outcome_unknown';
+}
+
+/** Test seam for the sign-in poll interval and deadline. */
+export const signinTiming = { pollMs: 5_000, deadlineMs: RECAST_DEADLINE_MS };
+
+/** At most this many media items per sign-in request (the media quota reserve). */
+function signinMaxItems(op: StudiosOperationDef, params: StudiosParams): number {
+  return Math.max(1, Math.floor(op.reserveBytes(params) / maxBytesFor(KIND_OF[op.id])));
+}
+
+/** Download sources for the finished media, one slot per item, full file first. */
+function signinSources(op: StudiosOperationDef, params: StudiosParams, media: SigninMedia[]): MediaSource[] {
+  const base = KIND_OF[op.id];
+  const used = new Set<string>();
+  const sources: MediaSource[] = [];
+  for (const [index, item] of media.slice(0, signinMaxItems(op, params)).entries()) {
+    let slot = op.id === 'character_shots' && item.shot && (STUDIOS_CHARACTER_SHOTS as readonly string[]).includes(item.shot)
+      ? item.shot
+      : index === 0 ? base : `${base}-${index + 1}`;
+    if (used.has(slot)) slot = `${base}-${index + 1}`;
+    used.add(slot);
+    for (const url of item.urls) sources.push({ slot, url });
+  }
+  return sources;
+}
+
+/**
+ * A sign-in request (any operation): call the create tool ONCE (its job ids
+ * are stored at once), then poll `get_job` (never charged) until every job is
+ * finished or failed, or the deadline passes. Finished media is downloaded at
+ * once (the links expire in about an hour), only from Studios' own host; when
+ * nothing could be copied the request is done with `media_not_copied` (the
+ * result is in the human's Studios My Media). A reply we cannot read after
+ * the send is `outcome_unknown` and is never sent again.
+ */
+async function runSignin(input: RunInput & { credentialSha256: string | null; jobIds: string[]; deadlineAt: Date | null }): Promise<StudiosOperationResult> {
+  const { op, requestId } = input;
+  const claim: JobClaim = { requestId, owner: input.owner };
+  const started = input.jobIds.length > 0;
+  if (!input.credentialSha256) return finishRequest(claim, failure(started ? 'outcome_unknown' : 'studios_signin_changed'));
+  const options = signinClientOptions(input.avatarId, input.credentialSha256, op.callTimeoutMs);
+  const jobs = new Map<string, SigninJob>();
+  const finished: SigninJob[] = [];
+  let deadline = input.deadlineAt?.getTime() ?? Date.now() + signinTiming.deadlineMs;
+
+  if (!started) {
+    const call = buildSigninToolCall(op.id, input.params);
+    if (!call.ok) return finishRequest(claim, failure('signin_option_unsupported'));
+    // Never send for a row another runner took over.
+    if (!(await holdsClaim(claim))) return lostClaim();
+    let replyJobs: SigninJob[];
+    try {
+      const read = readSigninReply(await callStudiosTool(options, call.tool, call.args));
+      if (read.kind === 'refused') return finishRequest(claim, failure('vendor_refused'));
+      if (read.kind === 'unknown') {
+        return finishRequest(claim, failure('outcome_unknown'), {
+          vendorJobId: read.jobIds[0] ?? null,
+          ...(read.jobIds.length ? { result: { signinJobIds: read.jobIds } } : {}),
+        });
+      }
+      replyJobs = read.jobs;
+    } catch (err) {
+      return finishRequest(claim, failure(signinSendFailure(err)));
+    }
+    const ids = replyJobs.flatMap((job) => (job.jobId ? [job.jobId] : []));
+    deadline = Date.now() + signinTiming.deadlineMs;
+    if (ids.length) {
+      await db.update(vendorCallRequests)
+        .set({ vendorJobId: ids[0], result: { signinJobIds: ids }, jobDeadlineAt: new Date(deadline), updatedAt: new Date() })
+        .where(and(eq(vendorCallRequests.id, requestId), eq(vendorCallRequests.leaseOwner, input.owner), eq(vendorCallRequests.status, 'running')));
+    }
+    for (const job of replyJobs) {
+      if (job.status === 'running') jobs.set(job.jobId, job);
+      else finished.push(job);
+    }
+  } else {
+    for (const id of input.jobIds) jobs.set(id, { jobId: id, status: 'running' });
+  }
+
+  const allIds = [...new Set([...input.jobIds, ...[...jobs.keys()], ...finished.flatMap((j) => (j.jobId ? [j.jobId] : []))])];
+  while (jobs.size > 0) {
+    if (Date.now() >= deadline) return finishRequest(claim, failure('job_timeout'));
+    await sleep(Math.min(signinTiming.pollMs, Math.max(0, deadline - Date.now())));
+    if (Date.now() >= deadline) return finishRequest(claim, failure('job_timeout'));
+    for (const id of [...jobs.keys()]) {
+      let read: ReturnType<typeof readSigninReply>;
+      try {
+        read = readSigninReply(await callStudiosTool(options, 'get_job', { job_id: id }));
+      } catch (err) {
+        // get_job is never charged: a transport failure is tried again until
+        // the deadline. A sign-in that is gone or changed cannot read the job
+        // any more; the job already started, so its outcome is unknown.
+        const retry = (err instanceof StudiosOAuthError && (err.code === 'studios_oauth_unavailable' || err.code === 'studios_oauth_exchange_failed'))
+          || (err instanceof StudiosMcpError && (err.code === 'studios_mcp_unavailable' || err.code === 'studios_mcp_session_expired'));
+        if (retry) continue;
+        return finishRequest(claim, failure('outcome_unknown'));
+      }
+      const job = read.kind === 'jobs' && read.jobs.length === 1 ? read.jobs[0]! : null;
+      if (!job) return finishRequest(claim, failure('outcome_unknown'));
+      if (job.status === 'running') continue;
+      jobs.delete(id);
+      finished.push(job);
+    }
+  }
+
+  const done = finished.filter((job): job is Extract<SigninJob, { status: 'finished' }> => job.status === 'finished');
+  if (done.length === 0) return finishRequest(claim, failure('job_failed'));
+  const media = done.flatMap((job) => job.media);
+  if (!(await holdsClaim(claim))) return lostClaim();
+  const stored = await storeSources({
+    avatarId: input.avatarId,
+    mode: 'signin',
+    actor: input.actor,
+    prompt: op.promptOf(input.params),
+    ledgerId: null,
+    operation: op.id,
+    sources: signinSources(op, input.params, media),
+  });
+  const studiosMediaIds = media.flatMap((item) => (item.vendorMediaId ? [item.vendorMediaId] : []));
+  return finishOperation({
+    requestId,
+    owner: input.owner,
+    op,
+    mode: 'signin',
+    media: stored,
+    vendorMediaId: studiosMediaIds[0] ?? null,
+    ledgerId: null,
+    paidUsdCents: null,
+    txSignature: null,
+    references: { signinJobIds: allIds, studiosMediaIds },
+  });
+}
+
+/** The job ids a sign-in row stored after its create call (oldest first). */
+function storedSigninJobIds(row: RequestRow): string[] {
+  const stored = (row.result as { signinJobIds?: unknown } | null)?.signinJobIds;
+  const ids = Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{4,128}$/.test(id)).slice(0, 8) : [];
+  if (ids.length === 0 && row.vendorJobId) ids.push(row.vendorJobId);
+  return ids;
+}
+
+/**
+ * Run one 'running' row to its end (video, recast, or any sign-in request).
+ * Called by the runner right after the reservation or the approve, and by its
+ * recovery pass for a recast or a sign-in request that already has a job id.
+ * `key` is the key the request was made or approved with; when absent it is
+ * loaded again and must still be the key the row was made with (the
+ * credential digest is bound to the request). A sign-in row reads its token
+ * only while the sign-in link still has the digest it was made with.
  */
 export async function executeLongJob(requestId: string, owner: string, key?: string | null): Promise<StudiosOperationResult | null> {
   const [row] = await db.select().from(vendorCallRequests).where(eq(vendorCallRequests.id, requestId)).limit(1);
   if (!row || row.status !== 'running' || row.leaseOwner !== owner) return null;
   const claim: JobClaim = { requestId, owner };
   const op = STUDIOS_OPERATIONS[row.operation as StudiosOperationId];
-  if (!op?.long) return finishRequest(claim, failure('outcome_unknown'));
-  const params = (row.params ?? {}) as StudiosParams;
+  const mode = rowMode(row.mode);
+  if (!op || !isLongJob(op, mode)) return finishRequest(claim, failure('outcome_unknown'));
+  const params = (row.operation === 'image' && !row.params
+    ? { prompt: row.prompt ?? '', ...(storedModel(row.model) ? { model: storedModel(row.model) } : {}) }
+    : (row.params ?? {})) as StudiosParams;
   const actor = row.actor === 'human' ? 'human' : 'agent';
+  const base0 = { requestId, owner, avatarId: row.avatarId, actor, op, params, idempotencyKey: row.idempotencyKey } as const;
+  if (mode === 'signin') {
+    return runSignin({ ...base0, key: null, credentialSha256: row.credentialSha256, jobIds: storedSigninJobIds(row), deadlineAt: row.jobDeadlineAt });
+  }
   let useKey: string | null = null;
-  if (row.mode === 'account') {
+  if (mode === 'account') {
     const current = key === undefined ? await loadKeyOrInvalid(row.avatarId) : key;
     // A recast that already has a job id was started (credits may be in use):
     // a key that is gone or changed now is outcome_unknown, not "nothing paid".
@@ -953,13 +1308,7 @@ export async function executeLongJob(requestId: string, owner: string, key?: str
   }
   const maxCallAtomic = (row.result as { signedMaxAtomic?: unknown } | null)?.signedMaxAtomic;
   const base: RunInput = {
-    requestId,
-    owner,
-    avatarId: row.avatarId,
-    actor,
-    op,
-    params,
-    idempotencyKey: row.idempotencyKey,
+    ...base0,
     key: useKey,
     maxCallAtomic: typeof maxCallAtomic === 'string' && /^\d{1,18}$/.test(maxCallAtomic) ? BigInt(maxCallAtomic) : undefined,
   };
@@ -989,24 +1338,24 @@ export async function requestStudiosOperation(input: {
   surface?: 'api' | 'hosted';
 }): Promise<StudiosOperationResult> {
   const op = STUDIOS_OPERATIONS[input.operation];
-  // A saved key that cannot be read is an error, never a silent switch to the
-  // wallet: the human chose their own account.
-  const key = await loadKeyOrInvalid(input.avatarId);
-  if (key === undefined) return failure('studios_key_invalid');
+  const payer = await resolveStudiosPayer(input.avatarId);
+  if (!payer.ok) return failure(payer.code);
+  // A setting the sign-in tools do not take is refused before any row or call.
+  if (payer.mode === 'signin' && !buildSigninToolCall(op.id, input.params).ok) return failure('signin_option_unsupported');
 
   const reservation = await reserveRequest({
     avatarId: input.avatarId,
     actor: input.actor,
     surface: input.surface ?? 'api',
-    mode: key ? 'account' : 'wallet',
+    mode: payer.mode,
     op,
     params: input.params,
     idempotencyKey: input.idempotencyKey,
-    credentialSha256: keySha(key),
+    credentialSha256: payer.credentialSha256,
   });
   if (reservation.kind === 'done') return reservation.result;
-  if (op.long) {
-    await startLongJob(reservation, key);
+  if (isLongJob(op, payer.mode)) {
+    await startLongJob(reservation, payer.key);
     return running(reservation.requestId);
   }
   return runOneCall({
@@ -1017,7 +1366,7 @@ export async function requestStudiosOperation(input: {
     op,
     params: input.params,
     idempotencyKey: input.idempotencyKey,
-    key,
+    key: payer.key,
   });
 }
 
@@ -1043,7 +1392,8 @@ export async function generateStudiosImage(input: {
     idempotencyKey: input.idempotencyKey,
     surface: input.surface,
   });
-  // The image operation never answers 'running' or a non-image success.
+  // The image operation answers an image success, or in sign-in mode
+  // 'running' (and the operation shape for a retry of a finished request).
   return result as StudiosImageResult;
 }
 
@@ -1106,7 +1456,7 @@ export async function readApprovalTerms(avatarId: string, requestId: string): Pr
   if (!row) return { ok: false, result: failure('approval_not_found') };
   if (row.status === 'expired') return { ok: false, result: failure('approval_expired') };
   if (row.status !== 'awaiting_approval' || row.prompt === null) return { ok: false, result: failure('approval_not_awaiting') };
-  const mode = row.mode === 'account' ? 'account' : 'wallet';
+  const mode = rowMode(row.mode);
   const op = operationOf(row);
   return {
     ok: true,
@@ -1115,10 +1465,10 @@ export async function readApprovalTerms(avatarId: string, requestId: string): Pr
       requestId,
       operation: op.id,
       mode,
-      maxUsdCents: mode === 'account' ? null : walletMaxCents(await readPolicyRow(db, avatarId), op),
+      maxUsdCents: mode !== 'wallet' ? null : walletMaxCents(await readPolicyRow(db, avatarId), op),
       promptSha256: promptSha256(row.prompt),
       paramsSha256: paramsSha256(row),
-      credentialSha256: mode === 'account' ? row.credentialSha256 : null,
+      credentialSha256: mode !== 'wallet' ? row.credentialSha256 : null,
     },
   };
 }
@@ -1128,8 +1478,9 @@ export async function readApprovalTerms(avatarId: string, requestId: string): Pr
  * wallet's signature over `terms` (`readApprovalTerms`, `verifyApprovalProof`);
  * a session alone never gets here. Under the avatar's lock: the row must still
  * wait and not be expired; its operation, mode, prompt and settings must equal
- * the signed terms; the payer must be the same as when it was made (a key
- * saved, removed or replaced since then refuses); the per-day counts and the
+ * the signed terms; the payer must be the same as when it was made (a pay
+ * mode changed, a key saved, removed or replaced, or a new Studios sign-in
+ * since then refuses); the per-day counts and the
  * media quota are checked again, counting this request on today (the day it
  * runs). In wallet mode the call may cost at most the signed amount. The row
  * then becomes 'pending' (or 'running' for a long job) in the same
@@ -1142,10 +1493,9 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
   if (input.terms.requestId !== input.requestId || input.terms.avatarId !== input.avatarId) {
     return { result: failure('approval_terms_changed'), surface: null, operation: null };
   }
-  const key = await loadKeyOrInvalid(input.avatarId);
-  if (key === undefined) return { result: failure('studios_key_invalid'), surface: null, operation: null };
-  const currentMode = key ? 'account' : 'wallet';
-  const currentCredential = keySha(key);
+  const payer = await resolveStudiosPayer(input.avatarId);
+  if (!payer.ok) return { result: failure(payer.code), surface: null, operation: null };
+  const key = payer.key;
   const signedMaxAtomic = input.terms.mode === 'wallet' ? BigInt(input.terms.maxUsdCents ?? 0) * ATOMIC_PER_CENT : undefined;
   const owner = randomUUID();
 
@@ -1159,13 +1509,14 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
       || row.mode !== input.terms.mode
       || promptSha256(row.prompt!) !== input.terms.promptSha256
       || paramsSha256(row) !== input.terms.paramsSha256
-      || (row.mode === 'account' ? row.credentialSha256 : null) !== input.terms.credentialSha256
+      || (rowMode(row.mode) !== 'wallet' ? row.credentialSha256 : null) !== input.terms.credentialSha256
     ) {
       return { ok: false as const, result: failure('approval_terms_changed') };
     }
-    if (row.mode !== currentMode) return { ok: false as const, result: failure('approval_mode_changed') };
-    // Key A replaced by key B (maybe another Studios account): B must not pay.
-    if (row.mode === 'account' && row.credentialSha256 !== currentCredential) {
+    if (rowMode(row.mode) !== payer.mode) return { ok: false as const, result: failure('approval_mode_changed') };
+    // Key A replaced by key B, or a new Studios sign-in (maybe another Studios
+    // account): the new one must not pay.
+    if (payer.mode !== 'wallet' && row.credentialSha256 !== payer.credentialSha256) {
       return { ok: false as const, result: failure('approval_mode_changed') };
     }
     const policy = await readPolicyRow(tx, input.avatarId);
@@ -1173,7 +1524,7 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
     const limited = await dayLimitRefusal(tx, {
       avatarId: input.avatarId,
       op,
-      mode: row.mode === 'account' ? 'account' : 'wallet',
+      mode: rowMode(row.mode),
       surface: row.surface === 'hosted' ? 'hosted' : 'api',
       policy,
       includeWaiting: false,
@@ -1183,13 +1534,20 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
     if (await overMediaQuota(tx, input.avatarId, op.reserveBytes((row.params ?? { prompt: row.prompt }) as StudiosParams), row.id)) {
       return { ok: false as const, result: failure('media_quota_full') };
     }
+    // The other checks that spend nothing, again now (caps can change while it
+    // waits): a refusal keeps the request waiting and nothing runs.
+    if (rowMode(row.mode) === 'wallet') {
+      const refused = await walletPrecheck(tx, input.avatarId, policy);
+      if (refused) return { ok: false as const, result: failure(refused) };
+    }
     // Flip only a row that still waits and is not overdue NOW (wall clock):
     // the checks above take time, and a read outside this lock can expire the
     // row. Nothing flipped means nothing runs.
+    const long = isLongJob(op, rowMode(row.mode));
     const [flipped] = await tx.update(vendorCallRequests).set({
-      status: op.long ? 'running' : 'pending',
+      status: long ? 'running' : 'pending',
       leaseOwner: owner,
-      ...(op.long ? {
+      ...(long ? {
         leaseUntil: new Date(Date.now() + JOB_LEASE_MS),
         // The signed amount travels with the row to the runner (our own value).
         result: signedMaxAtomic !== undefined ? { signedMaxAtomic: signedMaxAtomic.toString() } : null,
@@ -1212,7 +1570,7 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
   if (!claim.ok) return { result: claim.result, surface: null, operation: null };
   const { row, op } = claim;
   const surface = row.surface === 'hosted' ? 'hosted' : 'api';
-  if (op.long) {
+  if (isLongJob(op, rowMode(row.mode))) {
     await startLongJob({ requestId: row.id, owner }, key);
     return { result: running(row.id), surface, operation: op.id };
   }
@@ -1283,9 +1641,9 @@ export async function listAwaitingApprovals(avatarId: string): Promise<VendorCal
       operation: op.id,
       prompt: r.prompt ?? '',
       model: r.model,
-      mode: r.mode === 'account' ? 'account' : 'wallet',
+      mode: rowMode(r.mode),
       surface: r.surface === 'hosted' ? 'hosted' : 'api',
-      maxUsdCents: r.mode === 'account' ? null : walletMaxCents(policy, op),
+      maxUsdCents: rowMode(r.mode) !== 'wallet' ? null : walletMaxCents(policy, op),
       createdAt: new Date(r.createdAt).toISOString(),
       expiresAt: new Date(r.expiresAt ?? r.createdAt).toISOString(),
     };
@@ -1296,7 +1654,7 @@ export interface StudiosRequestStatusView {
   requestId: string;
   operation: StudiosOperationId;
   status: VendorCallStatus;
-  mode: 'wallet' | 'account';
+  mode: 'wallet' | 'account' | 'signin';
   createdAt: string;
   /** Only for a request that waited for approval. */
   expiresAt: string | null;
@@ -1305,8 +1663,10 @@ export interface StudiosRequestStatusView {
   mediaPath: string | null;
   /** Every stored item (character shots: one per shot). */
   media: StudiosMediaItem[];
-  /** Key mode: the item in the human's Studios My Media (reference only). */
+  /** Key and sign-in mode: the item in the human's Studios My Media (reference only). */
   vendorMediaId: string | null;
+  /** Sign-in mode: Studios job id (reference only; links expire, so ClawVille copies at once). */
+  vendorJobId: string | null;
   /** Our own refusal code for a failed or ambiguous request (never vendor text). */
   code: string | null;
   ledgerId: string | null;
@@ -1321,14 +1681,14 @@ export async function readStudiosRequest(avatarId: string, requestId: string): P
     eq(vendorCallRequests.vendor, 'studios'),
   )).limit(1);
   if (!row) return null;
-  const media = row.operation === 'image'
+  const media = row.operation === 'image' && rowMode(row.mode) !== 'signin'
     ? (row.mediaId ? [{ slot: 'image', mediaId: row.mediaId, mediaPath: `/api/media/${row.mediaId}` }] : [])
     : mediaItemsOf(row.result);
   return {
     requestId: row.id,
     operation: operationOf(row).id,
     status: row.status as VendorCallStatus,
-    mode: row.mode === 'account' ? 'account' : 'wallet',
+    mode: rowMode(row.mode),
     createdAt: new Date(row.createdAt).toISOString(),
     expiresAt: row.expiresAt ? new Date(row.expiresAt).toISOString() : null,
     decidedAt: row.decidedAt ? new Date(row.decidedAt).toISOString() : null,
@@ -1336,6 +1696,7 @@ export async function readStudiosRequest(avatarId: string, requestId: string): P
     mediaPath: row.mediaId ? `/api/media/${row.mediaId}` : null,
     media,
     vendorMediaId: row.vendorMediaId,
+    vendorJobId: rowMode(row.mode) === 'signin' ? row.vendorJobId : null,
     code: row.failureCode,
     ledgerId: row.ledgerId,
   };
@@ -1371,8 +1732,9 @@ export type RecoveryOutcome = 'resume' | 'failed' | 'ambiguous' | 'skipped';
  * Settle one unfinished row whose runner is gone (an API restart): a 'running'
  * row with an expired lease, or a 'pending' row (a one-call request) older than
  * 15 minutes. The runner claimed it (renewed lease) first.
- *   - key-mode recast with a stored job id: 'resume' (the runner polls it
- *     again; no new start) when `resumeRecast`, else `outcome_unknown`.
+ *   - key-mode recast or a sign-in request with a stored job id: 'resume'
+ *     (the runner polls it again with the free poll / get_job; no new start)
+ *     when `resumeRecast`, else `outcome_unknown`.
  *   - wallet mode: read the spend-ledger row by (avatar, idempotency key).
  *     None, or no stored payer signature: nothing was sent -> failed
  *     `interrupted_not_paid`. This is safe because the claim wrote a new
@@ -1384,14 +1746,17 @@ export type RecoveryOutcome = 'resume' | 'failed' | 'ambiguous' | 'skipped';
  *     'ambiguous' (terminal) and a 'pending' ledger row becomes 'ambiguous' for
  *     the existing reconcile path. A 'paid' ledger row: paid, result lost ->
  *     failed `result_lost`. Never called or paid again.
- *   - any other key-mode row: Studios may have billed the key -> failed
- *     `outcome_unknown` (not sent again).
+ *   - any other key-mode or sign-in row: Studios may have billed the human's
+ *     credits -> failed `outcome_unknown` (not sent again).
  */
 export async function recoverUnfinishedRequest(requestId: string, owner: string, opts: { resumeRecast: boolean }): Promise<RecoveryOutcome> {
   const [row] = await db.select().from(vendorCallRequests).where(eq(vendorCallRequests.id, requestId)).limit(1);
   if (!row || (row.status !== 'running' && row.status !== 'pending') || row.leaseOwner !== owner) return 'skipped';
   const claim: JobClaim = { requestId, owner };
   if (opts.resumeRecast && row.operation === 'recast' && row.mode === 'account' && row.status === 'running' && row.vendorJobId) {
+    return 'resume';
+  }
+  if (opts.resumeRecast && row.mode === 'signin' && row.status === 'running' && storedSigninJobIds(row).length > 0) {
     return 'resume';
   }
   if (row.mode === 'wallet') {

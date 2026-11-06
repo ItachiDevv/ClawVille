@@ -137,7 +137,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
   it('needs a linked wallet and its signature to raise, never to lower', async () => {
     await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = NULL WHERE id = ${userId}`);
-    const raise = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false };
+    const raise = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false, studiosPayMode: null };
 
     expect(await applySpendPolicyChange(avatarId, userId, raise, null)).toEqual({ kind: 'needs_wallet_link' });
 
@@ -166,7 +166,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
     await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
     const wallet = nacl.sign.keyPair();
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${bs58.encode(wallet.publicKey)} WHERE id = ${userId}`);
-    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[], requireApproval: false };
+    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[], requireApproval: false, studiosPayMode: null };
     expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosKeyImagesPerDay: 10 });
 
     // Lower than the default: no signature. Left out later: the saved 4 stays.
@@ -192,7 +192,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
     await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
     const wallet = nacl.sign.keyPair();
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${bs58.encode(wallet.publicKey)} WHERE id = ${userId}`);
-    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[], requireApproval: false };
+    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[], requireApproval: false, studiosPayMode: null };
     expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1 });
     expect((await applySpendPolicyChange(avatarId, userId, { ...unset, studiosVideosPerDay: 0, studiosRecastsPerDay: 0 }, null)).kind).toBe('saved');
     expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosVideosPerDay: 0, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 0 });
@@ -236,7 +236,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
     const pubA = bs58.encode(walletA.publicKey);
     const pubB = bs58.encode(nacl.sign.keyPair().publicKey);
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${pubA} WHERE id = ${userId}`);
-    const raise = { dailyCapUsdCents: 700, perCallCapUsdCents: 70, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false };
+    const raise = { dailyCapUsdCents: 700, perCallCapUsdCents: 70, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false, studiosPayMode: null };
     const challenge = issueSpendProofChallenge(userId, raise);
     const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), walletA.secretKey));
 

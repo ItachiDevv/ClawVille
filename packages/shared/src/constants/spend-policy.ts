@@ -43,6 +43,20 @@ export const STUDIOS_RECASTS_PER_DAY_DEFAULT = 1;
 export const STUDIOS_CLASS_PER_DAY_MAX = 1_000;
 
 /**
+ * Who pays for a Studios call (MCP hub phase 3c, migration 0096), chosen by
+ * the human:
+ *   wallet  the avatar wallet pays with x402 inside the spend caps (image, video);
+ *   key     the human's saved Studios API key, their Studios credits (every operation);
+ *   signin  the human's Studios sign-in, their Studios credits (every operation,
+ *           plus the My Media list and the account balance).
+ * Null (not chosen) keeps the earlier rule: the saved key when there is one,
+ * else the wallet. A chosen mode that is not usable refuses; it never falls
+ * back. Any change needs the linked-wallet signature (it changes who pays).
+ */
+export const STUDIOS_PAY_MODES = ['wallet', 'key', 'signin'] as const;
+export type StudiosPayMode = (typeof STUDIOS_PAY_MODES)[number];
+
+/**
  * "Ask me before each payment" (founder go 2026-11-06). When the human turns it
  * on, every paid-tool request from the agent waits for the human to approve or
  * decline it in the wallet panel. A waiting request expires after this time.
@@ -64,10 +78,10 @@ export interface VendorCallApprovalView {
   /** The agent's own text. Untrusted: show it as plain text only. */
   prompt: string;
   model: string | null;
-  /** 'account' = the human's own Studios key pays; 'wallet' = the avatar wallet pays. */
-  mode: 'wallet' | 'account';
+  /** 'account' = the human's own Studios key pays; 'signin' = the human's Studios sign-in pays; 'wallet' = the avatar wallet pays. */
+  mode: 'wallet' | 'account' | 'signin';
   surface: 'api' | 'hosted';
-  /** Wallet mode: the most this call can cost (the price comes at approve). Null in account mode. */
+  /** Wallet mode: the most this call can cost (the price comes at approve). Null in account and signin mode. */
   maxUsdCents: number | null;
   createdAt: string;
   expiresAt: string;
@@ -89,6 +103,8 @@ export interface SpendPolicyView {
   studiosRecastsPerDay: number;
   /** "Ask me before each payment": every agent request waits for the human. */
   requireApproval: boolean;
+  /** Who pays for Studios calls; null = the saved key if any, else the wallet. */
+  studiosPayMode: StudiosPayMode | null;
   /** True only when both caps are set. Paid calls need this. */
   configured: boolean;
   updatedAt: string | null;
@@ -108,14 +124,16 @@ export interface SpendPolicyValues {
   studiosCharacterShotsPerDay: number;
   studiosRecastsPerDay: number;
   requireApproval: boolean;
+  studiosPayMode: StudiosPayMode | null;
 }
 
 /**
  * True when `next` lets the agent spend more than `current` (phase 1b): a cap
  * goes from unset to set, a cap goes up, a vendor is added, the Studios
  * own-key image count or a Studios class count (videos, character shots,
- * recasts) goes up, or "ask me before each payment" goes from on
- * to off (turning it on only tightens). A raise needs a
+ * recasts) goes up, "ask me before each payment" goes from on
+ * to off (turning it on only tightens), or the Studios pay mode changes in
+ * any direction (it changes who pays). A raise needs a
  * signature from the human's linked wallet; a lower or equal change does not.
  * Setting a cap to unset (null) is a lower change: an unset cap refuses every
  * paid call.
@@ -129,5 +147,6 @@ export function isSpendPolicyRaise(current: SpendPolicyValues, next: SpendPolicy
   if (next.studiosCharacterShotsPerDay > current.studiosCharacterShotsPerDay) return true;
   if (next.studiosRecastsPerDay > current.studiosRecastsPerDay) return true;
   if (current.requireApproval && !next.requireApproval) return true;
+  if ((next.studiosPayMode ?? null) !== (current.studiosPayMode ?? null)) return true;
   return next.allowedVendors.some((vendor) => !current.allowedVendors.includes(vendor));
 }

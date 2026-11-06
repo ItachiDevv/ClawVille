@@ -16,12 +16,14 @@ import {
   STUDIOS_CLASS_PER_DAY_MAX,
   STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
   STUDIOS_KEY_IMAGES_PER_DAY_MAX,
+  STUDIOS_PAY_MODES,
   STUDIOS_RECASTS_PER_DAY_DEFAULT,
   STUDIOS_VIDEOS_PER_DAY_DEFAULT,
   isSpendPolicyRaise,
   type SpendPolicyValues,
   type SpendPolicyView,
   type SpendVendorId,
+  type StudiosPayMode,
 } from '@clawville/shared';
 import { verifySpendProof } from './spend-policy-proof';
 
@@ -43,6 +45,10 @@ export const spendPolicyInputSchema = z
     studiosRecastsPerDay: z.number().int().min(0).max(STUDIOS_CLASS_PER_DAY_MAX).optional(),
     // Optional: "ask me before each payment". Absent keeps the saved value.
     requireApproval: z.boolean().optional(),
+    // Optional: who pays for Studios calls (migration 0096). Absent keeps the
+    // saved value; null = the saved key if any, else the wallet. Any change
+    // needs the linked-wallet signature.
+    studiosPayMode: z.enum(STUDIOS_PAY_MODES).nullable().optional(),
   })
   .strict()
   .refine(
@@ -63,6 +69,7 @@ export function resolveSpendPolicyValues(input: SpendPolicyInput, current: Spend
     studiosCharacterShotsPerDay: input.studiosCharacterShotsPerDay ?? current.studiosCharacterShotsPerDay,
     studiosRecastsPerDay: input.studiosRecastsPerDay ?? current.studiosRecastsPerDay,
     requireApproval: input.requireApproval ?? current.requireApproval,
+    studiosPayMode: input.studiosPayMode === undefined ? current.studiosPayMode : input.studiosPayMode,
   };
 }
 
@@ -75,8 +82,13 @@ type PolicyRow = {
   studiosCharacterShotsPerDay?: number | null;
   studiosRecastsPerDay?: number | null;
   requireApproval?: boolean | null;
+  studiosPayMode?: string | null;
   updatedAt: Date | string | null;
 };
+
+function toPayMode(value: string | null | undefined): StudiosPayMode | null {
+  return (STUDIOS_PAY_MODES as readonly string[]).includes(value ?? '') ? (value as StudiosPayMode) : null;
+}
 
 export function toSpendPolicyView(row: PolicyRow | null | undefined): SpendPolicyView {
   const dailyCapUsdCents = row?.dailyCapUsdCents ?? null;
@@ -94,6 +106,7 @@ export function toSpendPolicyView(row: PolicyRow | null | undefined): SpendPolic
     studiosCharacterShotsPerDay: row?.studiosCharacterShotsPerDay ?? STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT,
     studiosRecastsPerDay: row?.studiosRecastsPerDay ?? STUDIOS_RECASTS_PER_DAY_DEFAULT,
     requireApproval: row?.requireApproval ?? false,
+    studiosPayMode: toPayMode(row?.studiosPayMode),
     configured: dailyCapUsdCents !== null && perCallCapUsdCents !== null,
     updatedAt: updatedAt === null ? null : new Date(updatedAt).toISOString(),
   };
@@ -110,6 +123,7 @@ export async function readSpendPolicy(avatarId: string): Promise<SpendPolicyView
       studiosCharacterShotsPerDay: userSpendPolicies.studiosCharacterShotsPerDay,
       studiosRecastsPerDay: userSpendPolicies.studiosRecastsPerDay,
       requireApproval: userSpendPolicies.requireApproval,
+      studiosPayMode: userSpendPolicies.studiosPayMode,
       updatedAt: userSpendPolicies.updatedAt,
     })
     .from(userSpendPolicies)
@@ -129,6 +143,7 @@ export const policyColumns = {
   studiosCharacterShotsPerDay: userSpendPolicies.studiosCharacterShotsPerDay,
   studiosRecastsPerDay: userSpendPolicies.studiosRecastsPerDay,
   requireApproval: userSpendPolicies.requireApproval,
+  studiosPayMode: userSpendPolicies.studiosPayMode,
   updatedAt: userSpendPolicies.updatedAt,
 };
 
@@ -138,7 +153,7 @@ async function upsertSpendPolicy(
   userId: string,
   input: SpendPolicyInput,
 ): Promise<SpendPolicyView> {
-  // An undefined count or requireApproval leaves the column unchanged on update.
+  // An undefined count, requireApproval or pay mode leaves the column unchanged on update.
   const values = {
     dailyCapUsdCents: input.dailyCapUsdCents,
     perCallCapUsdCents: input.perCallCapUsdCents,
@@ -148,6 +163,7 @@ async function upsertSpendPolicy(
     studiosCharacterShotsPerDay: input.studiosCharacterShotsPerDay,
     studiosRecastsPerDay: input.studiosRecastsPerDay,
     requireApproval: input.requireApproval,
+    studiosPayMode: input.studiosPayMode,
     updatedByUserId: userId,
     updatedAt: new Date(),
   };
@@ -188,7 +204,8 @@ export type SpendPolicyChangeResult =
  *
  * One transaction holds a per-avatar advisory lock, reads the saved values,
  * and decides whether `input` is a raise (see `isSpendPolicyRaise`; turning
- * "ask me before each payment" off is one). A raise needs a signature from the user's linked wallet over the exact new values.
+ * "ask me before each payment" off is one, and so is any change of the
+ * Studios pay mode). A raise needs a signature from the user's linked wallet over the exact new values.
  * A lower or equal change saves without one. The lock stops a concurrent lower
  * change from turning an unchecked write into a raise.
  */
