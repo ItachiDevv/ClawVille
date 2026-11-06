@@ -239,36 +239,44 @@ export function attachedStatusCode(status: string | undefined): 'awaiting_approv
 }
 
 const OPEN_STATUSES = new Set(['awaiting_approval', 'pending', 'running']);
+const ENDED_STATUSES = new Set(['done', 'failed', 'ambiguous', 'declined', 'expired']);
 
 /**
  * What a refused POST says about a request the same input or key already made.
- * - `409 duplicate_request_in_flight` with an id: attach and read it (the
- *   server also answers this for 30 minutes after a "may have charged" end;
- *   the read then shows that end).
- * - `duplicate_request` (a same-key replay) with an id and a status: attach
- *   when it has not ended; when it ended, drop the key and show its end.
- * - `duplicate_request` with no id (an older server): drop the key, show the code.
- * null: any other refusal.
+ * Any error body with `requestId` and a `status` names that request:
+ * - not ended (`awaiting_approval`, `pending`, `running`): attach and read it;
+ * - ended: drop the key and show that request's own end (`failureCode`, or the
+ *   body's code; a "may have charged" code gets its "may have charged" text).
+ *   A same-key replay of an ended request answers with that request's code
+ *   (for example `outcome_unknown` or `studios_key_invalid`), not only
+ *   `duplicate_request`.
+ * `409 duplicate_request_in_flight` with an id always attaches (the server
+ * also answers it for 30 minutes after a "may have charged" end; the read then
+ * shows that end). `duplicate_request` with no id (an older server): drop the
+ * key, show the code. null: any other refusal.
  */
 export function studiosReplayAnswer(error: unknown):
   | null
   | { kind: 'attach'; requestId: string; code: 'awaiting_approval' | 'already_running' }
   | { kind: 'ended'; code: string } {
   if (!(error instanceof ApiError)) return null;
-  if (error.code === 'duplicate_request_in_flight' && error.requestId) {
-    return { kind: 'attach', requestId: error.requestId, code: attachedStatusCode(error.requestStatus) };
+  const { requestId, requestStatus: status } = error;
+  if (error.code === 'duplicate_request_in_flight' && requestId) {
+    return { kind: 'attach', requestId, code: attachedStatusCode(status) };
   }
-  if (error.code !== 'duplicate_request') return null;
-  const status = error.requestStatus;
-  if (error.requestId && status && OPEN_STATUSES.has(status)) {
-    return { kind: 'attach', requestId: error.requestId, code: attachedStatusCode(status) };
+  if (requestId && status && OPEN_STATUSES.has(status)) {
+    return { kind: 'attach', requestId, code: attachedStatusCode(status) };
   }
-  if (!error.requestId || !status) return { kind: 'ended', code: 'duplicate_request' };
-  if (status === 'done') return { kind: 'ended', code: 'already_done' };
-  if (status === 'declined') return { kind: 'ended', code: 'approval_declined' };
-  if (status === 'expired') return { kind: 'ended', code: 'approval_expired' };
-  if (status === 'ambiguous') return { kind: 'ended', code: 'payment_ambiguous' };
-  return { kind: 'ended', code: error.requestFailureCode ?? 'duplicate_request' };
+  if (requestId && status && ENDED_STATUSES.has(status)) {
+    if (status === 'done') return { kind: 'ended', code: 'already_done' };
+    if (status === 'declined') return { kind: 'ended', code: 'approval_declined' };
+    if (status === 'expired') return { kind: 'ended', code: 'approval_expired' };
+    if (status === 'ambiguous') return { kind: 'ended', code: 'payment_ambiguous' };
+    const own = error.requestFailureCode ?? (error.code !== 'duplicate_request' ? error.code : undefined);
+    return { kind: 'ended', code: own ?? 'duplicate_request' };
+  }
+  if (error.code === 'duplicate_request') return { kind: 'ended', code: 'duplicate_request' };
+  return null;
 }
 
 

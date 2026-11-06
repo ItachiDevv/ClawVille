@@ -283,24 +283,32 @@ describe('hosted verbs: grammar and result lines', () => {
     }
   });
 
-  it('the input fingerprint (0097) is the vendor body after defaults: omitted and explicit defaults match, for every operation', () => {
+  it('the input fingerprint (0097) is coarse: tuning never splits it; the prompt and the references do, for every operation', () => {
     const fp = (operation: 'image' | 'video' | 'character_shots' | 'recast', params: Record<string, unknown>, avatarId = 'av-1') =>
       studiosInputFingerprint({ avatarId, operation, params: params as never });
-    // image: the default model
+    // image: the model is tuning
     expect(fp('image', { prompt: 'a gull' })).toBe(fp('image', { prompt: 'a gull', model: 'z-image-turbo' }));
-    // video: the default model
-    expect(fp('video', { prompt: 'a gull' })).toBe(fp('video', { prompt: 'a gull', model: 'minimax-h3-max-turbo' }));
-    expect(fp('video', { prompt: 'a gull' })).not.toBe(fp('video', { prompt: 'a gull', durationSeconds: 6 }));
-    // character shots: the default shots and resolution; a pick as one id or a list of one
+    // video: model, duration, resolution, aspect ratio and audio are tuning; the start frame is a reference
+    expect(fp('video', { prompt: 'a gull' }))
+      .toBe(fp('video', { prompt: 'a gull', model: 'minimax-h3-max-turbo', durationSeconds: 5, resolution: '768p', aspectRatio: '16:9', audio: true }));
+    expect(fp('video', { prompt: 'a gull' })).not.toBe(fp('video', { prompt: 'a gull', imageUrl: 'https://mystudios.fun/f.png' }));
+    // character shots: style, model, quality, resolution and image kind are tuning; shots (a set), random, picks and the image are references
     expect(fp('character_shots', { prompt: 'p', picks: { hair: 'h1' } }))
-      .toBe(fp('character_shots', { prompt: 'p', shots: ['sheet'], resolution: '1K', picks: { hair: ['h1'] } }));
-    expect(fp('character_shots', { prompt: 'p' })).not.toBe(fp('character_shots', { prompt: 'p', resolution: '2K' }));
-    // recast: no defaults; the direction whitespace is collapsed; the preset matters
-    const recast = { preset: 'recast-x-wan', imageUrls: ['https://mystudios.fun/a.png'] };
+      .toBe(fp('character_shots', { prompt: 'p', shots: ['sheet'], picks: { hair: ['h1'] }, style: 's1', model: 'm', quality: 'high', resolution: '2K', imageKind: 'photo' }));
+    expect(fp('character_shots', { prompt: 'p', shots: ['headshot', 'sheet'] })).toBe(fp('character_shots', { prompt: 'p', shots: ['sheet', 'headshot'] }));
+    expect(fp('character_shots', { prompt: 'p' })).not.toBe(fp('character_shots', { prompt: 'p', shots: ['headshot'] }));
+    expect(fp('character_shots', { prompt: 'p' })).not.toBe(fp('character_shots', { prompt: 'p', random: true }));
+    expect(fp('character_shots', { prompt: 'p', picks: { hair: 'h1' } })).not.toBe(fp('character_shots', { prompt: 'p', picks: { hair: 'h2' } }));
+    // recast: resolution is tuning; the preset, the images (as a set) and the direction are not
+    const recast = { preset: 'recast-x-wan', imageUrls: ['https://mystudios.fun/a.png', 'https://mystudios.fun/b.png'] };
+    expect(fp('recast', recast)).toBe(fp('recast', { ...recast, imageUrls: [...recast.imageUrls].reverse(), resolution: '1080p' }));
     expect(fp('recast', { ...recast, direction: 'spin  slowly ' })).toBe(fp('recast', { ...recast, direction: 'spin slowly' }));
     expect(fp('recast', recast)).not.toBe(fp('recast', { ...recast, preset: 'recast-y' }));
-    // prompt whitespace, key order; the avatar and the operation are part of it
+    expect(fp('recast', recast)).not.toBe(fp('recast', { ...recast, imageUrls: ['https://mystudios.fun/a.png'] }));
+    expect(fp('recast', recast)).not.toBe(fp('recast', { ...recast, direction: 'spin' }));
+    // prompt whitespace; the prompt, the avatar and the operation split it
     expect(fp('image', { prompt: ' a \n gull ' })).toBe(fp('image', { prompt: 'a gull' }));
+    expect(fp('image', { prompt: 'a gull' })).not.toBe(fp('image', { prompt: 'a tern' }));
     expect(fp('image', { prompt: 'a gull' })).not.toBe(fp('image', { prompt: 'a gull' }, 'av-2'));
     expect(fp('image', { prompt: 'a gull' })).not.toBe(fp('video', { prompt: 'a gull' }));
     expect(fp('image', { prompt: 'a gull' })).toMatch(/^[0-9a-f]{64}$/);

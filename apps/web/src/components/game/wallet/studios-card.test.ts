@@ -219,6 +219,19 @@ describe('studiosReplayAnswer (a refused POST about an earlier request)', () => 
     expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: 'failed' }))).toEqual({ kind: 'ended', code: 'duplicate_request' });
   });
 
+  test('a replay body with the own code of the ended request: drop the key and show that end', () => {
+    const body = (code: string, failureCode: string) => new ApiError(code, 502, code, { requestId: R, requestStatus: 'failed', requestFailureCode: failureCode });
+    expect(studiosReplayAnswer(body('outcome_unknown', 'outcome_unknown'))).toEqual({ kind: 'ended', code: 'outcome_unknown' });
+    expect(studiosReplayAnswer(body('studios_key_invalid', 'studios_key_invalid'))).toEqual({ kind: 'ended', code: 'studios_key_invalid' });
+    expect(studiosReplayAnswer(new ApiError('approval_expired', 409, 'approval_expired', { requestId: R, requestStatus: 'expired' }))).toEqual({ kind: 'ended', code: 'approval_expired' });
+    // No failureCode: the body's own code is the request's end.
+    expect(studiosReplayAnswer(new ApiError('outcome_unknown', 502, 'outcome_unknown', { requestId: R, requestStatus: 'failed' }))).toEqual({ kind: 'ended', code: 'outcome_unknown' });
+    // Any code with a non-terminal status: attach.
+    expect(studiosReplayAnswer(new ApiError('rate_limited', 429, 'rate_limited', { requestId: R, requestStatus: 'running' }))).toEqual({ kind: 'attach', requestId: R, code: 'already_running' });
+    // An ended may-have-charged request keeps its may-have-charged text.
+    expect(studiosErrorText(new ApiError('outcome_unknown', 200, 'outcome_unknown'))).toContain('may have charged');
+  });
+
   test('an older generic duplicate_request with no id: drop the key, show the code text', () => {
     expect(studiosReplayAnswer(err('duplicate_request'))).toEqual({ kind: 'ended', code: 'duplicate_request' });
   });

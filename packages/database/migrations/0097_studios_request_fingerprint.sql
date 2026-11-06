@@ -1,9 +1,12 @@
 -- 0097_studios_request_fingerprint.sql
 -- MCP hub phase 3c (2026-11-06): server-side dedupe of Studios requests.
 --
--- vendor_call_requests.input_fingerprint: SHA-256 (hex) over the avatar, the
--- operation and the canonical vendor body after defaults (an omitted default
--- and the explicit default give the same body; prompt whitespace collapsed).
+-- vendor_call_requests.input_fingerprint: SHA-256 (hex), coarse on purpose:
+-- the avatar, the operation, the prompt (and recast direction) with whitespace
+-- collapsed, and the reference inputs (images, start frame, preset or clip,
+-- character shots and picks). No tuning field (model, duration, resolution,
+-- aspect ratio, audio, quality, style): a tuning-only difference is the same
+-- request.
 -- The pay mode is NOT part of it: an unclear wallet request also blocks the
 -- same input in key or sign-in mode. A NEW Idempotency-Key with the same
 -- fingerprint as a request that still waits or runs (awaiting_approval,
@@ -18,10 +21,11 @@
 -- writer, so the 30-minute window starts at the uncertain outcome, not at
 -- creation (a recast that times out after 30 minutes still blocks for 30 more).
 --
--- Additive and idempotent (the CI runner may apply it twice). Old rows keep a
--- NULL fingerprint and never match (known limit for the first 30 minutes after
--- the deploy). Old code does not write either column; the trigger fills
--- finished_at for old code too.
+-- Additive and idempotent (the CI runner may apply it twice). No backfill: old
+-- rows keep a NULL fingerprint, and the dedupe check treats such a row as
+-- matching every request of its operation for that avatar while it waits,
+-- runs, or may have charged inside the window. Old code does not write either
+-- column; the trigger fills finished_at for old code too.
 
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "input_fingerprint" varchar(64);
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "finished_at" timestamp with time zone;

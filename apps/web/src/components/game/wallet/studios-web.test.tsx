@@ -671,6 +671,45 @@ describe('open requests outlive the wallet modal', () => {
     expect(calls('poll').map((l) => l.arg)).toEqual([OTHER]);
   });
 
+  for (const c of [
+    { code: 'outcome_unknown', status: 502, text: 'Studios did not tell us the result. Studios may have charged for it. Do not try it again for now.' },
+    { code: 'studios_key_invalid', status: 403, text: 'Your saved Studios API key does not work.' },
+  ]) {
+    test(`after a reload, a replay answered with the ended request's ${c.code} body clears the key and shows that end`, async () => {
+      payModeSaved = 'key';
+      keyLinked = true;
+      postAnswer = async () => {
+        throw new Error('network');
+      };
+      await mount(createElement(card.StudiosCard));
+      await openSection('Image');
+      await type(field('Describe the image'), 'a crab');
+      await click(button('Make image'));
+      const kept = slotOf('image')!.key;
+      // Reload: memory gone, sessionStorage keeps the open key.
+      store.resetStudiosRequestStoreForTests();
+      await remount();
+      expect(slotOf('image')?.key).toBe(kept);
+      postAnswer = async () => {
+        throw new ApiError(c.code, c.status, c.code, { requestId: OTHER, requestStatus: 'failed', requestFailureCode: c.code });
+      };
+      await openSection('Image');
+      await type(field('Describe the image'), 'a crab');
+      await click(button('Make image'));
+      expect((calls('image')[1]!.arg as { key: string }).key).toBe(kept);
+      expect(slotOf('image')).toBeNull();
+      expect(testWindow.sessionStorage.getItem(store.STUDIOS_REQUESTS_STORAGE_KEY)).toBeNull();
+      expect(container?.textContent).toContain(c.text);
+      expect(calls('poll')).toEqual([]);
+      // The next send is a new request with a new key.
+      postAnswer = async () => {
+        throw new Error('network');
+      };
+      await click(button('Make image'));
+      expect((calls('image')[2]!.arg as { key: string }).key).not.toBe(kept);
+    });
+  }
+
   test('a generic duplicate_request with no id clears the key and shows its text', async () => {
     payModeSaved = 'key';
     keyLinked = true;

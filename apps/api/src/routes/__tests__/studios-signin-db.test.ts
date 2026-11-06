@@ -765,16 +765,49 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     await waiting(await boat('agent'));
   });
 
-  it('dedupe: an omitted default and the explicit default are the same input (image model, video model, character shots and resolution)', async () => {
+  it('dedupe: a tuning-only difference is the same request (409); a different prompt or reference is not', async () => {
     await setRules({ requireApproval: true });
-    const ask = (operation: 'image' | 'video' | 'character_shots', params: Record<string, unknown>) =>
+    const ask = (operation: 'image' | 'video' | 'character_shots' | 'recast', params: Record<string, unknown>) =>
       requestStudiosOperation({ avatarId, actor: 'agent', operation, params: params as never, idempotencyKey: key() });
     const img = await waiting(await ask('image', { prompt: 'a gull' }));
     expect(await ask('image', { prompt: 'a gull', model: 'z-image-turbo' })).toEqual(inFlightOf(img, 'awaiting_approval'));
-    const vid = await waiting(await ask('video', { prompt: 'a gull', model: 'minimax-h3-max-turbo' }));
-    expect(await ask('video', { prompt: 'a gull' })).toEqual(inFlightOf(vid, 'awaiting_approval'));
+    const vid = await waiting(await ask('video', { prompt: 'a gull' }));
+    expect(await ask('video', { prompt: 'a gull', durationSeconds: 5, resolution: '768p', aspectRatio: '9:16', audio: false })).toEqual(inFlightOf(vid, 'awaiting_approval'));
+    await waiting(await ask('video', { prompt: 'a tern' }));
+    await waiting(await ask('video', { prompt: 'a gull', imageUrl: 'https://mystudios.fun/api/v1/media/artifacts/f.png' }));
+    // At most 5 requests may wait: start each operation clean.
+    await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`);
     const chr = await waiting(await ask('character_shots', { prompt: 'a gull', picks: { hair: 'h1' } }));
-    expect(await ask('character_shots', { prompt: 'a gull', shots: ['sheet'], picks: { hair: ['h1'] } })).toEqual(inFlightOf(chr, 'awaiting_approval'));
+    expect(await ask('character_shots', { prompt: 'a gull', shots: ['sheet'], picks: { hair: ['h1'] }, style: 's1' })).toEqual(inFlightOf(chr, 'awaiting_approval'));
+    await waiting(await ask('character_shots', { prompt: 'a gull', picks: { hair: 'h2' } }));
+    // At most 5 requests may wait: start each operation clean.
+    await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`);
+    const rec = await waiting(await ask('recast', { preset: 'p1', imageUrls: ['https://mystudios.fun/a.png'] }));
+    expect(await ask('recast', { preset: 'p1', imageUrls: ['https://mystudios.fun/a.png'], resolution: '720p' })).toEqual(inFlightOf(rec, 'awaiting_approval'));
+    await waiting(await ask('recast', { preset: 'p2', imageUrls: ['https://mystudios.fun/a.png'] }));
+  });
+
+  it('dedupe: a row from before 0097 (no fingerprint) blocks every request of its operation while it runs or may have charged', async () => {
+    await setRules({ requireApproval: true });
+    const legacy = first(await db.execute<{ id: string }>(sql`
+      INSERT INTO vendor_call_requests (avatar_id, vendor, actor, surface, mode, status, idempotency_key, operation, prompt, params, lease_until)
+      VALUES (${avatarId}, 'studios', 'agent', 'api', 'signin', 'running', ${key()}, 'video', 'old', ${JSON.stringify({ prompt: 'old' })}::jsonb, now() + interval '2 minutes')
+      RETURNING id`)).id;
+    // Any video, any prompt: blocked by the legacy row. Another operation is not.
+    expect(await boat('agent', 'anything at all')).toEqual(inFlightOf(legacy, 'running'));
+    await waiting(await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'image', params: { prompt: 'anything at all' }, idempotencyKey: key() }));
+    // It ends in a way that may have charged: still blocks inside the window, then not.
+    await setRow(legacy, 'failed', 'outcome_unknown');
+    expect(await boat('human', 'something else')).toEqual(inFlightOf(legacy, 'failed'));
+    await endedAgo(legacy, 31);
+    await waiting(await boat('agent', 'something else'));
+    // A legacy row that ended without charge never blocks.
+    await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`);
+    const done = first(await db.execute<{ id: string }>(sql`
+      INSERT INTO vendor_call_requests (avatar_id, vendor, actor, surface, mode, status, idempotency_key, operation, prompt)
+      VALUES (${avatarId}, 'studios', 'agent', 'api', 'signin', 'failed', ${key()}, 'video', 'old') RETURNING id`)).id;
+    await setRow(done, 'failed', 'vendor_refused');
+    await waiting(await boat('agent', 'another'));
   });
 
   it('dedupe: the window starts when the row ENDED: a job_timeout on a request made 2 hours ago still blocks; 31 minutes after the end it does not', async () => {

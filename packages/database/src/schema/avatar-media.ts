@@ -86,8 +86,8 @@ export const vendorCallRequests = pgTable('vendor_call_requests', {
   /** The token of the runner that holds the row; every runner write matches it. */
   leaseOwner: varchar('lease_owner', { length: 64 }),
   /**
-   * Migration 0097: SHA-256 of avatar + operation + the canonical vendor body
-   * after defaults (prompt whitespace collapsed; no pay mode). A new key with
+   * Migration 0097: SHA-256 of avatar + operation + prompt + reference inputs
+   * (coarse: no tuning field, no pay mode). NULL on old rows. A new key with
    * the same input as a request that still runs (or may have charged in the
    * last 30 minutes) answers 409 duplicate_request_in_flight.
    */

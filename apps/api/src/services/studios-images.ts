@@ -349,37 +349,66 @@ function inFlight(requestId: string, status: VendorCallStatus): StudiosInFlight 
 export const IN_FLIGHT_UNCLEAR_WINDOW_MS = 30 * 60_000;
 
 /**
- * SHA-256 (hex) of one request's input: avatar, operation and the vendor body
- * after defaults (the REST body `op.build` makes; the same in every pay mode,
- * so an omitted default and the explicit default collide, and so do the
- * wallet, the key and the sign-in). Canonical: sorted keys, prompt and
- * direction whitespace collapsed, character picks as lists. No idempotency
- * key (the recast header is not part of the body). Actor, surface and pay
- * mode stay out: a human form and the agent collide, and an unclear wallet
- * request blocks the same input on the human's Studios account too.
+ * SHA-256 (hex) of one request's input, COARSE on purpose: the avatar, the
+ * operation, the prompt (and the recast direction) with whitespace collapsed,
+ * and the reference inputs (image URLs sorted, the start frame, the recast
+ * preset or clip, the character shots as a set, random and picks). Every
+ * tuning field is left out (model, duration, resolution, aspect ratio, audio,
+ * quality, style, image kind): Studios fills some of them from its own model
+ * menu, so two requests that differ only in tuning count as the same request,
+ * and the second one waits while the first runs or may have charged (the safe
+ * side). No pay mode, actor, surface or idempotency key: a human form and the
+ * agent collide, and an unclear wallet request blocks the same input on the
+ * human's Studios account too.
  */
 export function studiosInputFingerprint(input: { avatarId: string; operation: StudiosOperationId; params: StudiosParams }): string {
-  const body: Record<string, unknown> = { ...STUDIOS_OPERATIONS[input.operation].build(input.params, { requestId: '' }).body };
-  for (const field of ['prompt', 'direction']) {
-    if (typeof body[field] === 'string') body[field] = (body[field] as string).replace(/\s+/g, ' ').trim();
-  }
-  if (body.picks && typeof body.picks === 'object' && !Array.isArray(body.picks)) {
-    body.picks = Object.fromEntries(Object.entries(body.picks as Record<string, unknown>).map(([k, v]) => [k, Array.isArray(v) ? v : [v]]));
+  const text = (value: unknown) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : null);
+  const sorted = (values: readonly string[] | undefined) => (values ? [...new Set(values)].sort() : null);
+  const p = input.params as Record<string, unknown>;
+  let refs: Record<string, unknown>;
+  switch (input.operation) {
+    case 'image':
+      refs = {};
+      break;
+    case 'video':
+      refs = { imageUrl: p.imageUrl ?? null };
+      break;
+    case 'character_shots': {
+      const picks = (p.picks ?? {}) as Record<string, string | string[]>;
+      refs = {
+        shots: sorted((p.shots as string[] | undefined) ?? ['sheet']),
+        random: p.random === true,
+        picks: Object.fromEntries(Object.entries(picks).map(([k, v]) => [k, sorted(Array.isArray(v) ? v : [v])])),
+        imageUrl: p.imageUrl ?? null,
+      };
+      break;
+    }
+    case 'recast':
+      refs = { preset: p.preset ?? null, videoUrl: p.videoUrl ?? null, imageUrls: sorted(p.imageUrls as string[]), direction: text(p.direction) };
+      break;
   }
   return createHash('sha256')
-    .update(canonicalJson({ avatarId: input.avatarId, operation: input.operation, body }), 'utf8')
+    .update(canonicalJson({ avatarId: input.avatarId, operation: input.operation, prompt: text(p.prompt), refs }), 'utf8')
     .digest('hex');
 }
 
-/** The oldest request of this avatar with the same input that still blocks a new key, or null. */
-async function inFlightTwin(executor: Executor, avatarId: string, fingerprint: string): Promise<{ id: string; status: string } | null> {
+/**
+ * The oldest request of this avatar that still blocks a new key, or null: one
+ * with the same input, or one of the same operation from before 0097 (no
+ * fingerprint, so its input is unknown and it blocks every request of that
+ * operation while it waits, runs, or may have charged inside the window).
+ */
+async function inFlightTwin(executor: Executor, avatarId: string, operation: StudiosOperationId, fingerprint: string): Promise<{ id: string; status: string } | null> {
   const windowSeconds = Math.round(IN_FLIGHT_UNCLEAR_WINDOW_MS / 1000);
   const [row] = await executor.select({ id: vendorCallRequests.id, status: vendorCallRequests.status })
     .from(vendorCallRequests)
     .where(and(
       eq(vendorCallRequests.avatarId, avatarId),
       eq(vendorCallRequests.vendor, 'studios'),
-      eq(vendorCallRequests.inputFingerprint, fingerprint),
+      or(
+        eq(vendorCallRequests.inputFingerprint, fingerprint),
+        and(isNull(vendorCallRequests.inputFingerprint), eq(vendorCallRequests.operation, operation)),
+      ),
       or(
         // Still waiting or running: blocks at any age.
         inArray(vendorCallRequests.status, ['awaiting_approval', 'pending', 'running']),
@@ -819,7 +848,7 @@ async function reserveRequest(input: {
     // the reply and its key, attach to that request instead of paying twice.
     // Before the day limits, which count waiting rows.
     const inputFingerprint = studiosInputFingerprint({ avatarId: input.avatarId, operation: op.id, params: input.params });
-    const twin = await inFlightTwin(tx, input.avatarId, inputFingerprint);
+    const twin = await inFlightTwin(tx, input.avatarId, op.id, inputFingerprint);
     if (twin) return { kind: 'done', result: inFlight(twin.id, twin.status as VendorCallStatus) };
     const policy = await readPolicyRow(tx, input.avatarId);
     const limited = await dayLimitRefusal(tx, {
