@@ -111,3 +111,20 @@ export function consumeWalletLinkChallenge(nonce: string, userId: string): boole
 export function _resetWalletLinkNoncesForTest(): void {
   nonces.clear();
 }
+
+/**
+ * The EXACT text the CURRENTLY linked wallet signs to approve a change to a new
+ * wallet (phase 1b, 2026-11-05). A magic link passes through the agent, so a
+ * human session alone must not be able to swap the linked wallet: the linked
+ * wallet approves spend-rule raises and receives market payouts. Bound to the
+ * account, the same single-use nonce as the link, and both pubkeys.
+ */
+export function buildWalletChangeMessage(userId: string, nonce: string, fromPubkey: string, toPubkey: string): string {
+  return `ClawVille wallet change\naccount: ${userId}\nfrom: ${fromPubkey}\nto: ${toPubkey}\nnonce: ${nonce}`;
+}
+
+/** True while the nonce is live for this user. Does not consume it. */
+export function peekWalletLinkChallenge(nonce: string, userId: string): boolean {
+  const entry = nonces.get(nonce);
+  return !!entry && entry.userId === userId && Date.now() <= entry.expiresAt;
+}

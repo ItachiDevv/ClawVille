@@ -629,15 +629,70 @@ export const api = {
   // ── Spend rules for paid third-party tools (routes/spend-policy.ts) ──────
   // The human owner writes them; the agent only reads. Null caps = not set.
   getSpendPolicy: () => request<SpendPolicyView>('/api/wallet/spend-policy'),
+  // A raise (a cap set or raised, a vendor added, or more own-key images) needs `proof`: the linked
+  // wallet's signature of the challenge message for the exact same values.
   putSpendPolicy: (body: {
     dailyCapUsdCents: number | null;
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
+    studiosKeyImagesPerDay: number;
+    proof?: { nonce: string; signature: string };
   }) =>
     request<SpendPolicyView>('/api/wallet/spend-policy', {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  // ── Studios images (routes/vendor-studios.ts, MCP hub step 2) ──────────
+  // Mode A: the human's own Studios key (Studios bills their account).
+  // Mode B: no key; the avatar wallet pays inside the spend rules.
+  studiosImage: (body: { prompt: string }, idempotencyKey: string) =>
+    request<{
+      ok: true;
+      mode: 'wallet' | 'account';
+      mediaId: string;
+      mediaPath: string;
+      ledgerId: string | null;
+      paidUsdCents: number | null;
+      txSignature: string | null;
+    }>('/api/vendors/studios/images', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    }),
+  studiosImages: () =>
+    request<{ images: Array<{ id: string; mediaPath: string; prompt: string; mode: string; actor: string; createdAt: string }> }>(
+      '/api/vendors/studios/images',
+    ),
+  studiosKeyStatus: () =>
+    request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key'),
+  /** A message for the linked wallet to sign before a key save or remove. */
+  studiosKeyChallenge: (body: { action: 'save'; last4: string; sha256: string } | { action: 'remove' }) =>
+    request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>('/api/vendors/studios/key/challenge', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  saveStudiosKey: (apiKey: string, proof: { nonce: string; signature: string }) =>
+    request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key', {
+      method: 'PUT',
+      body: JSON.stringify({ apiKey, proof }),
+    }),
+  deleteStudiosKey: (proof: { nonce: string; signature: string }) =>
+    request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key', {
+      method: 'DELETE',
+      body: JSON.stringify({ proof }),
+    }),
+  /** Absolute URL of a stored image path such as /api/media/<id>. */
+  mediaUrl: (mediaPath: string) => `${API_URL}${mediaPath}`,
+  spendPolicyChallenge: (body: {
+    dailyCapUsdCents: number | null;
+    perCallCapUsdCents: number | null;
+    allowedVendors: SpendVendorId[];
+    studiosKeyImagesPerDay: number;
+  }) =>
+    request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>(
+      '/api/wallet/spend-policy/challenge',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 
   /**
    * Move the caller's OWN deposited SOL/USDC/CLV out of their custodial

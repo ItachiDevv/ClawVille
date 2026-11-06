@@ -1,11 +1,15 @@
 /**
- * Spend rules for paid third-party tools (MCP hub step 2, phase 1).
+ * Spend rules for paid third-party tools (MCP hub step 2, phases 1 and 1b).
  *
- *   GET /api/wallet/spend-policy  - the avatar's rules. A human session OR the
- *                                   avatar's agent session may read.
- *   PUT /api/wallet/spend-policy  - set the rules. Human Lucia session ONLY;
- *                                   an agent session is refused, so an agent
- *                                   can never raise its own cap.
+ *   GET  /api/wallet/spend-policy            - the avatar's rules. A human
+ *                                              session OR the avatar's agent
+ *                                              session may read.
+ *   POST /api/wallet/spend-policy/challenge  - a wallet-signing challenge for
+ *                                              the exact new values. Human only.
+ *   PUT  /api/wallet/spend-policy            - set the rules. Human only. A
+ *                                              raise (a cap set or raised, or a
+ *                                              vendor added) also needs a
+ *                                              signature from the linked wallet.
  *
  * PARITY (Rule E5): the WRITE is human-only by design (the owner controls what
  * the agent may spend). Agent path: read the rules here, and the paid tools of
@@ -14,17 +18,27 @@
 
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { and, avatars, db, eq } from '@clawville/database';
+import { z } from 'zod';
+import { and, avatars, db, eq, users } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
 import {
-  AGENT_SESSION_HEADER,
   requireAuthOrAgentSession,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
+import {
+  refuseAgentHeader,
+  requireHumanSessionOrigin,
+  type HumanGateCopy,
+} from '../middleware/require-human-session';
 import { noStorePrivate } from '../middleware/no-store';
-import type { SessionCreatedVia } from '../lib/auth';
-import { readSpendPolicy, spendPolicyInputSchema, writeSpendPolicy } from '../services/spend-policy';
+import {
+  applySpendPolicyChange,
+  readSpendPolicy,
+  resolveSpendPolicyValues,
+  spendPolicyInputSchema,
+} from '../services/spend-policy';
+import { issueSpendProofChallenge } from '../services/spend-policy-proof';
 import type { AppContext } from '../types';
 
 export const spendPolicyRoutes = new Hono<AppContext & ActivityAuthContext>();
@@ -37,51 +51,107 @@ spendPolicyRoutes.get('/', requireAuthOrAgentSession, async (c) => {
   return c.json(await readSpendPolicy(identity.avatarId));
 });
 
-/**
- * Login origins that only a human sign-in produces. An agent can trade its
- * live session for its owner's cookie ('agent_exchange'), so that origin, a
- * guest session and a pre-0089 session (NULL) cannot write. Known gap: an
- * agent that opens its human's magic link itself gets a 'magic_link' session.
- */
-const HUMAN_SESSION_ORIGINS = new Set<SessionCreatedVia>(['password', 'magic_link', 'avatar_create']);
+const GATE: HumanGateCopy = {
+  humanOnlyCode: 'spend_policy_human_only',
+  humanOnlyMessage: 'Only the human owner can change spend rules. Ask your human to set them in the ClawVille wallet panel.',
+  needsLoginCode: 'spend_policy_needs_human_login',
+  needsLoginMessage: 'Sign in again in your browser, then change your spend rules.',
+};
 
-const HUMAN_ONLY = {
-  error: 'spend_policy_human_only',
-  message: 'Only the human owner can change spend rules. Ask your human to set them in the ClawVille wallet panel.',
+const NEEDS_WALLET_LINK = {
+  error: 'spend_policy_needs_wallet_link',
+  code: 'spend_policy_needs_wallet_link',
+  message: 'Link your own wallet first. Your linked wallet must approve higher caps.',
 } as const;
 
-spendPolicyRoutes.put(
-  '/',
-  async (c, next) => {
-    // Any request that carries an agent session header is an agent request.
-    if (c.req.header(AGENT_SESSION_HEADER)) return c.json(HUMAN_ONLY, 403);
-    return next();
-  },
+async function activeAvatarId(userId: string): Promise<string> {
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+    columns: { id: true },
+  });
+  if (!avatar) throw new HTTPException(403, { message: 'avatar_required' });
+  return avatar.id;
+}
+
+// 32-byte base58 nonce: 43-44 chars; 64-byte base58 signature: 86-88 chars.
+const proofSchema = z.object({
+  nonce: z.string().min(32).max(64),
+  signature: z.string().min(80).max(100),
+}).strict();
+
+function splitBody(body: unknown): { policy: unknown; proof: unknown } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { policy: body, proof: undefined };
+  const { proof, ...policy } = body as Record<string, unknown>;
+  return { policy, proof };
+}
+
+spendPolicyRoutes.post(
+  '/challenge',
+  refuseAgentHeader(GATE),
   requireAuth,
-  async (c, next) => {
-    const createdVia = c.get('session')?.createdVia ?? null;
-    if (createdVia === 'agent_exchange') return c.json(HUMAN_ONLY, 403);
-    if (createdVia === null || !HUMAN_SESSION_ORIGINS.has(createdVia)) {
-      return c.json({
-        error: 'spend_policy_needs_human_login',
-        message: 'Sign in again in your browser, then change your spend rules.',
-      }, 403);
-    }
-    return next();
-  },
+  requireHumanSessionOrigin(GATE),
   requireNonGuestUser,
   async (c) => {
     const user = c.get('user') as { id: string };
-    const body = await c.req.json().catch(() => null);
-    const parsed = spendPolicyInputSchema.safeParse(body);
+    const parsed = spendPolicyInputSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {
-      return c.json({ error: 'invalid_spend_policy', issues: parsed.error.issues }, 400);
+      return c.json({ error: 'invalid_spend_policy', code: 'invalid_spend_policy', issues: parsed.error.issues }, 400);
     }
-    const avatar = await db.query.avatars.findFirst({
-      where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-      columns: { id: true },
+    const avatarId = await activeAvatarId(user.id);
+    // The message names every value the PUT will save, the own-key image
+    // count included (an absent one keeps the saved value).
+    const values = resolveSpendPolicyValues(parsed.data, await readSpendPolicy(avatarId));
+    const owner = await db.query.users.findFirst({
+      where: eq(users.id, user.id),
+      columns: { linkedWalletPubkey: true },
     });
-    if (!avatar) throw new HTTPException(403, { message: 'avatar_required' });
-    return c.json(await writeSpendPolicy(avatar.id, user.id, parsed.data));
+    if (!owner?.linkedWalletPubkey) return c.json(NEEDS_WALLET_LINK, 403);
+    return c.json({ ...issueSpendProofChallenge(user.id, values), walletPubkey: owner.linkedWalletPubkey });
+  },
+);
+
+spendPolicyRoutes.put(
+  '/',
+  refuseAgentHeader(GATE),
+  requireAuth,
+  requireHumanSessionOrigin(GATE),
+  requireNonGuestUser,
+  async (c) => {
+    const user = c.get('user') as { id: string };
+    const { policy, proof } = splitBody(await c.req.json().catch(() => null));
+    const parsed = spendPolicyInputSchema.safeParse(policy);
+    const parsedProof = proof === undefined ? null : proofSchema.safeParse(proof);
+    if (!parsed.success || (parsedProof && !parsedProof.success)) {
+      return c.json({
+        error: 'invalid_spend_policy',
+        code: 'invalid_spend_policy',
+        issues: parsed.success ? [] : parsed.error.issues,
+      }, 400);
+    }
+    const result = await applySpendPolicyChange(
+      await activeAvatarId(user.id),
+      user.id,
+      parsed.data,
+      parsedProof?.success ? parsedProof.data : null,
+    );
+    switch (result.kind) {
+      case 'saved':
+        return c.json(result.view);
+      case 'needs_wallet_link':
+        return c.json(NEEDS_WALLET_LINK, 403);
+      case 'needs_wallet_proof':
+        return c.json({
+          error: 'spend_policy_needs_wallet_proof',
+          code: 'spend_policy_needs_wallet_proof',
+          message: 'Higher caps need a signature from your linked wallet.',
+        }, 403);
+      case 'invalid_proof':
+        return c.json({
+          error: 'spend_policy_invalid_wallet_proof',
+          code: 'spend_policy_invalid_wallet_proof',
+          detail: result.reason,
+          message: 'The wallet signature did not match. Try again.',
+        }, 401);
+    }
   },
 );

@@ -8,13 +8,18 @@
  */
 
 import { z } from 'zod';
-import { db, eq, userSpendPolicies } from '@clawville/database';
+import { db, eq, sql, userSpendPolicies } from '@clawville/database';
 import {
   SPEND_CAP_MAX_USD_CENTS,
   SPEND_VENDOR_IDS,
+  STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+  STUDIOS_KEY_IMAGES_PER_DAY_MAX,
+  isSpendPolicyRaise,
+  type SpendPolicyValues,
   type SpendPolicyView,
   type SpendVendorId,
 } from '@clawville/shared';
+import { verifySpendProof } from './spend-policy-proof';
 
 const capSchema = z.number().int().min(0).max(SPEND_CAP_MAX_USD_CENTS).nullable();
 
@@ -26,6 +31,8 @@ export const spendPolicyInputSchema = z
       .array(z.enum(SPEND_VENDOR_IDS))
       .max(32)
       .transform((vendors) => [...new Set(vendors)]),
+    // Optional: when absent, the saved value (or the default) stays.
+    studiosKeyImagesPerDay: z.number().int().min(0).max(STUDIOS_KEY_IMAGES_PER_DAY_MAX).optional(),
   })
   .strict()
   .refine(
@@ -37,10 +44,16 @@ export const spendPolicyInputSchema = z
 
 export type SpendPolicyInput = z.infer<typeof spendPolicyInputSchema>;
 
+/** The full values: an absent own-key image count keeps the current one. */
+export function resolveSpendPolicyValues(input: SpendPolicyInput, current: SpendPolicyView): SpendPolicyValues {
+  return { ...input, studiosKeyImagesPerDay: input.studiosKeyImagesPerDay ?? current.studiosKeyImagesPerDay };
+}
+
 type PolicyRow = {
   dailyCapUsdCents: number | null;
   perCallCapUsdCents: number | null;
   allowedVendors: string[];
+  studiosKeyImagesPerDay?: number | null;
   updatedAt: Date | string | null;
 };
 
@@ -55,6 +68,7 @@ export function toSpendPolicyView(row: PolicyRow | null | undefined): SpendPolic
     dailyCapUsdCents,
     perCallCapUsdCents,
     allowedVendors,
+    studiosKeyImagesPerDay: row?.studiosKeyImagesPerDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
     configured: dailyCapUsdCents !== null && perCallCapUsdCents !== null,
     updatedAt: updatedAt === null ? null : new Date(updatedAt).toISOString(),
   };
@@ -66,6 +80,7 @@ export async function readSpendPolicy(avatarId: string): Promise<SpendPolicyView
       dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
       perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
       allowedVendors: userSpendPolicies.allowedVendors,
+      studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
       updatedAt: userSpendPolicies.updatedAt,
     })
     .from(userSpendPolicies)
@@ -74,29 +89,100 @@ export async function readSpendPolicy(avatarId: string): Promise<SpendPolicyView
   return toSpendPolicyView(row);
 }
 
-/** Human-only writer. The caller has already proved the user owns `avatarId`. */
+type Executor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
+
+const policyColumns = {
+  dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
+  perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
+  allowedVendors: userSpendPolicies.allowedVendors,
+  studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
+  updatedAt: userSpendPolicies.updatedAt,
+};
+
+async function upsertSpendPolicy(
+  executor: Executor,
+  avatarId: string,
+  userId: string,
+  input: SpendPolicyInput,
+): Promise<SpendPolicyView> {
+  // An undefined studiosKeyImagesPerDay leaves the column unchanged on update.
+  const values = {
+    dailyCapUsdCents: input.dailyCapUsdCents,
+    perCallCapUsdCents: input.perCallCapUsdCents,
+    allowedVendors: input.allowedVendors,
+    studiosKeyImagesPerDay: input.studiosKeyImagesPerDay,
+    updatedByUserId: userId,
+    updatedAt: new Date(),
+  };
+  const [row] = await executor
+    .insert(userSpendPolicies)
+    .values({ avatarId, ...values })
+    .onConflictDoUpdate({ target: userSpendPolicies.avatarId, set: values })
+    .returning(policyColumns);
+  return toSpendPolicyView(row);
+}
+
+/**
+ * Unchecked writer, for tests and fixtures only. Routes use
+ * `applySpendPolicyChange`, which checks the raise rule.
+ */
 export async function writeSpendPolicy(
   avatarId: string,
   userId: string,
   input: SpendPolicyInput,
 ): Promise<SpendPolicyView> {
-  const now = new Date();
-  const values = {
-    dailyCapUsdCents: input.dailyCapUsdCents,
-    perCallCapUsdCents: input.perCallCapUsdCents,
-    allowedVendors: input.allowedVendors,
-    updatedByUserId: userId,
-    updatedAt: now,
-  };
-  const [row] = await db
-    .insert(userSpendPolicies)
-    .values({ avatarId, ...values })
-    .onConflictDoUpdate({ target: userSpendPolicies.avatarId, set: values })
-    .returning({
-      dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
-      perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
-      allowedVendors: userSpendPolicies.allowedVendors,
-      updatedAt: userSpendPolicies.updatedAt,
-    });
-  return toSpendPolicyView(row);
+  return upsertSpendPolicy(db, avatarId, userId, input);
+}
+
+export interface SpendProofInput {
+  nonce: string;
+  signature: string;
+}
+
+export type SpendPolicyChangeResult =
+  | { kind: 'saved'; view: SpendPolicyView }
+  | { kind: 'needs_wallet_link' }
+  | { kind: 'needs_wallet_proof' }
+  | { kind: 'invalid_proof'; reason: 'invalid_challenge' | 'invalid_signature' };
+
+/**
+ * Human-only writer with the phase 1b raise rule. The caller has already proved
+ * that `userId` owns `avatarId` through a human session.
+ *
+ * One transaction holds a per-avatar advisory lock, reads the saved values,
+ * and decides whether `input` is a raise (see `isSpendPolicyRaise`). A raise
+ * needs a signature from the user's linked wallet over the exact new values.
+ * A lower or equal change saves without one. The lock stops a concurrent lower
+ * change from turning an unchecked write into a raise.
+ */
+export async function applySpendPolicyChange(
+  avatarId: string,
+  userId: string,
+  input: SpendPolicyInput,
+  proof: SpendProofInput | null,
+): Promise<SpendPolicyChangeResult> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend-policy:${avatarId}`}, 0))`);
+    const [current] = await tx
+      .select(policyColumns)
+      .from(userSpendPolicies)
+      .where(eq(userSpendPolicies.avatarId, avatarId))
+      .limit(1);
+    const currentView = toSpendPolicyView(current);
+    const next = resolveSpendPolicyValues(input, currentView);
+    if (isSpendPolicyRaise(currentView, next)) {
+      // FOR SHARE conflicts with the wallet-link FOR UPDATE: a wallet change
+      // cannot commit between this read and the policy write, so a proof from
+      // a wallet that is being replaced cannot save a raise.
+      const ownerRows = await tx.execute<{ linked_wallet_pubkey: string | null }>(
+        sql`SELECT linked_wallet_pubkey FROM users WHERE id = ${userId} FOR SHARE`,
+      );
+      const walletPubkey = Array.from(ownerRows)[0]?.linked_wallet_pubkey ?? null;
+      if (!walletPubkey) return { kind: 'needs_wallet_link' } as const;
+      if (!proof) return { kind: 'needs_wallet_proof' } as const;
+      const verdict = verifySpendProof({ userId, values: next, walletPubkey, ...proof });
+      if (verdict !== 'ok') return { kind: 'invalid_proof', reason: verdict } as const;
+    }
+    return { kind: 'saved', view: await upsertSpendPolicy(tx, avatarId, userId, input) } as const;
+  });
 }

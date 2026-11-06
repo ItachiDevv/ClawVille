@@ -387,6 +387,35 @@ describe('game tool execution', () => {
     });
   });
 
+  test('clawville_studios_image forwards the prompt and the Idempotency-Key header to the Studios route', async () => {
+    const { rt, calls } = stubRuntime(() => ({
+      status: 200,
+      ok: true,
+      data: { ok: true, mode: 'wallet', mediaId: 'm1', mediaPath: '/api/media/m1' },
+    }));
+    const body = parse(answerText(await runMcpTool('clawville_studios_image', {
+      prompt: 'a red crab on a dock',
+      idempotencyKey: 'img-0001',
+      model: 'other',
+    }, rt)));
+    expect(calls).toEqual([{
+      method: 'POST',
+      path: '/api/vendors/studios/images',
+      body: { prompt: 'a red crab on a dock' },
+      headers: { 'Idempotency-Key': 'img-0001' },
+    }]);
+    expect(body).toMatchObject({ ok: true, status: 200, data: { mediaPath: '/api/media/m1' } });
+    expect(body.next).toContain('SAME idempotencyKey');
+    expect(body.next).toContain('payment_ambiguous');
+  });
+
+  test('clawville_studios_image without an idempotencyKey is refused before any call', async () => {
+    const { rt, calls } = stubRuntime();
+    const body = parse(answerText(await runMcpTool('clawville_studios_image', { prompt: 'a crab' }, rt)));
+    expect(body.error).toBe('invalid_input');
+    expect(calls).toHaveLength(0);
+  });
+
   test('a refused game action is a normal answer with the REST status', async () => {
     const { rt } = stubRuntime(() => ({ status: 403, ok: false, data: { error: 'agent_session_not_ledger_authorized' } }));
     const body = parse(answerText(await runMcpTool('clawville_buy_book', { itemId: 'b' }, rt)));

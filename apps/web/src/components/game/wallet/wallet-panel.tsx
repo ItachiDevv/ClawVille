@@ -50,6 +50,7 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { useWalletBalances } from '@/hooks/use-wallet-balances';
 import { SpendingCard } from './spending-card';
+import { StudiosCard } from './studios-card';
 import { useGameStore } from '@/stores/game';
 import { claimQuestsAfterStep } from '@/stores/quest';
 import {
@@ -90,6 +91,7 @@ export function WalletPanel({ variant = 'section' }: { variant?: 'section' | 'mo
       <CustodialWalletCard address={custodial} />
       {custodial && <WithdrawCard custodialAddress={custodial} />}
       <SpendingCard />
+      <StudiosCard />
       <LinkedWalletCard />
     </div>
   );

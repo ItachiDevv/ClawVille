@@ -9,8 +9,15 @@
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { SPEND_CAP_MAX_USD_CENTS, type SpendVendorId } from '@clawville/shared';
+import {
+  SPEND_CAP_MAX_USD_CENTS,
+  STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+  STUDIOS_KEY_IMAGES_PER_DAY_MAX,
+  isSpendPolicyRaise,
+  type SpendVendorId,
+} from '@clawville/shared';
 import { api, ApiError } from '@/lib/api';
+import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { centsToUsdText, parseUsdToCents } from '@/lib/usd-cents';
 
@@ -19,6 +26,37 @@ export const SPEND_POLICY_QUERY_KEY = ['spend-policy'] as const;
 const VENDOR_LABELS: Record<SpendVendorId, string> = {
   studios: 'Studios by Claw Hunter (images and video)',
 };
+
+/** The own-key images per day from the form text, or an error for the form. */
+export function parseImagesPerDay(text: string): { ok: true; value: number } | { ok: false; reason: string } {
+  const trimmed = text.trim();
+  if (!/^\d{1,4}$/.test(trimmed)) return { ok: false, reason: 'enter a whole number.' };
+  const value = Number(trimmed);
+  if (value > STUDIOS_KEY_IMAGES_PER_DAY_MAX) return { ok: false, reason: `at most ${STUDIOS_KEY_IMAGES_PER_DAY_MAX}.` };
+  return { ok: true, value };
+}
+
+/** Plain text for a failed save. Branches on the API `code`, never on raw text. */
+export function saveErrorText(error: unknown): string {
+  // The wallet's own messages are plain text written for people.
+  if (error instanceof WalletSignError) return error.message;
+  if (error instanceof ApiError) {
+    if (error.code === 'spend_policy_needs_wallet_link') {
+      return 'Link your own wallet first (below). Your linked wallet must approve higher caps.';
+    }
+    if (error.code === 'spend_policy_needs_wallet_proof' || error.code === 'spend_policy_invalid_wallet_proof') {
+      return 'Your linked wallet must approve higher caps. Approve the signature in your wallet and try again.';
+    }
+    if (error.code === 'spend_policy_needs_human_login') {
+      return 'For your safety, sign out and sign in again in this browser. Then save your spend rules.';
+    }
+    if (error.code === 'spend_policy_human_only') {
+      return 'Only you can change spend rules, from your own browser sign-in.';
+    }
+    if (error.status === 400) return 'Check the amounts and try again.';
+  }
+  return 'Saving failed. Try again.';
+}
 
 export function useHumanSpendPolicy() {
   const { data: auth } = useAuthMe();
@@ -40,6 +78,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
   const [daily, setDaily] = useState('');
   const [perCall, setPerCall] = useState('');
   const [vendors, setVendors] = useState<SpendVendorId[]>([]);
+  const [imagesPerDay, setImagesPerDay] = useState(String(STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT));
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -47,13 +86,36 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
     setDaily(centsToUsdText(policy.dailyCapUsdCents));
     setPerCall(centsToUsdText(policy.perCallCapUsdCents));
     setVendors(policy.allowedVendors);
+    setImagesPerDay(String(policy.studiosKeyImagesPerDay));
   }, [policy]);
 
   const save = useMutation({
-    mutationFn: api.putSpendPolicy,
+    mutationFn: async (next: {
+      dailyCapUsdCents: number | null;
+      perCallCapUsdCents: number | null;
+      allowedVendors: SpendVendorId[];
+      studiosKeyImagesPerDay: number;
+    }) => {
+      const current = policy ?? {
+        dailyCapUsdCents: null,
+        perCallCapUsdCents: null,
+        allowedVendors: [],
+        studiosKeyImagesPerDay: STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+      };
+      if (!isSpendPolicyRaise(current, next)) return api.putSpendPolicy(next);
+      // A raise needs the human's own linked wallet to sign the exact values.
+      const challenge = await api.spendPolicyChallenge(next);
+      const signed = await signMessageWithSolanaWallet(challenge.messageToSign, challenge.walletPubkey);
+      return api.putSpendPolicy({ ...next, proof: { nonce: challenge.nonce, signature: signed.signatureBase58 } });
+    },
     onSuccess: (next) => {
       queryClient.setQueryData(SPEND_POLICY_QUERY_KEY, next);
       onSaved?.();
+    },
+    // The server decides what a raise is. After a refusal, reload the saved
+    // rules so the next try compares against fresh values.
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: SPEND_POLICY_QUERY_KEY });
     },
   });
 
@@ -63,6 +125,8 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
     const perCallCents = parseUsdToCents(perCall, SPEND_CAP_MAX_USD_CENTS);
     if (!dailyCents.ok) return setFormError(`Daily cap: ${dailyCents.reason}`);
     if (!perCallCents.ok) return setFormError(`Per-call cap: ${perCallCents.reason}`);
+    const images = parseImagesPerDay(imagesPerDay);
+    if (!images.ok) return setFormError(`Images per day with your own Studios key: ${images.reason}`);
     if (dailyCents.cents !== null && perCallCents.cents !== null && perCallCents.cents > dailyCents.cents) {
       return setFormError('The per-call cap cannot be above the daily cap.');
     }
@@ -70,6 +134,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
       dailyCapUsdCents: dailyCents.cents,
       perCallCapUsdCents: perCallCents.cents,
       allowedVendors: vendors,
+      studiosKeyImagesPerDay: images.value,
     });
   };
 
@@ -83,6 +148,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
         <p className="text-xs text-white/70 leading-relaxed">
           Some tools your agent can use cost money. Your agent pays them from your in-game wallet,
           only inside the caps you set here. Only you can change these rules; your agent can only read them.
+          To set or raise a cap or a limit, your own linked wallet signs to approve it. Lowering needs no signature.
         </p>
         {!signedIn ? (
           <p className="text-xs text-white/60">Sign in to set spend rules for your agent.</p>
@@ -135,9 +201,22 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
                 </label>
               ))}
             </fieldset>
+            <label className="block text-xs text-white/80 space-y-1">
+              <span>Images per day with your own Studios key</span>
+              <input
+                inputMode="numeric"
+                value={imagesPerDay}
+                onChange={(e) => setImagesPerDay(e.target.value)}
+                className="w-full min-h-[44px] rounded-md bg-black/40 border border-white/15 px-3 text-sm text-white"
+              />
+              <span className="block text-white/55 leading-relaxed">
+                Applies only when you save your own Studios key (Studios images card). Studios bills your
+                Studios account, so the caps above do not cover it. This counts every image on your key.
+              </span>
+            </label>
             {(formError || save.isError) && (
               <p className="text-xs text-red-300">
-                {formError ?? (save.error instanceof ApiError ? save.error.message : 'Saving failed. Try again.')}
+                {formError ?? saveErrorText(save.error)}
               </p>
             )}
             <button

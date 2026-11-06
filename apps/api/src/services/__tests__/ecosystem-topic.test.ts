@@ -39,6 +39,56 @@ describe('protocol `ecosystem` page', () => {
     expect(page).toContain('`403 spend_policy_human_only`');
   });
 
+  test('v107: states that a raise needs the human linked wallet and that lowering does not', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain("your human's own linked wallet (Phantom, Solflare or Backpack) signs the new values");
+    expect(page).toContain('Lowering a cap needs no signature.');
+    expect(page).toContain('changing it later needs a signature from the old wallet');
+  });
+
+  test('v108: states the paid Studios image call, its refusals and the no-retry rule', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain('### Studios images');
+    expect(page).toContain(`\`POST ${API_BASE}/api/vendors/studios/images\``);
+    expect(page).toContain('`Idempotency-Key`');
+    for (const code of ['spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'payment_ambiguous']) {
+      expect(page).toContain(`\`${code}\``);
+    }
+    expect(page).toContain('Do NOT retry it.');
+  });
+
+  test('v109: states both pay modes, the MCP tool, the hosted verb and the media path', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain("**Your human's own Studios account.**");
+    expect(page).toContain('Only the human can save or remove the key, and their linked wallet signs each change; an agent cannot.');
+    expect(page).toContain('**Your avatar wallet.**');
+    expect(page).toContain('`clawville_studios_image`');
+    expect(page).toContain('[ACTION: generate_image(prompt="...")]');
+    expect(page).toContain('`mediaPath`');
+    for (const code of ['studios_key_invalid', 'studios_account_refused', 'daily_limit', 'duplicate_request', 'image_missing']) expect(page).toContain(`\`${code}\``);
+    expect(page).not.toContain('imageBase64');
+    expect(page).toContain('{ "prompt": "...", "idempotencyKey": "..." }');
+    expect(page).toContain('their linked wallet signs each change');
+  });
+
+  test("v110: the limits are the human's own; the manual states the own-key default from code and no fixed ClawVille count", async () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const { MEDIA_KEEP_PER_AVATAR } = await import('../studios-images');
+    const { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } = await import('@clawville/shared');
+    expect(page).toContain(`(\`studiosKeyImagesPerDay\` in the spend rules, ${STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT} until they change it)`);
+    expect(page).toContain('ClawVille sets no image count of its own.');
+    expect(page).toContain('`studiosKeyImagesPerDay` and `configured`');
+    expect(page).toContain('or to raise the images per day');
+    expect(page).not.toMatch(/at most \d+ (images )?per UTC day/);
+    expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
+  });
+
+  test('v111: the manual names the /game spend-cap prompt with its exact title', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain('a signed-in human also sees a "Set your agent\'s spend caps" prompt on /game');
+    expect(page).toContain('"Set later" hides it until their next browser session');
+  });
+
   test('renders every served row with its URL, auth and install lines', () => {
     const page = buildEcosystemTopic(API_BASE);
     for (const entry of servedEcosystemCatalog(API_BASE)) {

@@ -406,6 +406,11 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
     calls: (_c, i) => [{ method: 'POST', path: '/api/agent-pay', body: pick(i, ['recipient', 'usdCents']), headers: idem(i) }],
     next: 'Report data to your human; retry only with the SAME idempotencyKey.',
   },
+  clawville_studios_image: {
+    sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/images')],
+    calls: (_c, i) => [{ method: 'POST', path: '/api/vendors/studios/images', body: pick(i, ['prompt']), headers: idem(i) }],
+    next: 'Report data to your human; retry only with the SAME idempotencyKey. Never retry payment_ambiguous.',
+  },
   clawville_redeem_earned: {
     sources: [src('tokenomics-redeem.ts', 'post', '/api/tokenomics/redeem', '/')],
     calls: (_c, i) => [{ method: 'POST', path: '/api/tokenomics/redeem', body: pick(i, ['amountVclaw']), headers: idem(i) }],

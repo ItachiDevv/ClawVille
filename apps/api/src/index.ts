@@ -75,6 +75,8 @@ import { skillsRoutes } from './routes/skills';
 import { ecosystemRoutes } from './routes/ecosystem';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
+import { vendorStudiosRoutes } from './routes/vendor-studios';
+import { mediaRoutes } from './routes/media';
 // Tokenomics E1/E2 — internal, admin-only EARNED import/verifier/claw-back.
 // Service + route are independently gated by TOKENOMICS_EARN_ENABLED.
 import { tokenomicsEarnRoutes } from './routes/tokenomics-earn';
@@ -378,6 +380,10 @@ app.route('/api/skills', skillsRoutes);
 app.route('/api/ecosystem', ecosystemRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
+// Paid third-party tools, avatar wallet under the human's spend rules (MCP hub step 2 phase 2).
+app.route('/api/vendors/studios', vendorStudiosRoutes);
+// Images made by paid tools, served by unguessable id (MCP hub step 2 phase 2b).
+app.route('/api/media', mediaRoutes);
 app.route('/api/admin/tokenomics/earn', tokenomicsEarnRoutes);
 app.route('/api/tokenomics/redeem', tokenomicsRedeemRoutes);
 app.route('/api/dashboard', dashboardRoutes);
@@ -915,6 +921,15 @@ process.on('uncaughtException', (err) => {
     startX402AutoReconcile();
   } catch (err) {
     console.error('[API] x402 auto-reconcile worker failed to start:', err);
+  }
+
+  // MCP hub step 2: resolve vendor_spend_ledger rows left 'pending' or
+  // 'ambiguous' from chain evidence only (every 15 min; never pays or retries).
+  try {
+    const { startVendorLedgerReconcile } = await import('./services/vendor-ledger-reconcile');
+    startVendorLedgerReconcile();
+  } catch (err) {
+    console.error('[API] vendor ledger reconcile worker failed to start:', err);
   }
 
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart

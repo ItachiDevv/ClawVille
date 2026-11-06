@@ -104,6 +104,8 @@ import {
 // Type-only: the runtime modules load lazily inside the test seams.
 import type { CosmeticActor, CosmeticActionFailure } from './cosmetic-actions';
 import type { CustodialBalancesResult } from './wallet-withdraw-executor';
+// Type-only: the Studios service loads lazily inside its test seam.
+import type { StudiosImageResult } from './studios-images';
 // Hydra (wandering coin analyst): DB-only coin pool + template lines, no LLM.
 import { HYDRA_NPC_ID, hydraAmbientLine, pickHydraCoin } from './hydra-coin-chatter';
 import type { HydraAgentReply } from './hydra-agent-reply';
@@ -336,6 +338,57 @@ const AUTONOMOUS_VIEW_WALLET_INTERVAL_MS = 10 * 60_000;
 /** Exact `skuId=<uuid>` grammar for equip_cosmetic and buy_cosmetic. */
 const COSMETIC_SKU_PARAM_RE = /^\s*skuId\s*=\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s*$/;
 const COSMETIC_SKU_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+/**
+ * generate_image (MCP hub step 2 phase 2b): one Studios image for the hosted
+ * agent's own avatar. It can spend the avatar wallet's USDC inside the human's
+ * spend rules (`outbound-x402.ts`: per-call cap, per-avatar daily cap, refuse
+ * all when unset), or the human's own Studios key inside the human's
+ * images-per-day rule (`studios-images.ts`). Those per-avatar daily limits are
+ * the human's own (founder 2026-11-05: ClawVille sets no fixed image count;
+ * the 2026-10-22 rule "every autonomous money verb has a per-avatar daily
+ * cap" is met by them). The executor adds only one per reply and one in
+ * flight per avatar.
+ */
+export const GENERATE_IMAGE_PROMPT_MAX = 1_000;
+/** Exact `prompt="<text>"` grammar: one quoted value, no `"` inside. */
+const GENERATE_IMAGE_PARAM_RE = /^\s*prompt\s*=\s*"([^"]*)"\s*$/;
+// eslint-disable-next-line no-control-regex
+const GENERATE_IMAGE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
+
+/** The prompt from a strict `prompt="..."` param string, or null. */
+export function parseGenerateImageParams(paramStr: string): string | null {
+  const match = GENERATE_IMAGE_PARAM_RE.exec(paramStr);
+  if (!match) return null;
+  const prompt = match[1]!.trim();
+  if (prompt.length < 1 || prompt.length > GENERATE_IMAGE_PROMPT_MAX) return null;
+  if (GENERATE_IMAGE_CONTROL_RE.test(prompt)) return null;
+  return prompt;
+}
+
+/**
+ * One short line for the agent's next decide prompt about a generate_image
+ * result. Only our own fields: the media path, the paid cents, or our refusal
+ * code and message. Never vendor text, never the prompt.
+ */
+export function formatGeneratedImageResult(result: StudiosImageResult): string {
+  if (!result.ok) {
+    const message = result.message.replace(/\s+/g, ' ').slice(0, 130);
+    return `Studio: generate_image refused (${result.code}): ${message}`;
+  }
+  const path = /^\/api\/media\/[A-Za-z0-9-]{1,64}$/.test(result.mediaPath) ? result.mediaPath : 'your media list';
+  const cents = typeof result.paidUsdCents === 'number' && Number.isFinite(result.paidUsdCents)
+    ? Math.max(0, Math.round(result.paidUsdCents))
+    : null;
+  const paid = cents !== null
+    ? `your wallet paid ${cents} US cents`
+    : "your human's Studios account paid; your wallet paid nothing";
+  return `Studio: image ready at ${path}; ${paid}.`;
+}
+
+/** One short line for the agent's next decide prompt while an image is still being made. */
+export function formatGenerateImageInFlightRefusal(): string {
+  return 'Studio: generate_image refused (in_flight): your last image is still being made; wait for its result.';
+}
 
 /** One short line for the agent's next decide prompt. Numbers only, no pubkey. */
 export function formatWalletViewResult(result: CustodialBalancesResult): string {
@@ -1214,6 +1267,27 @@ class NpcSimulation {
     const { setCosmeticEquippedForActor } = await import('./cosmetic-actions');
     return setCosmeticEquippedForActor(actor, skuId, true, { fpHash: null, ipPrefixHash: null });
   };
+  /**
+   * Test seam; re-resolves the live connected-agent session for
+   * generate_image. The caller refuses a house actor first.
+   */
+  autonomousImageAgentResolve: typeof this.autonomousTradeAgentResolve = async (sessionId, expectedAgentId) => {
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    const resolved = await resolveAgentSession(sessionId);
+    return resolved?.agentId === expectedAgentId ? resolved : null;
+  };
+  /** Test seam; the SAME Studios image service as the web form, REST route and MCP tool. */
+  autonomousImageGenerate: (input: {
+    avatarId: string;
+    actor: 'agent';
+    prompt: string;
+    idempotencyKey: string;
+    /** Always 'hosted': the service keeps the persistent daily limit. */
+    surface: 'hosted';
+  }) => Promise<StudiosImageResult> = async (input) => {
+    const { generateStudiosImage } = await import('./studios-images');
+    return generateStudiosImage(input);
+  };
   /** Test seam; the SAME read as GET /api/wallet/balances. Read-only. */
   autonomousWalletBalances: (avatarId: string) => Promise<CustodialBalancesResult> = async (avatarId) => {
     const { getCustodialWalletBalances } = await import('./wallet-withdraw-executor');
@@ -1271,6 +1345,8 @@ class NpcSimulation {
    * Bounded by the number of concurrent settles.
    */
   private autonomousCosmeticBuyInFlight = new Set<string>();
+  /** Avatars with a generate_image settle still running; never evicted. */
+  private autonomousImageInFlight = new Set<string>();
   private autonomousSalvageLastAdmittedAt = new Map<string, number>();
   private autonomousTradeLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
@@ -2805,6 +2881,9 @@ class NpcSimulation {
       void this.autonomousActionResult(attribution.agentId, attribution.avatarId, line).catch(() => undefined);
     };
 
+    // generate_image can spend wallet USDC: at most one per reply.
+    let imageTagAdmitted = false;
+
     let match: RegExpExecArray | null;
     HATCHER_ACTION_REGEX.lastIndex = 0; // regex has /g state — reset per call
     while ((match = HATCHER_ACTION_REGEX.exec(replyText)) !== null) {
@@ -2861,7 +2940,24 @@ class NpcSimulation {
           : 'Wardrobe: that equip_cosmetic tag was not valid, so nothing changed. Copy skuId=<id> exactly from the cosmetics you own.');
         continue;
       }
-      if (paramStr.length > 0) {
+      // generate_image takes exactly one quoted prompt. Its free text may hold
+      // commas or `message=`, so it never goes through the generic split.
+      let imagePrompt: string | null = null;
+      if (name === 'generate_image') {
+        imagePrompt = parseGenerateImageParams(paramStr);
+        if (imagePrompt === null) {
+          console.warn('[Hatcher] generate_image dropped — expected exactly prompt="<1..1000 characters>"');
+          noteDrop('Studio: that generate_image tag was not valid, so nothing was made or paid. Write prompt="<1 to 1000 characters>" with no double quote or closing parenthesis inside.');
+          continue;
+        }
+        if (imageTagAdmitted) {
+          console.warn('[Hatcher] generate_image dropped — one per reply');
+          continue;
+        }
+        imageTagAdmitted = true;
+        params.prompt = imagePrompt;
+      }
+      if (paramStr.length > 0 && imagePrompt === null) {
         for (const part of paramStr.split(',')) {
           const eq = part.indexOf('=');
           if (eq > 0) {
@@ -3415,6 +3511,87 @@ class NpcSimulation {
         if (!keepBuyReservation) this.autonomousCosmeticBuyBlockedUntil.delete(buyReservationKey);
         this.autonomousCosmeticBuyInFlight.delete(buyReservationKey);
       }
+    }
+  }
+
+  /**
+   * generate_image as the bound avatar: one Studios image through the SAME
+   * service as the human web form, REST route and MCP tool
+   * (`generateStudiosImage`), with `actor: 'agent'` and the agent's OWN
+   * avatar id. The service picks the human's chosen mode: their saved Studios
+   * key (no ClawVille money), or the avatar wallet inside the human's spend
+   * rules (refused when unset).
+   *   0. synchronously, before any await: refuse while an image for this avatar
+   *      is in flight; else mark it in flight (released when this settle ends);
+   *   1. refuse a house actor BEFORE any session resolve (fail closed);
+   *   2. re-resolve the live connected session for this exact agentId;
+   *   3. require a ledger-authorized session;
+   *   4. require a bound avatar and owner;
+   *   5. require the live binding to equal the captured attribution.
+   * An unbound or non-ledger agent is DROPPED, never demoted to a guest.
+   * The result goes to the hosted driver as one short line for the next decide.
+   */
+  private async settleAutonomousImageGeneration(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    prompt: string,
+  ): Promise<void> {
+    const avatarId = attribution.avatarId;
+    if (this.autonomousImageInFlight.has(avatarId)) {
+      console.warn('[Hatcher] generate_image dropped — an image is in flight');
+      await this.autonomousActionResult(attribution.agentId, avatarId, formatGenerateImageInFlightRefusal())
+        .catch(() => undefined);
+      return;
+    }
+    this.autonomousImageInFlight.add(avatarId);
+    try {
+      try {
+        // Asked directly, not through refusedForHouseActor, so it holds whether
+        // or not the verb is in HOUSE_REFUSED_AUTONOMY_VERBS: a house bot has
+        // no session, and the resolve below would unregister its body.
+        if (await this.autonomousHouseActorCheck(attribution.agentId)) {
+          console.warn('[Hatcher] generate_image dropped - house actor (no connected session)');
+          return;
+        }
+      } catch {
+        console.warn('[Hatcher] generate_image dropped — house actor check unavailable');
+        return;
+      }
+      const resolved = await this.autonomousImageAgentResolve(attribution.sessionId, attribution.agentId);
+      if (!resolved) {
+        console.warn('[Hatcher] generate_image dropped — no live connected session');
+        return;
+      }
+      if (!resolved.ledgerCapable) {
+        console.warn('[Hatcher] generate_image dropped — agent session is not ledger-authorized');
+        return;
+      }
+      if (!resolved.avatarId || !resolved.userId) {
+        console.warn('[Hatcher] generate_image dropped — agent has no bound avatar');
+        return;
+      }
+      if (resolved.avatarId !== avatarId || resolved.agentId !== attribution.agentId) {
+        console.warn('[Hatcher] generate_image dropped — live agent/avatar binding changed');
+        return;
+      }
+      const idempotencyKey = `hosted-img-${avatarId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}-${randomUUID()}`;
+      let resultLine: string;
+      try {
+        const result = await this.autonomousImageGenerate({ avatarId, actor: 'agent', prompt, idempotencyKey, surface: 'hosted' });
+        resultLine = formatGeneratedImageResult(result);
+        if (!result.ok) console.warn(`[Hatcher] generate_image not made — ${result.code}`);
+        const body = this.npcs.get(npcId);
+        if (result.ok && body) body.intentDescription = 'made a Studios image';
+      } catch (err) {
+        console.warn(`[Hatcher] generate_image failed — ${err instanceof Error ? err.message : String(err)}`);
+        resultLine = 'Studio: generate_image failed (internal_error): the result is unknown and it may have been paid. Do not retry now.';
+      }
+      await this.autonomousActionResult(attribution.agentId, avatarId, resultLine);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[Hatcher] generate_image dropped — ${reason}`);
+    } finally {
+      this.autonomousImageInFlight.delete(avatarId);
     }
   }
 
@@ -4229,6 +4406,25 @@ class NpcSimulation {
           verb: name,
           skuId: params.skuId.toLowerCase(),
         });
+        return;
+      }
+      case 'generate_image': {
+        const keys = Object.keys(params);
+        const prompt = params.prompt ?? '';
+        if (
+          keys.length !== 1 || keys[0] !== 'prompt'
+          || prompt.trim() !== prompt
+          || prompt.length < 1 || prompt.length > GENERATE_IMAGE_PROMPT_MAX
+          || GENERATE_IMAGE_CONTROL_RE.test(prompt)
+        ) {
+          console.warn('[Hatcher] generate_image dropped — expected exactly one prompt');
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] generate_image dropped — no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousImageGeneration(npcId, attribution, prompt);
         return;
       }
       case 'salvage_node': {

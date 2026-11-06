@@ -29,6 +29,7 @@ export const HATCHER_ACTION_VERBS = [
   'view_wallet',
   'equip_cosmetic',
   'buy_cosmetic',
+  'generate_image',
 ] as const;
 
 export type HatcherActionVerb = (typeof HATCHER_ACTION_VERBS)[number];
@@ -61,6 +62,12 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     syntax: 'buy_cosmetic(skuId=<listed sku id from the Cosmetics block>)',
     whenToUse:
       'buy one listed cosmetic; your cosmetic credit pays first, then your own vCLAW pays the rest; buying an owned one charges nothing; at most one buy per 24 hours; equip it after with equip_cosmetic',
+  },
+  {
+    verb: 'generate_image',
+    syntax: 'generate_image(prompt="<1..1000 characters; no double quote and no closing parenthesis>")',
+    whenToUse:
+      'make one Studios image for yourself; it is stored and you get its media path; it can spend your avatar wallet USDC only inside the spend rules your human set (no rules set = refused), or your human\'s own Studios key inside the images per day they set; one per reply',
   },
   {
     verb: 'chat_nori',

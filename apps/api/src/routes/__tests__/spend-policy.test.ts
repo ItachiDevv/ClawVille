@@ -27,7 +27,9 @@ const sessions = new Map<string, FakeSession>();
 const guests = new Set<string>();
 const activeAvatarByUser = new Map<string, string>();
 const agentAvatarBySession = new Map<string, { userId: string; avatarId: string }>();
-const writes: Array<{ avatarId: string; userId: string; input: unknown }> = [];
+const writes: Array<{ avatarId: string; userId: string; input: unknown; proof: unknown }> = [];
+const linkedWallets = new Map<string, string>();
+let nextResult: { kind: string; reason?: string } | null = null;
 let lastFindUserId: string | null = null;
 
 mock.module('../../lib/auth', () => ({
@@ -65,7 +67,10 @@ mock.module('@clawville/database', () => ({
   db: {
     query: {
       users: {
-        findFirst: async () => ({ isGuest: lastFindUserId !== null && guests.has(lastFindUserId) }),
+        findFirst: async () => ({
+          isGuest: lastFindUserId !== null && guests.has(lastFindUserId),
+          linkedWalletPubkey: lastFindUserId ? linkedWallets.get(lastFindUserId) ?? null : null,
+        }),
       },
       avatars: {
         findFirst: async () => {
@@ -83,9 +88,15 @@ mock.module('../../services/spend-policy', () => ({
       ? { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios'], updatedAt: '2026-11-04T00:00:00.000Z' }
       : null,
   ),
-  writeSpendPolicy: async (avatarId: string, userId: string, input: realSpendPolicy.SpendPolicyInput) => {
-    writes.push({ avatarId, userId, input });
-    return realSpendPolicy.toSpendPolicyView({ ...input, updatedAt: '2026-11-04T01:00:00.000Z' });
+  applySpendPolicyChange: async (
+    avatarId: string,
+    userId: string,
+    input: realSpendPolicy.SpendPolicyInput,
+    proof: realSpendPolicy.SpendProofInput | null,
+  ) => {
+    if (nextResult) return nextResult;
+    writes.push({ avatarId, userId, input, proof });
+    return { kind: 'saved', view: realSpendPolicy.toSpendPolicyView({ ...input, updatedAt: '2026-11-04T01:00:00.000Z' }) };
   },
 }));
 
@@ -99,12 +110,12 @@ app.onError((err, c) => {
 
 const VALID = { dailyCapUsdCents: 200, perCallCapUsdCents: 25, allowedVendors: ['studios', 'studios'] };
 
-function call(method: 'GET' | 'PUT', opts: { cookie?: string; agent?: string; body?: unknown }) {
+function call(method: 'GET' | 'PUT' | 'POST', opts: { cookie?: string; agent?: string; body?: unknown; path?: string }) {
   lastFindUserId = opts.cookie ? sessions.get(opts.cookie)?.userId ?? null : null;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.cookie) headers.Cookie = `auth_session=${opts.cookie}`;
   if (opts.agent) headers[AGENT_HEADER] = opts.agent;
-  return app.request('/api/wallet/spend-policy', {
+  return app.request(`/api/wallet/spend-policy${opts.path ?? ''}`, {
     method,
     headers,
     ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
@@ -113,6 +124,8 @@ function call(method: 'GET' | 'PUT', opts: { cookie?: string; agent?: string; bo
 
 beforeEach(() => {
   writes.length = 0;
+  linkedWallets.clear();
+  nextResult = null;
   sessions.clear();
   guests.clear();
   activeAvatarByUser.clear();
@@ -140,6 +153,7 @@ describe('GET /api/wallet/spend-policy', () => {
       dailyCapUsdCents: null,
       perCallCapUsdCents: null,
       allowedVendors: [],
+      studiosKeyImagesPerDay: 10,
       configured: false,
       updatedAt: null,
     });
@@ -164,6 +178,7 @@ describe('PUT /api/wallet/spend-policy', () => {
       avatarId: 'avatar-new',
       userId: 'user-new',
       input: { dailyCapUsdCents: 200, perCallCapUsdCents: 25, allowedVendors: ['studios'] },
+      proof: null,
     });
   });
 
@@ -171,7 +186,7 @@ describe('PUT /api/wallet/spend-policy', () => {
     for (const opts of [{ agent: 'agent-session' }, { agent: 'agent-session', cookie: 'pw-new' }]) {
       const res = await call('PUT', { ...opts, body: VALID });
       expect(res.status).toBe(403);
-      expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only' });
+      expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only', code: 'spend_policy_human_only' });
     }
     expect(writes).toHaveLength(0);
   });
@@ -179,7 +194,7 @@ describe('PUT /api/wallet/spend-policy', () => {
   it('refuses a cookie that an agent got through the session exchange', async () => {
     const res = await call('PUT', { cookie: 'exchanged-set', body: VALID });
     expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only' });
+    expect(await res.json()).toMatchObject({ error: 'spend_policy_human_only', code: 'spend_policy_human_only' });
     expect(writes).toHaveLength(0);
   });
 
@@ -187,7 +202,7 @@ describe('PUT /api/wallet/spend-policy', () => {
     for (const cookie of ['legacy-new', 'guest-session']) {
       const res = await call('PUT', { cookie, body: VALID });
       expect(res.status).toBe(403);
-      expect(await res.json()).toMatchObject({ error: 'spend_policy_needs_human_login' });
+      expect(await res.json()).toMatchObject({ error: 'spend_policy_needs_human_login', code: 'spend_policy_needs_human_login' });
     }
     expect(writes).toHaveLength(0);
   });
@@ -225,5 +240,77 @@ describe('PUT /api/wallet/spend-policy', () => {
     const res = await call('PUT', { cookie: 'pw-noavatar', body: VALID });
     expect(res.status).toBe(403);
     expect(writes).toHaveLength(0);
+  });
+
+  it('passes a wallet proof through to the checked writer', async () => {
+    const proof = { nonce: 'n'.repeat(44), signature: 's'.repeat(88) };
+    const res = await call('PUT', { cookie: 'pw-new', body: { ...VALID, proof } });
+    expect(res.status).toBe(200);
+    expect(writes[0]?.proof).toEqual(proof);
+  });
+
+  it('rejects a malformed proof without a write', async () => {
+    for (const proof of [{ nonce: 'short', signature: 's'.repeat(88) }, { nonce: 'n'.repeat(44) }, 'x']) {
+      expect((await call('PUT', { cookie: 'pw-new', body: { ...VALID, proof } })).status).toBe(400);
+    }
+    expect(writes).toHaveLength(0);
+  });
+
+  it('maps each refusal of the raise rule to a code', async () => {
+    const cases: Array<[{ kind: string; reason?: string }, number, string]> = [
+      [{ kind: 'needs_wallet_link' }, 403, 'spend_policy_needs_wallet_link'],
+      [{ kind: 'needs_wallet_proof' }, 403, 'spend_policy_needs_wallet_proof'],
+      [{ kind: 'invalid_proof', reason: 'invalid_signature' }, 401, 'spend_policy_invalid_wallet_proof'],
+    ];
+    for (const [result, status, code] of cases) {
+      nextResult = result;
+      const res = await call('PUT', { cookie: 'pw-new', body: VALID });
+      expect(res.status).toBe(status);
+      expect(await res.json()).toMatchObject({ code });
+    }
+  });
+});
+
+describe('POST /api/wallet/spend-policy/challenge', () => {
+  it('refuses an agent and an agent-exchanged cookie', async () => {
+    for (const opts of [{ agent: 'agent-session' }, { cookie: 'exchanged-set' }]) {
+      const res = await call('POST', { ...opts, path: '/challenge', body: VALID });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'spend_policy_human_only' });
+    }
+  });
+
+  it('asks a human with no linked wallet to link one first', async () => {
+    const res = await call('POST', { cookie: 'pw-new', path: '/challenge', body: VALID });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'spend_policy_needs_wallet_link' });
+  });
+
+  it('returns a message that names the account and the exact values', async () => {
+    linkedWallets.set('user-new', 'WalletPubkey1111111111111111111111111111111');
+    const res = await call('POST', { cookie: 'pw-new', path: '/challenge', body: VALID });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { nonce: string; messageToSign: string; walletPubkey: string };
+    expect(body.walletPubkey).toBe('WalletPubkey1111111111111111111111111111111');
+    expect(body.messageToSign).toContain('account: user-new');
+    expect(body.messageToSign).toContain('daily cap: $2.00');
+    expect(body.messageToSign).toContain('per-call cap: $0.25');
+    expect(body.messageToSign).toContain('paid tools: studios');
+    // Left out of the body: the saved value (here the default) is named.
+    expect(body.messageToSign).toContain('Studios images per day with my own key: 10');
+    expect(body.messageToSign).toContain(`nonce: ${body.nonce}`);
+  });
+
+  it('names the own-key image count from the body when it is given', async () => {
+    linkedWallets.set('user-new', 'WalletPubkey1111111111111111111111111111111');
+    const res = await call('POST', { cookie: 'pw-new', path: '/challenge', body: { ...VALID, studiosKeyImagesPerDay: 40 } });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { messageToSign: string }).messageToSign).toContain('Studios images per day with my own key: 40');
+  });
+
+  it('rejects bad values', async () => {
+    linkedWallets.set('user-new', 'WalletPubkey1111111111111111111111111111111');
+    const res = await call('POST', { cookie: 'pw-new', path: '/challenge', body: { dailyCapUsdCents: 1, perCallCapUsdCents: 5, allowedVendors: [] } });
+    expect(res.status).toBe(400);
   });
 });

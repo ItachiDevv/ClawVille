@@ -28,6 +28,8 @@ export * from './building-chat-reward-claims';
 // (building visits / Nori chat / activity vCLAW). Migration 0077.
 export * from './daily-reward-caps';
 export * from './user-spend-policies';
+export * from './vendor-spend-ledger';
+export * from './avatar-media';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
 export * from './partner-api-keys';

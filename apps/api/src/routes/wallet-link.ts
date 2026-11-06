@@ -30,11 +30,18 @@ import bs58 from 'bs58';
 import { and, db, eq, isNull, sql, tradingWallets, users } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
+import {
+  refuseAgentHeader,
+  requireHumanSessionOrigin,
+  type HumanGateCopy,
+} from '../middleware/require-human-session';
 import { noStorePrivate } from '../middleware/no-store';
 import {
   issueWalletLinkChallenge,
   consumeWalletLinkChallenge,
   buildWalletLinkMessage,
+  buildWalletChangeMessage,
+  peekWalletLinkChallenge,
 } from '../services/wallet-link-challenge';
 import {
   getLinkedWalletClvBalance,
@@ -47,10 +54,34 @@ export const walletLinkRoutes = new Hono<AppContext>();
 
 walletLinkRoutes.use('*', sessionMiddleware);
 
+// Linking is an owner act (phase 1b, 2026-11-05): the linked wallet approves
+// spend-rule raises and receives market payouts, so an agent request, an
+// agent-exchanged cookie, a guest session and a pre-0089 session are refused.
+const GATE: HumanGateCopy = {
+  humanOnlyCode: 'wallet_link_human_only',
+  humanOnlyMessage: 'Only the human owner can link a wallet, from their own browser sign-in.',
+  needsLoginCode: 'wallet_link_needs_human_login',
+  needsLoginMessage: 'Sign in again in your browser, then link your wallet.',
+};
+const humanOnly = [refuseAgentHeader(GATE), requireAuth, requireHumanSessionOrigin(GATE), requireNonGuestUser] as const;
+
+class OldWalletProofError extends Error {}
+
+function verifyEd25519(message: string, signature: string, pubkey: string): boolean {
+  try {
+    const sig = bs58.decode(signature);
+    const pub = bs58.decode(pubkey);
+    if (sig.length !== 64 || pub.length !== 32) return false;
+    return nacl.sign.detached.verify(new TextEncoder().encode(message), sig, pub);
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // POST /challenge — issue a nonce bound to the caller
 // ---------------------------------------------------------------------------
-walletLinkRoutes.post('/challenge', requireAuth, requireNonGuestUser, async (c) => {
+walletLinkRoutes.post('/challenge', ...humanOnly, async (c) => {
   const user = c.get('user') as { id: string };
   const issued = issueWalletLinkChallenge(user.id);
   return c.json(issued);
@@ -65,9 +96,11 @@ const linkSchema = z.object({
   walletPubkey: z.string().min(32).max(44),
   nonce: z.string().min(32).max(64),
   signature: z.string().min(80).max(96),
+  /** Signature of buildWalletChangeMessage by the CURRENTLY linked wallet; needed only to change it. */
+  previousSignature: z.string().min(80).max(96).optional(),
 }).strict();
 
-walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
+walletLinkRoutes.post('/', ...humanOnly, async (c) => {
   const user = c.get('user') as { id: string };
 
   let body: unknown;
@@ -83,11 +116,12 @@ walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
       400,
     );
   }
-  const { walletPubkey, nonce, signature } = parsed.data;
+  const { walletPubkey, nonce, signature, previousSignature } = parsed.data;
 
-  // 1) Consume the nonce FOR this user (single-use + cross-account replay guard).
+  // 1) The nonce must be live FOR this user. It is consumed below, after the
+  //    wallet-change check, so a 409 lets the caller retry with the same nonce.
   //    Generic 401 so a caller can't distinguish missing / expired / wrong-user.
-  if (!consumeWalletLinkChallenge(nonce, user.id)) {
+  if (!peekWalletLinkChallenge(nonce, user.id)) {
     return c.json({ error: 'invalid_or_expired_challenge', code: 'invalid_challenge' }, 401);
   }
 
@@ -117,11 +151,46 @@ walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
     return c.json({ error: 'signature_verification_failed', code: 'invalid_signature' }, 401);
   }
 
+  // 2b) Changing an existing link needs the CURRENT wallet's approval. A magic
+  //     link passes through the agent, so the session alone must not swap it.
+  const existing = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { linkedWalletPubkey: true },
+  });
+  const fromPubkey = existing?.linkedWalletPubkey ?? null;
+  if (fromPubkey && fromPubkey !== walletPubkey && !previousSignature) {
+    return c.json({
+      error: 'wallet_change_needs_old_signature',
+      code: 'wallet_change_needs_old_signature',
+      fromPubkey,
+      messageToSign: buildWalletChangeMessage(user.id, nonce, fromPubkey, walletPubkey),
+      message: 'Your current linked wallet must approve this change.',
+    }, 409);
+  }
+
+  if (!consumeWalletLinkChallenge(nonce, user.id)) {
+    return c.json({ error: 'invalid_or_expired_challenge', code: 'invalid_challenge' }, 401);
+  }
+
   // 3) Persist the link (re-linking REPLACES the prior pubkey). The partial
   //    UNIQUE index (users_linked_wallet_pubkey_unique) is the hard guard that
   //    one wallet backs at most one account; a collision surfaces as a clean 409.
   try {
     await db.transaction(async (tx) => {
+      // Re-read the link under a row lock so a concurrent change cannot slip past
+      // the old-wallet check.
+      const locked = await tx.execute<{ linked_wallet_pubkey: string | null }>(
+        sql`SELECT linked_wallet_pubkey FROM users WHERE id = ${user.id} FOR UPDATE`,
+      );
+      const current = Array.from(locked)[0]?.linked_wallet_pubkey ?? null;
+      if (current && current !== walletPubkey) {
+        const approved = !!previousSignature && verifyEd25519(
+          buildWalletChangeMessage(user.id, nonce, current, walletPubkey),
+          previousSignature,
+          current,
+        );
+        if (!approved) throw new OldWalletProofError();
+      }
       const activeLinked = await tx.select({ avatarId: tradingWallets.avatarId }).from(tradingWallets)
         .where(and(eq(tradingWallets.userId, user.id), eq(tradingWallets.source, 'linked'), isNull(tradingWallets.revokedAt))).limit(1);
       if (activeLinked[0]) {
@@ -134,6 +203,9 @@ walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
       await syncLinkedTradingWallet({ userId: user.id, newPubkey: walletPubkey, tx });
     });
   } catch (err) {
+    if (err instanceof OldWalletProofError) {
+      return c.json({ error: 'invalid_old_wallet_signature', code: 'invalid_old_wallet_signature' }, 401);
+    }
     const code = (err as { code?: string; cause?: { code?: string } })?.code
       ?? (err as { cause?: { code?: string } })?.cause?.code;
     if (code === '23505') {
