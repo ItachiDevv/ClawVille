@@ -333,12 +333,14 @@ function running(requestId: string): StudiosRunning {
   };
 }
 
-function inFlight(requestId: string, status: VendorCallStatus): StudiosInFlight {
+function inFlight(requestId: string, status: VendorCallStatus, atApproval = false): StudiosInFlight {
   return {
     ok: false,
     code: 'duplicate_request_in_flight',
     httpStatus: 409,
-    message: `Do not retry: the same request is already running (or may have charged in the last 30 minutes) as request ${requestId}. Nothing new was sent or paid. Read GET /api/vendors/studios/requests/${requestId} for the result.`,
+    message: atApproval
+      ? `The same request is already running (or may have charged in the last 30 minutes) as request ${requestId}, so this one was not approved. Nothing was sent or paid; it still waits. Decline it, or approve it later.`
+      : `Do not retry: the same request is already running (or may have charged in the last 30 minutes) as request ${requestId}. Nothing new was sent or paid. Read GET /api/vendors/studios/requests/${requestId} for the result.`,
     ledgerId: null,
     requestId,
     status,
@@ -398,20 +400,28 @@ export function studiosInputFingerprint(input: { avatarId: string; operation: St
  * fingerprint, so its input is unknown and it blocks every request of that
  * operation while it waits, runs, or may have charged inside the window).
  */
-async function inFlightTwin(executor: Executor, avatarId: string, operation: StudiosOperationId, fingerprint: string): Promise<{ id: string; status: string } | null> {
+async function inFlightTwin(
+  executor: Executor,
+  avatarId: string,
+  operation: StudiosOperationId,
+  fingerprint: string,
+  /** Approve: skip the row being approved, and other waiting twins (they spend nothing until approved). */
+  approving?: { requestId: string },
+): Promise<{ id: string; status: string } | null> {
   const windowSeconds = Math.round(IN_FLIGHT_UNCLEAR_WINDOW_MS / 1000);
   const [row] = await executor.select({ id: vendorCallRequests.id, status: vendorCallRequests.status })
     .from(vendorCallRequests)
     .where(and(
       eq(vendorCallRequests.avatarId, avatarId),
       eq(vendorCallRequests.vendor, 'studios'),
+      approving ? sql`${vendorCallRequests.id} <> ${approving.requestId}` : sql`true`,
       or(
         eq(vendorCallRequests.inputFingerprint, fingerprint),
         and(isNull(vendorCallRequests.inputFingerprint), eq(vendorCallRequests.operation, operation)),
       ),
       or(
         // Still waiting or running: blocks at any age.
-        inArray(vendorCallRequests.status, ['awaiting_approval', 'pending', 'running']),
+        inArray(vendorCallRequests.status, approving ? ['pending', 'running'] : ['awaiting_approval', 'pending', 'running']),
         // May have charged: blocks for 30 minutes from the time it ENDED (DB
         // clock). A row with no finished_at (it ended before 0097 and slipped
         // past the backfill) uses its latest own time instead, so it still blocks.
@@ -1684,6 +1694,15 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
       return { ok: false as const, result: failure('approval_terms_changed') };
     }
     if (rowMode(row.mode) !== payer.mode) return { ok: false as const, result: failure('approval_mode_changed') };
+    // The same input already runs or may have charged (another key, or a twin
+    // that waited too, maybe from before 0097): refuse before any spend and
+    // keep this row waiting, so the human can decline it or approve it later.
+    const rowParams = (op.id === 'image'
+      ? { prompt: row.prompt!, ...(storedModel(row.model) ? { model: storedModel(row.model) } : {}) }
+      : row.params) as StudiosParams;
+    const fingerprint = row.inputFingerprint ?? studiosInputFingerprint({ avatarId: input.avatarId, operation: op.id, params: rowParams });
+    const twin = await inFlightTwin(tx, input.avatarId, op.id, fingerprint, { requestId: row.id });
+    if (twin) return { ok: false as const, result: inFlight(twin.id, twin.status as VendorCallStatus, true) };
     // Key A replaced by key B, or a new Studios sign-in (maybe another Studios
     // account): the new one must not pay.
     if (payer.mode !== 'wallet' && row.credentialSha256 !== payer.credentialSha256) {

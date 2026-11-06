@@ -858,6 +858,60 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     await waiting(await boat('agent'));
   });
 
+  // Approve runs the same duplicate check (Codex 2026-11-06): twins that both waited.
+  const statusOf = async (id: string) => first(await db.execute<{ status: string }>(sql`SELECT status FROM vendor_call_requests WHERE id = ${id}`)).status;
+  const approveNow = async (requestId: string) => {
+    const terms = await readApprovalTerms(avatarId, requestId);
+    if (!terms.ok) throw new Error(`no terms: ${JSON.stringify(terms)}`);
+    return (await approveStudiosRequest({ avatarId, userId, requestId, terms: terms.terms })).result;
+  };
+  /** A second waiting row with the same input under another key (made before 0097, or in a race). */
+  const twinOf = async (id: string, fingerprint: 'same' | 'null' = 'same') => first(await db.execute<{ id: string }>(sql`
+    INSERT INTO vendor_call_requests (avatar_id, vendor, actor, surface, mode, status, idempotency_key, operation, prompt, params, credential_sha256, expires_at, input_fingerprint)
+    SELECT avatar_id, vendor, actor, surface, mode, status, ${key()}, operation, prompt, params, credential_sha256, expires_at,
+      CASE WHEN ${fingerprint} = 'same' THEN input_fingerprint ELSE NULL END
+    FROM vendor_call_requests WHERE id = ${id}
+    RETURNING id`)).id;
+  const blockedAtApproval = (twin: string, status: string) =>
+    expect.objectContaining({ ok: false, code: 'duplicate_request_in_flight', httpStatus: 409, requestId: twin, status });
+
+  it('approve: of two waiting twins, A runs; B while A runs gets 409 with A and keeps waiting; nothing is sent for B', async () => {
+    await setRules({ requireApproval: true });
+    handlers.create_video = () => finished([], 'job-twin-a');
+    const a = await waiting(await boat('agent'));
+    const b = await twinOf(a);
+    expect(await approveNow(a)).toMatchObject({ ok: false, code: 'running', requestId: a });
+    expect(await waitForJob(a)).toMatchObject({ status: 'done' });
+    const sent = toolCalls.length;
+    await setRow(a, 'running'); // A is still running when the human approves B
+    expect(await approveNow(b)).toEqual(blockedAtApproval(a, 'running'));
+    expect(await statusOf(b)).toBe('awaiting_approval');
+    expect(toolCalls.length).toBe(sent);
+  });
+
+  it('approve: B inside 30 minutes after A ended outcome_unknown gets 409; after 31 minutes B runs', async () => {
+    await setRules({ requireApproval: true });
+    handlers.create_video = () => finished([], 'job-twin-b');
+    const a = await waiting(await boat('agent'));
+    const b = await twinOf(a);
+    await setRow(a, 'failed', 'outcome_unknown');
+    expect(await approveNow(b)).toEqual(blockedAtApproval(a, 'failed'));
+    expect(await statusOf(b)).toBe('awaiting_approval');
+    await endedAgo(a, 31);
+    expect(await approveNow(b)).toMatchObject({ ok: false, code: 'running', requestId: b });
+    expect(await waitForJob(b)).toMatchObject({ status: 'done' });
+  });
+
+  it('approve: a legacy twin with no fingerprint (same operation) that runs also blocks; the approved row keeps waiting', async () => {
+    await setRules({ requireApproval: true });
+    const a = await waiting(await boat('agent'));
+    const legacy = await twinOf(a, 'null');
+    await setRow(legacy, 'running');
+    expect(await approveNow(a)).toEqual(blockedAtApproval(legacy, 'running'));
+    expect(await statusOf(a)).toBe('awaiting_approval');
+    expect(toolCalls).toEqual([]);
+  });
+
   it('replay: the same key names the request and its status; after an end it carries the stored code', async () => {
     await setRules({ requireApproval: true });
     const k = key();
