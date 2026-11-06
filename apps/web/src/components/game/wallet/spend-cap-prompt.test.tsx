@@ -54,6 +54,7 @@ beforeAll(async () => {
       perCallCapUsdCents: policy.configured ? 10 : null,
       allowedVendors: [],
       studiosKeyImagesPerDay: 10,
+      requireApproval: false,
       configured: policy.configured,
       updatedAt: null,
     };

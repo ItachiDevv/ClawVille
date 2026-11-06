@@ -5,6 +5,20 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### Studios in the wallet panel: every feature for humans (session mcp-step3-signin, 2026-11-06, STAGING after the lead pushes)
+
+- **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in, with a linked wallet. Open the wallet panel (wallet chip or sidebar Wallet) and scroll to the Studios card. Each part is a section; tap its title to open it.
+- **STEPS:**
+  1. Open "How Studios is paid". Read the three choices and what each can do. Pick one and press "Save who pays". Your linked wallet signs.
+  2. In the same section, press "Sign in with Studios". Your linked wallet signs, then this tab opens Studios. Allow ClawVille there. Studios sends you back to /game, the wallet panel opens, and a green line says you are signed in. Check the balance, the free use left and "ClawVille may still spend today". Choose "My Studios sign-in" and save it if you want it to pay.
+  3. Open "Image" and make ONE cheap image (in wallet mode about half a cent; with the key or the sign-in it uses your Studios credits). It shows in "Your media".
+  4. Make a video ONLY after you set the cap you want: in wallet mode the per-call cap in Spending limits it (the card shows the cap; the wallet never pays more than $3.00 for one video). The cheapest model is about $0.20 for 5 seconds. Do not make a recast unless you want to spend $1 to $19 of Studios credits; the price shows before the button.
+  5. In "Your media", press Delete on one item. Your linked wallet signs. Open "My Studios media" (sign-in only) and press "Show my Studios media".
+  6. Press "Sign out of Studios" if you want to end the sign-in.
+- **ALSO NEW:** the Spending card sets videos, character-shot calls and recasts per day (a raise is signed). In wallet mode the Character shots and Recast sections say why the wallet cannot pay.
+- **FEEDBACK WANTED:** is the order of the sections right? Should "Image" be open by default? Are the pay mode texts clear? Is the video price line ("per unit", from the Studios menu) clear enough, or should it show a price for the chosen length? Does the return message after the Studios sign-in read well? Phone and iPad: does the wallet panel scroll well with the forms open?
+- **Session mcp-step3-signin, 2026-11-06.**
+
 ### "Ask me before each payment" (session spend-approval, 2026-11-06, STAGING after the lead pushes)
 
 - **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in. Wallet panel (wallet chip or sidebar Wallet): the Spending card has a new checkbox "Ask me before each payment"; a new Approvals card sits under Spending. While a request waits, a small amber pill on /game ("1 payment waits for your approval") opens the wallet panel.

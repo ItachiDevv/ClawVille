@@ -147,7 +147,11 @@ export function ApprovalsCard() {
             <div key={item.requestId} className="rounded-md border border-white/15 bg-black/30 p-3 space-y-2" data-testid="approval-item">
               <p className="text-xs text-white/55">{item.surface === 'hosted' ? 'Your agent asks' : 'A request asks'} for {approvalOperationText(item.operation)}:</p>
               {/* Agent text: plain text only. */}
-              <p className="text-sm text-white whitespace-pre-wrap break-words" data-testid="approval-prompt">{item.prompt}</p>
+              {item.prompt
+                ? <p className="text-sm text-white whitespace-pre-wrap break-words" data-testid="approval-prompt">{item.prompt}</p>
+                : <p className="text-xs text-white/55" data-testid="approval-prompt">No text. Only the settings.</p>}
+              {item.operation === 'recast' && item.model && <p className="text-xs text-white/70 break-words">Preset: {item.model}</p>}
+              {item.operation === 'video' && item.model && <p className="text-xs text-white/70 break-words">Model: {item.model}</p>}
               <p className="text-xs text-white/70">{approvalPriceText(item)}</p>
               <p className="text-xs text-white/55">{timeLeftText(item.expiresAt, now)}</p>
               {errors[item.requestId] && <p className="text-xs text-red-300">{errors[item.requestId]}</p>}

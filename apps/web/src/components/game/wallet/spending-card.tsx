@@ -16,6 +16,7 @@ import {
   STUDIOS_RECASTS_PER_DAY_DEFAULT,
   STUDIOS_VIDEOS_PER_DAY_DEFAULT,
   STUDIOS_KEY_IMAGES_PER_DAY_MAX,
+  STUDIOS_CLASS_PER_DAY_MAX,
   isSpendPolicyRaise,
   type SpendVendorId,
 } from '@clawville/shared';
@@ -32,14 +33,22 @@ const VENDOR_LABELS: Record<SpendVendorId, string> = {
   studios: 'Studios by Claw Hunter (images and video)',
 };
 
-/** The own-key images per day from the form text, or an error for the form. */
-export function parseImagesPerDay(text: string): { ok: true; value: number } | { ok: false; reason: string } {
+/** A per-day number from the form text (own-key images, or a Studios class), or an error for the form. */
+export function parseImagesPerDay(text: string, max: number = STUDIOS_KEY_IMAGES_PER_DAY_MAX): { ok: true; value: number } | { ok: false; reason: string } {
   const trimmed = text.trim();
   if (!/^\d{1,4}$/.test(trimmed)) return { ok: false, reason: 'enter a whole number.' };
   const value = Number(trimmed);
-  if (value > STUDIOS_KEY_IMAGES_PER_DAY_MAX) return { ok: false, reason: `at most ${STUDIOS_KEY_IMAGES_PER_DAY_MAX}.` };
+  if (value > max) return { ok: false, reason: `at most ${max}.` };
   return { ok: true, value };
 }
+
+/** The Studios per-class numbers per UTC day (migration 0095) the card edits. */
+const CLASS_FIELDS = [
+  { field: 'studiosVideosPerDay', label: 'Videos per day', fallback: STUDIOS_VIDEOS_PER_DAY_DEFAULT },
+  { field: 'studiosCharacterShotsPerDay', label: 'Character-shot calls per day', fallback: STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT },
+  { field: 'studiosRecastsPerDay', label: 'Recasts per day', fallback: STUDIOS_RECASTS_PER_DAY_DEFAULT },
+] as const;
+type ClassField = (typeof CLASS_FIELDS)[number]['field'];
 
 /** Plain text for a failed save. Branches on the API `code`, never on raw text. */
 export function saveErrorText(error: unknown): string {
@@ -85,6 +94,9 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
   const [vendors, setVendors] = useState<SpendVendorId[]>([]);
   const [imagesPerDay, setImagesPerDay] = useState(String(STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT));
   const [askFirst, setAskFirst] = useState(false);
+  const [classCounts, setClassCounts] = useState<Record<ClassField, string>>(() => Object.fromEntries(
+    CLASS_FIELDS.map((c) => [c.field, String(c.fallback)]),
+  ) as Record<ClassField, string>);
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -94,6 +106,10 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
     setVendors(policy.allowedVendors);
     setImagesPerDay(String(policy.studiosKeyImagesPerDay));
     setAskFirst(policy.requireApproval);
+    // A missing value (an older API answer) shows the default, which the server also keeps.
+    setClassCounts(Object.fromEntries(
+      CLASS_FIELDS.map((c) => [c.field, String(policy[c.field] ?? c.fallback)]),
+    ) as Record<ClassField, string>);
   }, [policy]);
 
   const save = useMutation({
@@ -102,6 +118,9 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
       perCallCapUsdCents: number | null;
       allowedVendors: SpendVendorId[];
       studiosKeyImagesPerDay: number;
+      studiosVideosPerDay: number;
+      studiosCharacterShotsPerDay: number;
+      studiosRecastsPerDay: number;
       requireApproval: boolean;
     }) => {
       const current = policy ?? {
@@ -115,16 +134,9 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
         requireApproval: false,
         studiosPayMode: null,
       };
-      // This card does not edit the per-class Studios counts (migration 0095)
-      // or the Studios pay mode (migration 0096): the PUT leaves them out, so
-      // the server keeps the saved values.
-      const compared = {
-        ...next,
-        studiosVideosPerDay: current.studiosVideosPerDay,
-        studiosCharacterShotsPerDay: current.studiosCharacterShotsPerDay,
-        studiosRecastsPerDay: current.studiosRecastsPerDay,
-        studiosPayMode: current.studiosPayMode,
-      };
+      // This card does not edit the Studios pay mode (migration 0096; the
+      // Studios card does): the PUT leaves it out, so the server keeps it.
+      const compared = { ...next, studiosPayMode: current.studiosPayMode };
       if (!isSpendPolicyRaise(current, compared)) return api.putSpendPolicy(next);
       // A raise (turning "ask me before each payment" off is one) needs the
       // human's own linked wallet to sign the exact values.
@@ -151,6 +163,12 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
     if (!perCallCents.ok) return setFormError(`Per-call cap: ${perCallCents.reason}`);
     const images = parseImagesPerDay(imagesPerDay);
     if (!images.ok) return setFormError(`Images per day with your own Studios key: ${images.reason}`);
+    const counts = {} as Record<ClassField, number>;
+    for (const c of CLASS_FIELDS) {
+      const parsed = parseImagesPerDay(classCounts[c.field], STUDIOS_CLASS_PER_DAY_MAX);
+      if (!parsed.ok) return setFormError(`${c.label}: ${parsed.reason}`);
+      counts[c.field] = parsed.value;
+    }
     if (dailyCents.cents !== null && perCallCents.cents !== null && perCallCents.cents > dailyCents.cents) {
       return setFormError('The per-call cap cannot be above the daily cap.');
     }
@@ -159,6 +177,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
       perCallCapUsdCents: perCallCents.cents,
       allowedVendors: vendors,
       studiosKeyImagesPerDay: images.value,
+      ...counts,
       requireApproval: askFirst,
     });
   };
@@ -235,10 +254,27 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
                 className="w-full min-h-[44px] rounded-md bg-black/40 border border-white/15 px-3 text-sm text-white"
               />
               <span className="block text-white/55 leading-relaxed">
-                Applies only when you save your own Studios key (Studios images card). Studios bills your
+                Applies when your own Studios key or your Studios sign-in pays (Studios card). Studios bills your
                 Studios account, so the caps above do not cover it. This counts every image on your key.
               </span>
             </label>
+            <fieldset className="space-y-2">
+              <legend className="text-xs text-white/80">Studios videos, character shots and recast</legend>
+              <p className="text-xs text-white/55 leading-relaxed">
+                How many your agent and you may make per UTC day, whoever pays. 0 turns one off.
+              </p>
+              {CLASS_FIELDS.map((c) => (
+                <label key={c.field} className="block text-xs text-white/80 space-y-1">
+                  <span>{c.label}</span>
+                  <input
+                    inputMode="numeric"
+                    value={classCounts[c.field]}
+                    onChange={(e) => setClassCounts((current) => ({ ...current, [c.field]: e.target.value }))}
+                    className="w-full min-h-[44px] rounded-md bg-black/40 border border-white/15 px-3 text-sm text-white"
+                  />
+                </label>
+              ))}
+            </fieldset>
             <label className="flex items-start gap-3 min-h-[44px] text-xs text-white/85">
               <input
                 type="checkbox"
@@ -249,7 +285,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
               <span className="space-y-1">
                 <span className="block font-semibold">Ask me before each payment</span>
                 <span className="block text-white/55 leading-relaxed">
-                  Each paid image (your agent&apos;s and your own) waits in Approvals (below) until you approve it
+                  Each paid Studios request (your agent&apos;s and your own) waits in Approvals (below) until you approve it
                   with your linked wallet, or decline it. It expires after 15 minutes. Turning this on needs a
                   linked wallet; turning it off needs your linked wallet to sign.
                 </span>

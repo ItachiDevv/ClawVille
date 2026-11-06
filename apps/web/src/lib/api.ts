@@ -359,8 +359,97 @@ export interface StudiosRequestView {
   mode: 'wallet' | 'account' | 'signin';
   mediaPath: string | null;
   media: Array<{ slot: string; mediaId: string; mediaPath: string }>;
+  /** Key and sign-in mode: the item in the human's Studios My Media (an id only). */
+  vendorMediaId?: string | null;
   code: string | null;
 }
+
+/** A stored item of the avatar (GET /api/vendors/studios/images lists images AND videos). */
+export interface StudiosStoredMedia {
+  id: string;
+  mediaPath: string;
+  mimeType: string;
+  prompt: string;
+  mode: string;
+  actor: string;
+  createdAt: string;
+}
+
+/** A finished Studios operation (video, character shots, recast, or any sign-in request). */
+export interface StudiosOperationDone {
+  ok: true;
+  operation?: string;
+  mode: 'wallet' | 'account' | 'signin';
+  mediaId: string | null;
+  mediaPath: string | null;
+  media?: Array<{ slot: string; mediaId: string; mediaPath: string }>;
+  note?: 'media_not_copied' | null;
+  ledgerId: string | null;
+  paidUsdCents: number | null;
+  txSignature: string | null;
+}
+
+/** 202 answers of a Studios POST: it waits for approval, or runs in the background. */
+export type StudiosAccepted =
+  | { status: 'awaiting_approval'; requestId: string; expiresAt: string; message: string }
+  | { status: 'running'; requestId: string; message: string };
+
+export type StudiosMenuId = 'media-models' | 'image-styles' | 'builder' | 'character-presets' | 'recast-presets';
+
+/** GET /api/vendors/studios/options/media-models (ids, prices and option values only). */
+export interface StudiosMediaModel {
+  id: string;
+  kind: 'image' | 'video';
+  operations: Record<string, { usdPerUnit?: number; listUsdPerUnit?: number; audio?: true }>;
+  aspectRatios?: string[];
+  resolutions?: string[];
+  durationSeconds?: { min?: number; max?: number; step?: number; default?: number };
+}
+
+/** GET /api/vendors/studios/options/recast-presets. */
+export interface StudiosRecastPreset {
+  id: string;
+  performers?: number;
+  minImages?: number;
+  seconds?: number;
+  priceUsd?: number;
+  defaultResolution?: string;
+  resolutions?: Array<{ id: string; priceUsd: number }>;
+  shape?: 'tall' | 'wide' | 'square';
+}
+
+export interface StudiosMenus {
+  'media-models': { menu: 'media-models'; models: StudiosMediaModel[] };
+  'image-styles': { menu: 'image-styles'; styles: Array<{ id: string; type: 'style' | 'template' }> };
+  builder: { menu: 'builder'; sections: Array<{ id: string; multi: boolean; default?: string; options: string[] }> };
+  'character-presets': { menu: 'character-presets'; presets: Array<{ id: string; species?: 'animal' | 'person'; sheetUrl?: string }> };
+  'recast-presets': { menu: 'recast-presets'; presets: StudiosRecastPreset[]; ownClip: unknown };
+}
+
+/** GET /api/vendors/studios/oauth (never tokens). */
+export interface StudiosOAuthStatus {
+  linked: boolean;
+  status: 'active' | 'broken' | null;
+  scope: string | null;
+  linkedAt: string | null;
+}
+
+/** GET /api/vendors/studios/signin/account (null fields: Studios did not say). */
+export interface StudiosSigninAccount {
+  balanceUsd: number | null;
+  freeUsageLeft: number | null;
+  connectionSpendLeftUsd: number | null;
+  readable: boolean;
+}
+
+/** GET /api/vendors/studios/signin/media (ids, kinds and states only; no Studios text). */
+export interface StudiosSigninMediaPage {
+  items: Array<{ id: string; kind: 'image' | 'video' | null; state: 'ready' | 'problem' | null; createdAt: string | null }>;
+  nextCursor: string | null;
+}
+
+type WalletChallenge = { nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string };
+type WalletProof = { nonce: string; signature: string };
 
 export const api = {
   // Auth
@@ -648,6 +737,10 @@ export const api = {
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
     studiosKeyImagesPerDay: number;
+    /** Per-class Studios numbers per UTC day; absent keeps the saved value. A raise needs `proof`. */
+    studiosVideosPerDay?: number;
+    studiosCharacterShotsPerDay?: number;
+    studiosRecastsPerDay?: number;
     requireApproval: boolean;
     /** Who pays for Studios calls; absent keeps the saved choice. Any change needs `proof`. */
     studiosPayMode?: 'wallet' | 'key' | 'signin' | null;
@@ -681,10 +774,68 @@ export const api = {
   /** One Studios request of this avatar: its status, and the media when done. */
   studiosRequest: (requestId: string) =>
     request<StudiosRequestView>(`/api/vendors/studios/requests/${encodeURIComponent(requestId)}`),
+  /** The avatar's newest stored media (images and videos), the agent's too. */
   studiosImages: () =>
-    request<{ images: Array<{ id: string; mediaPath: string; prompt: string; mode: string; actor: string; createdAt: string }> }>(
-      '/api/vendors/studios/images',
-    ),
+    request<{ images: StudiosStoredMedia[] }>('/api/vendors/studios/images'),
+  // Phase 3b: the other Studios operations. Same Idempotency-Key and 202 rules as images.
+  studiosVideo: (body: Record<string, unknown>, idempotencyKey: string) =>
+    request<StudiosOperationDone | StudiosAccepted>('/api/vendors/studios/videos', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    }),
+  studiosCharacter: (body: Record<string, unknown>, idempotencyKey: string) =>
+    request<StudiosOperationDone | StudiosAccepted>('/api/vendors/studios/characters', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    }),
+  studiosRecast: (body: Record<string, unknown>, idempotencyKey: string) =>
+    request<StudiosOperationDone | StudiosAccepted>('/api/vendors/studios/recasts', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    }),
+  /** A free Studios menu (ids, prices and option values; cached 10 minutes on the server). */
+  studiosOptions: <M extends StudiosMenuId>(menu: M) =>
+    request<StudiosMenus[M]>(`/api/vendors/studios/options/${menu}`),
+  // Phase 3c: the human's Studios sign-in (routes/vendor-studios-oauth.ts).
+  studiosOAuthStatus: () => request<StudiosOAuthStatus>('/api/vendors/studios/oauth'),
+  /** A message for the linked wallet to sign before a sign-in (link) or a sign-out (unlink). */
+  studiosOAuthChallenge: (action: 'link' | 'unlink') =>
+    request<WalletChallenge>('/api/vendors/studios/oauth/challenge', {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    }),
+  studiosOAuthStart: (proof: WalletProof) =>
+    request<{ authorizeUrl: string }>('/api/vendors/studios/oauth/start', {
+      method: 'POST',
+      body: JSON.stringify({ proof }),
+    }),
+  studiosOAuthUnlink: (proof: WalletProof) =>
+    request<StudiosOAuthStatus>('/api/vendors/studios/oauth', {
+      method: 'DELETE',
+      body: JSON.stringify({ proof }),
+    }),
+  studiosSigninAccount: () => request<StudiosSigninAccount>('/api/vendors/studios/signin/account'),
+  studiosSigninMedia: (query: { limit?: number; cursor?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set('limit', String(query.limit));
+    if (query.cursor) params.set('cursor', query.cursor);
+    const qs = params.toString();
+    return request<StudiosSigninMediaPage>(`/api/vendors/studios/signin/media${qs ? `?${qs}` : ''}`);
+  },
+  // Deleting a stored item: the linked wallet signs a challenge for that one item.
+  mediaDeleteChallenge: (mediaId: string) =>
+    request<WalletChallenge>(`/api/media/${encodeURIComponent(mediaId)}/delete-challenge`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  deleteMedia: (mediaId: string, proof: WalletProof) =>
+    request<{ deleted: true; mediaId: string }>(`/api/media/${encodeURIComponent(mediaId)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ proof }),
+    }),
   studiosKeyStatus: () =>
     request<{ linked: boolean; last4: string | null; updatedAt: string | null }>('/api/vendors/studios/key'),
   /** A message for the linked wallet to sign before a key save or remove. */
@@ -733,11 +884,19 @@ export const api = {
     ),
   /** Absolute URL of a stored image path such as /api/media/<id>. */
   mediaUrl: (mediaPath: string) => `${API_URL}${mediaPath}`,
+  /**
+   * The same item as a Studios input URL: always the absolute API host (Studios
+   * fetches it, and the API accepts only its own host plus /api/media/<id>).
+   */
+  mediaInputUrl: (mediaPath: string) => `${HONO_API_URL}${mediaPath}`,
   spendPolicyChallenge: (body: {
     dailyCapUsdCents: number | null;
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
     studiosKeyImagesPerDay: number;
+    studiosVideosPerDay?: number;
+    studiosCharacterShotsPerDay?: number;
+    studiosRecastsPerDay?: number;
     requireApproval: boolean;
     studiosPayMode?: 'wallet' | 'key' | 'signin' | null;
   }) =>
