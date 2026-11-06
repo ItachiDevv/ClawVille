@@ -16,7 +16,7 @@
  * When a hosted agent's job ends, its next decide gets one short line.
  */
 
-import { avatars, db, eq, sql, vendorCallRequests } from '@clawville/database';
+import { and, avatars, db, eq, sql, vendorCallRequests } from '@clawville/database';
 import type { StudiosOperationId } from '@clawville/shared';
 import {
   JOB_LEASE_MS,
@@ -38,26 +38,35 @@ export function activeStudiosJobs(): ReadonlyMap<string, Promise<void>> {
   return active;
 }
 
-async function renewLease(requestId: string): Promise<void> {
-  await db.update(vendorCallRequests)
+/** Renew the lease while this owner still holds the row. False = taken over or finished. */
+export async function renewLease(requestId: string, owner: string): Promise<boolean> {
+  const renewed = await db.update(vendorCallRequests)
     .set({ leaseUntil: sql`now() + ${`${Math.round(JOB_LEASE_MS / 1000)} seconds`}::interval` })
-    .where(sql`${vendorCallRequests.id} = ${requestId} AND ${vendorCallRequests.status} = 'running'`);
+    .where(and(
+      eq(vendorCallRequests.id, requestId),
+      eq(vendorCallRequests.leaseOwner, owner),
+      eq(vendorCallRequests.status, 'running'),
+    ))
+    .returning({ id: vendorCallRequests.id });
+  return renewed.length > 0;
 }
 
 /**
  * Tell a hosted agent how its job ended (one line in its next decide). Best
  * effort: the agent can also read the request route.
  */
-async function notifyHosted(requestId: string, result: StudiosOperationResult | null): Promise<void> {
+async function notifyHosted(requestId: string, leaseOwner: string, result: StudiosOperationResult | null): Promise<void> {
   try {
     const [row] = await db.select({
+      leaseOwner: vendorCallRequests.leaseOwner,
       surface: vendorCallRequests.surface,
       avatarId: vendorCallRequests.avatarId,
       operation: vendorCallRequests.operation,
       status: vendorCallRequests.status,
       failureCode: vendorCallRequests.failureCode,
     }).from(vendorCallRequests).where(eq(vendorCallRequests.id, requestId)).limit(1);
-    if (!row || row.surface !== 'hosted') return;
+    // A runner that lost the row says nothing; the new holder reports the end.
+    if (!row || row.surface !== 'hosted' || row.leaseOwner !== leaseOwner) return;
     const owner = await db.query.avatars.findFirst({ where: eq(avatars.id, row.avatarId), columns: { userId: true } });
     if (!owner?.userId) return;
     const { formatStudiosJobLine } = await import('./npc-simulation');
@@ -75,29 +84,34 @@ async function notifyHosted(requestId: string, result: StudiosOperationResult | 
 }
 
 /**
- * Run one 'running' row in the background with a renewed lease. `key` is the
- * key the request was made or approved with (undefined = load it again; it
- * must still be the key the row was made with). Every exit settles the row:
- * an unexpected error goes through recovery (never a second call or payment).
+ * Run one 'running' row in the background with a renewed lease, as the
+ * holder of `owner` (the row's `lease_owner`). `key` is the key the request
+ * was made or approved with (undefined = load it again; it must still be the
+ * key the row was made with). Every write matches the owner token, so after a
+ * takeover this runner stores nothing. Every exit settles the row it still
+ * holds: an unexpected error goes through recovery (never a second call or
+ * payment).
  */
-export function startStudiosJob(requestId: string, key?: string | null): void {
+export function startStudiosJob(requestId: string, owner: string, key?: string | null): void {
   if (active.has(requestId)) return;
   const run = (async () => {
     const heartbeat = setInterval(() => {
-      void renewLease(requestId).catch(() => undefined);
+      void renewLease(requestId, owner).then((held) => {
+        if (!held) clearInterval(heartbeat);
+      }).catch(() => undefined);
     }, LEASE_RENEW_MS);
     heartbeat.unref?.();
     let result: StudiosOperationResult | null = null;
     try {
-      result = await executeLongJob(requestId, key);
+      result = await executeLongJob(requestId, owner, key);
     } catch (err) {
       console.error(`[studios-job-runner] job ${requestId} failed:`, err instanceof Error ? err.message : 'unknown');
-      await recoverUnfinishedRequest(requestId, { resumeRecast: false }).catch(() => undefined);
+      await recoverUnfinishedRequest(requestId, owner, { resumeRecast: false }).catch(() => undefined);
     } finally {
       clearInterval(heartbeat);
       active.delete(requestId);
     }
-    await notifyHosted(requestId, result);
+    await notifyHosted(requestId, owner, result);
   })();
   active.set(requestId, run);
 }
@@ -107,9 +121,12 @@ export function startStudiosJob(requestId: string, key?: string | null): void {
  * ids it claimed (for tests and logs).
  */
 export async function recoverStudiosJobs(): Promise<string[]> {
-  const claimed = Array.from(await db.execute<{ id: string }>(sql`
+  // Each claim gets a new owner token: the old runner, if it still lives,
+  // can no longer renew, store or finish the row.
+  const claimed = Array.from(await db.execute<{ id: string; lease_owner: string }>(sql`
     UPDATE vendor_call_requests
-    SET lease_until = now() + ${`${Math.round(JOB_LEASE_MS / 1000)} seconds`}::interval
+    SET lease_until = now() + ${`${Math.round(JOB_LEASE_MS / 1000)} seconds`}::interval,
+        lease_owner = gen_random_uuid()::text
     WHERE id IN (
       SELECT id FROM vendor_call_requests
       WHERE (status = 'running' AND (lease_until IS NULL OR lease_until < now()))
@@ -118,22 +135,23 @@ export async function recoverStudiosJobs(): Promise<string[]> {
       LIMIT ${RECOVERY_BATCH}
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id`)).map((r) => r.id);
-  for (const id of claimed) {
-    if (active.has(id)) continue;
+    RETURNING id, lease_owner`));
+  for (const { id, lease_owner: owner } of claimed) {
+    // A job of this process whose lease ran out has lost it now: its writes no
+    // longer match. The recovery below settles the row under the new token.
     try {
-      const outcome = await recoverUnfinishedRequest(id, { resumeRecast: true });
+      const outcome = await recoverUnfinishedRequest(id, owner, { resumeRecast: true });
       if (outcome === 'resume') {
-        startStudiosJob(id);
+        if (!active.has(id)) startStudiosJob(id, owner);
         continue;
       }
-      if (outcome !== 'skipped') await notifyHosted(id, null);
+      if (outcome !== 'skipped') await notifyHosted(id, owner, null);
     } catch (err) {
       console.error(`[studios-job-runner] recovery of ${id} failed:`, err instanceof Error ? err.message : 'unknown');
     }
   }
   if (claimed.length) console.log(`[studios-job-runner] recovered ${claimed.length} unfinished request(s)`);
-  return claimed;
+  return claimed.map((r) => r.id);
 }
 
 let worker: ReturnType<typeof setInterval> | null = null;

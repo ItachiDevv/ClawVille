@@ -222,6 +222,44 @@ export function verifyApprovalProof(input: {
     buildApprovalMessage(input.userId, input.terms, input.nonce));
 }
 
+/**
+ * Deleting one stored media item (MCP hub phase 3b, Codex review 2026-11-06):
+ * a ledger-capable agent can redeem its own control link and hold a
+ * `magic_link` cookie, so the human session alone never deletes media. The
+ * linked wallet signs the account, the avatar, the media id and the action.
+ */
+export function buildMediaDeleteMessage(userId: string, avatarId: string, mediaId: string, nonce: string): string {
+  return [
+    'ClawVille media',
+    `account: ${userId}`,
+    `avatar: ${avatarId}`,
+    `media: ${mediaId}`,
+    'action: delete',
+    `nonce: ${nonce}`,
+  ].join('\n');
+}
+
+export function issueMediaDeleteChallenge(userId: string, avatarId: string, mediaId: string): SpendProofChallenge {
+  const nonce = bs58.encode(randomBytes(32));
+  const message = buildMediaDeleteMessage(userId, avatarId, mediaId, nonce);
+  const expiresAtMs = Date.now() + NONCE_TTL_MS;
+  nonces.set(nonce, { userId, message, expiresAt: expiresAtMs });
+  return { nonce, expiresAt: new Date(expiresAtMs).toISOString(), messageToSign: message };
+}
+
+/** Consume the nonce and verify the linked wallet signed THIS delete for THIS user. */
+export function verifyMediaDeleteProof(input: {
+  userId: string;
+  avatarId: string;
+  mediaId: string;
+  nonce: string;
+  signature: string;
+  walletPubkey: string;
+}): SpendProofResult {
+  return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
+    buildMediaDeleteMessage(input.userId, input.avatarId, input.mediaId, input.nonce));
+}
+
 function verifyMessage(userId: string, nonce: string, signature: string, walletPubkey: string, expected: string): SpendProofResult {
   const entry = nonces.get(nonce);
   if (!entry) return 'invalid_challenge';

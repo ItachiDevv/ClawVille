@@ -17,11 +17,13 @@ import {
   recastParamsSchema,
   recastPollUrl,
   validateMediaInputUrl,
+  validateStudiosInputUrl,
   videoParamsSchema,
 } from '../vendors/studios-operations';
 import { fetchStudiosArtifact, sniffMedia, studiosDownloadUrl } from '../studios-media';
 import { parseRange } from '../../routes/media';
-import { formatStudiosJobLine, parseRecastCharacterParams } from '../npc-simulation';
+import { formatGeneratedImageResult, formatStudiosJobLine, parseRecastCharacterParams } from '../npc-simulation';
+import { studiosRefusalFor } from '../studios-images';
 import { toSpendPolicyView } from '../spend-policy';
 
 const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom', 'latin1'), Buffer.alloc(16, 2)]);
@@ -60,18 +62,18 @@ describe('operation registry', () => {
     expect(video).toEqual({ method: 'POST', url: 'https://mystudios.fun/api/v1/videos/generations', body: { model: STUDIOS_VIDEO_DEFAULT_MODEL, prompt: 'a boat', duration_seconds: 5, aspect_ratio: '9:16' } });
     const chars = STUDIOS_OPERATIONS.character_shots.build(characterParamsSchema.parse({ random: true, shots: ['headshot', 'headshot'] }), { requestId: 'r2' });
     expect(chars.body).toEqual({ shots: ['headshot'], random: true, resolution: '1K' });
-    const preset = STUDIOS_OPERATIONS.recast.build(recastParamsSchema.parse({ preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/a.png'] }), { requestId: 'r3' });
+    const preset = STUDIOS_OPERATIONS.recast.build(recastParamsSchema.parse({ preset: 'recast-x-wan', imageUrls: ['https://mystudios.fun/u/a.png'] }), { requestId: 'r3' });
     expect(preset.headers).toEqual({ 'Idempotency-Key': 'clawville-r3' });
-    const own = STUDIOS_OPERATIONS.recast.build(recastParamsSchema.parse({ videoUrl: 'https://cdn.example.org/c.mp4', imageUrls: ['https://cdn.example.org/a.png'] }), { requestId: 'r4' });
+    const own = STUDIOS_OPERATIONS.recast.build(recastParamsSchema.parse({ videoUrl: 'https://mystudios.fun/u/c.mp4', imageUrls: ['https://mystudios.fun/u/a.png'] }), { requestId: 'r4' });
     expect(own.headers).toBeUndefined();
-    expect(own.body).toEqual({ video_url: 'https://cdn.example.org/c.mp4', image_urls: ['https://cdn.example.org/a.png'] });
+    expect(own.body).toEqual({ video_url: 'https://mystudios.fun/u/c.mp4', image_urls: ['https://mystudios.fun/u/a.png'] });
   });
 
   it('schemas refuse what Studios or our rules do not allow', () => {
     expect(characterParamsSchema.safeParse({}).success).toBe(false);
     expect(characterParamsSchema.safeParse({ prompt: 'x', resolution: '4K' }).success).toBe(false);
     expect(characterParamsSchema.safeParse({ prompt: 'x', extra: 1 }).success).toBe(false);
-    expect(recastParamsSchema.safeParse({ preset: 'p', videoUrl: 'https://a.example.org/v.mp4', imageUrls: ['https://a.example.org/i.png'] }).success).toBe(false);
+    expect(recastParamsSchema.safeParse({ preset: 'p', videoUrl: 'https://mystudios.fun/u/v.mp4', imageUrls: ['https://mystudios.fun/u/i.png'] }).success).toBe(false);
     expect(recastParamsSchema.safeParse({ preset: 'p', imageUrls: [] }).success).toBe(false);
     expect(recastParamsSchema.safeParse({ preset: 'p', imageUrls: ['http://a.example.org/i.png'] }).success).toBe(false);
     expect(videoParamsSchema.safeParse({ prompt: 'x', model: 'clawhunter/smart' }).success).toBe(false);
@@ -119,9 +121,43 @@ describe('input URL validator (Studios fetches it; our server never does)', () =
       'https://cdn.example.org/a b.png',
       `https://cdn.example.org/${'a'.repeat(2050)}`,
       42,
+      'https://[fd00::1]/a.png',
+      'https://[::ffff:127.0.0.1]/a.png',
+      'https://017700000001/a.png',
+      'https://LOCALHOST/a.png',
+      'https://x.localhost/a.png',
+      'https://cam.home.local/a.png',
+      'https://meta.corp.internal/a.png',
+      'https://127.0.0.1.nip.io/x.png',
+      'https://10-0-0-1.sslip.io/x.png',
+      'https://10.0.0.1.xip.io/x.png',
+      'https://localtest.me/x.png',
+      'https://app.lvh.me/x.png',
     ]) {
       expect(validateMediaInputUrl(bad)).toBeNull();
     }
+  });
+  it('Studios operations take only our own stored items or the Studios host (REST, MCP and hosted verbs share the schemas)', () => {
+    const id = '11111111-2222-4333-8444-555555555555';
+    expect(validateStudiosInputUrl(`https://api.clawville.world/api/media/${id}`)).toBe(`https://api.clawville.world/api/media/${id}`);
+    expect(validateStudiosInputUrl(`https://api-staging.clawville.world/api/media/${id}`)).not.toBeNull();
+    expect(validateStudiosInputUrl('https://mystudios.fun/api/v1/media/artifacts/a.png')).not.toBeNull();
+    for (const bad of [
+      'https://cdn.example.org/a.png',
+      `https://api.clawville.world/api/media/${id}?x=1`,
+      `https://api.clawville.world/api/media/${id}#x`,
+      'https://api.clawville.world/api/media/not-a-uuid',
+      `https://api.clawville.world/api/other/${id}`,
+      `https://evil.example.org/api/media/${id}`,
+      'https://mystudios.fun.evil.org/a.png',
+      'https://127.0.0.1.nip.io/x.png',
+      `http://api.clawville.world/api/media/${id}`,
+    ]) {
+      expect(validateStudiosInputUrl(bad)).toBeNull();
+    }
+    expect(videoParamsSchema.safeParse({ prompt: 'p', imageUrl: 'https://cdn.example.org/a.png' }).success).toBe(false);
+    expect(recastParamsSchema.safeParse({ preset: 'p', imageUrls: [`https://api.clawville.world/api/media/${id}`] }).success).toBe(true);
+    expect(recastParamsSchema.safeParse({ preset: 'p', imageUrls: ['https://cdn.example.org/a.png'] }).success).toBe(false);
   });
 });
 
@@ -264,6 +300,20 @@ describe('hosted verbs: grammar and result lines', () => {
     expect(lines[3]).toContain('refused (hosted_daily_cap)');
     expect(lines[4]).toBe('Studio: video ready at /api/media/abc; your wallet paid 21 US cents.');
     expect(lines[5]).toContain('My Media');
+    // The do-not-retry sentence comes first and survives the 200-character cut.
+    const ambiguous = studiosRefusalFor('payment_ambiguous', 'video')!;
+    const unknown = studiosRefusalFor('outcome_unknown', 'recast')!;
+    const stopLines = [
+      formatStudiosJobLine('video', ambiguous),
+      formatStudiosJobLine('recast', unknown),
+      formatGeneratedImageResult(studiosRefusalFor('payment_ambiguous', 'image')!),
+      formatGeneratedImageResult(studiosRefusalFor('outcome_unknown', 'image')!),
+    ];
+    expect(stopLines[0]).toStartWith('Studio: generate_video refused (payment_ambiguous): Do not retry; it counts toward the daily cap until it is checked on chain.');
+    expect(stopLines[1]).toStartWith('Studio: recast_character refused (outcome_unknown): Do not retry.');
+    expect(stopLines[2]).toContain('Do not retry; it counts toward the daily cap until it is checked on chain.');
+    expect(stopLines[3]).toContain('Do not retry.');
+    lines.push(...stopLines);
     for (const line of lines) {
       expect(line.length).toBeLessThanOrEqual(200);
       expect(line).not.toContain('SECRET');

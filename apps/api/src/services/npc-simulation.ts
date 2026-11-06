@@ -367,6 +367,20 @@ export function parseGenerateImageParams(paramStr: string): string | null {
 }
 
 /**
+ * One refusal line of at most 200 characters. A "Do not retry" sentence in the
+ * message (payment_ambiguous, outcome_unknown, ...) goes first and whole, so
+ * the cut at 200 characters only ever removes the explanation after it.
+ */
+export function formatStudiosRefusalLine(verb: string, code: string, message: string | undefined): string {
+  const head = `Studio: ${verb} refused (${String(code).slice(0, 40)})`;
+  if (typeof message !== 'string') return head.slice(0, 200);
+  const text = message.replace(/\s+/g, ' ').trim();
+  const stop = /Do not retry[^.]*\./.exec(text);
+  const body = stop ? `${stop[0]} ${text.replace(stop[0], '').trim()}`.trim() : text;
+  return `${head}: ${body}`.slice(0, 200);
+}
+
+/**
  * One short line for the agent's next decide prompt about a generate_image
  * result. Only our own fields: the media path, the paid cents, or our refusal
  * code and message. Never vendor text, never the prompt.
@@ -375,10 +389,7 @@ export function formatGeneratedImageResult(result: StudiosImageResult): string {
   if (!result.ok && result.code === 'awaiting_approval') {
     return 'Studio: generate_image waits for your human to approve it in the wallet panel (it expires in 15 minutes); nothing was paid yet. Do not send another generate_image until your human answers.';
   }
-  if (!result.ok) {
-    const message = result.message.replace(/\s+/g, ' ').slice(0, 130);
-    return `Studio: generate_image refused (${result.code}): ${message}`;
-  }
+  if (!result.ok) return formatStudiosRefusalLine('generate_image', result.code, result.message);
   const path = /^\/api\/media\/[A-Za-z0-9-]{1,64}$/.test(result.mediaPath) ? result.mediaPath : 'your media list';
   const cents = typeof result.paidUsdCents === 'number' && Number.isFinite(result.paidUsdCents)
     ? Math.max(0, Math.round(result.paidUsdCents))
@@ -461,10 +472,7 @@ export function formatStudiosJobLine(
   if (!result.ok && result.code === 'approval_declined') {
     return `Studio: your human declined your ${verb} request; nothing was made or paid. Do not send the same request again.`;
   }
-  if (!result.ok) {
-    const message = typeof result.message === 'string' ? `: ${result.message.replace(/\s+/g, ' ')}` : '';
-    return `Studio: ${verb} refused (${String(result.code).slice(0, 40)})${message}`.slice(0, 200);
-  }
+  if (!result.ok) return formatStudiosRefusalLine(verb, result.code, result.message);
   if ('operation' in result && result.mediaPath === null) {
     return `Studio: your ${label} was made on your human's Studios account (it is in their Studios My Media); ClawVille could not copy it.`;
   }

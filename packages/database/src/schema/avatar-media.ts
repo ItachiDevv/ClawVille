@@ -83,6 +83,8 @@ export const vendorCallRequests = pgTable('vendor_call_requests', {
   /** A long job's runner renews this while it works; an expired lease on a 'running' row is recovered. */
   leaseUntil: timestamp('lease_until', { withTimezone: true }),
   jobDeadlineAt: timestamp('job_deadline_at', { withTimezone: true }),
+  /** The token of the runner that holds the row; every runner write matches it. */
+  leaseOwner: varchar('lease_owner', { length: 64 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({

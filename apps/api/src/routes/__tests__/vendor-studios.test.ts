@@ -251,7 +251,8 @@ describe('POST /videos, /characters, /recasts and GET /options/:menu (phase 3b)'
     expect(chars.status).toBe(403);
     expect(await chars.json()).toMatchObject({ code: 'operation_needs_studios_key' });
     nextOpResult = { ok: false, code: 'running', httpStatus: 202, message: 'running', ledgerId: null, requestId: REQ };
-    expect((await postOp('/recasts', { preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/a.png'] })).status).toBe(202);
+    expect((await postOp('/recasts', { preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/a.png'] })).status).toBe(400);
+    expect((await postOp('/recasts', { preset: 'recast-x-wan', imageUrls: ['https://api.clawville.world/api/media/11111111-2222-4333-8444-555555555555'] })).status).toBe(202);
     expect(opCalls.map((c) => [c.operation, c.actor, c.avatarId, c.idempotencyKey])).toEqual([
       ['video', 'agent', 'a1', 'key-12345678'],
       ['character_shots', 'agent', 'a1', 'key-12345678'],

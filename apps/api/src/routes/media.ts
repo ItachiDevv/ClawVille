@@ -10,18 +10,24 @@
  * answer the whole item (200); a range past the end answers 416. Reads are
  * limited per client IP, because each miss reads from Postgres.
  *
- * DELETE /api/media/:id - the human owner deletes one item of their own active
- * avatar (frees media quota). Human session only; an agent session is refused.
+ * POST /api/media/:id/delete-challenge, then DELETE /api/media/:id with
+ * `{ proof: { nonce, signature } }` - the human owner deletes one item of their
+ * own active avatar (frees media quota). Human session only (an agent session
+ * is refused), AND a fresh signature from the owner's linked wallet: a magic
+ * link passes through the agent, so the cookie alone never deletes.
  */
 
 import { Hono } from 'hono';
-import { and, avatars, db, eq } from '@clawville/database';
+import { bodyLimit } from 'hono/body-limit';
+import { z } from 'zod';
+import { and, avatars, db, eq, users } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { refuseAgentHeader, requireHumanSessionOrigin, type HumanGateCopy } from '../middleware/require-human-session';
 import { readMedia } from '../services/studios-images';
 import { deleteOwnMedia, readMediaHead, readMediaRange } from '../services/studios-media';
+import { issueMediaDeleteChallenge, verifyMediaDeleteProof } from '../services/spend-policy-proof';
 
 export const mediaRoutes = new Hono();
 
@@ -117,22 +123,75 @@ const DELETE_GATE: HumanGateCopy = {
   needsLoginMessage: 'Sign in again in your browser, then delete the media.',
 };
 
-mediaRoutes.delete(
-  '/:id',
+const deleteGate = [
   sessionMiddleware,
+  bodyLimit({ maxSize: 4 * 1024, onError: (c) => c.json({ error: 'payload_too_large', code: 'payload_too_large' }, 413) }),
   refuseAgentHeader(DELETE_GATE),
   requireAuth,
   requireHumanSessionOrigin(DELETE_GATE),
   requireNonGuestUser,
-  async (c) => {
-    const user = c.get('user' as never) as { id: string };
-    const id = c.req.param('id').toLowerCase();
-    if (!UUID.test(id)) return c.json({ error: 'not_found', code: 'not_found' }, 404);
-    const avatar = await db.query.avatars.findFirst({
-      where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-      columns: { id: true },
-    });
-    if (!avatar || !(await deleteOwnMedia(avatar.id, id))) return c.json({ error: 'not_found', code: 'not_found' }, 404);
-    return c.json({ deleted: true, mediaId: id });
-  },
-);
+] as const;
+
+const NEEDS_WALLET_LINK = {
+  error: 'media_delete_needs_wallet_link',
+  code: 'media_delete_needs_wallet_link',
+  message: 'Link your own wallet in the wallet panel first. It signs to delete media.',
+} as const;
+const NEEDS_WALLET_PROOF = {
+  error: 'media_delete_needs_wallet_proof',
+  code: 'media_delete_needs_wallet_proof',
+  message: 'Deleting media needs a signature from your linked wallet. Ask POST /api/media/<id>/delete-challenge first.',
+} as const;
+const INVALID_WALLET_PROOF = {
+  error: 'media_delete_invalid_wallet_proof',
+  code: 'media_delete_invalid_wallet_proof',
+  message: 'The wallet signature did not match. Ask for a new challenge and sign again.',
+} as const;
+const proofBodySchema = z.object({
+  proof: z.object({ nonce: z.string().min(32).max(64), signature: z.string().min(80).max(100) }).strict(),
+}).strict();
+
+/** The user's active avatar and linked wallet. */
+async function ownerOf(userId: string): Promise<{ avatarId: string | null; wallet: string | null }> {
+  const [avatar, owner] = await Promise.all([
+    db.query.avatars.findFirst({ where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)), columns: { id: true } }),
+    db.query.users.findFirst({ where: eq(users.id, userId), columns: { linkedWalletPubkey: true } }),
+  ]);
+  return { avatarId: avatar?.id ?? null, wallet: owner?.linkedWalletPubkey ?? null };
+}
+
+// A ledger-capable agent can redeem its own control link and hold a
+// `magic_link` cookie, which the human gate accepts. So a delete also needs a
+// fresh signature from the owner's linked wallet over the account, the avatar,
+// the media id and the action (single-use nonce, 120 s; Codex review 2026-11-06).
+mediaRoutes.post('/:id/delete-challenge', ...deleteGate, async (c) => {
+  const user = c.get('user' as never) as { id: string };
+  const id = c.req.param('id').toLowerCase();
+  if (!UUID.test(id)) return c.json({ error: 'not_found', code: 'not_found' }, 404);
+  const { avatarId, wallet } = await ownerOf(user.id);
+  if (!avatarId) return c.json({ error: 'not_found', code: 'not_found' }, 404);
+  if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
+  return c.json({ ...issueMediaDeleteChallenge(user.id, avatarId, id), walletPubkey: wallet });
+});
+
+mediaRoutes.delete('/:id', ...deleteGate, async (c) => {
+  const user = c.get('user' as never) as { id: string };
+  const id = c.req.param('id').toLowerCase();
+  if (!UUID.test(id)) return c.json({ error: 'not_found', code: 'not_found' }, 404);
+  const { avatarId, wallet } = await ownerOf(user.id);
+  if (!avatarId) return c.json({ error: 'not_found', code: 'not_found' }, 404);
+  if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
+  const body = proofBodySchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json(NEEDS_WALLET_PROOF, 403);
+  const verdict = verifyMediaDeleteProof({
+    userId: user.id,
+    avatarId,
+    mediaId: id,
+    nonce: body.data.proof.nonce,
+    signature: body.data.proof.signature,
+    walletPubkey: wallet,
+  });
+  if (verdict !== 'ok') return c.json(INVALID_WALLET_PROOF, 401);
+  if (!(await deleteOwnMedia(avatarId, id))) return c.json({ error: 'not_found', code: 'not_found' }, 404);
+  return c.json({ deleted: true, mediaId: id });
+});

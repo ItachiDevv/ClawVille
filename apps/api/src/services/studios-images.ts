@@ -46,7 +46,7 @@
  * Vendor text is untrusted: only media and our own status leave here.
  */
 
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { and, asc, avatarMedia, db, desc, eq, inArray, or, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
 import {
   SPEND_APPROVAL_MAX_AWAITING,
@@ -342,18 +342,21 @@ async function storeSources(input: {
 
 type AccountCall =
   | { ok: true; json: unknown }
-  | { ok: false; code: 'studios_key_invalid' | 'studios_account_refused' | 'vendor_refused' | 'vendor_unreachable' | 'outcome_unknown' };
+  | { ok: false; code: 'studios_key_invalid' | 'studios_account_refused' | 'vendor_refused' | 'outcome_unknown' };
 
 /**
- * One call with the human's own key. `unknownOnError`: a timeout or a broken
- * connection after sending may have billed the key (a video render), so it is
- * `outcome_unknown`, never retried; for an image it stays `vendor_unreachable`
- * (phase 2b).
+ * One call with the human's own key (Codex review 2026-11-06). Only a
+ * refusal that is clearly not charged says "nothing was paid": 401/403 (the
+ * key), 402 (no credits), and the statuses docs.md marks as not charged for
+ * this endpoint (`unchargedStatus` in vendors/studios-operations.ts). Every
+ * other outcome may already have billed the key: any other status (a 5xx
+ * included), a timeout, a network error (it cannot tell before from after the
+ * send) and a 2xx that cannot be read are `outcome_unknown`, never retried.
  */
 async function callWithAccountKey(
   key: string,
   request: { method?: 'POST' | 'GET'; url: string; body?: Record<string, unknown>; headers?: Record<string, string> },
-  opts: { timeoutMs: number; replyMaxBytes?: number; unknownOnError?: boolean },
+  opts: { timeoutMs: number; replyMaxBytes?: number; unchargedStatus: (status: number) => boolean },
 ): Promise<AccountCall> {
   let res: Response;
   try {
@@ -370,13 +373,17 @@ async function callWithAccountKey(
       redirect: 'error',
     });
   } catch {
-    return { ok: false, code: opts.unknownOnError ? 'outcome_unknown' : 'vendor_unreachable' };
+    return { ok: false, code: 'outcome_unknown' };
   }
-  if (res.ok) return { ok: true, json: await readJsonCapped(res, opts.replyMaxBytes).catch(() => null) };
+  if (res.ok) {
+    const json = await readJsonCapped(res, opts.replyMaxBytes).catch(() => null);
+    return json === null ? { ok: false, code: 'outcome_unknown' } : { ok: true, json };
+  }
   await res.body?.cancel().catch(() => {});
   if (res.status === 401 || res.status === 403) return { ok: false, code: 'studios_key_invalid' };
   if (res.status === 402) return { ok: false, code: 'studios_account_refused' };
-  return { ok: false, code: 'vendor_refused' };
+  if (opts.unchargedStatus(res.status)) return { ok: false, code: 'vendor_refused' };
+  return { ok: false, code: 'outcome_unknown' };
 }
 
 type Executor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
@@ -569,8 +576,14 @@ function mediaItemsOf(result: unknown): StudiosMediaItem[] {
   });
 }
 
+/** A row and the token of the runner that holds it (`lease_owner`). */
+export interface JobClaim {
+  requestId: string;
+  owner: string;
+}
+
 type Reservation =
-  | { kind: 'new'; requestId: string }
+  | { kind: 'new'; requestId: string; owner: string }
   | { kind: 'done'; result: StudiosOperationResult };
 
 /** Reserve the request, or find the earlier one, under the avatar's lock. */
@@ -654,22 +667,25 @@ async function reserveRequest(input: {
       if (!created) throw new Error('vendor_call_requests insert returned no row');
       return { kind: 'done', result: awaiting(created.id, expiresAt) };
     }
+    const owner = randomUUID();
     const [created] = await tx.insert(vendorCallRequests).values({
       ...base,
+      leaseOwner: owner,
       // A long job is 'running' from the start, with a lease its runner renews.
       ...(op.long ? { status: 'running', leaseUntil: new Date(Date.now() + JOB_LEASE_MS) } : {}),
     }).returning({ id: vendorCallRequests.id });
     if (!created) throw new Error('vendor_call_requests insert returned no row');
-    return { kind: 'new', requestId: created.id };
+    return { kind: 'new', requestId: created.id, owner };
   });
 }
 
 /**
  * Record the outcome on the request row, then return it unchanged. Only a row
- * that still runs is written, so a row a recovery pass already settled stays.
+ * that still runs AND is still held by this claim's token is written, so a row
+ * that a recovery pass took over or settled stays as it is.
  */
 async function finishRequest<T extends StudiosOperationResult>(
-  requestId: string,
+  claim: JobClaim,
   result: T,
   extra: { result?: unknown; vendorMediaId?: string | null; status?: 'done' | 'failed' | 'ambiguous' } = {},
 ): Promise<T> {
@@ -682,13 +698,33 @@ async function finishRequest<T extends StudiosOperationResult>(
     ...(extra.vendorMediaId !== undefined ? { vendorMediaId: extra.vendorMediaId } : {}),
     leaseUntil: null,
     updatedAt: new Date(),
-  }).where(and(eq(vendorCallRequests.id, requestId), inArray(vendorCallRequests.status, ['pending', 'running'])));
+  }).where(and(
+    eq(vendorCallRequests.id, claim.requestId),
+    eq(vendorCallRequests.leaseOwner, claim.owner),
+    inArray(vendorCallRequests.status, ['pending', 'running']),
+  ));
   return result;
+}
+
+/** True while this claim still holds the row (checked before any result is stored). */
+async function holdsClaim(claim: JobClaim): Promise<boolean> {
+  const [row] = await db.select({ id: vendorCallRequests.id }).from(vendorCallRequests).where(and(
+    eq(vendorCallRequests.id, claim.requestId),
+    eq(vendorCallRequests.leaseOwner, claim.owner),
+    inArray(vendorCallRequests.status, ['pending', 'running']),
+  )).limit(1);
+  return Boolean(row);
+}
+
+/** The answer when another runner took the row over: nothing is written or stored. */
+function lostClaim(): StudiosImageRefusal {
+  return failure('outcome_unknown');
 }
 
 /** The finished result of a non-image operation, written to the row. */
 async function finishOperation(input: {
   requestId: string;
+  owner: string;
   op: StudiosOperationDef;
   mode: StudiosMode;
   media: StudiosMediaItem[];
@@ -700,7 +736,7 @@ async function finishOperation(input: {
   // Wallet mode: nothing stored means the paid result is lost (Studios keeps
   // no copy of an x402 call). Key mode: Studios keeps it in My Media.
   if (input.media.length === 0 && input.mode === 'wallet') {
-    return finishRequest(input.requestId, failure('media_missing', input.ledgerId));
+    return finishRequest({ requestId: input.requestId, owner: input.owner }, failure('media_missing', input.ledgerId));
   }
   const success: StudiosOperationSuccess = {
     ok: true,
@@ -716,7 +752,7 @@ async function finishOperation(input: {
     paidUsdCents: input.paidUsdCents,
     txSignature: input.txSignature,
   };
-  return finishRequest(input.requestId, success, {
+  return finishRequest({ requestId: input.requestId, owner: input.owner }, success, {
     result: { media: input.media.map(({ slot, mediaId }) => ({ slot, mediaId })) },
     vendorMediaId: input.vendorMediaId,
   });
@@ -724,6 +760,8 @@ async function finishOperation(input: {
 
 interface RunInput {
   requestId: string;
+  /** The token of the runner that holds the row. */
+  owner: string;
   avatarId: string;
   actor: 'human' | 'agent';
   op: StudiosOperationDef;
@@ -747,6 +785,7 @@ function walletPin(op: StudiosOperationDef, signedMax: bigint | undefined): bigi
  */
 async function runOneCall(input: RunInput): Promise<StudiosOperationResult> {
   const { op, requestId } = input;
+  const claim: JobClaim = { requestId, owner: input.owner };
   const request = op.build(input.params, { requestId });
   const prompt = op.promptOf(input.params);
   const isImage = op.id === 'image';
@@ -755,18 +794,19 @@ async function runOneCall(input: RunInput): Promise<StudiosOperationResult> {
     const result = await callWithAccountKey(input.key, request, {
       timeoutMs: op.callTimeoutMs,
       replyMaxBytes: op.replyMaxBytes,
-      unknownOnError: !isImage,
+      unchargedStatus: op.unchargedStatus,
     });
-    if (!result.ok) return finishRequest(requestId, failure(result.code));
+    if (!result.ok) return finishRequest(claim, failure(result.code));
+    if (!(await holdsClaim(claim))) return lostClaim();
     const media = await storeSources({ avatarId: input.avatarId, mode: 'account', actor: input.actor, prompt, ledgerId: null, operation: op.id, sources: op.readMedia(result.json) });
     if (isImage) {
-      if (!media[0]) return finishRequest(requestId, failure('image_missing'));
-      return finishRequest(requestId, { ok: true, mode: 'account', mediaId: media[0].mediaId, mediaPath: media[0].mediaPath, ledgerId: null, paidUsdCents: null, txSignature: null });
+      if (!media[0]) return finishRequest(claim, failure('image_missing'));
+      return finishRequest(claim, { ok: true, mode: 'account', mediaId: media[0].mediaId, mediaPath: media[0].mediaPath, ledgerId: null, paidUsdCents: null, txSignature: null });
     }
-    return finishOperation({ requestId, op, mode: 'account', media, vendorMediaId: null, ledgerId: null, paidUsdCents: null, txSignature: null });
+    return finishOperation({ requestId, owner: input.owner, op, mode: 'account', media, vendorMediaId: null, ledgerId: null, paidUsdCents: null, txSignature: null });
   }
 
-  if (!op.modes.includes('wallet') || op.maxCallAtomic === null) return finishRequest(requestId, failure('operation_needs_studios_key'));
+  if (!op.modes.includes('wallet') || op.maxCallAtomic === null) return finishRequest(claim, failure('operation_needs_studios_key'));
   const paid = await callVendorWithAvatarWallet({
     avatarId: input.avatarId,
     actor: input.actor,
@@ -778,12 +818,13 @@ async function runOneCall(input: RunInput): Promise<StudiosOperationResult> {
     ...(isImage ? {} : { paidTimeoutMs: op.callTimeoutMs, replyMaxBytes: op.replyMaxBytes }),
   });
   if (!paid.ok) {
-    return finishRequest(requestId, failure(paid.code, paid.ledgerId ?? null), paid.code === 'payment_ambiguous' && !isImage ? { status: 'ambiguous' } : {});
+    return finishRequest(claim, failure(paid.code, paid.ledgerId ?? null), paid.code === 'payment_ambiguous' && !isImage ? { status: 'ambiguous' } : {});
   }
+  if (!(await holdsClaim(claim))) return lostClaim();
   const media = await storeSources({ avatarId: input.avatarId, mode: 'wallet', actor: input.actor, prompt, ledgerId: paid.ledgerId, operation: op.id, sources: op.readMedia(paid.responseJson) });
   if (isImage) {
-    if (!media[0]) return finishRequest(requestId, failure('image_missing', paid.ledgerId));
-    return finishRequest(requestId, {
+    if (!media[0]) return finishRequest(claim, failure('image_missing', paid.ledgerId));
+    return finishRequest(claim, {
       ok: true,
       mode: 'wallet',
       mediaId: media[0].mediaId,
@@ -793,7 +834,7 @@ async function runOneCall(input: RunInput): Promise<StudiosOperationResult> {
       txSignature: paid.txSignature,
     });
   }
-  return finishOperation({ requestId, op, mode: 'wallet', media, vendorMediaId: null, ledgerId: paid.ledgerId, paidUsdCents: paid.usdCents, txSignature: paid.txSignature });
+  return finishOperation({ requestId, owner: input.owner, op, mode: 'wallet', media, vendorMediaId: null, ledgerId: paid.ledgerId, paidUsdCents: paid.usdCents, txSignature: paid.txSignature });
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -808,42 +849,45 @@ export const recastTiming = { pollMs: RECAST_POLL_MS, deadlineMs: RECAST_DEADLIN
  */
 async function runRecast(input: RunInput & { vendorJobId: string | null; deadlineAt: Date | null }): Promise<StudiosOperationResult> {
   const { op, requestId, key } = input;
-  if (!key) return finishRequest(requestId, failure('operation_needs_studios_key'));
+  const claim: JobClaim = { requestId, owner: input.owner };
+  if (!key) return finishRequest(claim, failure('operation_needs_studios_key'));
   let jobId = input.vendorJobId;
   let deadline = input.deadlineAt?.getTime() ?? null;
   if (!jobId) {
     const start = await callWithAccountKey(key, op.build(input.params, { requestId }), {
       timeoutMs: op.callTimeoutMs,
       replyMaxBytes: op.replyMaxBytes,
-      unknownOnError: true,
+      unchargedStatus: op.unchargedStatus,
     });
-    if (!start.ok) return finishRequest(requestId, failure(start.code));
+    if (!start.ok) return finishRequest(claim, failure(start.code));
     jobId = readRecastStart(start.json);
-    if (!jobId) return finishRequest(requestId, failure('outcome_unknown'));
+    if (!jobId) return finishRequest(claim, failure('outcome_unknown'));
     deadline = Date.now() + recastTiming.deadlineMs;
     await db.update(vendorCallRequests)
       .set({ vendorJobId: jobId, jobDeadlineAt: new Date(deadline), updatedAt: new Date() })
-      .where(and(eq(vendorCallRequests.id, requestId), eq(vendorCallRequests.status, 'running')));
+      .where(and(eq(vendorCallRequests.id, requestId), eq(vendorCallRequests.leaseOwner, input.owner), eq(vendorCallRequests.status, 'running')));
   }
   const pollUrl = recastPollUrl(jobId);
-  if (!pollUrl) return finishRequest(requestId, failure('outcome_unknown'));
+  if (!pollUrl) return finishRequest(claim, failure('outcome_unknown'));
   const end = deadline ?? Date.now() + recastTiming.deadlineMs;
   for (;;) {
-    if (Date.now() >= end) return finishRequest(requestId, failure('job_timeout'));
+    if (Date.now() >= end) return finishRequest(claim, failure('job_timeout'));
     await sleep(Math.min(recastTiming.pollMs, Math.max(0, end - Date.now())));
-    if (Date.now() >= end) return finishRequest(requestId, failure('job_timeout'));
-    const reply = await callWithAccountKey(key, { method: 'GET', url: pollUrl }, { timeoutMs: 30_000, replyMaxBytes: op.replyMaxBytes });
+    if (Date.now() >= end) return finishRequest(claim, failure('job_timeout'));
+    // A poll is free (docs.md: GET /api/v1/videos/recast/{id} "Billing: free"); any failed poll is tried again.
+    const reply = await callWithAccountKey(key, { method: 'GET', url: pollUrl }, { timeoutMs: 30_000, replyMaxBytes: op.replyMaxBytes, unchargedStatus: () => true });
     if (!reply.ok) {
-      if (reply.code === 'studios_key_invalid') return finishRequest(requestId, failure('studios_key_invalid'));
+      if (reply.code === 'studios_key_invalid') return finishRequest(claim, failure('studios_key_invalid'));
       continue; // A poll that fails changes nothing; try again until the deadline.
     }
     const poll = readRecastPoll(reply.json);
     if (!poll || poll.state === 'running') continue;
-    if (poll.state === 'failed') return finishRequest(requestId, failure('job_failed'));
+    if (poll.state === 'failed') return finishRequest(claim, failure('job_failed'));
+    if (!(await holdsClaim(claim))) return lostClaim();
     const media = await storeSources({
       avatarId: input.avatarId, mode: 'account', actor: input.actor, prompt: op.promptOf(input.params), ledgerId: null, operation: op.id, sources: poll.sources,
     });
-    return finishOperation({ requestId, op, mode: 'account', media, vendorMediaId: poll.vendorMediaId, ledgerId: null, paidUsdCents: null, txSignature: null });
+    return finishOperation({ requestId, owner: input.owner, op, mode: 'account', media, vendorMediaId: poll.vendorMediaId, ledgerId: null, paidUsdCents: null, txSignature: null });
   }
 }
 
@@ -867,23 +911,25 @@ function keySha(key: string | null): string | null {
  * approved with; when absent it is loaded again and must still be the key the
  * row was made with (the credential digest is bound to the request).
  */
-export async function executeLongJob(requestId: string, key?: string | null): Promise<StudiosOperationResult | null> {
+export async function executeLongJob(requestId: string, owner: string, key?: string | null): Promise<StudiosOperationResult | null> {
   const [row] = await db.select().from(vendorCallRequests).where(eq(vendorCallRequests.id, requestId)).limit(1);
-  if (!row || row.status !== 'running') return null;
+  if (!row || row.status !== 'running' || row.leaseOwner !== owner) return null;
+  const claim: JobClaim = { requestId, owner };
   const op = STUDIOS_OPERATIONS[row.operation as StudiosOperationId];
-  if (!op?.long) return finishRequest(requestId, failure('outcome_unknown'));
+  if (!op?.long) return finishRequest(claim, failure('outcome_unknown'));
   const params = (row.params ?? {}) as StudiosParams;
   const actor = row.actor === 'human' ? 'human' : 'agent';
   let useKey: string | null = null;
   if (row.mode === 'account') {
     const current = key === undefined ? await loadKeyOrInvalid(row.avatarId) : key;
-    if (current === undefined) return finishRequest(requestId, failure('studios_key_invalid'));
-    if (!current || keySha(current) !== row.credentialSha256) return finishRequest(requestId, failure('studios_key_changed'));
+    if (current === undefined) return finishRequest(claim, failure('studios_key_invalid'));
+    if (!current || keySha(current) !== row.credentialSha256) return finishRequest(claim, failure('studios_key_changed'));
     useKey = current;
   }
   const maxCallAtomic = (row.result as { signedMaxAtomic?: unknown } | null)?.signedMaxAtomic;
   const base: RunInput = {
     requestId,
+    owner,
     avatarId: row.avatarId,
     actor,
     op,
@@ -896,9 +942,9 @@ export async function executeLongJob(requestId: string, key?: string | null): Pr
   return runOneCall(base);
 }
 
-async function startLongJob(requestId: string, key: string | null): Promise<void> {
+async function startLongJob(claim: JobClaim, key: string | null): Promise<void> {
   const { startStudiosJob } = await import('./studios-job-runner');
-  startStudiosJob(requestId, key);
+  startStudiosJob(claim.requestId, claim.owner, key);
 }
 
 /**
@@ -935,11 +981,12 @@ export async function requestStudiosOperation(input: {
   });
   if (reservation.kind === 'done') return reservation.result;
   if (op.long) {
-    await startLongJob(reservation.requestId, key);
+    await startLongJob(reservation, key);
     return running(reservation.requestId);
   }
   return runOneCall({
     requestId: reservation.requestId,
+    owner: reservation.owner,
     avatarId: input.avatarId,
     actor: input.actor,
     op,
@@ -1075,6 +1122,7 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
   const currentMode = key ? 'account' : 'wallet';
   const currentCredential = keySha(key);
   const signedMaxAtomic = input.terms.mode === 'wallet' ? BigInt(input.terms.maxUsdCents ?? 0) * ATOMIC_PER_CENT : undefined;
+  const owner = randomUUID();
 
   const claim = await db.transaction(async (tx) => {
     const found = await lockAwaitingRow(tx, input.avatarId, input.requestId);
@@ -1115,6 +1163,7 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
     // row. Nothing flipped means nothing runs.
     const [flipped] = await tx.update(vendorCallRequests).set({
       status: op.long ? 'running' : 'pending',
+      leaseOwner: owner,
       ...(op.long ? {
         leaseUntil: new Date(Date.now() + JOB_LEASE_MS),
         // The signed amount travels with the row to the runner (our own value).
@@ -1139,11 +1188,12 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
   const { row, op } = claim;
   const surface = row.surface === 'hosted' ? 'hosted' : 'api';
   if (op.long) {
-    await startLongJob(row.id, key);
+    await startLongJob({ requestId: row.id, owner }, key);
     return { result: running(row.id), surface, operation: op.id };
   }
   const result = await runOneCall({
     requestId: row.id,
+    owner,
     avatarId: input.avatarId,
     actor: row.actor === 'human' ? 'human' : 'agent',
     op,
@@ -1308,9 +1358,10 @@ export type RecoveryOutcome = 'resume' | 'failed' | 'ambiguous' | 'skipped';
  *   - any other key-mode row: Studios may have billed the key -> failed
  *     `outcome_unknown` (not sent again).
  */
-export async function recoverUnfinishedRequest(requestId: string, opts: { resumeRecast: boolean }): Promise<RecoveryOutcome> {
+export async function recoverUnfinishedRequest(requestId: string, owner: string, opts: { resumeRecast: boolean }): Promise<RecoveryOutcome> {
   const [row] = await db.select().from(vendorCallRequests).where(eq(vendorCallRequests.id, requestId)).limit(1);
-  if (!row || (row.status !== 'running' && row.status !== 'pending')) return 'skipped';
+  if (!row || (row.status !== 'running' && row.status !== 'pending') || row.leaseOwner !== owner) return 'skipped';
+  const claim: JobClaim = { requestId, owner };
   if (opts.resumeRecast && row.operation === 'recast' && row.mode === 'account' && row.status === 'running' && row.vendorJobId) {
     return 'resume';
   }
@@ -1324,29 +1375,29 @@ export async function recoverUnfinishedRequest(requestId: string, opts: { resume
       eq(vendorSpendLedger.idempotencyKey, row.idempotencyKey),
     )).limit(1);
     if (!ledger) {
-      await finishRequest(row.id, failure('interrupted_not_paid'));
+      await finishRequest(claim, failure('interrupted_not_paid'));
       return 'failed';
     }
     if (ledger.status === 'paid') {
-      await finishRequest(row.id, failure('result_lost', ledger.id));
+      await finishRequest(claim, failure('result_lost', ledger.id));
       return 'failed';
     }
     if (ledger.status === 'failed') {
-      await finishRequest(row.id, failure('payment_prepare_failed', ledger.id));
+      await finishRequest(claim, failure('payment_prepare_failed', ledger.id));
       return 'failed';
     }
     // 'pending' with no stored signature was never sent (the signature is
     // stored before sending); the reconcile pass marks it never_sent.
     if (ledger.status === 'pending' && !ledger.payerSignature) {
-      await finishRequest(row.id, failure('interrupted_not_paid', ledger.id));
+      await finishRequest(claim, failure('interrupted_not_paid', ledger.id));
       return 'failed';
     }
     await db.update(vendorSpendLedger)
       .set({ status: 'ambiguous', failureReason: 'runner_interrupted_after_signing', updatedAt: new Date() })
       .where(and(eq(vendorSpendLedger.id, ledger.id), eq(vendorSpendLedger.status, 'pending')));
-    await finishRequest(row.id, failure('payment_ambiguous', ledger.id), { status: 'ambiguous' });
+    await finishRequest(claim, failure('payment_ambiguous', ledger.id), { status: 'ambiguous' });
     return 'ambiguous';
   }
-  await finishRequest(row.id, failure('outcome_unknown'));
+  await finishRequest(claim, failure('outcome_unknown'));
   return 'failed';
 }

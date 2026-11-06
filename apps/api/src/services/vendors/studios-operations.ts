@@ -74,14 +74,25 @@ export type StudiosCharacterShot = (typeof STUDIOS_CHARACTER_SHOTS)[number];
 // ---------------------------------------------------------------------------
 
 export const MEDIA_URL_MAX = 2048;
-const BLOCKED_SUFFIXES = ['localhost', 'local', 'internal', 'intranet', 'lan', 'home', 'corp', 'home.arpa', 'onion', 'test', 'invalid', 'example'];
+const BLOCKED_SUFFIXES = [
+  'localhost', 'local', 'internal', 'intranet', 'lan', 'home', 'corp', 'home.arpa', 'onion', 'test', 'invalid', 'example',
+  // Wildcard-DNS services: any name under them resolves to the IP written in
+  // the name (127.0.0.1.nip.io) or to loopback (localtest.me, lvh.me).
+  'nip.io', 'sslip.io', 'xip.io', 'localtest.me', 'lvh.me',
+];
 
 /**
  * A strict https URL for an input image or clip, or null. Our server never
  * fetches it (Studios does), but it must still not point at a private host:
- * https only, port 443, no user info, a DNS name (no IP literal of any form),
- * at least two labels, no private-use suffix, a letter TLD, and at most 2048
- * characters. Returns the normalized URL.
+ * https only, port 443, no user info, a DNS name (no IP literal of any form,
+ * v4 or v6), at least two labels, no private-use suffix, no wildcard-DNS
+ * service, a letter TLD, and at most 2048 characters. Returns the normalized
+ * URL.
+ *
+ * Limit: this is a check of the text only. What the name resolves to when
+ * Studios fetches it, and any redirect Studios follows, cannot be fully
+ * checked from our side. So the Studios operations accept only the narrower
+ * `validateStudiosInputUrl` below.
  */
 export function validateMediaInputUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -111,8 +122,32 @@ export function validateMediaInputUrl(raw: unknown): string | null {
   return url.href;
 }
 
+/** Our public API hosts; an input on them must be one stored item of ours. */
+export const OWN_MEDIA_HOSTS = ['api.clawville.world', 'api-staging.clawville.world'] as const;
+const OWN_MEDIA_PATH_RE = /^\/api\/media\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The only input URLs a Studios operation takes (REST route, MCP tool and
+ * hosted verb all use the same schemas; Codex review 2026-11-06): a URL that
+ * passes `validateMediaInputUrl` AND is either one of our own stored items
+ * (`https://<our API host>/api/media/<uuid>`, no query or fragment) or on the
+ * Studios host itself. No third-party host, so no name we cannot vouch for
+ * reaches Studios' fetcher. Returns the normalized URL or null.
+ */
+export function validateStudiosInputUrl(raw: unknown): string | null {
+  const href = validateMediaInputUrl(raw);
+  if (!href) return null;
+  const url = new URL(href);
+  const host = url.hostname.toLowerCase();
+  if (host === STUDIOS_HOST) return href;
+  if ((OWN_MEDIA_HOSTS as readonly string[]).includes(host) && OWN_MEDIA_PATH_RE.test(url.pathname) && !url.search && !url.hash) {
+    return href;
+  }
+  return null;
+}
+
 const mediaUrl = z.string().max(MEDIA_URL_MAX).transform((value, ctx) => {
-  const ok = validateMediaInputUrl(value);
+  const ok = validateStudiosInputUrl(value);
   if (!ok) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'media_url_invalid' });
     return z.NEVER;
@@ -214,6 +249,14 @@ export interface StudiosOperationDef {
   replyMaxBytes: number;
   /** Time limit for the call that makes the media. */
   callTimeoutMs: number;
+  /**
+   * Key mode: true only for an HTTP status that docs.md marks as NOT charged
+   * for this endpoint (the reply is then `vendor_refused`, nothing paid).
+   * 401/403 (key) and 402 (credits) are refusals for every endpoint. Every
+   * other status, a timeout, a network error and an unreadable 2xx is
+   * `outcome_unknown` (the key may have paid; never retried).
+   */
+  unchargedStatus: (status: number) => boolean;
   /** The text kept in `vendor_call_requests.prompt` ('' when the operation has none). */
   promptOf: (params: StudiosParams) => string;
   modelOf: (params: StudiosParams) => string | null;
@@ -257,6 +300,9 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
     reserveBytes: () => IMAGE_MAX_BYTES,
     replyMaxBytes: REPLY_12_MB,
     callTimeoutMs: 120_000,
+    // docs.md, POST /api/v1/images/generations: "A request that fails
+    // moderation (422), is invalid (4xx), or fails upstream (502) is not charged."
+    unchargedStatus: (status) => (status >= 400 && status < 500) || status === 502,
     promptOf: (p) => (p as ImageParams).prompt,
     modelOf: (p) => (p as ImageParams).model ?? null,
     build: (p) => ({ method: 'POST', ...buildStudiosImageRequest(p as ImageParams) }),
@@ -280,6 +326,10 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
     replyMaxBytes: 1 * MB,
     // Studios waits up to 5 minutes for the render.
     callTimeoutMs: 330_000,
+    // docs.md, POST /api/v1/videos/generations: "A render that fails or times
+    // out returns 502 and is not charged; so is a request that fails
+    // moderation (422) or is invalid (4xx)."
+    unchargedStatus: (status) => (status >= 400 && status < 500) || status === 502,
     promptOf: (p) => (p as VideoParams).prompt,
     modelOf: (p) => (p as VideoParams).model ?? STUDIOS_VIDEO_DEFAULT_MODEL,
     build: (raw) => {
@@ -314,6 +364,10 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
     // Up to four base64 images of at most 8 MB each.
     replyMaxBytes: 48 * MB,
     callTimeoutMs: 180_000,
+    // docs.md, POST /api/v1/images/characters names no uncharged status
+    // ("If the sheet fails, the call fails and is not charged" gives no status
+    // code), so only the key and credit refusals are clear.
+    unchargedStatus: () => false,
     promptOf: (p) => (p as CharacterParams).prompt ?? '',
     modelOf: (p) => (p as CharacterParams).model ?? null,
     build: (raw) => {
@@ -358,6 +412,9 @@ export const STUDIOS_OPERATIONS: Record<StudiosOperationId, StudiosOperationDef>
     reserveBytes: () => VIDEO_MAX_BYTES,
     replyMaxBytes: 1 * MB,
     callTimeoutMs: 60_000,
+    // docs.md, POST /api/v1/videos/recast: "The clip is checked before
+    // anything is charged." Only the input-check refusals (400, 422) are clear.
+    unchargedStatus: (status) => status === 400 || status === 422,
     promptOf: (p) => (p as RecastParams).direction ?? '',
     modelOf: (p) => (p as RecastParams).preset ?? null,
     build: (raw, ctx) => {

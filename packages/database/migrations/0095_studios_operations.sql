@@ -17,6 +17,9 @@
 --                    row whose lease ran out belongs to a dead runner and is
 --                    recovered (never called or paid again).
 --   job_deadline_at  the hard end of a long job (recast polling).
+--   lease_owner      the token of the runner that holds the row. Renewing the
+--                    lease, storing a result and finishing the row each match
+--                    it, so a runner whose lease was taken over writes nothing.
 -- Two new statuses:
 --   running    a long job (video, recast) runs in the API background runner;
 --              the route answered 202 and the agent reads the row.
@@ -45,6 +48,7 @@ ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "vendor_media_id" va
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "result" jsonb;
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "lease_until" timestamp with time zone;
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "job_deadline_at" timestamp with time zone;
+ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "lease_owner" varchar(64);
 
 ALTER TABLE "vendor_call_requests" DROP CONSTRAINT IF EXISTS "vendor_call_requests_operation_check";
 ALTER TABLE "vendor_call_requests" ADD CONSTRAINT "vendor_call_requests_operation_check"

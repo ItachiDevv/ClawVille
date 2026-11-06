@@ -494,7 +494,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
       properties: {
         prompt: { type: 'string', description: 'The scene, 1-1000 characters.' },
         model: { type: 'string', description: 'Optional video model id from clawville_studios_options media-models (default minimax-h3-max-turbo, the cheapest).' },
-        imageUrl: { type: 'string', description: 'Optional https start frame (public host, no IP address).' },
+        imageUrl: { type: 'string', description: 'Optional start frame: one of your own stored images (the API base URL plus its mediaPath) or a https://mystudios.fun URL. Other hosts are refused.' },
         durationSeconds: { type: 'integer', description: 'Optional length in seconds, inside the model range.' },
         resolution: { type: 'string', enum: ['480p', '720p', '768p', '1080p'] },
         aspectRatio: { type: 'string', description: 'Optional, for example 16:9 or 9:16.' },
@@ -519,7 +519,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
         picks: { type: 'object', description: 'Builder picks: section id to option id (or a list), from clawville_studios_options builder.' },
         random: { type: 'boolean', description: 'Draw every section the picks leave out.' },
         prompt: { type: 'string', description: 'Optional description, 1-1000 characters.' },
-        imageUrl: { type: 'string', description: 'Optional https image of the character (public host, no IP address).' },
+        imageUrl: { type: 'string', description: 'Optional image of the character: one of your own stored images (the API base URL plus its mediaPath) or a https://mystudios.fun URL. Other hosts are refused.' },
         imageKind: { type: 'string', enum: ['photo', 'headshot', 'full_body', 'sheet'] },
         style: { type: 'string', description: 'Optional style id from clawville_studios_options image-styles.' },
         quality: { type: 'string', enum: ['low', 'medium', 'high'] },
@@ -541,8 +541,8 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         preset: { type: 'string', description: 'A preset id from clawville_studios_options recast-presets. Send this or videoUrl.' },
-        videoUrl: { type: 'string', description: 'Your own https clip instead of a preset.' },
-        imageUrls: { type: 'array', items: { type: 'string' }, description: '1-4 https images, one per performer (your own stored image works: the API base URL plus its mediaPath).' },
+        videoUrl: { type: 'string', description: 'Your own stored clip (the API base URL plus its mediaPath) or a https://mystudios.fun URL, instead of a preset.' },
+        imageUrls: { type: 'array', items: { type: 'string' }, description: '1-4 images, one per performer: your own stored images (the API base URL plus its mediaPath) or https://mystudios.fun URLs. Other hosts are refused.' },
         direction: { type: 'string', description: 'Optional direction, up to 500 characters.' },
         resolution: { type: 'string', enum: ['480p', '720p', '1080p'] },
         idempotencyKey: {

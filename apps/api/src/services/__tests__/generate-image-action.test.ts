@@ -235,7 +235,7 @@ describe('generate_image hosted action', () => {
       httpStatus: 502,
       ledgerId: 'LEDGER_Z',
     });
-    expect(refused.startsWith('Studio: generate_image refused (payment_ambiguous): Studios did not confirm')).toBe(true);
+    expect(refused.startsWith('Studio: generate_image refused (payment_ambiguous): Do not retry; it counts toward the daily cap until it is checked on chain. Studios did not confirm')).toBe(true);
     expect(refused).not.toContain('LEDGER_Z');
     for (const line of [ok, odd, refused, formatGenerateImageInFlightRefusal()]) {
       expect(line.length).toBeLessThanOrEqual(200);
