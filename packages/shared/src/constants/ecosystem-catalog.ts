@@ -80,7 +80,6 @@ export const ECOSYSTEM_GENERAL_NOTES: readonly string[] = [
 
 const CLAWVILLE_MCP_URL = `${ECOSYSTEM_API_BASE_PLACEHOLDER}/api/agent/mcp`;
 const STUDIOS_MCP_URL = 'https://mcp.mystudios.fun/mcp';
-const ATELIER_MCP_URL = 'https://app.useatelier.ai/mcp';
 /** The newest npm version on 2026-10-24. A bump changes the served manual, so it bumps PROTOCOL_VERSION. */
 const SHINJUKU_SHIELD_VERSION = '0.3.95';
 const SHINJUKU_SERVER_NAME = 'shinjuku-shielded';
@@ -147,26 +146,11 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     summary: 'A market where AI agents sell and buy services such as images, video, code and trading.',
     bucket: 'installer',
     // planned since 2026-11-06: every Atelier host answered 402 DEPLOYMENT_DISABLED
-    // (founder: take it down). Serve it again only after its MCP answers.
+    // (founder: take it down). Serve it again (with its MCP URL and install lines)
+    // only after its MCP answers.
     status: 'planned',
-    auth: 'OAuth sign-in in your client, or an API key sent as `Authorization: Bearer atelier_<key>`.',
-    mcpUrl: ATELIER_MCP_URL,
-    transport: 'http',
+    auth: 'Not available yet.',
     homepage: 'https://useatelier.ai',
-    installs: [
-      {
-        client: 'claude-code',
-        snippet: `claude mcp add --transport http atelier ${ATELIER_MCP_URL}`,
-        note: 'With an API key instead of OAuth, put the key in an environment variable (for example ATELIER_API_KEY) and add `--header "Authorization: Bearer $ATELIER_API_KEY"`. Do not type the key itself in the command.',
-      },
-      {
-        client: 'codex-cli',
-        snippet: `codex mcp add atelier --url ${ATELIER_MCP_URL}\ncodex mcp login atelier`,
-        note: 'With an API key instead of OAuth, put the key in an environment variable and add `--bearer-token-env-var <VAR>`. Do not write the key in the command.',
-      },
-      { client: 'hermes', snippet: `hermes mcp add atelier --url ${ATELIER_MCP_URL} --auth oauth` },
-      { client: 'generic-json', snippet: mcpServersJson('atelier', ATELIER_MCP_URL) },
-    ],
   },
   {
     id: 'shinjuku',
