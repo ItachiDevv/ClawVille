@@ -412,9 +412,11 @@ async function inFlightTwin(executor: Executor, avatarId: string, operation: Stu
       or(
         // Still waiting or running: blocks at any age.
         inArray(vendorCallRequests.status, ['awaiting_approval', 'pending', 'running']),
-        // May have charged: blocks for 30 minutes from the time it ENDED (DB clock).
+        // May have charged: blocks for 30 minutes from the time it ENDED (DB
+        // clock). A row with no finished_at (it ended before 0097 and slipped
+        // past the backfill) uses its latest own time instead, so it still blocks.
         and(
-          sql`${vendorCallRequests.finishedAt} > now() - make_interval(secs => ${windowSeconds})`,
+          sql`coalesce(${vendorCallRequests.finishedAt}, GREATEST(${vendorCallRequests.createdAt}, ${vendorCallRequests.updatedAt}, ${vendorCallRequests.decidedAt})) > now() - make_interval(secs => ${windowSeconds})`,
           or(
             eq(vendorCallRequests.status, 'ambiguous'),
             and(eq(vendorCallRequests.status, 'failed'), inArray(vendorCallRequests.failureCode, [...STUDIOS_MAY_HAVE_CHARGED_CODES])),

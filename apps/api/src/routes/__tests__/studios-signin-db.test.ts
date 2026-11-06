@@ -21,6 +21,8 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import * as dbMod from '@clawville/database';
@@ -785,6 +787,38 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     const rec = await waiting(await ask('recast', { preset: 'p1', imageUrls: ['https://mystudios.fun/a.png'] }));
     expect(await ask('recast', { preset: 'p1', imageUrls: ['https://mystudios.fun/a.png'], resolution: '720p' })).toEqual(inFlightOf(rec, 'awaiting_approval'));
     await waiting(await ask('recast', { preset: 'p2', imageUrls: ['https://mystudios.fun/a.png'] }));
+  });
+
+  it('dedupe: a row that ENDED before 0097 (no finished_at) is backfilled by 0097 and blocks for 30 minutes after its last time; the query also covers a missed row', async () => {
+    await setRules({ requireApproval: true });
+    const insertEnded = async (minutesAgo: number) => {
+      const id = first(await db.execute<{ id: string }>(sql`
+        INSERT INTO vendor_call_requests (avatar_id, vendor, actor, surface, mode, status, failure_code, idempotency_key, operation, prompt, created_at, updated_at)
+        VALUES (${avatarId}, 'studios', 'agent', 'api', 'wallet', 'failed', 'outcome_unknown', ${key()}, 'video', 'old',
+          now() - make_interval(mins => ${minutesAgo + 5}), now() - make_interval(mins => ${minutesAgo}))
+        RETURNING id`)).id;
+      // As if it existed before the trigger: no finished_at (a same-status update keeps the written value).
+      await db.execute(sql`UPDATE vendor_call_requests SET finished_at = NULL WHERE id = ${id}`);
+      expect(first(await db.execute<{ f: string | null }>(sql`SELECT finished_at AS f FROM vendor_call_requests WHERE id = ${id}`)).f).toBeNull();
+      return id;
+    };
+    // (b) no backfill yet: the query falls back to the row's latest own time.
+    const missed = await insertEnded(10);
+    expect(await boat('agent', 'anything')).toEqual(inFlightOf(missed, 'failed'));
+    await db.execute(sql`UPDATE vendor_call_requests SET updated_at = now() - interval '31 minutes', created_at = now() - interval '40 minutes' WHERE id = ${missed}`);
+    await waiting(await boat('agent', 'anything'));
+    await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`);
+    // (a) the exact backfill statement from 0097 stamps it with its last time.
+    const migration = readFileSync(join(import.meta.dir, '../../../../../packages/database/migrations/0097_studios_request_fingerprint.sql'), 'utf8');
+    const backfill = /-- BACKFILL BEGIN[^\n]*\n([\s\S]*?)-- BACKFILL END/.exec(migration)![1]!.split('\n').filter((l) => !l.startsWith('--')).join('\n');
+    const old = await insertEnded(10);
+    await db.execute(sql.raw(backfill));
+    await db.execute(sql.raw(backfill)); // idempotent
+    const stamped = first(await db.execute<{ ok: boolean }>(sql`SELECT abs(extract(epoch FROM finished_at - updated_at)) < 1 AS ok FROM vendor_call_requests WHERE id = ${old}`));
+    expect(stamped.ok).toBe(true);
+    expect(await boat('human', 'anything')).toEqual(inFlightOf(old, 'failed'));
+    await endedAgo(old, 31);
+    await waiting(await boat('agent', 'anything'));
   });
 
   it('dedupe: a row from before 0097 (no fingerprint) blocks every request of its operation while it runs or may have charged', async () => {

@@ -30,6 +30,18 @@
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "input_fingerprint" varchar(64);
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "finished_at" timestamp with time zone;
 
+-- BACKFILL BEGIN (the DB test runs this exact statement)
+-- Rows that ENDED before this migration have no finished_at. Stamp them with
+-- the latest time the row really has (GREATEST skips NULLs). Conservative: a
+-- later time blocks longer. Idempotent: only NULL rows are touched. It runs
+-- before the trigger exists; with the trigger, a same-status update keeps the
+-- written time.
+UPDATE "vendor_call_requests"
+  SET "finished_at" = GREATEST("created_at", "updated_at", "decided_at")
+  WHERE "finished_at" IS NULL
+    AND "status" IN ('done', 'failed', 'ambiguous', 'declined', 'expired');
+-- BACKFILL END
+
 CREATE INDEX IF NOT EXISTS "vendor_call_requests_avatar_fingerprint_idx"
   ON "vendor_call_requests" ("avatar_id", "input_fingerprint");
 
