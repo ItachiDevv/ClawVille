@@ -76,7 +76,7 @@ import { ecosystemRoutes } from './routes/ecosystem';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
 import { vendorStudiosRoutes } from './routes/vendor-studios';
-import { vendorStudiosOAuthRoutes } from './routes/vendor-studios-oauth';
+import { redactStudiosOAuthCallbackQuery, vendorStudiosOAuthRoutes } from './routes/vendor-studios-oauth';
 import { STUDIOS_OAUTH_CLIENT_METADATA_PATH, buildStudiosClientMetadata } from './services/vendors/studios-oauth';
 import { mediaRoutes } from './routes/media';
 // Tokenomics E1/E2 — internal, admin-only EARNED import/verifier/claw-back.
@@ -220,12 +220,15 @@ const app = new Hono<AppContext>();
 // print fn scrubs only the LOG string; URLs/responses to the Hatcher partner are
 // unchanged. Pre-existing leak folded in at the P0 Codex gate (2026-07-01), same
 // class as the B1 body-id leak. See services/log-redact.ts.
+// The Studios sign-in callback query (OAuth `code`, `state`, `iss`) is
+// removed from the line the same way (routes/vendor-studios-oauth.ts).
+const redactLogLine = (line: string): string => redactBearerTokens(redactStudiosOAuthCallbackQuery(line));
 app.use(
   '*',
   logger((message: string, ...rest: string[]) => {
     console.log(
-      redactBearerTokens(message),
-      ...rest.map((r) => (typeof r === 'string' ? redactBearerTokens(r) : r)),
+      redactLogLine(message),
+      ...rest.map((r) => (typeof r === 'string' ? redactLogLine(r) : r)),
     );
   }),
 );
@@ -264,6 +267,12 @@ app.use('*', fingerprintMiddleware);
 // Its tools call the other routes in-process through `app.fetch` (see the
 // setMcpDispatcher call after the last route mount).
 app.route('/api/agent', agentMcpRoutes);
+
+// Studios sign-in (OAuth) routes (MCP hub phase 3c). Mounted BEFORE
+// jsonBodyGuard so their 1 KB body limit runs before anything reads the body,
+// and before the parent /api/vendors/studios prefix so its session middleware
+// does not run twice on these paths.
+app.route('/api/vendors/studios/oauth', vendorStudiosOAuthRoutes);
 
 // Reject malformed, non-empty JSON before route handlers call `c.req.json()`.
 // Raw-body signed/HMAC endpoints are exempt inside the guard so their exact
@@ -390,9 +399,7 @@ app.route('/api/ecosystem', ecosystemRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
 // Paid third-party tools, avatar wallet under the human's spend rules (MCP hub step 2 phase 2).
-// Studios sign-in (OAuth) routes, mounted BEFORE the parent prefix so its
-// session middleware does not run twice on these paths (MCP hub phase 3c).
-app.route('/api/vendors/studios/oauth', vendorStudiosOAuthRoutes);
+// The Studios sign-in routes are mounted above jsonBodyGuard (MCP hub phase 3c).
 app.route('/api/vendors/studios', vendorStudiosRoutes);
 // Images made by paid tools, served by unguessable id (MCP hub step 2 phase 2b).
 app.route('/api/media', mediaRoutes);

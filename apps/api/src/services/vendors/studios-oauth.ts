@@ -16,8 +16,8 @@
  *      only if the state row, locked, was not cancelled by an unlink meanwhile.
  *   3. `getAccessToken` returns a valid access token. Near expiry it claims
  *      the refresh (status 'refreshing', committed BEFORE the request), sends
- *      it outside any lock and writes the result only for the generation it
- *      claimed. An unknown outcome (timeout, network error, 5xx, unreadable
+ *      it outside any lock and writes the result only while the row still has
+ *      its link id, its own claim id and status 'refreshing'. An unknown outcome (timeout, network error, 5xx, unreadable
  *      reply) or `invalid_grant` marks the link 'broken' and throws
  *      `studios_oauth_relink_required`: a refresh token is never sent twice.
  *   4. `unlinkStudiosOAuth` cancels every open sign-in of the avatar and
@@ -28,7 +28,7 @@
  * zod and read with a byte limit; vendor error text is never relayed.
  */
 
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { z } from 'zod';
 import {
   and,
@@ -420,6 +420,9 @@ export async function completeStudiosSignIn(input: {
     if (!locked || locked.cancelledAt) return false;
     const sealed = sealTokens(result.tokens);
     const at = new Date();
+    // A new link id every time: a refresh claimed on an earlier link can never
+    // write into this one.
+    const linkId = randomUUID();
     await tx.insert(userVendorOAuthLinks)
       .values({
         avatarId: row.avatarId,
@@ -427,7 +430,8 @@ export async function completeStudiosSignIn(input: {
         ...sealed,
         status: 'active',
         refreshStartedAt: null,
-        generation: 1,
+        linkId,
+        refreshClaimId: null,
         linkedByUserId: input.userId,
         createdAt: at,
         updatedAt: at,
@@ -438,7 +442,8 @@ export async function completeStudiosSignIn(input: {
           ...sealed,
           status: 'active',
           refreshStartedAt: null,
-          generation: sql`${userVendorOAuthLinks.generation} + 1`,
+          linkId,
+          refreshClaimId: null,
           linkedByUserId: input.userId,
           createdAt: at,
           updatedAt: at,
@@ -488,16 +493,31 @@ function freshAccess(row: LinkRow, rejectedToken: string | undefined): string | 
   return rejectedToken !== undefined && token === rejectedToken ? null : token;
 }
 
-/** Mark broken, only if the row is still in the refresh this caller claimed. */
-async function markBroken(avatarId: string, generation: number): Promise<void> {
+interface RefreshClaim {
+  linkId: string;
+  claimId: string;
+}
+
+/** The row is still in THIS refresh claim: same link, same claim, still refreshing. */
+function claimRow(avatarId: string, claim: RefreshClaim) {
+  return and(
+    linkRow(avatarId),
+    eq(userVendorOAuthLinks.linkId, claim.linkId),
+    eq(userVendorOAuthLinks.refreshClaimId, claim.claimId),
+    eq(userVendorOAuthLinks.status, 'refreshing'),
+  );
+}
+
+/** Mark broken and end the claim, only if the row is still in this claim. */
+async function markBroken(avatarId: string, claim: RefreshClaim): Promise<void> {
   await db.update(userVendorOAuthLinks)
-    .set({ status: 'broken', refreshStartedAt: null, updatedAt: new Date() })
-    .where(and(linkRow(avatarId), eq(userVendorOAuthLinks.generation, generation)));
+    .set({ status: 'broken', refreshStartedAt: null, refreshClaimId: null, updatedAt: new Date() })
+    .where(claimRow(avatarId, claim));
 }
 
 type Claim =
   | { kind: 'token'; token: string }
-  | { kind: 'claimed'; generation: number; refreshToken: string }
+  | { kind: 'claimed'; claim: RefreshClaim; refreshToken: string }
   | { kind: 'wait' }
   | { kind: 'broken' }
   | { kind: 'not_linked' };
@@ -530,9 +550,10 @@ export async function getAccessToken(avatarId: string, options: { rejectedToken?
       if (locked.status === 'refreshing') {
         const started = locked.refreshStartedAt?.getTime() ?? 0;
         if (Date.now() - started > STUDIOS_REFRESH_STALE_MS) {
-          // The request that set this mark never reported back: its outcome is unknown.
+          // The request that set this mark never reported back: its outcome is
+          // unknown. End its claim too, so a late reply matches nothing.
           await tx.update(userVendorOAuthLinks)
-            .set({ status: 'broken', refreshStartedAt: null, updatedAt: new Date() })
+            .set({ status: 'broken', refreshStartedAt: null, refreshClaimId: null, updatedAt: new Date() })
             .where(linkRow(avatarId));
           return { kind: 'broken' };
         }
@@ -544,11 +565,11 @@ export async function getAccessToken(avatarId: string, options: { rejectedToken?
         await tx.update(userVendorOAuthLinks).set({ status: 'broken', updatedAt: new Date() }).where(linkRow(avatarId));
         return { kind: 'broken' };
       }
-      const generation = locked.generation + 1;
+      const claim: RefreshClaim = { linkId: locked.linkId, claimId: randomUUID() };
       await tx.update(userVendorOAuthLinks)
-        .set({ status: 'refreshing', refreshStartedAt: new Date(), generation, updatedAt: new Date() })
+        .set({ status: 'refreshing', refreshStartedAt: new Date(), refreshClaimId: claim.claimId, updatedAt: new Date() })
         .where(linkRow(avatarId));
-      return { kind: 'claimed', generation, refreshToken: decryptToken(locked.refreshEnc, locked.refreshIv, locked.refreshTag) };
+      return { kind: 'claimed', claim, refreshToken: decryptToken(locked.refreshEnc, locked.refreshIv, locked.refreshTag) };
     });
 
     if (claim.kind === 'not_linked') throw new StudiosOAuthError('studios_oauth_not_linked');
@@ -570,11 +591,12 @@ export async function getAccessToken(avatarId: string, options: { rejectedToken?
       // A server that does not rotate keeps the old refresh token valid.
       const sealed = sealTokens({ ...result.tokens, refreshToken: result.tokens.refreshToken ?? claim.refreshToken });
       const written = await db.update(userVendorOAuthLinks)
-        .set({ ...sealed, status: 'active', refreshStartedAt: null, updatedAt: new Date() })
-        .where(and(linkRow(avatarId), eq(userVendorOAuthLinks.generation, claim.generation)))
-        .returning({ generation: userVendorOAuthLinks.generation });
+        .set({ ...sealed, status: 'active', refreshStartedAt: null, refreshClaimId: null, updatedAt: new Date() })
+        .where(claimRow(avatarId, claim.claim))
+        .returning({ linkId: userVendorOAuthLinks.linkId });
       if (written.length === 0) {
-        // Unlinked or linked again meanwhile: these tokens belong to no link.
+        // Unlinked, linked again, or marked broken meanwhile: these tokens
+        // belong to no link.
         const t = result.tokens;
         await revokeToken(t.refreshToken ?? t.accessToken, t.refreshToken ? 'refresh_token' : 'access_token');
         continue;
@@ -584,12 +606,12 @@ export async function getAccessToken(avatarId: string, options: { rejectedToken?
     if (result.kind === 'rate_limited' || result.kind === 'refused') {
       // Studios answered and did not use the refresh token: release the claim.
       await db.update(userVendorOAuthLinks)
-        .set({ status: 'active', refreshStartedAt: null, updatedAt: new Date() })
-        .where(and(linkRow(avatarId), eq(userVendorOAuthLinks.generation, claim.generation)));
+        .set({ status: 'active', refreshStartedAt: null, refreshClaimId: null, updatedAt: new Date() })
+        .where(claimRow(avatarId, claim.claim));
       throw new StudiosOAuthError(result.kind === 'rate_limited' ? 'studios_oauth_unavailable' : 'studios_oauth_exchange_failed');
     }
     // invalid_grant, or an unknown outcome after the request was sent.
-    await markBroken(avatarId, claim.generation);
+    await markBroken(avatarId, claim.claim);
     throw new StudiosOAuthError('studios_oauth_relink_required');
   }
 }

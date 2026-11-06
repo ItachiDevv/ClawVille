@@ -65,6 +65,16 @@ import {
 
 export const vendorStudiosOAuthRoutes = new Hono<ActivityAuthContext>();
 
+// The callback URL carries the authorization `code`, `state` and `iss`. The
+// global request logger prints the path with its query, so index.ts passes
+// every log line through this before printing (path only for this route).
+const CALLBACK_QUERY_IN_LOG = /(\/api\/vendors\/studios\/oauth\/callback[^?\s]*)\?\S*/g;
+
+export function redactStudiosOAuthCallbackQuery(line: string): string {
+  if (typeof line !== 'string' || line.length === 0) return line;
+  return line.replace(CALLBACK_QUERY_IN_LOG, '$1?<redacted>');
+}
+
 // Each start writes a row and each callback can call Studios once, so both are
 // limited per human.
 const startRateLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 10 * 60_000 });
@@ -110,6 +120,20 @@ const INVALID_WALLET_PROOF = {
   message: 'The wallet signature did not match. Ask for a new challenge and sign again.',
 } as const;
 
+/**
+ * Parse the JSON body. Malformed or empty JSON gives `fallback`; any other
+ * read error (the body limit's BodyLimitError) is thrown, so `bodyLimit`
+ * answers 413 instead of the handler treating the body as missing.
+ */
+async function readJsonBody(c: Context, fallback: unknown): Promise<unknown> {
+  try {
+    return await c.req.json();
+  } catch (err) {
+    if (err instanceof SyntaxError) return fallback;
+    throw err;
+  }
+}
+
 async function linkedWallet(userId: string): Promise<string | null> {
   const owner = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { linkedWalletPubkey: true } });
   return owner?.linkedWalletPubkey ?? null;
@@ -120,7 +144,7 @@ async function linkedWallet(userId: string): Promise<string | null> {
  * or null when the proof is valid (the nonce is consumed either way).
  */
 async function refuseWithoutProof(c: Context, userId: string, avatarId: string, action: StudiosSignInAction) {
-  const body = proofBodySchema.safeParse(await c.req.json().catch(() => ({})));
+  const body = proofBodySchema.safeParse(await readJsonBody(c, {}));
   if (!body.success) return c.json({ error: 'invalid_request', code: 'invalid_request' }, 400);
   const wallet = await linkedWallet(userId);
   if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
@@ -156,7 +180,7 @@ vendorStudiosOAuthRoutes.post(
   requireNonGuestUser,
   async (c) => {
     const user = c.get('user') as { id: string };
-    const body = challengeBodySchema.safeParse(await c.req.json().catch(() => null));
+    const body = challengeBodySchema.safeParse(await readJsonBody(c, null));
     if (!body.success) return c.json({ error: 'invalid_request', code: 'invalid_request' }, 400);
     if (!challengeRateLimiter.check(user.id)) {
       return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many requests. Wait ten minutes.' }, 429);

@@ -15,8 +15,9 @@
 -- and refresh tokens are each encrypted with the same enc/iv/tag scheme.
 -- status 'refreshing' + refresh_started_at is committed BEFORE a refresh
 -- request, so a lost reply never leads to a second use of a rotated refresh
--- token; 'broken' = the human must sign in again. generation grows on every
--- token write.
+-- token; 'broken' = the human must sign in again. link_id is new on every
+-- link; refresh_claim_id is new on every refresh claim, and a refresh result
+-- is written only while both still match and status is 'refreshing'.
 --
 -- Idempotent: the CI bootstrap makes the final shape from the Drizzle schema
 -- first (drizzle-kit 0.24 does not emit CHECKs), and then this file runs.
@@ -61,7 +62,8 @@ CREATE TABLE IF NOT EXISTS "user_vendor_oauth_links" (
   "scope" text NOT NULL,
   "status" varchar(16) DEFAULT 'active' NOT NULL,
   "refresh_started_at" timestamp with time zone,
-  "generation" integer DEFAULT 0 NOT NULL,
+  "link_id" uuid NOT NULL,
+  "refresh_claim_id" uuid,
   "linked_by_user_id" uuid,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,

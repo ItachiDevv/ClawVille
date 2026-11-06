@@ -5,7 +5,7 @@
  */
 
 import { sql } from 'drizzle-orm';
-import { check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
+import { check, index, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
 import { avatars } from './avatars';
 import { users } from './users';
 
@@ -42,8 +42,10 @@ export const vendorOAuthStates = pgTable('vendor_oauth_states', {
  * 'refreshing' = a refresh request is in flight since `refresh_started_at`
  * (written and committed BEFORE the request, so a lost reply is never followed
  * by a second use of the same refresh token); 'broken' = the human must sign
- * in again. `generation` grows on every token write; a refresh writes its
- * result only when the generation is still the one it claimed.
+ * in again. `link_id` is new on every link (a link after an unlink never
+ * reuses it); `refresh_claim_id` is new on every refresh claim. A refresh
+ * writes its result only while the row still has its link id, its claim id
+ * and status 'refreshing'.
  */
 export const userVendorOAuthLinks = pgTable('user_vendor_oauth_links', {
   avatarId: uuid('avatar_id').notNull().references(() => avatars.id, { onDelete: 'cascade' }),
@@ -58,7 +60,8 @@ export const userVendorOAuthLinks = pgTable('user_vendor_oauth_links', {
   scope: text('scope').notNull(),
   status: varchar('status', { length: 16 }).notNull().default('active'),
   refreshStartedAt: timestamp('refresh_started_at', { withTimezone: true }),
-  generation: integer('generation').notNull().default(0),
+  linkId: uuid('link_id').notNull(),
+  refreshClaimId: uuid('refresh_claim_id'),
   linkedByUserId: uuid('linked_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

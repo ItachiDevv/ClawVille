@@ -28,6 +28,7 @@ import {
 import { _resetStudiosSignInNoncesForTest } from '../../services/vendors/studios-oauth-proof';
 import { decryptToken } from '../../services/keypair-vault';
 import { loadVendorKey, readVendorKeyStatus, saveVendorKey } from '../../services/vendor-credentials';
+import { jsonBodyGuard } from '../../middleware/json-body-guard';
 import { resetStudiosOAuthRateLimit, vendorStudiosOAuthRoutes } from '../vendor-studios-oauth';
 
 if (!process.env.VANITY_ENCRYPTION_KEY) process.env.VANITY_ENCRYPTION_KEY = 'b'.repeat(64);
@@ -62,7 +63,9 @@ describeIfSchema('studios sign-in: executed DB contract', () => {
   const savedWeb = process.env.WEB_ORIGIN;
   const realFetch = globalThis.fetch;
   const app = new Hono();
+  // Same order as index.ts: the sign-in routes, then jsonBodyGuard.
   app.route('/api/vendors/studios/oauth', vendorStudiosOAuthRoutes);
+  app.use('*', jsonBodyGuard);
   const wallet = nacl.sign.keyPair();
   const otherWallet = nacl.sign.keyPair();
 
@@ -272,6 +275,26 @@ describeIfSchema('studios sign-in: executed DB contract', () => {
     expect((await unlinkRequest({ proof: good })).status).toBe(401);
   });
 
+  it('an authenticated body over 1 KB is refused with 413 before the handler acts (with and without Content-Length)', async () => {
+    const big = JSON.stringify({ proof: await proof('link'), pad: 'x'.repeat(3000) });
+    const declared = await app.request('/api/vendors/studios/oauth/start', {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json', 'Content-Length': String(big.length) },
+      body: big,
+    });
+    expect(declared.status).toBe(413);
+    for (const [method, path] of [['POST', '/start'], ['POST', '/challenge'], ['DELETE', '']] as const) {
+      const res = await app.fetch(new Request(`http://local/api/vendors/studios/oauth${path}`, {
+        method,
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(big)); controller.close(); } }),
+        duplex: 'half',
+      }));
+      expect(res.status).toBe(413);
+    }
+    expect(Array.from(await db.execute(sql`SELECT 1 FROM vendor_oauth_states WHERE user_id = ${userId}`)).length).toBe(0);
+  });
+
   // ---- start + callback ----------------------------------------------------
 
   it('start: builds the authorize URL with PKCE S256, the resource and the env redirect; stores only the state hash', async () => {
@@ -315,9 +338,10 @@ describeIfSchema('studios sign-in: executed DB contract', () => {
       resource: 'https://mcp.mystudios.fun/mcp',
     });
     const stored = first(await db.execute<Record<string, string | number | null>>(
-      sql`SELECT status, access_enc, refresh_enc, scope, generation FROM user_vendor_oauth_links WHERE avatar_id = ${avatarId}`,
+      sql`SELECT status, access_enc, refresh_enc, scope, link_id, refresh_claim_id FROM user_vendor_oauth_links WHERE avatar_id = ${avatarId}`,
     ));
-    expect(stored).toMatchObject({ status: 'active', scope: 'studio offline_access', generation: 1 });
+    expect(stored).toMatchObject({ status: 'active', scope: 'studio offline_access', refresh_claim_id: null });
+    expect(String(stored.link_id)).toMatch(/^[0-9a-f-]{36}$/);
     expect(String(stored.access_enc)).not.toContain('acc-1');
     expect(String(stored.refresh_enc)).not.toContain('ref-1');
     expect(await getAccessToken(avatarId)).toBe('acc-1');
@@ -540,6 +564,75 @@ describeIfSchema('studios sign-in: executed DB contract', () => {
     expect(((await getAccessToken(avatarId).catch((e) => e)) as StudiosOAuthError).code).toBe('studios_oauth_relink_required');
     expect(await linkStatus()).toBe('broken');
     expect(calls.length).toBe(0);
+  });
+
+  async function storedTokens(): Promise<{ access: string; refresh: string | null; status: string; claim: string | null }> {
+    const row = first(await db.execute<Record<string, string | null>>(
+      sql`SELECT access_enc, access_iv, access_tag, refresh_enc, refresh_iv, refresh_tag, status, refresh_claim_id FROM user_vendor_oauth_links WHERE avatar_id = ${avatarId}`,
+    ));
+    return {
+      access: decryptToken(row.access_enc!, row.access_iv!, row.access_tag!),
+      refresh: row.refresh_enc ? decryptToken(row.refresh_enc, row.refresh_iv!, row.refresh_tag!) : null,
+      status: String(row.status),
+      claim: row.refresh_claim_id,
+    };
+  }
+
+  /** A refresh reply held until `release()`; other token calls answer from `other`. */
+  function heldRefresh(reply: Record<string, unknown>, other: (call: FetchCall) => Response = () => new Response(null, { status: 200 })) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    fakeStudios(async (call) => {
+      if (call.url === STUDIOS_OAUTH_TOKEN_URL && call.body.get('grant_type') === 'refresh_token' && call.body.get('refresh_token') === 'ref-1') {
+        markStarted();
+        await gate;
+        return json(200, reply);
+      }
+      return other(call);
+    });
+    return { release: () => release(), started };
+  }
+
+  it('refresh: unlink + new link during a refresh; the old reply arrives late and changes nothing', async () => {
+    await link();
+    await expireAccess();
+    const oldLinkId = first(await db.execute<{ link_id: string }>(sql`SELECT link_id FROM user_vendor_oauth_links WHERE avatar_id = ${avatarId}`)).link_id;
+    const held = heldRefresh({ access_token: 'old-acc', token_type: 'Bearer', expires_in: 3600, refresh_token: 'old-ref' }, (call) =>
+      call.body.get('grant_type') === 'authorization_code'
+        ? json(200, { access_token: 'new-acc', token_type: 'Bearer', expires_in: 3600, refresh_token: 'new-ref', scope: 'studio offline_access' })
+        : new Response(null, { status: 200 }));
+    const pending = getAccessToken(avatarId);
+    await held.started;
+    expect((await unlinkRequest({ proof: await proof('unlink') })).status).toBe(200);
+    const { state } = await start();
+    expect(reasonOf(await callback({ code: 'c2', state }))).toBe('linked');
+    const newLinkId = first(await db.execute<{ link_id: string }>(sql`SELECT link_id FROM user_vendor_oauth_links WHERE avatar_id = ${avatarId}`)).link_id;
+    expect(newLinkId).not.toBe(oldLinkId);
+
+    held.release();
+    expect(await pending).toBe('new-acc');
+    expect(await storedTokens()).toEqual({ access: 'new-acc', refresh: 'new-ref', status: 'active', claim: null });
+    const revoked = calls.filter((c) => c.url === STUDIOS_OAUTH_REVOKE_URL).map((c) => c.body.get('token'));
+    expect(revoked).toContain('old-ref');
+    expect(revoked).not.toContain('new-ref');
+  });
+
+  it('refresh: a waiter that marks a stale claim broken ends it; the late reply then changes nothing', async () => {
+    await link();
+    await expireAccess();
+    const held = heldRefresh({ access_token: 'late-acc', token_type: 'Bearer', expires_in: 3600, refresh_token: 'late-ref' });
+    const pending = getAccessToken(avatarId).catch((e) => e);
+    await held.started;
+    await db.execute(sql`UPDATE user_vendor_oauth_links SET refresh_started_at = now() - interval '1 minute' WHERE avatar_id = ${avatarId}`);
+    expect(((await getAccessToken(avatarId).catch((e) => e)) as StudiosOAuthError).code).toBe('studios_oauth_relink_required');
+    expect(await storedTokens()).toEqual({ access: 'acc-1', refresh: 'ref-1', status: 'broken', claim: null });
+
+    held.release();
+    expect(((await pending) as StudiosOAuthError).code).toBe('studios_oauth_relink_required');
+    expect(await storedTokens()).toEqual({ access: 'acc-1', refresh: 'ref-1', status: 'broken', claim: null });
+    expect(calls.filter((c) => c.url === STUDIOS_OAUTH_REVOKE_URL).map((c) => c.body.get('token'))).toContain('late-ref');
   });
 
   it('getAccessToken: no link -> studios_oauth_not_linked', async () => {
