@@ -78,6 +78,28 @@ describe('keepsRequestKey', () => {
 
 // The Studios card shows plain text for every refusal; never a raw API code.
 
+describe('outcomes that may have charged', () => {
+  test('each has its own text: may have charged, do not try again, check My Media, credits and the wallet history', () => {
+    const texts = ['outcome_unknown', 'job_timeout', 'result_lost', 'media_missing'].map((code) => {
+      const text = studiosErrorText(new ApiError(code, 200, code));
+      expect(text).toContain('may have charged');
+      expect(text).toContain('Do not try it again');
+      expect(text).toContain('My Media and credits');
+      expect(text).toContain('wallet history');
+      expect(text).not.toBe('That did not work. Try again later.');
+      return text;
+    });
+    expect(new Set(texts).size).toBe(4);
+  });
+
+  test('the same prompt stays blocked after each of them', () => {
+    for (const code of ['outcome_unknown', 'job_timeout', 'result_lost', 'media_missing']) {
+      expect(studiosRequestOutcome({ requestId: 'r1', operation: 'image', status: 'failed', mode: 'signin', mediaPath: null, media: [], code }))
+        .toEqual({ kind: 'failed', code, blockPrompt: true });
+    }
+  });
+});
+
 describe('studiosErrorText', () => {
   test('points to the spend caps when no rules are set', () => {
     expect(studiosErrorText(new ApiError('x', 403, 'spend_rules_not_set'))).toContain('spend caps');

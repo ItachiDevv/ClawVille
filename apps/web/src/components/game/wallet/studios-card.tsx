@@ -80,6 +80,14 @@ export function studiosErrorText(error: unknown): string {
         return 'This image is still being made, or its request did not finish. Wait a minute and check your recent images; press again to check. Change the text to make a new image.';
       case 'image_missing':
         return 'Studios sent no readable image.';
+      case 'outcome_unknown':
+        return 'Studios did not tell us the result. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+      case 'job_timeout':
+        return 'Studios took too long, and we stopped waiting. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+      case 'result_lost':
+        return 'The result was lost after the call. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+      case 'media_missing':
+        return 'Studios finished, but we could not get the media. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
       case 'payload_too_large':
         return 'The text is too long.';
       default:
