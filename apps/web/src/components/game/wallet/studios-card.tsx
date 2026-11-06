@@ -9,9 +9,9 @@
  * Saving or removing the key needs a signature from the human's linked wallet.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, type StudiosRequestView } from '@/lib/api';
 import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { STUDIOS_APPROVALS_QUERY_KEY, useHumanSpendPolicy } from './spending-card';
 
@@ -47,7 +47,11 @@ export function studiosErrorText(error: unknown): string {
       case 'awaiting_approval':
         return '"Ask me before each payment" is on, so this image waits in Approvals below. Approve it there with your linked wallet.';
       case 'running':
-        return 'Studios is making this image on your Studios account (Studios sign-in). It appears in your recent images when it is ready.';
+        return 'Studios is making this image on your Studios account (Studios sign-in). It appears here and in your recent images when it is ready.';
+      case 'approval_declined':
+        return 'You declined this image in Approvals. Nothing was paid.';
+      case 'approval_expired':
+        return 'This image waited too long in Approvals and expired. Nothing was paid.';
       case 'approval_pending_limit':
         return 'Five requests already wait in Approvals. Approve or decline them first.';
       case 'daily_limit':
@@ -132,6 +136,56 @@ export function keepsRequestKey(error: unknown): boolean {
   return !(error instanceof ApiError && typeof error.code === 'string' && FINAL_NOTHING_CHARGED.has(error.code));
 }
 
+/** The request of the current prompt: its key, and its id after a 202. */
+export interface StudiosPendingRequest {
+  operation: 'image';
+  prompt: string;
+  key: string;
+  /** Set after a 202 (waiting for approval or running): poll it until it ends. */
+  requestId: string | null;
+}
+
+/**
+ * The request to send. The same prompt and operation reuse the open key, so a
+ * second click returns the same request and never pays twice. Only a new
+ * prompt or operation (or no open request: it ended) gets a new key.
+ */
+export function studiosRequestFor(
+  pending: StudiosPendingRequest | null,
+  operation: 'image',
+  prompt: string,
+  newKey: () => string,
+): StudiosPendingRequest {
+  if (pending && pending.operation === operation && pending.prompt === prompt) return pending;
+  return { operation, prompt, key: newKey(), requestId: null };
+}
+
+const TERMINAL_STATUSES = new Set<StudiosRequestView['status']>(['done', 'failed', 'ambiguous', 'declined', 'expired']);
+
+/**
+ * What the polled request says. null: it has not ended yet (keep the key, keep
+ * the button off). Else the end: the image, or the code to show and whether
+ * the same prompt must not be sent again (it may have been charged).
+ */
+export function studiosRequestOutcome(view: StudiosRequestView | undefined):
+  | null
+  | { kind: 'done'; mediaPath: string | null; note: string }
+  | { kind: 'failed'; code: string; blockPrompt: boolean } {
+  if (!view || !TERMINAL_STATUSES.has(view.status)) return null;
+  if (view.status === 'done') {
+    return {
+      kind: 'done',
+      mediaPath: view.media[0]?.mediaPath ?? view.mediaPath,
+      note: view.mode === 'wallet' ? 'Paid from your agent wallet.' : 'Made with your Studios account.',
+    };
+  }
+  if (view.status === 'declined') return { kind: 'failed', code: 'approval_declined', blockPrompt: false };
+  if (view.status === 'expired') return { kind: 'failed', code: 'approval_expired', blockPrompt: false };
+  if (view.status === 'ambiguous') return { kind: 'failed', code: 'payment_ambiguous', blockPrompt: true };
+  const code = view.code ?? 'failed';
+  return { kind: 'failed', code, blockPrompt: !FINAL_NOTHING_CHARGED.has(code) };
+}
+
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
@@ -150,32 +204,60 @@ export function StudiosCard() {
   const [keyText, setKeyText] = useState('');
   const [last, setLast] = useState<{ mediaPath: string; note: string } | null>(null);
   const [error, setError] = useState<unknown>(null);
-  // The request key for the current prompt. A retry after a lost reply reuses
-  // it, so the server returns the first image instead of paying again.
-  const [pending, setPending] = useState<{ prompt: string; key: string } | null>(null);
+  // The request key for the current prompt. A retry after a lost reply, or a
+  // click while the request waits or runs, reuses it, so the server returns
+  // the same request instead of paying again.
+  const [pending, setPending] = useState<StudiosPendingRequest | null>(null);
   // After payment_ambiguous, the same prompt cannot be sent again.
   const [blockedPrompt, setBlockedPrompt] = useState<string | null>(null);
 
   const keyQuery = useQuery({ queryKey: KEY_QUERY, queryFn: api.studiosKeyStatus, enabled: signedIn, retry: false });
   const imagesQuery = useQuery({ queryKey: IMAGES_QUERY, queryFn: api.studiosImages, enabled: signedIn, retry: false });
+  // After a 202 the request ends in the background: read it until it ends.
+  const openRequestId = pending?.requestId ?? null;
+  const requestQuery = useQuery({
+    queryKey: ['studios-request', openRequestId],
+    queryFn: () => api.studiosRequest(openRequestId!),
+    enabled: signedIn && openRequestId !== null,
+    refetchInterval: (query) => (studiosRequestOutcome(query.state.data) ? false : 4000),
+    retry: 2,
+  });
+  const outcome = openRequestId !== null && requestQuery.data?.requestId === openRequestId
+    ? studiosRequestOutcome(requestQuery.data)
+    : null;
+
+  useEffect(() => {
+    if (!outcome || !pending) return;
+    // The request ended: show the result and drop the key (the next click is a new request).
+    if (outcome.kind === 'done') {
+      setError(null);
+      if (outcome.mediaPath) setLast({ mediaPath: outcome.mediaPath, note: outcome.note });
+    } else {
+      setError(new ApiError(outcome.code, 200, outcome.code));
+      if (outcome.blockPrompt) setBlockedPrompt(pending.prompt);
+    }
+    setPending(null);
+    queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
+  }, [outcome, pending, queryClient]);
 
   const make = useMutation({
-    mutationFn: (request: { prompt: string; key: string }) => api.studiosImage({ prompt: request.prompt }, request.key),
+    mutationFn: (request: StudiosPendingRequest) => api.studiosImage({ prompt: request.prompt }, request.key),
     onMutate: () => {
       setError(null);
       setLast(null);
     },
-    onSuccess: (result) => {
-      setPending(null);
+    onSuccess: (result, request) => {
       // With "ask me before each payment" on, every image waits in Approvals
       // (below) until the linked wallet signs the approval. With the Studios
       // sign-in, the image is a Studios job that finishes in the background.
+      // Both keep the key and the request id until the request ends.
       if ('status' in result) {
+        setPending({ ...request, requestId: result.requestId });
         setError(new ApiError(result.status, 202, result.status));
         if (result.status === 'awaiting_approval') queryClient.invalidateQueries({ queryKey: STUDIOS_APPROVALS_QUERY_KEY });
-        else queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
         return;
       }
+      setPending(null);
       setLast({
         mediaPath: result.mediaPath,
         note: result.mode !== 'wallet'
@@ -215,9 +297,15 @@ export function StudiosCard() {
   const linked = keyQuery.data?.linked === true;
   const text = prompt.trim();
   const blocked = blockedPrompt !== null && blockedPrompt === text;
+  // A request that waits or runs keeps the button off until it ends.
+  const open = openRequestId !== null && outcome === null;
+  const waitingApproval = open && (requestQuery.data
+    ? requestQuery.data.status === 'awaiting_approval'
+    : error instanceof ApiError && error.code === 'awaiting_approval');
 
   const submit = () => {
-    const request = pending && pending.prompt === text ? pending : { prompt: text, key: newIdempotencyKey() };
+    if (open) return;
+    const request = studiosRequestFor(pending, 'image', text, newIdempotencyKey);
     setPending(request);
     make.mutate(request);
   };
@@ -246,10 +334,14 @@ export function StudiosCard() {
         <button
           type="button"
           onClick={submit}
-          disabled={make.isPending || text.length === 0 || blocked}
+          disabled={make.isPending || open || text.length === 0 || blocked}
           className="w-full min-h-[44px] rounded-md bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-sm font-bold text-white"
         >
-          {make.isPending ? 'Making the image...' : blocked ? 'Change the text to make a new image' : 'Make image'}
+          {make.isPending
+            ? 'Making the image...'
+            : open
+              ? waitingApproval ? 'Waiting for your approval...' : 'Running...'
+              : blocked ? 'Change the text to make a new image' : 'Make image'}
         </button>
 
         {last && (

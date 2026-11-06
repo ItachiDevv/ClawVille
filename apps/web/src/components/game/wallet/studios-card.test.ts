@@ -1,6 +1,48 @@
 import { describe, expect, test } from 'bun:test';
 import { ApiError } from '@/lib/api';
-import { keepsRequestKey, studiosErrorText, studiosPayerNotice } from './studios-card';
+import type { StudiosRequestView } from '@/lib/api';
+import { keepsRequestKey, studiosErrorText, studiosPayerNotice, studiosRequestFor, studiosRequestOutcome } from './studios-card';
+
+describe('a request that waits or runs keeps its key (no second charge from a second click)', () => {
+  let n = 0;
+  const newKey = () => `web-k${++n}`;
+  const view = (status: StudiosRequestView['status'], extra: Partial<StudiosRequestView> = {}): StudiosRequestView => ({
+    requestId: 'r1', operation: 'image', status, mode: 'signin', mediaPath: null, media: [], code: null, ...extra,
+  });
+
+  test('after a 202 running, the same prompt reuses the key and the request id', () => {
+    const first = studiosRequestFor(null, 'image', 'a crab', newKey);
+    const running = { ...first, requestId: 'r1' };
+    const again = studiosRequestFor(running, 'image', 'a crab', newKey);
+    expect(again).toBe(running);
+    expect(again.key).toBe(first.key);
+  });
+
+  test('a changed prompt, or no open request (it ended), gets a new key', () => {
+    const open = { ...studiosRequestFor(null, 'image', 'a crab', newKey), requestId: 'r1' };
+    expect(studiosRequestFor(open, 'image', 'a fish', newKey).key).not.toBe(open.key);
+    expect(studiosRequestFor(null, 'image', 'a crab', newKey).key).not.toBe(open.key);
+  });
+
+  test('waiting, pending and running are not an end: keep polling, keep the button off', () => {
+    for (const status of ['awaiting_approval', 'pending', 'running'] as const) expect(studiosRequestOutcome(view(status))).toBeNull();
+    expect(studiosRequestOutcome(undefined)).toBeNull();
+  });
+
+  test('every terminal state ends the request', () => {
+    expect(studiosRequestOutcome(view('done', { media: [{ slot: 'image', mediaId: 'm1', mediaPath: '/api/media/m1' }] })))
+      .toEqual({ kind: 'done', mediaPath: '/api/media/m1', note: 'Made with your Studios account.' });
+    expect(studiosRequestOutcome(view('done', { mode: 'wallet', mediaPath: '/api/media/m2' })))
+      .toEqual({ kind: 'done', mediaPath: '/api/media/m2', note: 'Paid from your agent wallet.' });
+    expect(studiosRequestOutcome(view('declined'))).toEqual({ kind: 'failed', code: 'approval_declined', blockPrompt: false });
+    expect(studiosRequestOutcome(view('expired'))).toEqual({ kind: 'failed', code: 'approval_expired', blockPrompt: false });
+    expect(studiosRequestOutcome(view('ambiguous'))).toEqual({ kind: 'failed', code: 'payment_ambiguous', blockPrompt: true });
+    // Charged nothing: the same prompt may go again with a new key.
+    expect(studiosRequestOutcome(view('failed', { code: 'studios_signin_broken' }))).toEqual({ kind: 'failed', code: 'studios_signin_broken', blockPrompt: false });
+    // May have charged (the outcome is not known): the same prompt is blocked.
+    expect(studiosRequestOutcome(view('failed', { code: 'outcome_unknown' }))).toEqual({ kind: 'failed', code: 'outcome_unknown', blockPrompt: true });
+  });
+});
 
 describe('studiosPayerNotice', () => {
   const key = { linked: true, last4: 'ab12' };

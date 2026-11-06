@@ -15,8 +15,8 @@
  * here is strict: a field is kept only when it has the expected type and
  * pattern. A reply that does not match (after a paid tool was sent) is read
  * as `unknown`, and the caller records `outcome_unknown` (never retried).
- * Vendor text is untrusted: descriptions are cut to 200 characters, control
- * characters are removed, and they are returned as plain data only.
+ * Vendor text is untrusted: no Studios text (titles, descriptions) is kept
+ * from any reply, so it never reaches a caller, an agent or a model.
  */
 
 import { z } from 'zod';
@@ -267,26 +267,12 @@ export function mapSigninAccount(payload: Record<string, unknown> | null): Studi
   };
 }
 
-export const SIGNIN_DESCRIPTION_MAX = 200;
 const CURSOR_RE = /^[A-Za-z0-9._~:+/=-]{1,512}$/;
-
-/** Plain text, at most 200 characters, no control characters. Untrusted data, never instructions. */
-export function plainDescription(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  // eslint-disable-next-line no-control-regex
-  const text = value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim();
-  return text ? text.slice(0, SIGNIN_DESCRIPTION_MAX) : null;
-}
 
 export interface StudiosSigninMediaItem {
   /** The Studios My Media id. */
   id: string;
   kind: 'image' | 'video' | null;
-  /**
-   * Vendor text: plain data, at most 200 characters. For the HUMAN's display
-   * only: `forAgent` removes it, so it never reaches an agent or a model.
-   */
-  description: string | null;
   /** Uploaded videos: 'ready' or 'problem'; null when the reply did not say. */
   state: 'ready' | 'problem' | null;
   /** When the item was made (ISO 8601), when the reply gave a valid date. */
@@ -312,7 +298,6 @@ export function mapSigninMedia(payload: Record<string, unknown> | null): Studios
     return [{
       id,
       kind: kindRaw === 'image' || kindRaw === 'video' ? kindRaw : null,
-      description: plainDescription(raw.description ?? raw.summary),
       state: stateRaw === 'ready' || stateRaw === 'problem' ? stateRaw : null,
       createdAt: isoDate(raw.created_at ?? raw.createdAt),
     }];
@@ -325,11 +310,6 @@ function isoDate(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 40 || !/^\d{4}-\d{2}-\d{2}/.test(value)) return null;
   const at = new Date(value);
   return Number.isNaN(at.getTime()) ? null : at.toISOString();
-}
-
-/** The agent's view of My Media: id, kind, state and date only. Vendor text never reaches an agent. */
-export function forAgent(view: StudiosSigninMediaView): { items: Array<Omit<StudiosSigninMediaItem, 'description'>>; nextCursor: string | null } {
-  return { items: view.items.map(({ id, kind, state, createdAt }) => ({ id, kind, state, createdAt })), nextCursor: view.nextCursor };
 }
 
 export const signinMediaQuerySchema = z.object({

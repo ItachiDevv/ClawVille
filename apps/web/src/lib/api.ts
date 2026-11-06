@@ -351,6 +351,17 @@ export interface GuestSignupResponse {
   reused: boolean;
 }
 
+/** GET /api/vendors/studios/requests/:id (the fields the web reads). */
+export interface StudiosRequestView {
+  requestId: string;
+  operation: string;
+  status: 'awaiting_approval' | 'pending' | 'running' | 'done' | 'failed' | 'ambiguous' | 'declined' | 'expired';
+  mode: 'wallet' | 'account' | 'signin';
+  mediaPath: string | null;
+  media: Array<{ slot: string; mediaId: string; mediaPath: string }>;
+  code: string | null;
+}
+
 export const api = {
   // Auth
   // P2 Path-B (2026-07-04) — signup now AUTO-PROVISIONS the hosted agent
@@ -667,6 +678,9 @@ export const api = {
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(body),
     }),
+  /** One Studios request of this avatar: its status, and the media when done. */
+  studiosRequest: (requestId: string) =>
+    request<StudiosRequestView>(`/api/vendors/studios/requests/${encodeURIComponent(requestId)}`),
   studiosImages: () =>
     request<{ images: Array<{ id: string; mediaPath: string; prompt: string; mode: string; actor: string; createdAt: string }> }>(
       '/api/vendors/studios/images',

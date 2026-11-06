@@ -19,9 +19,8 @@
  *          sign-in (phase 3c): balance in USD, free usage left, this
  *          connection's spend left today. Free; no request row.
  *   GET    /api/vendors/studios/signin/media?kind&limit&cursor  the human's
- *          Studios My Media: id, kind, ready/problem, createdAt. The human
- *          session also gets a short description (vendor text, plain data, at
- *          most 200 characters); an agent session never does. Free; no request row.
+ *          Studios My Media: id, kind, ready/problem, createdAt. No Studios
+ *          text (titles, descriptions) for any caller. Free; no request row.
  *          Both: human session or agent session of the same avatar; 404
  *          `studios_signin_missing`, 409 `studios_signin_broken`.
  *   Who pays (phase 3c): the human's `studiosPayMode` in the spend rules
@@ -107,7 +106,7 @@ import {
   type StudiosOperationResult,
   type StudiosSigninReadFailure,
 } from '../services/studios-images';
-import { forAgent, signinMediaQuerySchema } from '../services/vendors/studios-signin';
+import { signinMediaQuerySchema } from '../services/vendors/studios-signin';
 import { readStudiosMenu } from '../services/studios-menus';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
 import {
@@ -261,9 +260,9 @@ vendorStudiosRoutes.get('/signin/media', requireAuthOrAgentSession, async (c) =>
   }
   const read = await listStudiosSigninMedia(identity.avatarId, query.data);
   if (!read.ok) return readRefusal(c, read);
-  // Vendor descriptions are for the human's display only: an agent session
-  // (REST, the MCP tool) gets id, kind, state and date, never Studios text.
-  return c.json(identity.kind === 'agent' ? forAgent(read.media) : read.media);
+  // No Studios text for any caller: an agent can hold a session that reads as
+  // a user (an agent_exchange cookie), so the API never carries descriptions.
+  return c.json(read.media);
 });
 
 vendorStudiosRoutes.get('/images', requireAuthOrAgentSession, async (c) => {
