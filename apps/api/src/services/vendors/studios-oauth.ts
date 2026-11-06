@@ -43,6 +43,7 @@ import {
 } from '@clawville/database';
 import { decryptToken, encryptToken } from '../keypair-vault';
 import { resolveApiBase } from '../skill-protocol';
+import { lockSpendRules } from '../spend-policy';
 
 export const STUDIOS_OAUTH_VENDOR = 'studios';
 export const STUDIOS_OAUTH_ISSUER = 'https://mystudios.fun';
@@ -440,6 +441,8 @@ export async function completeStudiosSignIn(input: {
   let install: Install;
   try {
     install = await db.transaction(async (tx): Promise<Install> => {
+      // A sign-in decides who pays: installed under the avatar's spend-rules lock.
+      await lockSpendRules(tx, row.avatarId);
       const [locked] = await tx.select({ cancelledAt: vendorOAuthStates.cancelledAt })
         .from(vendorOAuthStates).where(eq(vendorOAuthStates.id, row.id)).for('update');
       if (!locked || locked.cancelledAt) return { installed: false };
@@ -506,12 +509,16 @@ export function studiosSignInDigest(linkId: string): string {
   return createHash('sha256').update(`studios-signin:${linkId}`, 'utf8').digest('hex');
 }
 
-/** The link id and state of this avatar's sign-in (no token is read), or null. */
-export async function readStudiosSignInLink(avatarId: string): Promise<{ linkId: string; status: 'active' | 'broken' } | null> {
-  const row = await db.query.userVendorOAuthLinks.findFirst({
-    where: linkRow(avatarId),
-    columns: { linkId: true, status: true },
-  });
+/** The link id and state of this avatar's sign-in (no token is read), or null. `executor`: a transaction that holds the spend-rules lock. */
+export async function readStudiosSignInLink(
+  avatarId: string,
+  executor: Pick<typeof db, 'select'> = db,
+): Promise<{ linkId: string; status: 'active' | 'broken' } | null> {
+  const [row] = await executor
+    .select({ linkId: userVendorOAuthLinks.linkId, status: userVendorOAuthLinks.status })
+    .from(userVendorOAuthLinks)
+    .where(linkRow(avatarId))
+    .limit(1);
   if (!row) return null;
   return { linkId: row.linkId, status: row.status === 'broken' ? 'broken' : 'active' };
 }
@@ -695,6 +702,7 @@ export async function getAccessToken(
  */
 export async function unlinkStudiosOAuth(input: { userId: string; avatarId: string }): Promise<void> {
   const removed = await db.transaction(async (tx) => {
+    await lockSpendRules(tx, input.avatarId);
     const now = new Date();
     await tx.update(vendorOAuthStates)
       .set({ cancelledAt: now, usedAt: sql`COALESCE(${vendorOAuthStates.usedAt}, ${now.toISOString()}::timestamptz)` })

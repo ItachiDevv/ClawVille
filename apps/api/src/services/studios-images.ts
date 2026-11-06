@@ -68,7 +68,7 @@ import {
   type VendorCallStatus,
 } from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type LedgerTx, type VendorCallFailure } from './outbound-x402';
-import { policyColumns, toSpendPolicyView } from './spend-policy';
+import { lockSpendRules, policyColumns, toSpendPolicyView } from './spend-policy';
 import { StudiosMcpError, callStudiosTool, type StudiosMcpClientOptions } from './vendors/studios-mcp-client';
 import { StudiosOAuthError, getAccessToken, readStudiosSignInLink, studiosSignInDigest } from './vendors/studios-oauth';
 import {
@@ -642,7 +642,7 @@ export interface JobClaim {
 }
 
 type Reservation =
-  | { kind: 'new'; requestId: string; owner: string }
+  | { kind: 'new'; requestId: string; owner: string; payer: Extract<StudiosPayer, { ok: true }> }
   | { kind: 'done'; result: StudiosOperationResult };
 
 /** Reserve the request, or find the earlier one, under the avatar's lock. */
@@ -650,12 +650,9 @@ async function reserveRequest(input: {
   avatarId: string;
   actor: 'human' | 'agent';
   surface: 'api' | 'hosted';
-  mode: StudiosMode;
   op: StudiosOperationDef;
   params: StudiosParams;
   idempotencyKey: string;
-  /** Account mode: SHA-256 of the saved key; signin mode: of the sign-in link id. Bound to the request (never a secret). */
-  credentialSha256: string | null;
 }): Promise<Reservation> {
   const { op } = input;
   return db.transaction(async (tx) => {
@@ -682,10 +679,19 @@ async function reserveRequest(input: {
       if (prior.status === 'ambiguous') return { kind: 'done', result: failure('payment_ambiguous', prior.ledgerId) };
       return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
     }
-    if (!op.modes.includes(input.mode)) return { kind: 'done', result: failure('operation_needs_studios_key') };
+    // Who pays, read under the spend-rules lock that every payer change takes.
+    // The row binds the mode and the credential digest (key SHA-256 or sign-in
+    // link digest; never a secret).
+    await lockSpendRules(tx, input.avatarId);
+    const payer = await resolveStudiosPayer(input.avatarId, tx);
+    if (!payer.ok) return { kind: 'done', result: failure(payer.code) };
+    const mode = payer.mode;
+    if (!op.modes.includes(mode)) return { kind: 'done', result: failure('operation_needs_studios_key') };
+    // A setting the sign-in tools do not take is refused before any row or call.
+    if (mode === 'signin' && !buildSigninToolCall(op.id, input.params).ok) return { kind: 'done', result: failure('signin_option_unsupported') };
     const policy = await readPolicyRow(tx, input.avatarId);
     const limited = await dayLimitRefusal(tx, {
-      avatarId: input.avatarId, op, mode: input.mode, surface: input.surface, policy, includeWaiting: true,
+      avatarId: input.avatarId, op, mode, surface: input.surface, policy, includeWaiting: true,
     });
     if (limited) return { kind: 'done', result: failure(limited, null, op.id) };
     if (await overMediaQuota(tx, input.avatarId, op.reserveBytes(input.params))) {
@@ -696,7 +702,7 @@ async function reserveRequest(input: {
     // not answer 202 'running' and then fail in the runner on a rule that was
     // already broken (staging 2026-11-06: a wallet video with no caps). The
     // payment path checks again with the price.
-    if (input.mode === 'wallet') {
+    if (mode === 'wallet') {
       const refused = await walletPrecheck(tx, input.avatarId, policy);
       if (refused) return { kind: 'done', result: failure(refused) };
     }
@@ -705,14 +711,14 @@ async function reserveRequest(input: {
       vendor: 'studios',
       actor: input.actor,
       surface: input.surface,
-      mode: input.mode,
+      mode,
       idempotencyKey: input.idempotencyKey,
       operation: op.id,
       prompt: op.promptOf(input.params),
       model: op.modelOf(input.params),
       // Image keeps its phase 2b columns (prompt + model); the others keep their settings.
       params: op.id === 'image' ? null : input.params,
-      credentialSha256: input.credentialSha256,
+      credentialSha256: payer.credentialSha256,
     };
     // "Ask me before each payment": EVERY request waits, the human's own web
     // form too (lead decision 2026-11-06, Codex review): a magic link passes
@@ -736,10 +742,10 @@ async function reserveRequest(input: {
       ...base,
       leaseOwner: owner,
       // A long job (and every sign-in job) is 'running' from the start, with a lease its runner renews.
-      ...(isLongJob(op, input.mode) ? { status: 'running', leaseUntil: new Date(Date.now() + JOB_LEASE_MS) } : {}),
+      ...(isLongJob(op, mode) ? { status: 'running', leaseUntil: new Date(Date.now() + JOB_LEASE_MS) } : {}),
     }).returning({ id: vendorCallRequests.id });
     if (!created) throw new Error('vendor_call_requests insert returned no row');
-    return { kind: 'new', requestId: created.id, owner };
+    return { kind: 'new', requestId: created.id, owner, payer };
   });
 }
 
@@ -981,9 +987,9 @@ async function runRecast(input: RunInput & { vendorJobId: string | null; deadlin
 }
 
 /** The saved key, `undefined` when it cannot be read (never a silent switch to the wallet). */
-async function loadKeyOrInvalid(avatarId: string): Promise<string | null | undefined> {
+async function loadKeyOrInvalid(avatarId: string, executor: Executor = db): Promise<string | null | undefined> {
   try {
-    return await loadVendorKey(avatarId, 'studios');
+    return await loadVendorKey(avatarId, 'studios', executor);
   } catch {
     return undefined;
   }
@@ -1003,22 +1009,24 @@ export type StudiosPayer =
 /**
  * The payer the human chose (`studiosPayMode`, migration 0096). Not chosen:
  * the saved key if any, else the wallet (the phase 2b rule). A chosen mode
- * that is not usable refuses; it never falls back to another payer. Called
- * for a new request, again at approve, and (the digest) by the runner.
+ * that is not usable refuses; it never falls back to another payer. The
+ * reservation and the approve call it INSIDE their transaction, after
+ * `lockSpendRules` (every write that changes the payer takes that lock), so
+ * the payer they bind is the one in force when the request is stored.
  */
-export async function resolveStudiosPayer(avatarId: string): Promise<StudiosPayer> {
-  const policy = await readPolicyRow(db, avatarId);
+export async function resolveStudiosPayer(avatarId: string, executor: Executor = db): Promise<StudiosPayer> {
+  const policy = await readPolicyRow(executor, avatarId);
   const choice = policy.studiosPayMode;
   if (choice === 'wallet') return { ok: true, mode: 'wallet', key: null, credentialSha256: null };
   if (choice === 'signin') {
-    const link = await readStudiosSignInLink(avatarId);
+    const link = await readStudiosSignInLink(avatarId, executor);
     if (!link) return { ok: false, code: 'studios_signin_missing' };
     if (link.status === 'broken') return { ok: false, code: 'studios_signin_broken' };
     return { ok: true, mode: 'signin', key: null, credentialSha256: studiosSignInDigest(link.linkId) };
   }
   // 'key' or not chosen. A saved key that cannot be read is an error, never a
   // silent switch to the wallet: the human chose their own account.
-  const key = await loadKeyOrInvalid(avatarId);
+  const key = await loadKeyOrInvalid(avatarId, executor);
   if (key === undefined) return { ok: false, code: 'studios_key_invalid' };
   if (key) return { ok: true, mode: 'account', key, credentialSha256: keySha(key)! };
   if (choice === 'key') return { ok: false, code: 'studios_key_missing' };
@@ -1338,22 +1346,17 @@ export async function requestStudiosOperation(input: {
   surface?: 'api' | 'hosted';
 }): Promise<StudiosOperationResult> {
   const op = STUDIOS_OPERATIONS[input.operation];
-  const payer = await resolveStudiosPayer(input.avatarId);
-  if (!payer.ok) return failure(payer.code);
-  // A setting the sign-in tools do not take is refused before any row or call.
-  if (payer.mode === 'signin' && !buildSigninToolCall(op.id, input.params).ok) return failure('signin_option_unsupported');
-
+  // The payer is resolved inside the reservation, under the spend-rules lock.
   const reservation = await reserveRequest({
     avatarId: input.avatarId,
     actor: input.actor,
     surface: input.surface ?? 'api',
-    mode: payer.mode,
     op,
     params: input.params,
     idempotencyKey: input.idempotencyKey,
-    credentialSha256: payer.credentialSha256,
   });
   if (reservation.kind === 'done') return reservation.result;
+  const { payer } = reservation;
   if (isLongJob(op, payer.mode)) {
     await startLongJob(reservation, payer.key);
     return running(reservation.requestId);
@@ -1493,9 +1496,6 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
   if (input.terms.requestId !== input.requestId || input.terms.avatarId !== input.avatarId) {
     return { result: failure('approval_terms_changed'), surface: null, operation: null };
   }
-  const payer = await resolveStudiosPayer(input.avatarId);
-  if (!payer.ok) return { result: failure(payer.code), surface: null, operation: null };
-  const key = payer.key;
   const signedMaxAtomic = input.terms.mode === 'wallet' ? BigInt(input.terms.maxUsdCents ?? 0) * ATOMIC_PER_CENT : undefined;
   const owner = randomUUID();
 
@@ -1504,6 +1504,12 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
     if (!found.ok) return found;
     const { row } = found;
     const op = operationOf(row);
+    // Who pays NOW, read in this transaction under the spend-rules lock that
+    // every payer change (pay mode, key, sign-in) also takes: a change that
+    // committed first is seen here; one that comes later waits for this commit.
+    await lockSpendRules(tx, input.avatarId);
+    const payer = await resolveStudiosPayer(input.avatarId, tx);
+    if (!payer.ok) return { ok: false as const, result: failure(payer.code) };
     if (
       row.operation !== input.terms.operation
       || row.mode !== input.terms.mode
@@ -1565,10 +1571,10 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
       const [now] = await tx.select({ status: vendorCallRequests.status }).from(vendorCallRequests).where(eq(vendorCallRequests.id, row.id)).limit(1);
       return { ok: false as const, result: failure(now?.status === 'expired' ? 'approval_expired' : 'approval_not_awaiting') };
     }
-    return { ok: true as const, row, op };
+    return { ok: true as const, row, op, key: payer.key };
   });
   if (!claim.ok) return { result: claim.result, surface: null, operation: null };
-  const { row, op } = claim;
+  const { row, op, key } = claim;
   const surface = row.surface === 'hosted' ? 'hosted' : 'api';
   if (isLongJob(op, rowMode(row.mode))) {
     await startLongJob({ requestId: row.id, owner }, key);

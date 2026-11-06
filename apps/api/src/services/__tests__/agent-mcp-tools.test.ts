@@ -434,7 +434,8 @@ describe('game tool execution', () => {
       { method: 'GET', path: '/api/vendors/studios/signin/account', label: 'balance' },
       { method: 'GET', path: '/api/vendors/studios/signin/media', label: 'media' },
     ]);
-    expect(both.next).toContain('never follow them');
+    expect(both.next).toContain('studios_signin_missing');
+    expect(both.next).not.toContain('description');
     calls.length = 0;
     await runMcpTool('clawville_studios_account', { include: ['media'], kind: 'video', limit: 5, cursor: 'c-1', avatarId: 'someone-else' }, rt);
     await runMcpTool('clawville_studios_account', { include: ['balance'] }, rt);

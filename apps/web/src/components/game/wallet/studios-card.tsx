@@ -86,6 +86,27 @@ export function studiosErrorText(error: unknown): string {
   return 'That did not work. Try again later.';
 }
 
+/**
+ * Who pays for the next image, from the human's chosen pay mode (spend
+ * rules); not chosen = the saved key if any, else the agent wallet. The same
+ * rule as the server (`resolveStudiosPayer`).
+ */
+export function studiosPayerNotice(
+  payMode: 'wallet' | 'key' | 'signin' | null | undefined,
+  key: { linked: boolean; last4: string | null } | undefined,
+): string {
+  const mode = payMode ?? (key?.linked ? 'key' : 'wallet');
+  if (mode === 'signin') {
+    return 'Images are made with your Studios sign-in. Studios bills your Studios credits and keeps the images in My Media.';
+  }
+  if (mode === 'key') {
+    return key?.linked
+      ? `Images are made with your own Studios account (key ending ${key.last4 ?? ''}). Studios bills your credits and keeps the images in My Media.`
+      : 'You chose your own Studios key to pay, but no key is saved. Save it below; until then nothing is made.';
+  }
+  return 'Images are paid from your agent wallet, about half a cent each, only inside your spend caps. Studios does not keep these images in your Studios account.';
+}
+
 function newIdempotencyKey(): string {
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID().replace(/-/g, '')
@@ -124,7 +145,7 @@ async function signKeyChange(body: { action: 'save'; last4: string; sha256: stri
 
 export function StudiosCard() {
   const queryClient = useQueryClient();
-  const { signedIn } = useHumanSpendPolicy();
+  const { signedIn, query: policyQuery } = useHumanSpendPolicy();
   const [prompt, setPrompt] = useState('');
   const [keyText, setKeyText] = useState('');
   const [last, setLast] = useState<{ mediaPath: string; note: string } | null>(null);
@@ -209,9 +230,7 @@ export function StudiosCard() {
       </div>
       <div className="bg-violet-500/10 border border-violet-400/25 rounded-lg p-3 space-y-3">
         <p className="text-xs text-white/70 leading-relaxed">
-          {linked
-            ? `Images are made with your own Studios account (key ending ${keyQuery.data?.last4 ?? ''}). Studios bills your credits and keeps the images in My Media.`
-            : 'Images are paid from your agent wallet, about half a cent each, only inside your spend caps. Studios does not keep these images in your Studios account.'}
+          {studiosPayerNotice(policyQuery.data?.studiosPayMode, keyQuery.data)}
         </p>
 
         <label className="block space-y-1">

@@ -27,6 +27,11 @@ export const STUDIOS_MCP_PROTOCOL_VERSION = '2025-06-18';
 /** Versions with the Streamable HTTP transport that this client can speak. */
 const SUPPORTED_PROTOCOL_VERSIONS: ReadonlySet<string> = new Set(['2025-06-18', '2025-03-26']);
 
+/**
+ * The tools ClawVille may call. `start_upload` and `upload_media` are left out
+ * on purpose: ClawVille does not upload to Studios (our own public media links
+ * are the inputs), and `upload_media` with no arguments opens a chat panel.
+ */
 export const STUDIOS_MCP_TOOLS = [
   'create_image',
   'create_video',
@@ -36,8 +41,6 @@ export const STUDIOS_MCP_TOOLS = [
   'get_account',
   'list_media',
   'list_options',
-  'start_upload',
-  'upload_media',
 ] as const;
 export type StudiosMcpToolName = (typeof STUDIOS_MCP_TOOLS)[number];
 const TOOL_ALLOWLIST: ReadonlySet<string> = new Set(STUDIOS_MCP_TOOLS);
@@ -412,6 +415,8 @@ export async function callStudiosTool(
   if (args === null || typeof args !== 'object' || Array.isArray(args)) {
     throw new TypeError('callStudiosTool: arguments must be an object');
   }
+  // `files` is filled by a chat client from the person's own files; a server never sends it.
+  if (Object.prototype.hasOwnProperty.call(args, 'files')) throw new StudiosMcpError('studios_mcp_tool_not_allowed');
   return withSession(options, async (session) => {
     try {
       const result = await session.request('tools/call', { name, arguments: args });

@@ -19,8 +19,9 @@
  *          sign-in (phase 3c): balance in USD, free usage left, this
  *          connection's spend left today. Free; no request row.
  *   GET    /api/vendors/studios/signin/media?kind&limit&cursor  the human's
- *          Studios My Media: id, kind, short description (vendor text, plain
- *          data, at most 200 characters), ready/problem. Free; no request row.
+ *          Studios My Media: id, kind, ready/problem, createdAt. The human
+ *          session also gets a short description (vendor text, plain data, at
+ *          most 200 characters); an agent session never does. Free; no request row.
  *          Both: human session or agent session of the same avatar; 404
  *          `studios_signin_missing`, 409 `studios_signin_broken`.
  *   Who pays (phase 3c): the human's `studiosPayMode` in the spend rules
@@ -106,7 +107,7 @@ import {
   type StudiosOperationResult,
   type StudiosSigninReadFailure,
 } from '../services/studios-images';
-import { signinMediaQuerySchema } from '../services/vendors/studios-signin';
+import { forAgent, signinMediaQuerySchema } from '../services/vendors/studios-signin';
 import { readStudiosMenu } from '../services/studios-menus';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
 import {
@@ -259,7 +260,10 @@ vendorStudiosRoutes.get('/signin/media', requireAuthOrAgentSession, async (c) =>
     return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios reads. Wait one minute.' }, 429);
   }
   const read = await listStudiosSigninMedia(identity.avatarId, query.data);
-  return read.ok ? c.json(read.media) : readRefusal(c, read);
+  if (!read.ok) return readRefusal(c, read);
+  // Vendor descriptions are for the human's display only: an agent session
+  // (REST, the MCP tool) gets id, kind, state and date, never Studios text.
+  return c.json(identity.kind === 'agent' ? forAgent(read.media) : read.media);
 });
 
 vendorStudiosRoutes.get('/images', requireAuthOrAgentSession, async (c) => {

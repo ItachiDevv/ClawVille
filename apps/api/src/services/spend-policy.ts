@@ -134,6 +134,17 @@ export async function readSpendPolicy(avatarId: string): Promise<SpendPolicyView
 
 type Executor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
 
+/**
+ * The per-avatar "who pays and how much" lock (transaction scoped). Every
+ * write that changes who pays or the caps takes it: the spend-rules write,
+ * the Studios key save/remove, the Studios sign-in install and unlink. The
+ * Studios request reservation and its approve take it before they read the
+ * payer, so they never act on a payer that is being changed.
+ */
+export async function lockSpendRules(executor: Pick<typeof db, 'execute'>, avatarId: string): Promise<void> {
+  await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend-policy:${avatarId}`}, 0))`);
+}
+
 export const policyColumns = {
   dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
   perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
@@ -216,7 +227,7 @@ export async function applySpendPolicyChange(
   proof: SpendProofInput | null,
 ): Promise<SpendPolicyChangeResult> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend-policy:${avatarId}`}, 0))`);
+    await lockSpendRules(tx, avatarId);
     const [current] = await tx
       .select(policyColumns)
       .from(userSpendPolicies)

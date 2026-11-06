@@ -179,11 +179,23 @@ describe('studios MCP client', () => {
     expect(seen).toEqual([]);
   });
 
-  it('allows exactly the ten Studios tool names', () => {
+  it('allows exactly the eight Studios tool names ClawVille uses (no upload tool)', () => {
     expect([...STUDIOS_MCP_TOOLS].sort()).toEqual([
       'create_character_shots', 'create_image', 'create_video', 'get_account', 'get_job',
-      'list_media', 'list_options', 'recast', 'start_upload', 'upload_media',
+      'list_media', 'list_options', 'recast',
     ]);
+  });
+
+  it('refuses an upload tool and any `files` argument before any token or network call', async () => {
+    const tokens = tokenSource(['good']);
+    for (const name of ['upload_media', 'start_upload']) {
+      const err = await callStudiosTool({ avatarId: 'a1', endpoint, getToken: tokens.getToken }, name, {}).catch((e) => e);
+      expect((err as StudiosMcpError).code).toBe('studios_mcp_tool_not_allowed');
+    }
+    const files = await callStudiosTool({ avatarId: 'a1', endpoint, getToken: tokens.getToken }, 'create_image', { prompt: 'x', files: [] }).catch((e) => e);
+    expect((files as StudiosMcpError).code).toBe('studios_mcp_tool_not_allowed');
+    expect(tokens.calls).toEqual([]);
+    expect(seen).toEqual([]);
   });
 
   it('on a 401 refreshes once with the rejected token and retries on a new session', async () => {

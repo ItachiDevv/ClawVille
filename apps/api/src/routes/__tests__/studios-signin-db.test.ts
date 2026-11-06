@@ -36,7 +36,7 @@ import {
   studiosSigninClient,
 } from '../../services/studios-images';
 import { activeStudiosJobs, recoverStudiosJobs } from '../../services/studios-job-runner';
-import { applySpendPolicyChange, writeSpendPolicy } from '../../services/spend-policy';
+import { applySpendPolicyChange, lockSpendRules, writeSpendPolicy } from '../../services/spend-policy';
 import { _resetSpendProofNoncesForTest, buildApprovalMessage, issueSpendProofChallenge } from '../../services/spend-policy-proof';
 import { saveVendorKey, deleteVendorKey } from '../../services/vendor-credentials';
 import { encryptToken } from '../../services/keypair-vault';
@@ -539,7 +539,7 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     expect(media.media.items.map((i) => i.id)).toEqual(['mm-1', 'mm-2']);
     expect(media.media.items[0]!.description!.length).toBe(200);
     expect(media.media.items[0]!.description!.startsWith('a b c ')).toBe(true);
-    expect(media.media.items[1]).toEqual({ id: 'mm-2', kind: 'video', description: 'clip', state: 'problem' });
+    expect(media.media.items[1]).toEqual({ id: 'mm-2', kind: 'video', description: 'clip', state: 'problem', createdAt: null });
     expect(toolCalls.map((c) => [c.name, c.args])).toEqual([['get_account', {}], ['list_media', { kind: 'image', limit: 5, cursor: 'c-1' }]]);
     expect(await rows()).toBe(0);
     await db.execute(sql`DELETE FROM user_vendor_oauth_links WHERE avatar_id = ${avatarId}`);
@@ -633,6 +633,73 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     const unknown = await waitForJob(await started(await requestStudiosOperation(videoReq())));
     expect(unknown).toMatchObject({ status: 'failed', code: 'outcome_unknown' });
     expect(await requestStudiosOperation(videoReq())).toMatchObject({ ok: false, code: 'daily_limit' });
+  });
+  // ---------------------------------------------------------------------------
+  // The payer is read under the spend-rules lock (Codex review 2026-11-06)
+  // ---------------------------------------------------------------------------
+
+  /** Hold the spend-rules lock in another transaction while it changes the pay mode; release on demand. */
+  async function holdPayModeChange(mode: 'wallet' | 'key' | 'signin' | null) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let held!: () => void;
+    const holding = new Promise<void>((r) => { held = r; });
+    const done = db.transaction(async (tx) => {
+      await lockSpendRules(tx, avatarId);
+      await tx.update(dbMod.userSpendPolicies).set({ studiosPayMode: mode }).where(dbMod.eq(dbMod.userSpendPolicies.avatarId, avatarId));
+      held();
+      await gate;
+    });
+    await holding;
+    return { release, done };
+  }
+
+  it('race, approve: a pay mode change that holds the lock first is seen; approve waits, then refuses approval_mode_changed and runs nothing', async () => {
+    await saveVendorKey(avatarId, 'studios', userId, KEY);
+    await setRules({ payMode: 'key', requireApproval: true });
+    const r = await requestStudiosOperation(videoReq());
+    if (r.ok || r.code !== 'awaiting_approval') throw new Error('expected awaiting_approval');
+    const terms = await readApprovalTerms(avatarId, r.requestId);
+    if (!terms.ok) throw new Error('expected terms');
+    expect(terms.terms.mode).toBe('account');
+    const change = await holdPayModeChange('wallet');
+    let settled = false;
+    const approving = approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: terms.terms }).then((d) => { settled = true; return d; });
+    await new Promise((res) => setTimeout(res, 200));
+    expect(settled).toBe(false); // approve waits for the lock
+    change.release();
+    await change.done;
+    expect((await approving).result).toMatchObject({ ok: false, code: 'approval_mode_changed' });
+    expect((await readStudiosRequest(avatarId, r.requestId))?.status).toBe('awaiting_approval');
+    expect(outside).toEqual([]); // the key was never sent to Studios
+    expect(toolCalls).toEqual([]);
+  });
+
+  it('race, 202 path: a pay mode change that holds the lock first is seen; the request refuses with the new mode\'s code, no row', async () => {
+    await setRules({ payMode: 'signin' });
+    handlers.create_video = () => finished([], 'job-race');
+    const change = await holdPayModeChange('key'); // key chosen, none saved
+    let settled = false;
+    const requesting = requestStudiosOperation(videoReq()).then((d) => { settled = true; return d; });
+    await new Promise((res) => setTimeout(res, 200));
+    expect(settled).toBe(false);
+    change.release();
+    await change.done;
+    expect(await requesting).toMatchObject({ ok: false, code: 'studios_key_missing', httpStatus: 403 });
+    expect(await rows()).toBe(0);
+    expect(toolCalls).toEqual([]);
+  });
+
+  it('the key save and the sign-in unlink wait for the same lock', async () => {
+    const change = await holdPayModeChange('signin');
+    let saved = false;
+    const saving = saveVendorKey(avatarId, 'studios', userId, KEY).then(() => { saved = true; });
+    await new Promise((res) => setTimeout(res, 150));
+    expect(saved).toBe(false);
+    change.release();
+    await change.done;
+    await saving;
+    expect(saved).toBe(true);
   });
 });
 

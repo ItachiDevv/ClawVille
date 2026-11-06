@@ -9,6 +9,7 @@ import { isSpendPolicyRaise, type SpendPolicyValues } from '@clawville/shared';
 import { buildApprovalMessage, buildSpendRulesMessage } from '../spend-policy-proof';
 import {
   buildSigninToolCall,
+  forAgent,
   mapSigninAccount,
   mapSigninMedia,
   plainDescription,
@@ -84,8 +85,11 @@ describe('free read mappers', () => {
   });
 
   it('media: ids by pattern, kind and state from a fixed set, descriptions as short plain text, no links', () => {
-    const view = mapSigninMedia({ items: [{ id: 'm-1', type: 'video', description: 'line1\nline2\u2028x', state: 'processing', url: 'https://x.example/y' }], nextCursor: 'bad cursor!' });
-    expect(view).toEqual({ items: [{ id: 'm-1', kind: 'video', description: 'line1 line2 x', state: null }], nextCursor: null });
+    const view = mapSigninMedia({ items: [{ id: 'm-1', type: 'video', description: 'line1\nline2\u2028x', state: 'processing', url: 'https://x.example/y', created_at: '2026-11-01T10:00:00Z' }], nextCursor: 'bad cursor!' });
+    expect(view).toEqual({ items: [{ id: 'm-1', kind: 'video', description: 'line1 line2 x', state: null, createdAt: '2026-11-01T10:00:00.000Z' }], nextCursor: null });
+    // The agent view drops every vendor text.
+    expect(forAgent(view!)).toEqual({ items: [{ id: 'm-1', kind: 'video', state: null, createdAt: '2026-11-01T10:00:00.000Z' }], nextCursor: null });
+    expect(mapSigninMedia({ items: [{ id: 'm-2', created_at: 'not a date' }] })!.items[0]!.createdAt).toBeNull();
     expect(mapSigninMedia({ nothing: true })).toBeNull();
     expect(plainDescription('a'.repeat(500))!.length).toBe(200);
     expect(plainDescription('   ')).toBeNull();

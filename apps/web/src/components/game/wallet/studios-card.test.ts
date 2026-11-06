@@ -1,6 +1,22 @@
 import { describe, expect, test } from 'bun:test';
 import { ApiError } from '@/lib/api';
-import { keepsRequestKey, studiosErrorText } from './studios-card';
+import { keepsRequestKey, studiosErrorText, studiosPayerNotice } from './studios-card';
+
+describe('studiosPayerNotice', () => {
+  const key = { linked: true, last4: 'ab12' };
+  const none = { linked: false, last4: null };
+  test('follows the chosen pay mode, not only whether a key is saved', () => {
+    expect(studiosPayerNotice('signin', key)).toContain('Studios sign-in');
+    expect(studiosPayerNotice('wallet', key)).toContain('agent wallet');
+    expect(studiosPayerNotice('key', key)).toContain('key ending ab12');
+    expect(studiosPayerNotice('key', none)).toContain('no key is saved');
+  });
+  test('not chosen: the saved key if any, else the wallet', () => {
+    expect(studiosPayerNotice(null, key)).toContain('key ending ab12');
+    expect(studiosPayerNotice(null, none)).toContain('agent wallet');
+    expect(studiosPayerNotice(undefined, undefined)).toContain('agent wallet');
+  });
+});
 
 describe('keepsRequestKey', () => {
   test('keeps the request key after an uncertain outcome, so a retry cannot pay twice', () => {
