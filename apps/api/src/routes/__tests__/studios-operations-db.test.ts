@@ -20,11 +20,18 @@ import { Hono } from 'hono';
 import * as dbMod from '@clawville/database';
 import {
   approveStudiosRequest,
+  listAwaitingApprovals,
   readApprovalTerms,
   readStudiosRequest,
   recastTiming,
   requestStudiosOperation,
+  studiosRefusalFor,
 } from '../../services/studios-images';
+import { encodePaymentRequiredHeader } from '@x402/core/http';
+import { randomBytes } from 'node:crypto';
+import bs58 from 'bs58';
+import { SOLANA_MAINNET } from '../../services/outbound-x402';
+import { STUDIOS_PAY_TO } from '../../services/vendors/studios';
 import { activeStudiosJobs, recoverStudiosJobs, renewLease } from '../../services/studios-job-runner';
 import { deleteOwnMedia } from '../../services/studios-media';
 import { vendorKeyRef } from '../../services/spend-policy-proof';
@@ -169,6 +176,7 @@ describeIfSchema('Studios operations (phase 3b): executed DB contract', () => {
     await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`);
     await db.execute(sql`DELETE FROM avatar_media WHERE avatar_id IN (${avatarId}, ${otherAvatarId})`);
     await db.execute(sql`DELETE FROM vendor_spend_ledger WHERE avatar_id = ${avatarId}`);
+    await db.execute(sql`DELETE FROM wallets WHERE subject_type = 'avatar' AND subject_id = ${avatarId}`);
   });
 
   afterAll(async () => {
@@ -423,6 +431,77 @@ describeIfSchema('Studios operations (phase 3b): executed DB contract', () => {
     expect(seen).toEqual([]);
   });
 
+  it('wallet fence: a runner that lost its lease before paying inserts no ledger row and sends nothing after recovery said interrupted_not_paid', async () => {
+    await deleteVendorKey(avatarId, 'studios');
+    await setRules({ daily: 1000, perCall: 1000, vendors: ['studios'] });
+    // Hold the old runner right after the unpaid quote, before admission.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let quoted!: () => void;
+    const atQuote = new Promise<void>((resolve) => { quoted = resolve; });
+    const paidSends: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      if (headers.get('PAYMENT-SIGNATURE')) paidSends.push(url);
+      seen.push({ url, method: init?.method ?? 'GET', auth: null, idem: null, body: null });
+      quoted();
+      await gate;
+      // A valid quote: without the fence the old runner would admit (insert a
+      // ledger row) and go on to sign and send.
+      const header = encodePaymentRequiredHeader({
+        x402Version: 2,
+        resource: { url },
+        accepts: [{ scheme: 'exact', network: SOLANA_MAINNET, amount: '5000', asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', payTo: STUDIOS_PAY_TO[0]!, maxTimeoutSeconds: 300, extra: { feePayer: 'CjNFTjvBhbJJd2B5ePPMHRLx1ELZpa8dwQgGL727eKww' } }],
+      } as never);
+      return new Response('{}', { status: 402, headers: { 'PAYMENT-REQUIRED': header } });
+    }) as typeof fetch;
+    await db.execute(sql`INSERT INTO wallets (subject_type, subject_id, public_key, encrypted_secret_key, encryption_iv, encryption_tag)
+      VALUES ('avatar', ${avatarId}, ${bs58.encode(randomBytes(32))}, 'x', 'x', 'x')`);
+    const run = requestStudiosOperation({ avatarId, actor: 'agent', operation: 'image', params: { prompt: 'a cat' }, idempotencyKey: key() });
+    await atQuote;
+    const [row] = Array.from(await db.execute<{ id: string; lease_owner: string }>(sql`SELECT id, lease_owner FROM vendor_call_requests WHERE avatar_id = ${avatarId} AND status = 'pending'`));
+    if (!row) throw new Error('expected a pending row');
+    // The lease lapses (a stale pending row); recovery claims it with a new owner.
+    await db.execute(sql`UPDATE vendor_call_requests SET updated_at = now() - interval '1 hour' WHERE id = ${row.id}`);
+    expect(await recoverStudiosJobs()).toContain(row.id);
+    expect(await readStudiosRequest(avatarId, row.id)).toMatchObject({ status: 'failed', code: 'interrupted_not_paid' });
+    release();
+    await run;
+    expect(paidSends).toEqual([]);
+    expect(Number(first(await db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM vendor_spend_ledger WHERE avatar_id = ${avatarId}`)).n)).toBe(0);
+    expect(await readStudiosRequest(avatarId, row.id)).toMatchObject({ status: 'failed', code: 'interrupted_not_paid' });
+  });
+
+  it('a recast that already started never says nothing was paid: a 401 on the poll, a changed key or a removed key at recovery end as outcome_unknown and keep the job id', async () => {
+    const unknown = studiosRefusalFor('outcome_unknown', 'recast')!;
+    expect(unknown.message.startsWith('Do not retry; ask your human to check their Studios My Media and credits.')).toBe(true);
+    expect(unknown.message).not.toContain('Nothing was paid');
+    const jobIdOf = async (id: string) => first(await db.execute<{ vendor_job_id: string | null }>(sql`SELECT vendor_job_id FROM vendor_call_requests WHERE id = ${id}`)).vendor_job_id;
+    const recastParams = { preset: 'recast-x-wan', imageUrls: ['https://mystudios.fun/api/v1/media/artifacts/a.png'] };
+    // 1) The start answers a job id, then the poll answers 401.
+    overrides.set(`/api/v1/videos/recast/${JOB}`, { status: 401, body: {} });
+    const r = await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'recast', params: recastParams, idempotencyKey: key() });
+    if (r.ok || r.code !== 'running') throw new Error('expected running');
+    expect(await waitForJob(r.requestId)).toMatchObject({ status: 'failed', code: 'outcome_unknown' });
+    expect(await jobIdOf(r.requestId)).toBe(JOB);
+    overrides.clear();
+    // 2) Recovery resumes a started recast, but the key changed.
+    const changed = await deadRow({ operation: 'recast', mode: 'account', jobId: JOB, params: recastParams, credential: vendorKeyRef(KEY).sha256 });
+    await saveVendorKey(avatarId, 'studios', userId, `chk_${tag}zzzzzzzzzzzzzzzz9999`);
+    seen = [];
+    expect(await recoverStudiosJobs()).toContain(changed.id);
+    expect(await waitForJob(changed.id)).toMatchObject({ status: 'failed', code: 'outcome_unknown' });
+    expect(await jobIdOf(changed.id)).toBe(JOB);
+    // 3) The same with the key removed.
+    const removed = await deadRow({ operation: 'recast', mode: 'account', jobId: JOB, params: recastParams, credential: vendorKeyRef(KEY).sha256 });
+    await deleteVendorKey(avatarId, 'studios');
+    expect(await recoverStudiosJobs()).toContain(removed.id);
+    expect(await waitForJob(removed.id)).toMatchObject({ status: 'failed', code: 'outcome_unknown' });
+    expect(await jobIdOf(removed.id)).toBe(JOB);
+    expect(seen).toEqual([]);
+  });
+
   it('approval: the terms name the operation and hash the settings; image terms never approve a video; approve answers running', async () => {
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = 'CjNFTjvBhbJJd2B5ePPMHRLx1ELZpa8dwQgGL727eKww' WHERE id = ${userId}`);
     await setRules({ requireApproval: true });
@@ -430,6 +509,7 @@ describeIfSchema('Studios operations (phase 3b): executed DB contract', () => {
     expect(r).toMatchObject({ ok: false, code: 'awaiting_approval' });
     if (r.ok || r.code !== 'awaiting_approval') throw new Error('expected awaiting');
     expect(seen).toEqual([]);
+    expect((await listAwaitingApprovals(avatarId)).map((a) => [a.requestId, a.operation])).toEqual([[r.requestId, 'video']]);
     const read = await readApprovalTerms(avatarId, r.requestId);
     if (!read.ok) throw new Error('expected terms');
     expect(read.terms).toMatchObject({ operation: 'video', mode: 'account', maxUsdCents: null, credentialSha256: vendorKeyRef(KEY).sha256 });

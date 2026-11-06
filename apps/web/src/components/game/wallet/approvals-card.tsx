@@ -34,6 +34,18 @@ export function timeLeftText(expiresAt: string, nowMs: number): string {
 }
 
 /** Plain text for who pays and how much at most. */
+const OPERATION_LABEL: Record<VendorCallApprovalView['operation'], string> = {
+  image: 'a Studios image',
+  video: 'a Studios video',
+  character_shots: 'Studios character shots',
+  recast: 'a Studios recast clip',
+};
+
+/** What the request would make, from the API's `operation` (never from agent text). */
+export function approvalOperationText(operation: VendorCallApprovalView['operation']): string {
+  return OPERATION_LABEL[operation] ?? 'a Studios request';
+}
+
 export function approvalPriceText(item: Pick<VendorCallApprovalView, 'mode' | 'maxUsdCents'>): string {
   if (item.mode === 'account') return 'Your Studios key pays (your Studios credits).';
   const cents = item.maxUsdCents ?? 0;
@@ -127,12 +139,12 @@ export function ApprovalsCard() {
           <p className="text-xs text-red-300">{approvalErrorText(query.error)}</p>
         ) : approvals.length === 0 ? (
           <p className="text-xs text-white/60">
-            No payment waits for you. With &quot;Ask me before each payment&quot; on (Spending, above), each paid image waits here until you approve it with your linked wallet.
+            No payment waits for you. With &quot;Ask me before each payment&quot; on (Spending, above), each paid Studios request (image, video, character shots or recast) waits here until you approve it with your linked wallet.
           </p>
         ) : (
           approvals.map((item) => (
             <div key={item.requestId} className="rounded-md border border-white/15 bg-black/30 p-3 space-y-2" data-testid="approval-item">
-              <p className="text-xs text-white/55">{item.surface === 'hosted' ? 'Your agent asks' : 'A request asks'} for a Studios image:</p>
+              <p className="text-xs text-white/55">{item.surface === 'hosted' ? 'Your agent asks' : 'A request asks'} for {approvalOperationText(item.operation)}:</p>
               {/* Agent text: plain text only. */}
               <p className="text-sm text-white whitespace-pre-wrap break-words" data-testid="approval-prompt">{item.prompt}</p>
               <p className="text-xs text-white/70">{approvalPriceText(item)}</p>

@@ -149,6 +149,38 @@ describeIfSchema('outbound x402: executed DB contract', () => {
     expect(paidCalls).toBe(1);
   });
 
+  it('the caller fence: refused at admission = no ledger row; refused at the signature store, or a row closed by recovery = failed, never sent', async () => {
+    await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 100, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
+    const fenced = (key: string, fence: () => Promise<boolean>, d: Partial<OutboundDeps>) => callVendorWithAvatarWallet({
+      avatarId, actor: 'agent', pin: PIN, tool: 'images.generations', idempotencyKey: `${tag}-${key}`,
+      url: 'https://mystudios.fun/api/v1/images/generations', body: { model: 'z-image-turbo', prompt: 'test', n: 1 }, fence,
+    }, d);
+    const ledgerRows = async (key: string) => Array.from(await db.execute<{ status: string; failure_reason: string | null; payer_signature: string | null }>(
+      sql`SELECT status, failure_reason, payer_signature FROM vendor_spend_ledger WHERE avatar_id = ${avatarId} AND idempotency_key = ${`${tag}-${key}`}`,
+    ));
+    // 1) Lost before admission: nothing at all.
+    expect(await fenced('fa', async () => false, deps(() => settledResponse(200, {}, sig64())))).toEqual({ ok: false, code: 'payment_fenced' });
+    expect(await ledgerRows('fa')).toEqual([]);
+    expect([signCalls, paidCalls]).toEqual([0, 0]);
+    // 2) Lost between admission and the signature store: the row fails, nothing is sent.
+    let checks = 0;
+    const second = await fenced('fb', async () => (checks += 1) === 1, deps(() => settledResponse(200, {}, sig64())));
+    expect(second).toMatchObject({ ok: false, code: 'payment_fenced' });
+    expect(await ledgerRows('fb')).toEqual([{ status: 'failed', failure_reason: 'not_sent_job_taken_over', payer_signature: null }]);
+    expect(paidCalls).toBe(0);
+    // 3) Recovery closed the unsigned row while the old runner was signing.
+    const third = await fenced('fc', async () => true, {
+      ...deps(() => settledResponse(200, {}, sig64())),
+      signPayment: async () => {
+        await db.execute(sql`UPDATE vendor_spend_ledger SET status = 'failed', failure_reason = 'never_sent_runner_interrupted' WHERE avatar_id = ${avatarId} AND idempotency_key = ${`${tag}-fc`}`);
+        return { header: 'signed-payment-header', payerSignature: sig64() };
+      },
+    });
+    expect(third).toMatchObject({ ok: false, code: 'payment_fenced' });
+    expect(await ledgerRows('fc')).toEqual([{ status: 'failed', failure_reason: 'never_sent_runner_interrupted', payer_signature: null }]);
+    expect(paidCalls).toBe(0);
+  });
+
   it('enforces the per-call cap on the quoted amount', async () => {
     await writeSpendPolicy(avatarId, userId, { dailyCapUsdCents: 100, perCallCapUsdCents: 1, allowedVendors: ['studios'] });
     const result = await call('big', deps(() => settledResponse(200, {}, 'tx'), () => quoteResponse('10001')));

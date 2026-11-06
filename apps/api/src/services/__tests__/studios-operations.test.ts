@@ -310,9 +310,9 @@ describe('hosted verbs: grammar and result lines', () => {
       formatGeneratedImageResult(studiosRefusalFor('outcome_unknown', 'image')!),
     ];
     expect(stopLines[0]).toStartWith('Studio: generate_video refused (payment_ambiguous): Do not retry; it counts toward the daily cap until it is checked on chain.');
-    expect(stopLines[1]).toStartWith('Studio: recast_character refused (outcome_unknown): Do not retry.');
+    expect(stopLines[1]).toStartWith('Studio: recast_character refused (outcome_unknown): Do not retry; ask your human to check their Studios My Media and credits.');
     expect(stopLines[2]).toContain('Do not retry; it counts toward the daily cap until it is checked on chain.');
-    expect(stopLines[3]).toContain('Do not retry.');
+    expect(stopLines[3]).toContain('Do not retry; ask your human to check their Studios My Media and credits.');
     lines.push(...stopLines);
     for (const line of lines) {
       expect(line.length).toBeLessThanOrEqual(200);

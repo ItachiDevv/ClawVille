@@ -47,7 +47,7 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { and, asc, avatarMedia, db, desc, eq, inArray, or, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
+import { and, asc, avatarMedia, db, desc, eq, inArray, isNull, or, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
 import {
   SPEND_APPROVAL_MAX_AWAITING,
   SPEND_APPROVAL_TTL_MS,
@@ -55,7 +55,7 @@ import {
   type VendorCallApprovalView,
   type VendorCallStatus,
 } from '@clawville/shared';
-import { callVendorWithAvatarWallet, readJsonCapped, type VendorCallFailure } from './outbound-x402';
+import { callVendorWithAvatarWallet, readJsonCapped, type LedgerTx, type VendorCallFailure } from './outbound-x402';
 import { policyColumns, toSpendPolicyView } from './spend-policy';
 import { promptSha256, vendorKeyRef, type ApprovalTerms } from './spend-policy-proof';
 import { loadVendorKey } from './vendor-credentials';
@@ -204,7 +204,8 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message
   studios_account_refused: { httpStatus: 402, message: "Studios refused the call on your human's Studios account (for example, no credits left). ClawVille paid nothing." },
   image_missing: { httpStatus: 502, message: 'Studios sent no readable image. Do not retry; contact support with the ledgerId if one is shown.' },
   media_missing: { httpStatus: 502, message: 'Studios sent no media that ClawVille could store. Do not retry; contact support with the ledgerId if one is shown.' },
-  outcome_unknown: { httpStatus: 502, message: "ClawVille lost the answer from Studios. Studios may have billed your human's Studios credits; the result may be in their Studios My Media. Do not retry." },
+  outcome_unknown: { httpStatus: 502, message: "Do not retry; ask your human to check their Studios My Media and credits. ClawVille cannot tell how this Studios call ended (the answer was lost, or Studios stopped answering after the job started), so it may have used their Studios credits." },
+  payment_fenced: { httpStatus: 502, message: 'Another ClawVille worker took this request over before this one paid, so this one sent nothing. Do not retry; read the request status.' },
   interrupted_not_paid: { httpStatus: 502, message: 'The ClawVille server restarted before this request paid anything. Nothing was paid. Send a new request with a new key.' },
   result_lost: { httpStatus: 502, message: 'The wallet paid, but the ClawVille server restarted before it stored the result. Do not retry; contact support with the ledgerId.' },
   job_failed: { httpStatus: 502, message: 'Studios says the job failed (Studios refunds a failed job). Do not retry the same request.' },
@@ -716,6 +717,22 @@ async function holdsClaim(claim: JobClaim): Promise<boolean> {
   return Boolean(row);
 }
 
+/**
+ * The ownership check passed to the wallet payment (`fence`): locks the row
+ * and is true only while this claim holds it and it is not terminal. A
+ * recovery pass writes a new `lease_owner` first, so an old runner that wakes
+ * up later cannot insert a ledger row or store a signature, and sends nothing.
+ */
+function claimFence(claim: JobClaim): (tx: LedgerTx) => Promise<boolean> {
+  return async (tx) => {
+    const rows = await tx.execute(sql`
+      SELECT 1 FROM vendor_call_requests
+      WHERE id = ${claim.requestId} AND lease_owner = ${claim.owner} AND status IN ('pending', 'running')
+      FOR UPDATE`);
+    return Array.from(rows).length > 0;
+  };
+}
+
 /** The answer when another runner took the row over: nothing is written or stored. */
 function lostClaim(): StudiosImageRefusal {
   return failure('outcome_unknown');
@@ -816,7 +833,10 @@ async function runOneCall(input: RunInput): Promise<StudiosOperationResult> {
     url: request.url,
     body: request.body,
     ...(isImage ? {} : { paidTimeoutMs: op.callTimeoutMs, replyMaxBytes: op.replyMaxBytes }),
+    fence: claimFence(claim),
   });
+  // Taken over before paying: the new holder settles the row; write nothing.
+  if (!paid.ok && paid.code === 'payment_fenced') return lostClaim();
   if (!paid.ok) {
     return finishRequest(claim, failure(paid.code, paid.ledgerId ?? null), paid.code === 'payment_ambiguous' && !isImage ? { status: 'ambiguous' } : {});
   }
@@ -850,7 +870,8 @@ export const recastTiming = { pollMs: RECAST_POLL_MS, deadlineMs: RECAST_DEADLIN
 async function runRecast(input: RunInput & { vendorJobId: string | null; deadlineAt: Date | null }): Promise<StudiosOperationResult> {
   const { op, requestId, key } = input;
   const claim: JobClaim = { requestId, owner: input.owner };
-  if (!key) return finishRequest(claim, failure('operation_needs_studios_key'));
+  // Once a start returned a job id, credits may be in use: never "nothing was paid".
+  if (!key) return finishRequest(claim, failure(input.vendorJobId ? 'outcome_unknown' : 'operation_needs_studios_key'));
   let jobId = input.vendorJobId;
   let deadline = input.deadlineAt?.getTime() ?? null;
   if (!jobId) {
@@ -877,7 +898,9 @@ async function runRecast(input: RunInput & { vendorJobId: string | null; deadlin
     // A poll is free (docs.md: GET /api/v1/videos/recast/{id} "Billing: free"); any failed poll is tried again.
     const reply = await callWithAccountKey(key, { method: 'GET', url: pollUrl }, { timeoutMs: 30_000, replyMaxBytes: op.replyMaxBytes, unchargedStatus: () => true });
     if (!reply.ok) {
-      if (reply.code === 'studios_key_invalid') return finishRequest(claim, failure('studios_key_invalid'));
+      // The job already started (it may have used credits): a key refused now is
+      // outcome_unknown, never "nothing was paid". The job id stays on the row.
+      if (reply.code === 'studios_key_invalid') return finishRequest(claim, failure('outcome_unknown'));
       continue; // A poll that fails changes nothing; try again until the deadline.
     }
     const poll = readRecastPoll(reply.json);
@@ -922,8 +945,10 @@ export async function executeLongJob(requestId: string, owner: string, key?: str
   let useKey: string | null = null;
   if (row.mode === 'account') {
     const current = key === undefined ? await loadKeyOrInvalid(row.avatarId) : key;
-    if (current === undefined) return finishRequest(claim, failure('studios_key_invalid'));
-    if (!current || keySha(current) !== row.credentialSha256) return finishRequest(claim, failure('studios_key_changed'));
+    // A recast that already has a job id was started (credits may be in use):
+    // a key that is gone or changed now is outcome_unknown, not "nothing paid".
+    if (current === undefined) return finishRequest(claim, failure(row.vendorJobId ? 'outcome_unknown' : 'studios_key_invalid'));
+    if (!current || keySha(current) !== row.credentialSha256) return finishRequest(claim, failure(row.vendorJobId ? 'outcome_unknown' : 'studios_key_changed'));
     useKey = current;
   }
   const maxCallAtomic = (row.result as { signedMaxAtomic?: unknown } | null)?.signedMaxAtomic;
@@ -1350,7 +1375,11 @@ export type RecoveryOutcome = 'resume' | 'failed' | 'ambiguous' | 'skipped';
  *     again; no new start) when `resumeRecast`, else `outcome_unknown`.
  *   - wallet mode: read the spend-ledger row by (avatar, idempotency key).
  *     None, or no stored payer signature: nothing was sent -> failed
- *     `interrupted_not_paid` (the reconcile pass marks the ledger never_sent).
+ *     `interrupted_not_paid`. This is safe because the claim wrote a new
+ *     `lease_owner` first: the old runner's admission and signature store are
+ *     fenced by it (`claimFence`), and an unsigned 'pending' ledger row is
+ *     closed here as 'failed' in one conditional UPDATE, so it can never be
+ *     signed or sent afterwards.
  *     A stored payer signature: the payment may have settled -> the request is
  *     'ambiguous' (terminal) and a 'pending' ledger row becomes 'ambiguous' for
  *     the existing reconcile path. A 'paid' ledger row: paid, result lost ->
@@ -1387,10 +1416,17 @@ export async function recoverUnfinishedRequest(requestId: string, owner: string,
       return 'failed';
     }
     // 'pending' with no stored signature was never sent (the signature is
-    // stored before sending); the reconcile pass marks it never_sent.
+    // stored before sending). Close it in one conditional UPDATE; if a
+    // signature landed first, fall through to 'ambiguous'.
     if (ledger.status === 'pending' && !ledger.payerSignature) {
-      await finishRequest(claim, failure('interrupted_not_paid', ledger.id));
-      return 'failed';
+      const closed = await db.update(vendorSpendLedger)
+        .set({ status: 'failed', failureReason: 'never_sent_runner_interrupted', updatedAt: new Date() })
+        .where(and(eq(vendorSpendLedger.id, ledger.id), eq(vendorSpendLedger.status, 'pending'), isNull(vendorSpendLedger.payerSignature)))
+        .returning({ id: vendorSpendLedger.id });
+      if (closed.length > 0) {
+        await finishRequest(claim, failure('interrupted_not_paid', ledger.id));
+        return 'failed';
+      }
     }
     await db.update(vendorSpendLedger)
       .set({ status: 'ambiguous', failureReason: 'runner_interrupted_after_signing', updatedAt: new Date() })

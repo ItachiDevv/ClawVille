@@ -112,6 +112,7 @@ beforeEach(() => {
   approvals = [{
     requestId: REQ,
     vendor: 'studios',
+    operation: 'image',
     prompt: '<img src=x onerror=alert(1)> **bold** [link](https://evil.example)',
     model: null,
     mode: 'wallet',
@@ -182,6 +183,23 @@ describe('ApprovalsCard', () => {
     expect(container?.querySelector('a')).toBeNull();
     expect(container?.textContent).toContain('Your agent wallet pays, at most $0.10');
     expect(container?.textContent).toContain('14 min left');
+    expect(container?.textContent).toContain('A request asks for a Studios image:');
+  });
+
+  test('names the real Studios operation from item.operation', async () => {
+    approvals = [
+      { ...approvals[0]!, requestId: 'r-video', operation: 'video', surface: 'hosted' },
+      { ...approvals[0]!, requestId: 'r-chars', operation: 'character_shots', mode: 'account', maxUsdCents: null },
+      { ...approvals[0]!, requestId: 'r-recast', operation: 'recast', mode: 'account', maxUsdCents: null },
+    ];
+    await mount(createElement(cards.ApprovalsCard));
+    const lines = Array.from(container?.querySelectorAll('[data-testid="approval-item"]') ?? []).map((el) => el.querySelector('p')?.textContent);
+    expect(lines).toEqual([
+      'Your agent asks for a Studios video:',
+      'A request asks for Studios character shots:',
+      'A request asks for a Studios recast clip:',
+    ]);
+    expect(container?.textContent).not.toContain('a Studios image');
   });
 
   test('Approve asks the linked wallet to sign this request, sends the signature, then the list is empty', async () => {

@@ -68,7 +68,19 @@ export interface VendorCallInput {
   paidTimeoutMs?: number;
   /** Largest reply read (default 12 MB). */
   replyMaxBytes?: number;
+  /**
+   * The caller's ownership check (Codex review 2026-11-06). Called inside the
+   * admission transaction (before the ledger row is inserted) and inside the
+   * transaction that stores our signature (the last step before the send). It
+   * must lock the caller's job row and return true only while the caller
+   * still owns it and the job is not terminal. False: no ledger row, no
+   * signature stored, nothing sent (`payment_fenced`).
+   */
+  fence?: (tx: LedgerTx) => Promise<boolean>;
 }
+
+/** The transaction handle `fence` gets. */
+export type LedgerTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type VendorCallFailure =
   | 'duplicate_request'
@@ -82,7 +94,8 @@ export type VendorCallFailure =
   | 'over_daily_cap'
   | 'wallet_missing'
   | 'payment_prepare_failed'
-  | 'payment_ambiguous';
+  | 'payment_ambiguous'
+  | 'payment_fenced';
 
 export type VendorCallResult =
   | {
@@ -288,6 +301,8 @@ async function admit(input: VendorCallInput, requirement: PaymentRequirements, a
   const usdCents = Number((amount + ATOMIC_PER_CENT - 1n) / ATOMIC_PER_CENT);
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend-policy:${input.avatarId}`}, 0))`);
+    // The caller lost its job (a recovery pass took it over): no ledger row.
+    if (input.fence && !(await input.fence(tx))) return { ok: false, code: 'payment_fenced' } as const;
     const [existing] = await tx
       .select({ id: vendorSpendLedger.id })
       .from(vendorSpendLedger)
@@ -480,15 +495,27 @@ export async function callVendorWithAvatarWallet(
   }
 
   // 4) Store our signature BEFORE sending, so the transaction can be found on
-  //    chain later. If this write fails, nothing is sent.
+  //    chain later. If this write fails, nothing is sent. The write is fenced:
+  //    if the caller lost its job, or a recovery pass already closed this
+  //    unsigned row, nothing is stored and nothing is sent.
+  let stored: 'stored' | 'fenced';
   try {
-    await db
-      .update(vendorSpendLedger)
-      .set({ payerSignature: signed.payerSignature, signedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(vendorSpendLedger.id, admission.ledgerId), eq(vendorSpendLedger.status, 'pending')));
+    stored = await db.transaction(async (tx) => {
+      if (input.fence && !(await input.fence(tx))) return 'fenced' as const;
+      const rows = await tx
+        .update(vendorSpendLedger)
+        .set({ payerSignature: signed.payerSignature, signedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(vendorSpendLedger.id, admission.ledgerId), eq(vendorSpendLedger.status, 'pending')))
+        .returning({ id: vendorSpendLedger.id });
+      return rows.length > 0 ? 'stored' as const : 'fenced' as const;
+    });
   } catch {
     await finish(admission.ledgerId, 'failed', { failureReason: 'not_sent_ledger_write_failed' });
     return { ok: false, code: 'payment_prepare_failed', ledgerId: admission.ledgerId };
+  }
+  if (stored === 'fenced') {
+    await finish(admission.ledgerId, 'failed', { failureReason: 'not_sent_job_taken_over' });
+    return { ok: false, code: 'payment_fenced', ledgerId: admission.ledgerId };
   }
 
   // 5) Paid request. From here on the payment may have settled.
