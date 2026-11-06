@@ -8,9 +8,17 @@ describe('spend policy view', () => {
       perCallCapUsdCents: null,
       allowedVendors: [],
       studiosKeyImagesPerDay: 10,
+      requireApproval: false,
       configured: false,
       updatedAt: null,
     });
+  });
+
+  it('shows ask-me-before-each-payment, off when the row is missing or never set', () => {
+    const base = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], updatedAt: null };
+    expect(toSpendPolicyView({ ...base, requireApproval: true }).requireApproval).toBe(true);
+    expect(toSpendPolicyView({ ...base, requireApproval: null }).requireApproval).toBe(false);
+    expect(toSpendPolicyView(base).requireApproval).toBe(false);
   });
 
   it('shows the saved own-key image count, or the default when it was never set', () => {
@@ -50,6 +58,15 @@ describe('spend policy input', () => {
     const base = { dailyCapUsdCents: 100, perCallCapUsdCents: 10, allowedVendors: [] as 'studios'[] };
     expect(resolveSpendPolicyValues(base, current).studiosKeyImagesPerDay).toBe(7);
     expect(resolveSpendPolicyValues({ ...base, studiosKeyImagesPerDay: 3 }, current).studiosKeyImagesPerDay).toBe(3);
+  });
+
+  it('takes an optional boolean requireApproval and keeps the saved one when left out', () => {
+    const base = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[] };
+    expect(spendPolicyInputSchema.safeParse({ ...base, requireApproval: true }).success).toBe(true);
+    for (const bad of ['yes', 1, null]) expect(spendPolicyInputSchema.safeParse({ ...base, requireApproval: bad }).success).toBe(false);
+    const asking = toSpendPolicyView({ ...base, requireApproval: true, updatedAt: null });
+    expect(resolveSpendPolicyValues(base, asking).requireApproval).toBe(true);
+    expect(resolveSpendPolicyValues({ ...base, requireApproval: false }, asking).requireApproval).toBe(false);
   });
 
   it('accepts unset caps (the human may clear a cap)', () => {

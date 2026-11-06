@@ -67,7 +67,7 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'generate_image',
     syntax: 'generate_image(prompt="<1..1000 characters; no double quote and no closing parenthesis>")',
     whenToUse:
-      'make one Studios image for yourself; it is stored and you get its media path; it can spend your avatar wallet USDC only inside the spend rules your human set (no rules set = refused), or your human\'s own Studios key inside the images per day they set; one per reply',
+      'make one Studios image for yourself; it is stored and you get its media path; it can spend your avatar wallet USDC only inside the spend rules your human set (no rules set = refused), or your human\'s own Studios key inside the images per day they set; if your human asks to approve each payment, it waits for them (do not send another while one waits); one per reply',
   },
   {
     verb: 'chat_nori',

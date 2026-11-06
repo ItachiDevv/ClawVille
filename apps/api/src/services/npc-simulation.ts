@@ -371,6 +371,9 @@ export function parseGenerateImageParams(paramStr: string): string | null {
  * code and message. Never vendor text, never the prompt.
  */
 export function formatGeneratedImageResult(result: StudiosImageResult): string {
+  if (!result.ok && result.code === 'awaiting_approval') {
+    return 'Studio: generate_image waits for your human to approve it in the wallet panel (it expires in 15 minutes); nothing was paid yet. Do not send another generate_image until your human answers.';
+  }
   if (!result.ok) {
     const message = result.message.replace(/\s+/g, ' ').slice(0, 130);
     return `Studio: generate_image refused (${result.code}): ${message}`;
@@ -388,6 +391,11 @@ export function formatGeneratedImageResult(result: StudiosImageResult): string {
 /** One short line for the agent's next decide prompt while an image is still being made. */
 export function formatGenerateImageInFlightRefusal(): string {
   return 'Studio: generate_image refused (in_flight): your last image is still being made; wait for its result.';
+}
+
+/** One short line for the agent's next decide prompt after its human declined its request. */
+export function formatGenerateImageDeclined(): string {
+  return 'Studio: your human declined your generate_image request; nothing was made or paid. Do not send the same request again.';
 }
 
 /** One short line for the agent's next decide prompt. Numbers only, no pubkey. */

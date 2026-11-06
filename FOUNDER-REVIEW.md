@@ -5,6 +5,14 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### "Ask me before each payment" (session spend-approval, 2026-11-06, STAGING after the lead pushes)
+
+- **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in. Wallet panel (wallet chip or sidebar Wallet): the Spending card has a new checkbox "Ask me before each payment"; a new Approvals card sits under Spending. While a request waits, a small amber pill on /game ("1 payment waits for your approval") opens the wallet panel.
+- **LOOK AT:** (1) turn the checkbox on and save (no wallet signature); turn it off and save (your linked wallet signs). (2) With it on, have your agent ask for a Studios image (MCP `clawville_studios_image` or the hosted `generate_image`): the agent gets "waits for your human", nothing is paid, and the request shows in Approvals with the prompt as plain text, who pays ("your Studios key" or "your agent wallet, at most $X") and the minutes left. (3) Approve: the image appears in the Studios images card. Decline: nothing is made or paid. Leave one for 15 minutes: it expires. (4) Images you make yourself from the Studios images card do not wait.
+- **COST:** with your own Studios key, an approved image uses your Studios credits; in wallet mode, about $0.005 from the avatar wallet, inside your caps. Decline and expiry cost nothing.
+- **FEEDBACK WANTED:** is 15 minutes right? Is 5 waiting requests at a time right? Where should the /game pill sit on your phone (top centre, under the toasts)? Is the wording clear? Known limit: a magic-link sign-in passes through the agent, so an agent that holds that cookie could approve its own request; do you want each approval signed by your linked wallet too?
+- **Session spend-approval, 2026-11-06.**
+
 ### Hydra, the coin-analyst wanderer + chat with every wanderer (session hydra, 2026-10-31, STAGING)
 
 - **WHERE:** https://staging.clawville.world/game, NPC mode, walk to the south side of the town ring (the road toward the Trading Floor). Bench page with every clip and the glow sliders: https://claude.ai/artifact/CogoeEVj8izxGUf28fyc7x

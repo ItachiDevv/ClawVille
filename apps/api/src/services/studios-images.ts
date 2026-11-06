@@ -14,6 +14,14 @@
  * bills twice in either mode. A retry of a finished request returns the same
  * image; a retry of an unfinished or failed one is `duplicate_request`.
  *
+ * "Ask me before each payment" (founder go 2026-11-06, migration 0093): when
+ * the human turns `requireApproval` on, a request whose actor is the agent
+ * runs only the checks that need no vendor call, then its row waits as
+ * `awaiting_approval` for 15 minutes. Nothing is called, signed or paid. The
+ * human approves (`approveStudiosRequest`: the SAME pipeline, every cap and
+ * limit checked again at that moment) or declines it; nobody answering makes
+ * it `expired` (lazily, on the next read or write of that avatar's rows).
+ *
  * Limits are the human's own (founder 2026-11-05: each user's agent pays for
  * its own tools; ClawVille sets no fixed image count). The spend caps bound
  * the wallet mode. They do not cover the human's Studios credits, so mode
@@ -21,17 +29,27 @@
  * the avatar's mode-'account' requests of this UTC day, ANY actor and surface
  * (an agent that holds its owner's magic-link session looks like the human),
  * counted from the same rows under the same lock, so it survives a restart.
+ * A waiting request counts (it is reserved); a declined or expired one does
+ * not (it never reached Studios).
  *
  * The image is stored in `avatar_media` (checked png/jpeg/webp bytes only; a
  * reply with only a link is `image_missing`) and served at GET /api/media/:id.
  * Vendor text is untrusted: only the image and our own status leave here.
  */
 
-import { and, avatarMedia, db, desc, eq, inArray, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
-import { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } from '@clawville/shared';
+import { and, asc, avatarMedia, db, desc, eq, inArray, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
+import {
+  SPEND_APPROVAL_MAX_AWAITING,
+  SPEND_APPROVAL_TTL_MS,
+  STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+  type VendorCallApprovalView,
+  type VendorCallStatus,
+} from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type VendorCallFailure } from './outbound-x402';
+import { toSpendPolicyView } from './spend-policy';
 import { loadVendorKey } from './vendor-credentials';
 import {
+  STUDIOS_IMAGE_MODELS,
   STUDIOS_MAX_CALL_ATOMIC,
   STUDIOS_PAY_TO,
   buildStudiosImageRequest,
@@ -41,13 +59,35 @@ import {
 
 export const MEDIA_KEEP_PER_AVATAR = 50;
 const ACCOUNT_CALL_TIMEOUT_MS = 120_000;
+const ATOMIC_PER_CENT = 10_000n;
+/** The most one Studios call can cost, in US cents (the hard ceiling in vendors/studios.ts). */
+const STUDIOS_MAX_CALL_CENTS = Number(STUDIOS_MAX_CALL_ATOMIC / ATOMIC_PER_CENT);
+/** The hosted verb keeps at most one request waiting; it must not queue more. */
+const HOSTED_MAX_AWAITING = 1;
 
 export type StudiosImageFailure =
   | VendorCallFailure
   | 'studios_key_invalid'
   | 'studios_account_refused'
   | 'image_missing'
-  | 'daily_limit';
+  | 'daily_limit'
+  | 'approval_pending_limit'
+  | 'approval_declined'
+  | 'approval_expired'
+  | 'approval_not_found'
+  | 'approval_not_awaiting'
+  | 'approval_mode_changed';
+
+/** The request waits for the human (HTTP 202). Nothing was called or paid. */
+export interface StudiosImageAwaiting {
+  ok: false;
+  code: 'awaiting_approval';
+  httpStatus: 202;
+  message: string;
+  ledgerId: null;
+  requestId: string;
+  expiresAt: string;
+}
 
 export type StudiosImageResult =
   | {
@@ -61,9 +101,13 @@ export type StudiosImageResult =
     paidUsdCents: number | null;
     txSignature: string | null;
   }
-  | { ok: false; code: StudiosImageFailure; message: string; httpStatus: FailureStatus; ledgerId: string | null };
+  | StudiosImageRefusal
+  | StudiosImageAwaiting;
 
-type FailureStatus = 400 | 402 | 403 | 409 | 429 | 502;
+/** A refusal or failure with our own code and message. */
+export interface StudiosImageRefusal { ok: false; code: StudiosImageFailure; message: string; httpStatus: FailureStatus; ledgerId: string | null }
+
+type FailureStatus = 400 | 402 | 403 | 404 | 409 | 429 | 502;
 
 const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message: string }> = {
   duplicate_request: { httpStatus: 409, message: 'This Idempotency-Key was already used for a request that did not finish. Do not retry it; use a new key only for a new image.' },
@@ -82,10 +126,32 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message
   studios_key_invalid: { httpStatus: 403, message: 'The saved Studios API key does not work. Ask your human to save it again in the wallet panel. Nothing was paid.' },
   studios_account_refused: { httpStatus: 402, message: "Studios refused the call on your human's Studios account (for example, no credits left). ClawVille paid nothing." },
   image_missing: { httpStatus: 502, message: 'Studios sent no readable image. Do not retry; contact support with the ledgerId if one is shown.' },
+  approval_pending_limit: { httpStatus: 429, message: "Earlier requests still wait for your human's approval. Do not send another one; wait until your human approves or declines them in the wallet panel (each one expires after 15 minutes)." },
+  approval_declined: { httpStatus: 403, message: 'Your human declined this request. Nothing was called or paid. Do not send it again.' },
+  approval_expired: { httpStatus: 409, message: 'Nobody approved this request within 15 minutes, so it expired. Nothing was called or paid.' },
+  approval_not_found: { httpStatus: 404, message: 'There is no such image request for this avatar.' },
+  approval_not_awaiting: { httpStatus: 409, message: 'This request does not wait for approval any more: it was already approved, declined or finished.' },
+  approval_mode_changed: { httpStatus: 409, message: 'The Studios key was saved or removed after this request was made, so a different account would pay now. Nothing was paid. Decline it; your agent can send a new request.' },
 };
 
-function failure(code: StudiosImageFailure, ledgerId: string | null = null): StudiosImageResult {
+function failure(code: StudiosImageFailure, ledgerId: string | null = null): StudiosImageRefusal {
   return { ok: false, code, ...MESSAGES[code], ledgerId };
+}
+
+function awaiting(requestId: string, expiresAt: Date | string): StudiosImageAwaiting {
+  return {
+    ok: false,
+    code: 'awaiting_approval',
+    httpStatus: 202,
+    message: `Your human asked to approve each payment. This request waits for them in the wallet panel (Approvals) and expires in 15 minutes. Nothing was called or paid yet. Do not send it again; read GET /api/vendors/studios/requests/${requestId} for the result.`,
+    ledgerId: null,
+    requestId,
+    expiresAt: new Date(expiresAt).toISOString(),
+  };
+}
+
+function storedModel(model: string | null): StudiosImageModel | undefined {
+  return (STUDIOS_IMAGE_MODELS as readonly string[]).includes(model ?? '') ? (model as StudiosImageModel) : undefined;
 }
 
 const MAGIC: Array<{ mime: string; test: (b: Buffer) => boolean }> = [
@@ -161,6 +227,74 @@ async function callWithAccountKey(key: string, request: { url: string; body: Rec
   return { ok: false, code: 'vendor_refused' };
 }
 
+type Executor = Pick<typeof db, 'select' | 'insert' | 'update' | 'execute'>;
+
+function lockAvatarRequests(tx: Executor, avatarId: string) {
+  return tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`vendor-call:${avatarId}`}))`);
+}
+
+/** Mark this avatar's overdue waiting requests 'expired' (nothing was called or paid). */
+async function expireOverdue(executor: Executor, avatarId: string): Promise<void> {
+  await executor.update(vendorCallRequests)
+    .set({ status: 'expired', updatedAt: new Date() })
+    .where(and(
+      eq(vendorCallRequests.avatarId, avatarId),
+      eq(vendorCallRequests.status, 'awaiting_approval'),
+      sql`${vendorCallRequests.expiresAt} <= now()`,
+    ));
+}
+
+const DAY_START = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
+
+/**
+ * The avatar's own-key requests of this UTC day that count toward the human's
+ * per-day rule. `executedOnly`: only rows that reached (or are reaching)
+ * Studios; else also the waiting ones (a reservation).
+ */
+async function ownKeyRequestsToday(executor: Executor, avatarId: string, opts: { executedOnly: boolean; exceptId?: string }): Promise<number> {
+  const statuses: VendorCallStatus[] = opts.executedOnly ? ['pending', 'done', 'failed'] : ['awaiting_approval', 'pending', 'done', 'failed'];
+  const [row] = await executor.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
+    eq(vendorCallRequests.avatarId, avatarId),
+    eq(vendorCallRequests.mode, 'account'),
+    inArray(vendorCallRequests.status, statuses),
+    sql`${vendorCallRequests.createdAt} >= ${DAY_START}`,
+    opts.exceptId ? sql`${vendorCallRequests.id} <> ${opts.exceptId}` : sql`true`,
+  ));
+  return row?.n ?? 0;
+}
+
+async function readPolicyRow(executor: Executor, avatarId: string) {
+  const [row] = await executor.select({
+    dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
+    perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
+    allowedVendors: userSpendPolicies.allowedVendors,
+    studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
+    requireApproval: userSpendPolicies.requireApproval,
+    updatedAt: userSpendPolicies.updatedAt,
+  }).from(userSpendPolicies).where(eq(userSpendPolicies.avatarId, avatarId)).limit(1);
+  return toSpendPolicyView(row);
+}
+
+/**
+ * Wallet-mode checks that need no vendor call (the price comes only with the
+ * vendor's quote, so the exact per-call and daily checks run again at approve,
+ * in `outbound-x402.ts admit`, under the spend-rules lock).
+ */
+async function walletPrecheck(executor: Executor, avatarId: string, policy: ReturnType<typeof toSpendPolicyView>): Promise<StudiosImageFailure | null> {
+  if (!policy.configured || policy.dailyCapUsdCents === null || policy.perCallCapUsdCents === null) return 'spend_rules_not_set';
+  if (!policy.allowedVendors.includes('studios')) return 'vendor_not_allowed';
+  if (policy.perCallCapUsdCents <= 0) return 'over_per_call_cap';
+  const spent = await executor.execute<{ total: string | null }>(sql`
+    SELECT COALESCE(SUM(usdc_atomic), 0)::text AS total
+    FROM vendor_spend_ledger
+    WHERE avatar_id = ${avatarId}
+      AND status IN ('pending', 'paid', 'ambiguous')
+      AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`);
+  const spentToday = BigInt(Array.from(spent)[0]?.total ?? '0');
+  if (spentToday >= BigInt(policy.dailyCapUsdCents) * ATOMIC_PER_CENT) return 'over_daily_cap';
+  return null;
+}
+
 type Reservation =
   | { kind: 'new'; requestId: string }
   | { kind: 'done'; result: StudiosImageResult };
@@ -172,11 +306,21 @@ async function reserveRequest(input: {
   surface: 'api' | 'hosted';
   mode: 'wallet' | 'account';
   idempotencyKey: string;
+  prompt: string;
+  model: StudiosImageModel | undefined;
 }): Promise<Reservation> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`vendor-call:${input.avatarId}`}))`);
+    await lockAvatarRequests(tx, input.avatarId);
+    await expireOverdue(tx, input.avatarId);
     const [prior] = await tx
-      .select({ status: vendorCallRequests.status, mode: vendorCallRequests.mode, mediaId: vendorCallRequests.mediaId, ledgerId: vendorCallRequests.ledgerId })
+      .select({
+        id: vendorCallRequests.id,
+        status: vendorCallRequests.status,
+        mode: vendorCallRequests.mode,
+        mediaId: vendorCallRequests.mediaId,
+        ledgerId: vendorCallRequests.ledgerId,
+        expiresAt: vendorCallRequests.expiresAt,
+      })
       .from(vendorCallRequests)
       .where(and(
         eq(vendorCallRequests.avatarId, input.avatarId),
@@ -203,19 +347,47 @@ async function reserveRequest(input: {
           },
         };
       }
+      // The same key again returns the same waiting request, never a new row.
+      if (prior.status === 'awaiting_approval' && prior.expiresAt) return { kind: 'done', result: awaiting(prior.id, prior.expiresAt) };
+      if (prior.status === 'declined') return { kind: 'done', result: failure('approval_declined') };
+      if (prior.status === 'expired') return { kind: 'done', result: failure('approval_expired') };
       return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
     }
+    const policy = await readPolicyRow(tx, input.avatarId);
     if (input.mode === 'account') {
-      const [rule] = await tx.select({ perDay: userSpendPolicies.studiosKeyImagesPerDay })
-        .from(userSpendPolicies).where(eq(userSpendPolicies.avatarId, input.avatarId)).limit(1);
-      const perDay = rule?.perDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT;
-      const dayStart = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
-      const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
+      const perDay = policy.studiosKeyImagesPerDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT;
+      if (await ownKeyRequestsToday(tx, input.avatarId, { executedOnly: false }) >= perDay) {
+        return { kind: 'done', result: failure('daily_limit') };
+      }
+    }
+    // "Ask me before each payment": only the agent's requests wait. A request
+    // the human made (the human pressed the button) runs now.
+    if (input.actor === 'agent' && policy.requireApproval) {
+      if (input.mode === 'wallet') {
+        const refused = await walletPrecheck(tx, input.avatarId, policy);
+        if (refused) return { kind: 'done', result: failure(refused) };
+      }
+      const [waiting] = await tx.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
         eq(vendorCallRequests.avatarId, input.avatarId),
-        eq(vendorCallRequests.mode, 'account'),
-        sql`${vendorCallRequests.createdAt} >= ${dayStart}`,
+        eq(vendorCallRequests.status, 'awaiting_approval'),
       ));
-      if ((row?.n ?? 0) >= perDay) return { kind: 'done', result: failure('daily_limit') };
+      const maxAwaiting = input.surface === 'hosted' ? HOSTED_MAX_AWAITING : SPEND_APPROVAL_MAX_AWAITING;
+      if ((waiting?.n ?? 0) >= maxAwaiting) return { kind: 'done', result: failure('approval_pending_limit') };
+      const expiresAt = new Date(Date.now() + SPEND_APPROVAL_TTL_MS);
+      const [created] = await tx.insert(vendorCallRequests).values({
+        avatarId: input.avatarId,
+        vendor: 'studios',
+        actor: input.actor,
+        surface: input.surface,
+        mode: input.mode,
+        status: 'awaiting_approval',
+        idempotencyKey: input.idempotencyKey,
+        prompt: input.prompt,
+        model: input.model ?? null,
+        expiresAt,
+      }).returning({ id: vendorCallRequests.id });
+      if (!created) throw new Error('vendor_call_requests insert returned no row');
+      return { kind: 'done', result: awaiting(created.id, expiresAt) };
     }
     const [created] = await tx.insert(vendorCallRequests).values({
       avatarId: input.avatarId,
@@ -224,6 +396,8 @@ async function reserveRequest(input: {
       surface: input.surface,
       mode: input.mode,
       idempotencyKey: input.idempotencyKey,
+      prompt: input.prompt,
+      model: input.model ?? null,
     }).returning({ id: vendorCallRequests.id });
     if (!created) throw new Error('vendor_call_requests insert returned no row');
     return { kind: 'new', requestId: created.id };
@@ -236,50 +410,31 @@ async function finishRequest(requestId: string, result: StudiosImageResult): Pro
     status: result.ok ? 'done' : 'failed',
     mediaId: result.ok ? result.mediaId : null,
     ledgerId: result.ledgerId,
+    failureCode: result.ok ? null : result.code,
     updatedAt: new Date(),
   }).where(eq(vendorCallRequests.id, requestId));
   return result;
 }
 
 /**
- * Make one Studios image for `avatarId`. The caller has already proved the
- * caller acts for this avatar (human session, ledger-capable agent session,
- * or the hosted runtime of this avatar).
+ * Run one reserved ('pending') request: the human's own key when `key` is
+ * set, else the avatar wallet inside the spend rules. The row's idempotency
+ * key is also the spend-ledger key, so a payment is never made twice.
  */
-export async function generateStudiosImage(input: {
+async function runReservedRequest(input: {
+  requestId: string;
   avatarId: string;
   actor: 'human' | 'agent';
   prompt: string;
+  model: StudiosImageModel | undefined;
   idempotencyKey: string;
-  model?: StudiosImageModel;
-  /** 'hosted' = the [ACTION:] verb (recorded on the request row). Default 'api'. */
-  surface?: 'api' | 'hosted';
+  key: string | null;
 }): Promise<StudiosImageResult> {
   const request = buildStudiosImageRequest({ prompt: input.prompt, model: input.model });
+  const { requestId } = input;
 
-  // A saved key that cannot be read is an error, never a silent switch to the
-  // wallet: the human chose their own account.
-  let key: string | null;
-  try {
-    key = await loadVendorKey(input.avatarId, 'studios');
-  } catch {
-    return failure('studios_key_invalid');
-  }
-  const mode = key ? 'account' : 'wallet';
-
-  const reservation = await reserveRequest({
-    avatarId: input.avatarId,
-    actor: input.actor,
-    surface: input.surface ?? 'api',
-    mode,
-    idempotencyKey: input.idempotencyKey,
-  });
-  if (reservation.kind === 'done') return reservation.result;
-  const { requestId } = reservation;
-
-  if (key) {
-    const result = await callWithAccountKey(key, request);
-    key = null;
+  if (input.key) {
+    const result = await callWithAccountKey(input.key, request);
     if (!result.ok) return finishRequest(requestId, failure(result.code));
     const image = parseStudiosImage(result.json);
     const mediaId = image
@@ -313,6 +468,248 @@ export async function generateStudiosImage(input: {
     paidUsdCents: paid.usdCents,
     txSignature: paid.txSignature,
   });
+}
+
+/** The saved key, `undefined` when it cannot be read (never a silent switch to the wallet). */
+async function loadKeyOrInvalid(avatarId: string): Promise<string | null | undefined> {
+  try {
+    return await loadVendorKey(avatarId, 'studios');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Make one Studios image for `avatarId`. The caller has already proved the
+ * caller acts for this avatar (human session, ledger-capable agent session,
+ * or the hosted runtime of this avatar). `actor` decides whether the request
+ * waits for the human when "ask me before each payment" is on: pass 'agent'
+ * for every request that the human did not make themselves.
+ */
+export async function generateStudiosImage(input: {
+  avatarId: string;
+  actor: 'human' | 'agent';
+  prompt: string;
+  idempotencyKey: string;
+  model?: StudiosImageModel;
+  /** 'hosted' = the [ACTION:] verb (recorded on the request row). Default 'api'. */
+  surface?: 'api' | 'hosted';
+}): Promise<StudiosImageResult> {
+  // A saved key that cannot be read is an error, never a silent switch to the
+  // wallet: the human chose their own account.
+  const key = await loadKeyOrInvalid(input.avatarId);
+  if (key === undefined) return failure('studios_key_invalid');
+
+  const reservation = await reserveRequest({
+    avatarId: input.avatarId,
+    actor: input.actor,
+    surface: input.surface ?? 'api',
+    mode: key ? 'account' : 'wallet',
+    idempotencyKey: input.idempotencyKey,
+    prompt: input.prompt,
+    model: input.model,
+  });
+  if (reservation.kind === 'done') return reservation.result;
+  return runReservedRequest({
+    requestId: reservation.requestId,
+    avatarId: input.avatarId,
+    actor: input.actor,
+    prompt: input.prompt,
+    model: input.model,
+    idempotencyKey: input.idempotencyKey,
+    key,
+  });
+}
+
+type DecisionRow = {
+  id: string;
+  status: string;
+  mode: string;
+  actor: string;
+  surface: string;
+  prompt: string | null;
+  model: string | null;
+  idempotencyKey: string;
+};
+
+/**
+ * Lock this avatar's requests, expire overdue ones, and return the request row
+ * when it still waits, or the refusal. Runs inside the caller's transaction.
+ */
+async function lockAwaitingRow(tx: Executor, avatarId: string, requestId: string): Promise<{ ok: true; row: DecisionRow } | { ok: false; result: StudiosImageRefusal }> {
+  await lockAvatarRequests(tx, avatarId);
+  await expireOverdue(tx, avatarId);
+  const [row] = await tx.select({
+    id: vendorCallRequests.id,
+    status: vendorCallRequests.status,
+    mode: vendorCallRequests.mode,
+    actor: vendorCallRequests.actor,
+    surface: vendorCallRequests.surface,
+    prompt: vendorCallRequests.prompt,
+    model: vendorCallRequests.model,
+    idempotencyKey: vendorCallRequests.idempotencyKey,
+  }).from(vendorCallRequests).where(and(
+    eq(vendorCallRequests.id, requestId),
+    eq(vendorCallRequests.avatarId, avatarId),
+    eq(vendorCallRequests.vendor, 'studios'),
+  )).limit(1);
+  if (!row) return { ok: false, result: failure('approval_not_found') };
+  if (row.status === 'expired') return { ok: false, result: failure('approval_expired') };
+  if (row.status !== 'awaiting_approval' || !row.prompt) return { ok: false, result: failure('approval_not_awaiting') };
+  return { ok: true, row };
+}
+
+export type StudiosDecision = { result: StudiosImageResult; surface: 'api' | 'hosted' | null };
+
+/**
+ * The human approves one waiting request (human session only; the route
+ * checks it). Under the avatar's lock: the row must still wait and not be
+ * expired, the payer must be the same as when it was made (a key saved or
+ * removed since then refuses), and the own-key day limit is checked again. The
+ * row then becomes 'pending' in the same transaction, so a second approve
+ * click finds it not waiting and pays nothing. The SAME pipeline as a direct
+ * request runs next; the wallet mode checks every cap again with the real
+ * price (`admit`), writes the ledger row before signing, and never retries an
+ * ambiguous payment.
+ */
+export async function approveStudiosRequest(input: { avatarId: string; userId: string; requestId: string }): Promise<StudiosDecision> {
+  const key = await loadKeyOrInvalid(input.avatarId);
+  if (key === undefined) return { result: failure('studios_key_invalid'), surface: null };
+  const currentMode = key ? 'account' : 'wallet';
+
+  const claim = await db.transaction(async (tx) => {
+    const found = await lockAwaitingRow(tx, input.avatarId, input.requestId);
+    if (!found.ok) return found;
+    const { row } = found;
+    if (row.mode !== currentMode) return { ok: false as const, result: failure('approval_mode_changed') };
+    if (row.mode === 'account') {
+      const policy = await readPolicyRow(tx, input.avatarId);
+      if (await ownKeyRequestsToday(tx, input.avatarId, { executedOnly: true, exceptId: row.id }) >= policy.studiosKeyImagesPerDay) {
+        return { ok: false as const, result: failure('daily_limit') };
+      }
+    }
+    // A read outside this lock can expire the row between the select and here;
+    // then no row flips and nothing runs.
+    const [flipped] = await tx.update(vendorCallRequests).set({
+      status: 'pending',
+      decidedAt: new Date(),
+      decidedByUserId: input.userId,
+      updatedAt: new Date(),
+    }).where(and(eq(vendorCallRequests.id, row.id), eq(vendorCallRequests.status, 'awaiting_approval')))
+      .returning({ id: vendorCallRequests.id });
+    if (!flipped) return { ok: false as const, result: failure('approval_not_awaiting') };
+    return { ok: true as const, row };
+  });
+  if (!claim.ok) return { result: claim.result, surface: null };
+  const { row } = claim;
+  const result = await runReservedRequest({
+    requestId: row.id,
+    avatarId: input.avatarId,
+    actor: row.actor === 'human' ? 'human' : 'agent',
+    prompt: row.prompt!,
+    model: storedModel(row.model),
+    idempotencyKey: row.idempotencyKey,
+    key,
+  });
+  return { result, surface: row.surface === 'hosted' ? 'hosted' : 'api' };
+}
+
+/** The human declines one waiting request. Nothing is called or paid. */
+export async function declineStudiosRequest(input: { avatarId: string; userId: string; requestId: string }): Promise<
+  { ok: true; requestId: string; status: 'declined'; surface: 'api' | 'hosted' } | { ok: false; result: StudiosImageRefusal }
+> {
+  return db.transaction(async (tx) => {
+    const found = await lockAwaitingRow(tx, input.avatarId, input.requestId);
+    if (!found.ok) return found;
+    const [flipped] = await tx.update(vendorCallRequests).set({
+      status: 'declined',
+      decidedAt: new Date(),
+      decidedByUserId: input.userId,
+      updatedAt: new Date(),
+    }).where(and(eq(vendorCallRequests.id, found.row.id), eq(vendorCallRequests.status, 'awaiting_approval')))
+      .returning({ id: vendorCallRequests.id });
+    if (!flipped) return { ok: false as const, result: failure('approval_not_awaiting') };
+    return { ok: true as const, requestId: found.row.id, status: 'declined' as const, surface: found.row.surface === 'hosted' ? 'hosted' as const : 'api' as const };
+  });
+}
+
+/** The avatar's waiting requests, oldest first, for the human's Approvals list. */
+export async function listAwaitingApprovals(avatarId: string): Promise<VendorCallApprovalView[]> {
+  await expireOverdue(db, avatarId);
+  const rows = await db.select({
+    id: vendorCallRequests.id,
+    prompt: vendorCallRequests.prompt,
+    model: vendorCallRequests.model,
+    mode: vendorCallRequests.mode,
+    surface: vendorCallRequests.surface,
+    createdAt: vendorCallRequests.createdAt,
+    expiresAt: vendorCallRequests.expiresAt,
+  }).from(vendorCallRequests).where(and(
+    eq(vendorCallRequests.avatarId, avatarId),
+    eq(vendorCallRequests.vendor, 'studios'),
+    eq(vendorCallRequests.status, 'awaiting_approval'),
+  )).orderBy(asc(vendorCallRequests.createdAt)).limit(SPEND_APPROVAL_MAX_AWAITING * 2);
+  const policy = await readPolicyRow(db, avatarId);
+  const walletMax = Math.min(policy.perCallCapUsdCents ?? 0, STUDIOS_MAX_CALL_CENTS);
+  return rows.map((r) => ({
+    requestId: r.id,
+    vendor: 'studios',
+    prompt: r.prompt ?? '',
+    model: r.model,
+    mode: r.mode === 'account' ? 'account' : 'wallet',
+    surface: r.surface === 'hosted' ? 'hosted' : 'api',
+    maxUsdCents: r.mode === 'account' ? null : walletMax,
+    createdAt: new Date(r.createdAt).toISOString(),
+    expiresAt: new Date(r.expiresAt ?? r.createdAt).toISOString(),
+  }));
+}
+
+export interface StudiosRequestStatusView {
+  requestId: string;
+  status: VendorCallStatus;
+  mode: 'wallet' | 'account';
+  createdAt: string;
+  /** Only for a request that waited for approval. */
+  expiresAt: string | null;
+  decidedAt: string | null;
+  mediaId: string | null;
+  mediaPath: string | null;
+  /** Our own refusal code for a failed request (never vendor text). */
+  code: string | null;
+  ledgerId: string | null;
+}
+
+/** One request of this avatar, for its agent or its human. Null when not found. */
+export async function readStudiosRequest(avatarId: string, requestId: string): Promise<StudiosRequestStatusView | null> {
+  await expireOverdue(db, avatarId);
+  const [row] = await db.select({
+    id: vendorCallRequests.id,
+    status: vendorCallRequests.status,
+    mode: vendorCallRequests.mode,
+    createdAt: vendorCallRequests.createdAt,
+    expiresAt: vendorCallRequests.expiresAt,
+    decidedAt: vendorCallRequests.decidedAt,
+    mediaId: vendorCallRequests.mediaId,
+    failureCode: vendorCallRequests.failureCode,
+    ledgerId: vendorCallRequests.ledgerId,
+  }).from(vendorCallRequests).where(and(
+    eq(vendorCallRequests.id, requestId),
+    eq(vendorCallRequests.avatarId, avatarId),
+    eq(vendorCallRequests.vendor, 'studios'),
+  )).limit(1);
+  if (!row) return null;
+  return {
+    requestId: row.id,
+    status: row.status as VendorCallStatus,
+    mode: row.mode === 'account' ? 'account' : 'wallet',
+    createdAt: new Date(row.createdAt).toISOString(),
+    expiresAt: row.expiresAt ? new Date(row.expiresAt).toISOString() : null,
+    decidedAt: row.decidedAt ? new Date(row.decidedAt).toISOString() : null,
+    mediaId: row.mediaId,
+    mediaPath: row.mediaId ? `/api/media/${row.mediaId}` : null,
+    code: row.failureCode,
+    ledgerId: row.ledgerId,
+  };
 }
 
 /** One stored image, for GET /api/media/:id. */

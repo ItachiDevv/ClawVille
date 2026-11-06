@@ -137,7 +137,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
   it('needs a linked wallet and its signature to raise, never to lower', async () => {
     await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = NULL WHERE id = ${userId}`);
-    const raise = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10 };
+    const raise = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, requireApproval: false };
 
     expect(await applySpendPolicyChange(avatarId, userId, raise, null)).toEqual({ kind: 'needs_wallet_link' });
 
@@ -166,7 +166,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
     await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
     const wallet = nacl.sign.keyPair();
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${bs58.encode(wallet.publicKey)} WHERE id = ${userId}`);
-    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[] };
+    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[], requireApproval: false };
     expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosKeyImagesPerDay: 10 });
 
     // Lower than the default: no signature. Left out later: the saved 4 stays.
@@ -209,7 +209,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
     const pubA = bs58.encode(walletA.publicKey);
     const pubB = bs58.encode(nacl.sign.keyPair().publicKey);
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${pubA} WHERE id = ${userId}`);
-    const raise = { dailyCapUsdCents: 700, perCallCapUsdCents: 70, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10 };
+    const raise = { dailyCapUsdCents: 700, perCallCapUsdCents: 70, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, requireApproval: false };
     const challenge = issueSpendProofChallenge(userId, raise);
     const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), walletA.secretKey));
 

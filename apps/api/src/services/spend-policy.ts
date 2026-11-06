@@ -33,6 +33,8 @@ export const spendPolicyInputSchema = z
       .transform((vendors) => [...new Set(vendors)]),
     // Optional: when absent, the saved value (or the default) stays.
     studiosKeyImagesPerDay: z.number().int().min(0).max(STUDIOS_KEY_IMAGES_PER_DAY_MAX).optional(),
+    // Optional: "ask me before each payment". Absent keeps the saved value.
+    requireApproval: z.boolean().optional(),
   })
   .strict()
   .refine(
@@ -44,9 +46,13 @@ export const spendPolicyInputSchema = z
 
 export type SpendPolicyInput = z.infer<typeof spendPolicyInputSchema>;
 
-/** The full values: an absent own-key image count keeps the current one. */
+/** The full values: an absent own-key image count or approval setting keeps the current one. */
 export function resolveSpendPolicyValues(input: SpendPolicyInput, current: SpendPolicyView): SpendPolicyValues {
-  return { ...input, studiosKeyImagesPerDay: input.studiosKeyImagesPerDay ?? current.studiosKeyImagesPerDay };
+  return {
+    ...input,
+    studiosKeyImagesPerDay: input.studiosKeyImagesPerDay ?? current.studiosKeyImagesPerDay,
+    requireApproval: input.requireApproval ?? current.requireApproval,
+  };
 }
 
 type PolicyRow = {
@@ -54,6 +60,7 @@ type PolicyRow = {
   perCallCapUsdCents: number | null;
   allowedVendors: string[];
   studiosKeyImagesPerDay?: number | null;
+  requireApproval?: boolean | null;
   updatedAt: Date | string | null;
 };
 
@@ -69,6 +76,7 @@ export function toSpendPolicyView(row: PolicyRow | null | undefined): SpendPolic
     perCallCapUsdCents,
     allowedVendors,
     studiosKeyImagesPerDay: row?.studiosKeyImagesPerDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+    requireApproval: row?.requireApproval ?? false,
     configured: dailyCapUsdCents !== null && perCallCapUsdCents !== null,
     updatedAt: updatedAt === null ? null : new Date(updatedAt).toISOString(),
   };
@@ -81,6 +89,7 @@ export async function readSpendPolicy(avatarId: string): Promise<SpendPolicyView
       perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
       allowedVendors: userSpendPolicies.allowedVendors,
       studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
+      requireApproval: userSpendPolicies.requireApproval,
       updatedAt: userSpendPolicies.updatedAt,
     })
     .from(userSpendPolicies)
@@ -96,6 +105,7 @@ const policyColumns = {
   perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
   allowedVendors: userSpendPolicies.allowedVendors,
   studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
+  requireApproval: userSpendPolicies.requireApproval,
   updatedAt: userSpendPolicies.updatedAt,
 };
 
@@ -105,12 +115,14 @@ async function upsertSpendPolicy(
   userId: string,
   input: SpendPolicyInput,
 ): Promise<SpendPolicyView> {
-  // An undefined studiosKeyImagesPerDay leaves the column unchanged on update.
+  // An undefined studiosKeyImagesPerDay or requireApproval leaves the column
+  // unchanged on update.
   const values = {
     dailyCapUsdCents: input.dailyCapUsdCents,
     perCallCapUsdCents: input.perCallCapUsdCents,
     allowedVendors: input.allowedVendors,
     studiosKeyImagesPerDay: input.studiosKeyImagesPerDay,
+    requireApproval: input.requireApproval,
     updatedByUserId: userId,
     updatedAt: new Date(),
   };
@@ -150,8 +162,8 @@ export type SpendPolicyChangeResult =
  * that `userId` owns `avatarId` through a human session.
  *
  * One transaction holds a per-avatar advisory lock, reads the saved values,
- * and decides whether `input` is a raise (see `isSpendPolicyRaise`). A raise
- * needs a signature from the user's linked wallet over the exact new values.
+ * and decides whether `input` is a raise (see `isSpendPolicyRaise`; turning
+ * "ask me before each payment" off is one). A raise needs a signature from the user's linked wallet over the exact new values.
  * A lower or equal change saves without one. The lock stops a concurrent lower
  * change from turning an unchecked write into a raise.
  */

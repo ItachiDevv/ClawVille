@@ -70,6 +70,13 @@ export const HUD_Z = {
    * 2026-11-06; at 110 it drew over modal content on a 390x844 phone.
    */
   hotbar: 47,
+  /**
+   * "Ask me before each payment" notice on /game (2026-11-06,
+   * `wallet/approvals-card.tsx`): above the hotbar, below every dialog
+   * (z-50 Radix dialogs, the z-[95] spend-cap prompt, the z-[100] modals), so
+   * an open dialog always covers it. It hides while the wallet modal is open.
+   */
+  approvalNotice: 48,
   /** Interact button, floating prompts. */
   overlay: 51,
   /** Full game modals (slots / blackjack / hold'em / baccarat). */
@@ -179,6 +186,13 @@ export const GAME_HUD: readonly GameHudEntry[] = [
   },
   { file: 'components/game/perf-hud.tsx', name: 'perf-hud', layer: 'seatedGameHud', expectedZ: HUD_Z.seatedGameHud, form: 'class' },
   { file: 'components/game/emote-hotbar.tsx', name: 'emote-hotbar', layer: 'hotbar', expectedZ: HUD_Z.hotbar, form: 'class' },
+  {
+    file: 'components/game/wallet/approvals-card.tsx',
+    name: 'approval-notice (a payment waits for the human)',
+    layer: 'approvalNotice',
+    expectedZ: HUD_Z.approvalNotice,
+    form: 'class',
+  },
 ] as const;
 
 /**

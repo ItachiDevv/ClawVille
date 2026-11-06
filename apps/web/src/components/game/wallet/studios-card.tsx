@@ -13,10 +13,10 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/lib/api';
 import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
-import { useHumanSpendPolicy } from './spending-card';
+import { STUDIOS_APPROVALS_QUERY_KEY, useHumanSpendPolicy } from './spending-card';
 
 const KEY_QUERY = ['studios-key'] as const;
-const IMAGES_QUERY = ['studios-images'] as const;
+export const IMAGES_QUERY = ['studios-images'] as const;
 
 /** Plain text for a failed call. Branches on the API code, never on raw text. */
 export function studiosErrorText(error: unknown): string {
@@ -38,6 +38,10 @@ export function studiosErrorText(error: unknown): string {
         return 'Studios refused the call on your Studios account (for example, no credits left).';
       case 'rate_limited':
         return 'Too many images. Wait one minute.';
+      case 'awaiting_approval':
+        return 'This image waits in Approvals below, because this browser sign-in cannot prove it is you. Approve it there, or sign out and sign in again to make images directly.';
+      case 'approval_pending_limit':
+        return 'Five requests already wait in Approvals. Approve or decline them first.';
       case 'daily_limit':
         return 'Your images per day with your own Studios key are used up. Try again after 00:00 UTC, or raise the number in Spending above.';
       case 'invalid_studios_key':
@@ -133,6 +137,13 @@ export function StudiosCard() {
     },
     onSuccess: (result) => {
       setPending(null);
+      // A browser sign-in from before the approval rule counts as the agent,
+      // so with "ask me before each payment" on its image waits in Approvals.
+      if ('status' in result) {
+        setError(new ApiError('awaiting_approval', 202, 'awaiting_approval'));
+        queryClient.invalidateQueries({ queryKey: STUDIOS_APPROVALS_QUERY_KEY });
+        return;
+      }
       setLast({
         mediaPath: result.mediaPath,
         note: result.mode === 'account'

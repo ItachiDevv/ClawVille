@@ -6,6 +6,14 @@
  *          bills the human's own account. Mode B (no key): the avatar wallet
  *          pays with x402 inside the spend rules. Returns the stored image path.
  *   GET    /api/vendors/studios/images  the avatar's newest images.
+ *   GET    /api/vendors/studios/requests/:id  one image request of this
+ *          avatar (agent or human): status, and the image path when done.
+ *   GET    /api/vendors/studios/approvals  the requests that wait for the
+ *          human ("ask me before each payment"). Human only.
+ *   POST   /api/vendors/studios/approvals/:id/approve  run one waiting
+ *          request now (every cap and limit checked again). Human only.
+ *   POST   /api/vendors/studios/approvals/:id/decline  decline it; nothing
+ *          is called or paid. Human only.
  *   GET    /api/vendors/studios/key     whether a key is saved (last 4 only).
  *   POST   /api/vendors/studios/key/challenge  a message for the human's
  *          linked wallet to sign (`{ action: 'save', last4, sha256 }` or
@@ -22,6 +30,10 @@
  * all through `services/studios-images.ts`. The key routes are human-only by
  * design: the human chooses whose account pays, and the linked wallet signs
  * each change (a magic-link session alone does not prove a human).
+ * "Ask me before each payment": an agent request answers 202
+ * `awaiting_approval` and the agent reads `GET /requests/:id`; approve and
+ * decline are human-only by design (the owner decides each payment), like the
+ * spend-rules write.
  */
 
 import { Hono } from 'hono';
@@ -37,13 +49,22 @@ import {
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity, requireNonGuestUser } from '../middleware/require-non-guest';
 import {
+  HUMAN_SESSION_ORIGINS,
   refuseAgentHeader,
   requireHumanSessionOrigin,
   type HumanGateCopy,
 } from '../middleware/require-human-session';
+import type { SessionCreatedVia } from '../lib/auth';
 import { noStorePrivate } from '../middleware/no-store';
 import { issueVendorKeyChallenge, vendorKeyRef, verifyVendorKeyProof } from '../services/spend-policy-proof';
-import { generateStudiosImage, listMedia } from '../services/studios-images';
+import {
+  approveStudiosRequest,
+  declineStudiosRequest,
+  generateStudiosImage,
+  listAwaitingApprovals,
+  listMedia,
+  readStudiosRequest,
+} from '../services/studios-images';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
 import { STUDIOS_IMAGE_MODELS, STUDIOS_PROMPT_MAX } from '../services/vendors/studios';
 
@@ -90,13 +111,22 @@ vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requir
     return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many image calls. Wait one minute.' }, 429);
   }
 
+  // A cookie session counts as the human only when a human sign-in made it.
+  // An agent can trade its session for its owner's cookie ('agent_exchange'),
+  // and a session from before migration 0089 has no origin: both count as
+  // the agent, so "ask me before each payment" cannot be bypassed that way.
+  const createdVia = (c.get('session') as { createdVia?: SessionCreatedVia | null } | null | undefined)?.createdVia ?? null;
+  const humanPressed = identity.kind === 'user' && createdVia !== null && HUMAN_SESSION_ORIGINS.has(createdVia);
   const result = await generateStudiosImage({
     avatarId: identity.avatarId,
-    actor: identity.kind === 'agent' ? 'agent' : 'human',
+    actor: humanPressed ? 'human' : 'agent',
     prompt: body.data.prompt,
     model: body.data.model,
     idempotencyKey: idempotencyKey.data,
   });
+  if (!result.ok && result.code === 'awaiting_approval') {
+    return c.json({ status: 'awaiting_approval', requestId: result.requestId, expiresAt: result.expiresAt, message: result.message }, 202);
+  }
   if (!result.ok) {
     return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId }, result.httpStatus);
   }
@@ -106,6 +136,16 @@ vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requir
 vendorStudiosRoutes.get('/images', requireAuthOrAgentSession, async (c) => {
   const identity = c.get('identity');
   return c.json({ images: await listMedia(identity.avatarId) });
+});
+
+const requestIdSchema = z.string().uuid();
+
+vendorStudiosRoutes.get('/requests/:id', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  const view = id.success ? await readStudiosRequest(identity.avatarId, id.data) : null;
+  if (!view) return c.json({ error: 'request_not_found', code: 'request_not_found' }, 404);
+  return c.json(view);
 });
 
 vendorStudiosRoutes.get('/key', requireAuthOrAgentSession, async (c) => {
@@ -164,6 +204,69 @@ async function linkedWallet(userId: string): Promise<string | null> {
   const owner = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { linkedWalletPubkey: true } });
   return owner?.linkedWalletPubkey ?? null;
 }
+
+const APPROVAL_GATE: HumanGateCopy = {
+  humanOnlyCode: 'studios_approval_human_only',
+  humanOnlyMessage: 'Only your human can approve or decline a payment, in the ClawVille wallet panel (Approvals). Wait for their answer.',
+  needsLoginCode: 'studios_approval_needs_human_login',
+  needsLoginMessage: 'Sign in again in your browser, then approve or decline the request.',
+};
+const approvalGate = [refuseAgentHeader(APPROVAL_GATE), requireAuth, requireHumanSessionOrigin(APPROVAL_GATE), requireNonGuestUser] as const;
+
+/**
+ * Tell a hosted agent the human's answer: one short line for its next decide
+ * (the same slot as the generate_image result). Best effort; the agent can
+ * also see the image in its media list.
+ */
+async function tellHostedAgent(userId: string, avatarId: string, line: string): Promise<void> {
+  try {
+    const { agentAutonomyDriver } = await import('../services/agent-autonomy-driver');
+    const agentId = agentAutonomyDriver.getEnrolledAgentForOwner(userId);
+    if (agentId) agentAutonomyDriver.rememberActionResult(agentId, avatarId, line);
+  } catch {
+    // The human's answer still stands; only the note to the agent is lost.
+  }
+}
+
+vendorStudiosRoutes.get('/approvals', ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  return c.json({ approvals: await listAwaitingApprovals(await activeAvatarId(user.id)) });
+});
+
+vendorStudiosRoutes.post('/approvals/:id/approve', ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'approval_not_found', code: 'approval_not_found' }, 404);
+  // No per-minute limiter here: the agent's own calls already used it, and
+  // at most 5 requests can wait, so the human's clicks are bounded.
+  const avatarId = await activeAvatarId(user.id);
+  const { result, surface } = await approveStudiosRequest({ avatarId, userId: user.id, requestId: id.data });
+  if (surface === 'hosted') {
+    const { formatGeneratedImageResult } = await import('../services/npc-simulation');
+    await tellHostedAgent(user.id, avatarId, formatGeneratedImageResult(result));
+  }
+  if (!result.ok) {
+    return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId }, result.httpStatus);
+  }
+  return c.json(result);
+});
+
+vendorStudiosRoutes.post('/approvals/:id/decline', ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'approval_not_found', code: 'approval_not_found' }, 404);
+  const avatarId = await activeAvatarId(user.id);
+  const declined = await declineStudiosRequest({ avatarId, userId: user.id, requestId: id.data });
+  if (!declined.ok) {
+    const { result } = declined;
+    return c.json({ error: result.code, code: result.code, message: result.message }, result.httpStatus);
+  }
+  if (declined.surface === 'hosted') {
+    const { formatGenerateImageDeclined } = await import('../services/npc-simulation');
+    await tellHostedAgent(user.id, avatarId, formatGenerateImageDeclined());
+  }
+  return c.json({ requestId: declined.requestId, status: declined.status });
+});
 
 vendorStudiosRoutes.post('/key/challenge', smallBody, refuseAgentHeader(KEY_GATE), requireAuth, requireHumanSessionOrigin(KEY_GATE), requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };

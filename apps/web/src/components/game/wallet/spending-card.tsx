@@ -22,6 +22,8 @@ import { useAuthMe } from '@/hooks/use-auth-me';
 import { centsToUsdText, parseUsdToCents } from '@/lib/usd-cents';
 
 export const SPEND_POLICY_QUERY_KEY = ['spend-policy'] as const;
+/** GET /api/vendors/studios/approvals (Approvals card and the /game notice). */
+export const STUDIOS_APPROVALS_QUERY_KEY = ['studios-approvals'] as const;
 
 const VENDOR_LABELS: Record<SpendVendorId, string> = {
   studios: 'Studios by Claw Hunter (images and video)',
@@ -79,6 +81,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
   const [perCall, setPerCall] = useState('');
   const [vendors, setVendors] = useState<SpendVendorId[]>([]);
   const [imagesPerDay, setImagesPerDay] = useState(String(STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT));
+  const [askFirst, setAskFirst] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -87,6 +90,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
     setPerCall(centsToUsdText(policy.perCallCapUsdCents));
     setVendors(policy.allowedVendors);
     setImagesPerDay(String(policy.studiosKeyImagesPerDay));
+    setAskFirst(policy.requireApproval);
   }, [policy]);
 
   const save = useMutation({
@@ -95,15 +99,18 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
       perCallCapUsdCents: number | null;
       allowedVendors: SpendVendorId[];
       studiosKeyImagesPerDay: number;
+      requireApproval: boolean;
     }) => {
       const current = policy ?? {
         dailyCapUsdCents: null,
         perCallCapUsdCents: null,
         allowedVendors: [],
         studiosKeyImagesPerDay: STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+        requireApproval: false,
       };
       if (!isSpendPolicyRaise(current, next)) return api.putSpendPolicy(next);
-      // A raise needs the human's own linked wallet to sign the exact values.
+      // A raise (turning "ask me before each payment" off is one) needs the
+      // human's own linked wallet to sign the exact values.
       const challenge = await api.spendPolicyChallenge(next);
       const signed = await signMessageWithSolanaWallet(challenge.messageToSign, challenge.walletPubkey);
       return api.putSpendPolicy({ ...next, proof: { nonce: challenge.nonce, signature: signed.signatureBase58 } });
@@ -135,6 +142,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
       perCallCapUsdCents: perCallCents.cents,
       allowedVendors: vendors,
       studiosKeyImagesPerDay: images.value,
+      requireApproval: askFirst,
     });
   };
 
@@ -212,6 +220,22 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
               <span className="block text-white/55 leading-relaxed">
                 Applies only when you save your own Studios key (Studios images card). Studios bills your
                 Studios account, so the caps above do not cover it. This counts every image on your key.
+              </span>
+            </label>
+            <label className="flex items-start gap-3 min-h-[44px] text-xs text-white/85">
+              <input
+                type="checkbox"
+                className="h-5 w-5 mt-0.5 shrink-0"
+                checked={askFirst}
+                onChange={(e) => setAskFirst(e.target.checked)}
+              />
+              <span className="space-y-1">
+                <span className="block font-semibold">Ask me before each payment</span>
+                <span className="block text-white/55 leading-relaxed">
+                  Each paid image your agent asks for waits in Approvals (below) until you approve or decline it.
+                  It expires after 15 minutes. Images you make yourself do not wait. Turning this off needs your
+                  linked wallet to sign.
+                </span>
               </span>
             </label>
             {(formError || save.isError) && (

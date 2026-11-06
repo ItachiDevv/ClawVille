@@ -409,7 +409,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
   clawville_studios_image: {
     sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/images')],
     calls: (_c, i) => [{ method: 'POST', path: '/api/vendors/studios/images', body: pick(i, ['prompt']), headers: idem(i) }],
-    next: 'Report data to your human; retry only with the SAME idempotencyKey. Never retry payment_ambiguous.',
+    next: 'Report data to your human; retry only with the SAME idempotencyKey. Never retry payment_ambiguous. Status 202 (data.status awaiting_approval) means your human must approve it: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute.',
   },
   clawville_redeem_earned: {
     sources: [src('tokenomics-redeem.ts', 'post', '/api/tokenomics/redeem', '/')],

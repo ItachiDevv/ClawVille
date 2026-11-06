@@ -77,7 +77,7 @@ describe('protocol `ecosystem` page', () => {
     const { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } = await import('@clawville/shared');
     expect(page).toContain(`(\`studiosKeyImagesPerDay\` in the spend rules, ${STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT} until they change it)`);
     expect(page).toContain('ClawVille sets no image count of its own.');
-    expect(page).toContain('`studiosKeyImagesPerDay` and `configured`');
+    expect(page).toContain('`studiosKeyImagesPerDay`, `requireApproval` and `configured`');
     expect(page).toContain('or to raise the images per day');
     expect(page).not.toMatch(/at most \d+ (images )?per UTC day/);
     expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
@@ -228,5 +228,38 @@ describe('Nori points at the ecosystem list', () => {
     const lines = townGuide.knowledge.filter((entry) => entry.includes('/api/ecosystem/catalog'));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('/api/skills/protocol/ecosystem.md');
+  });
+});
+
+describe('v112: "Ask me before each payment" in the served manual and Nori', () => {
+  test('the ecosystem page tells the agent the 202 reply, the status read, the 15 minutes, no re-send and human-only approval', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain('### Waiting for your human ("Ask me before each payment")');
+    expect(page).toContain('answers HTTP `202` with `{ "status": "awaiting_approval", "requestId": "...", "expiresAt": "..." }`');
+    expect(page).toContain(`\`GET ${API_BASE}/api/vendors/studios/requests/<requestId>\``);
+    expect(page).toContain('expires 15 minutes after you sent it');
+    expect(page).toContain('Do not send it again.');
+    expect(page).toContain('Only your human can approve or decline it');
+    expect(page).toContain('`403 studios_approval_human_only`');
+    expect(page).toContain('`approval_pending_limit`');
+    expect(page).not.toContain('—');
+  });
+
+  test('the actions page tells a hosted agent to wait for its human', () => {
+    const page = buildProtocolTopic(API_BASE, 'actions');
+    expect(page).toContain('"Ask me before each');
+    expect(page).toContain('Do not send another generate_image while it waits');
+    // The page has older em dashes; the new text has none.
+    const start = page.indexOf('If your human turned on');
+    const added = page.slice(start, page.indexOf('House agents are refused.', start));
+    expect(added).toContain('only your human approves it in the wallet panel');
+    expect(added).not.toContain('—');
+  });
+
+  test('Nori has one orientation line for the setting', () => {
+    const lines = townGuide.knowledge.filter((entry) => entry.includes('Ask me before each payment'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Approvals');
+    expect(lines[0]).not.toContain('—');
   });
 });

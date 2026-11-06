@@ -29,6 +29,8 @@ const humanWallet = nacl.sign.keyPair();
 const otherWallet = nacl.sign.keyPair();
 let linkedWalletPubkey: string | null = null;
 const deletedKeys: string[] = [];
+const decisions: Array<Record<string, unknown>> = [];
+const REQ = '11111111-2222-4333-8444-555555555555';
 
 mock.module('../../lib/auth', () => ({
   resolveSessionCookieDomain: () => undefined,
@@ -73,6 +75,22 @@ mock.module('../../services/studios-images', () => ({
     return nextResult;
   },
   listMedia: async () => [],
+  listAwaitingApprovals: async (avatarId: string) => {
+    decisions.push({ kind: 'list', avatarId });
+    return [];
+  },
+  approveStudiosRequest: async (input: { avatarId: string; userId: string; requestId: string }) => {
+    decisions.push({ kind: 'approve', ...input });
+    return { result: nextResult, surface: 'api' };
+  },
+  declineStudiosRequest: async (input: { avatarId: string; userId: string; requestId: string }) => {
+    decisions.push({ kind: 'decline', ...input });
+    return { ok: true, requestId: input.requestId, status: 'declined', surface: 'api' };
+  },
+  readStudiosRequest: async (avatarId: string, requestId: string) => {
+    decisions.push({ kind: 'read', avatarId, requestId });
+    return avatarId === 'a1' && requestId === REQ ? { requestId, status: 'awaiting_approval', mode: 'wallet' } : null;
+  },
 }));
 mock.module('../../services/vendor-credentials', () => ({
   ...realCreds,
@@ -131,6 +149,7 @@ beforeEach(() => {
   calls.length = 0;
   savedKeys.length = 0;
   deletedKeys.length = 0;
+  decisions.length = 0;
   linkedWalletPubkey = bs58.encode(humanWallet.publicKey);
   sessions.clear();
   sessions.set('pw', { userId: 'u1', createdVia: 'password' });
@@ -256,5 +275,93 @@ describe('Studios key routes (human only, linked wallet signs)', () => {
     res = await keyRequest('DELETE', '/key', { cookie: 'pw', body: { proof } });
     expect(res.status).toBe(200);
     expect(deletedKeys).toEqual(['avatar-of-user']);
+  });
+});
+
+function postAs(cookie: string | null, body: unknown, key = 'key-12345678') {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', 'Idempotency-Key': key };
+  if (cookie) headers.Cookie = `auth_session=${cookie}`;
+  return app.request('/api/vendors/studios/images', { method: 'POST', headers, body: JSON.stringify(body) });
+}
+
+describe('"Ask me before each payment": the request side', () => {
+  it('answers 202 with the request id when the request waits for the human', async () => {
+    identity = { kind: 'agent', userId: 'u1', avatarId: 'a1', agentId: 'g1', ledgerCapable: true };
+    nextResult = { ok: false, code: 'awaiting_approval', httpStatus: 202, message: 'waits', ledgerId: null, requestId: REQ, expiresAt: '2026-11-06T12:15:00.000Z' };
+    const res = await post({ prompt: 'crab' });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ status: 'awaiting_approval', requestId: REQ, expiresAt: '2026-11-06T12:15:00.000Z', message: 'waits' });
+  });
+
+  it('counts only a human sign-in cookie as the human; an exchanged or origin-less cookie is the agent', async () => {
+    sessions.set('legacy', { userId: 'u1', createdVia: null });
+    for (const [cookie, actor] of [['pw', 'human'], ['exchanged', 'agent'], ['legacy', 'agent'], [null, 'agent']] as const) {
+      calls.length = 0;
+      resetStudiosRateLimit();
+      await postAs(cookie, { prompt: 'crab' });
+      expect(calls[0]?.actor).toBe(actor);
+    }
+  });
+});
+
+function approvalRequest(method: 'GET' | 'POST', path: string, opts: { cookie?: string; agent?: string } = {}) {
+  const headers: Record<string, string> = {};
+  if (opts.cookie) headers.Cookie = `auth_session=${opts.cookie}`;
+  if (opts.agent) headers[realAgentAuth.AGENT_SESSION_HEADER] = opts.agent;
+  return app.request(`/api/vendors/studios${path}`, { method, headers });
+}
+
+describe('"Ask me before each payment": approve and decline are human-only', () => {
+  it('refuses an agent header, an agent-exchanged cookie and no session, before any decision', async () => {
+    for (const path of ['/approvals', `/approvals/${REQ}/approve`, `/approvals/${REQ}/decline`]) {
+      const method = path === '/approvals' ? 'GET' : 'POST';
+      for (const opts of [{ agent: 'x' }, { agent: 'x', cookie: 'pw' }, { cookie: 'exchanged' }]) {
+        const res = await approvalRequest(method, path, opts);
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'studios_approval_human_only' });
+      }
+      expect((await approvalRequest(method, path)).status).toBe(401);
+    }
+    expect(decisions).toHaveLength(0);
+  });
+
+  it('lists, approves and declines for the human active avatar', async () => {
+    expect((await approvalRequest('GET', '/approvals', { cookie: 'pw' })).status).toBe(200);
+    nextResult = { ok: true, mode: 'wallet', mediaId: 'm1', mediaPath: '/api/media/m1', ledgerId: 'l1', paidUsdCents: 1, txSignature: 'tx1' };
+    const approved = await approvalRequest('POST', `/approvals/${REQ}/approve`, { cookie: 'pw' });
+    expect(approved.status).toBe(200);
+    expect(await approved.json()).toEqual(nextResult);
+    const declined = await approvalRequest('POST', `/approvals/${REQ}/decline`, { cookie: 'pw' });
+    expect(await declined.json()).toEqual({ requestId: REQ, status: 'declined' });
+    expect(decisions).toEqual([
+      { kind: 'list', avatarId: 'avatar-of-user' },
+      { kind: 'approve', avatarId: 'avatar-of-user', userId: 'u1', requestId: REQ },
+      { kind: 'decline', avatarId: 'avatar-of-user', userId: 'u1', requestId: REQ },
+    ]);
+  });
+
+  it('returns an approve refusal with its code and status, and refuses a bad id without a decision', async () => {
+    nextResult = { ok: false, code: 'approval_expired', message: 'expired', httpStatus: 409, ledgerId: null };
+    const res = await approvalRequest('POST', `/approvals/${REQ}/approve`, { cookie: 'pw' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'approval_expired' });
+    decisions.length = 0;
+    expect((await approvalRequest('POST', '/approvals/not-a-uuid/approve', { cookie: 'pw' })).status).toBe(404);
+    expect(decisions).toHaveLength(0);
+  });
+});
+
+describe('GET /api/vendors/studios/requests/:id', () => {
+  it('reads one request of the session avatar, for the agent or the human', async () => {
+    identity = { kind: 'agent', userId: 'u1', avatarId: 'a1', agentId: 'g1', ledgerCapable: true };
+    const res = await approvalRequest('GET', `/requests/${REQ}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ requestId: REQ, status: 'awaiting_approval' });
+  });
+
+  it('is 404 for another avatar or a bad id', async () => {
+    identity = { kind: 'agent', userId: 'u2', avatarId: 'a2', agentId: 'g2', ledgerCapable: true };
+    expect((await approvalRequest('GET', `/requests/${REQ}`)).status).toBe(404);
+    expect((await approvalRequest('GET', '/requests/x')).status).toBe(404);
   });
 });

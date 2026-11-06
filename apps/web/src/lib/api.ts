@@ -6,6 +6,7 @@ import type {
   LandTier,
   SpendPolicyView,
   SpendVendorId,
+  VendorCallApprovalView,
 } from '@clawville/shared';
 // Type-only (erased at compile time — no runtime store dependency): the
 // heartbeat body's optional controlMode mirrors the game store's union so the
@@ -636,6 +637,7 @@ export const api = {
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
     studiosKeyImagesPerDay: number;
+    requireApproval: boolean;
     proof?: { nonce: string; signature: string };
   }) =>
     request<SpendPolicyView>('/api/wallet/spend-policy', {
@@ -645,6 +647,8 @@ export const api = {
   // ── Studios images (routes/vendor-studios.ts, MCP hub step 2) ──────────
   // Mode A: the human's own Studios key (Studios bills their account).
   // Mode B: no key; the avatar wallet pays inside the spend rules.
+  // 202 `awaiting_approval`: "ask me before each payment" is on and the
+  // server could not tell this request came from the human (see Approvals).
   studiosImage: (body: { prompt: string }, idempotencyKey: string) =>
     request<{
       ok: true;
@@ -654,7 +658,7 @@ export const api = {
       ledgerId: string | null;
       paidUsdCents: number | null;
       txSignature: string | null;
-    }>('/api/vendors/studios/images', {
+    } | { status: 'awaiting_approval'; requestId: string; expiresAt: string; message: string }>('/api/vendors/studios/images', {
       method: 'POST',
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(body),
@@ -681,6 +685,25 @@ export const api = {
       method: 'DELETE',
       body: JSON.stringify({ proof }),
     }),
+  // "Ask me before each payment": the agent's requests that wait for the
+  // human. Human session only (an agent session gets 403).
+  studiosApprovals: () =>
+    request<{ approvals: VendorCallApprovalView[] }>('/api/vendors/studios/approvals'),
+  approveStudiosRequest: (requestId: string) =>
+    request<{
+      ok: true;
+      mode: 'wallet' | 'account';
+      mediaId: string;
+      mediaPath: string;
+      ledgerId: string | null;
+      paidUsdCents: number | null;
+      txSignature: string | null;
+    }>(`/api/vendors/studios/approvals/${encodeURIComponent(requestId)}/approve`, { method: 'POST' }),
+  declineStudiosRequest: (requestId: string) =>
+    request<{ requestId: string; status: 'declined' }>(
+      `/api/vendors/studios/approvals/${encodeURIComponent(requestId)}/decline`,
+      { method: 'POST' },
+    ),
   /** Absolute URL of a stored image path such as /api/media/<id>. */
   mediaUrl: (mediaPath: string) => `${API_URL}${mediaPath}`,
   spendPolicyChallenge: (body: {
@@ -688,6 +711,7 @@ export const api = {
     perCallCapUsdCents: number | null;
     allowedVendors: SpendVendorId[];
     studiosKeyImagesPerDay: number;
+    requireApproval: boolean;
   }) =>
     request<{ nonce: string; expiresAt: string; messageToSign: string; walletPubkey: string }>(
       '/api/wallet/spend-policy/challenge',

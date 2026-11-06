@@ -56,10 +56,18 @@ export const vendorCallRequests = pgTable('vendor_call_requests', {
   actor: varchar('actor', { length: 16 }).notNull(),
   surface: varchar('surface', { length: 16 }).notNull(),
   mode: varchar('mode', { length: 16 }).notNull(),
-  status: varchar('status', { length: 16 }).notNull().default('pending'),
+  status: varchar('status', { length: 24 }).notNull().default('pending'),
   idempotencyKey: varchar('idempotency_key', { length: 64 }).notNull(),
   mediaId: uuid('media_id').references(() => avatarMedia.id, { onDelete: 'set null' }),
   ledgerId: uuid('ledger_id').references(() => vendorSpendLedger.id, { onDelete: 'set null' }),
+  // Migration 0093 ("ask me before each payment"): what a waiting request
+  // runs at approve, its expiry, the decision, and our own failure code.
+  prompt: text('prompt'),
+  model: varchar('model', { length: 64 }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  decidedAt: timestamp('decided_at', { withTimezone: true }),
+  decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  failureCode: varchar('failure_code', { length: 48 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
