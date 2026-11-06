@@ -65,7 +65,7 @@ const WalletModal = dynamic(() => import('@/components/game/wallet/wallet-modal'
 // "Ask me before each payment": a pill while an agent payment waits for the
 // human; it opens the wallet panel (Approvals). Renders nothing otherwise.
 const ApprovalNotice = dynamic(
-  () => import('@/components/game/wallet/approvals-card').then((m) => m.ApprovalNotice),
+  () => import('@/components/game/wallet/approval-notice').then((m) => m.ApprovalNotice),
   { ssr: false },
 );
 import BuildingTooltip from '@/components/game/building-tooltip';

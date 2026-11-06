@@ -18,6 +18,7 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { detectIsMobile, useIsMobile } from '@/hooks/use-is-mobile';
 import { bottomPromptOffset, useBottomPromptOwner } from '@/hooks/use-bottom-prompt-slot';
 import { useGameStore } from '@/stores/game';
+import { ApprovalTrackerSlot } from '@/components/game/wallet/approval-notice';
 
 const TUTORIAL_KEY = 'clawville-tutorial-seen';
 const QUEST_INTRO_KEY = 'clawville-quest-intro-seen';
@@ -379,7 +380,10 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
       // 124px clears the whole stack whether or not the agent pill renders.
       // The status bar returns null on every touch device, so the desktop
       // left-column reserve does not apply here.
-      <div className={`fixed top-[7.75rem] left-1/2 -translate-x-1/2 ${mobileZ}`}>
+      // The "ask me before each payment" notice shares this row, right of the
+      // pill and top-aligned with it, so it never covers the tracker, collapsed
+      // or expanded (the list grows down beside it); see approval-notice.tsx.
+      <div className={`fixed top-[7.75rem] left-1/2 -translate-x-1/2 w-max flex items-start gap-2 ${mobileZ}`}>
         <QuestPanel
           expanded={expanded}
           onToggle={() => setExpanded((e) => !e)}
@@ -393,6 +397,7 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
           bodyMaxHeight={`min(${QUEST_BODY_MAX_PX}px, max(${QUEST_BODY_MIN_PX}px, ${mobileBodyBandCss}))`}
           mobile
         />
+        <ApprovalTrackerSlot />
       </div>
     );
   }

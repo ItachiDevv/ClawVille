@@ -72,7 +72,9 @@ export const HUD_Z = {
   hotbar: 47,
   /**
    * "Ask me before each payment" notice on /game (2026-11-06,
-   * `wallet/approvals-card.tsx`): above the hotbar, below every dialog
+   * `wallet/approval-notice.tsx`, stand-alone pill; on touch it renders
+   * inside the quest tracker's row instead and takes the tracker's z): above
+   * the hotbar, below every dialog
    * (z-50 Radix dialogs, the z-[95] spend-cap prompt, the z-[100] modals), so
    * an open dialog always covers it. It hides while the wallet modal is open.
    */
@@ -187,8 +189,8 @@ export const GAME_HUD: readonly GameHudEntry[] = [
   { file: 'components/game/perf-hud.tsx', name: 'perf-hud', layer: 'seatedGameHud', expectedZ: HUD_Z.seatedGameHud, form: 'class' },
   { file: 'components/game/emote-hotbar.tsx', name: 'emote-hotbar', layer: 'hotbar', expectedZ: HUD_Z.hotbar, form: 'class' },
   {
-    file: 'components/game/wallet/approvals-card.tsx',
-    name: 'approval-notice (a payment waits for the human)',
+    file: 'components/game/wallet/approval-notice.tsx',
+    name: 'approval-notice stand-alone pill (desktop, or touch with no quest tracker)',
     layer: 'approvalNotice',
     expectedZ: HUD_Z.approvalNotice,
     form: 'class',

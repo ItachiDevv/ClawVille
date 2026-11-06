@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { act, createElement, type ReactElement } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Window } from 'happy-dom';
+import { readFileSync } from 'node:fs';
 import type { Root } from 'react-dom/client';
 
 // "Ask me before each payment" (founder go 2026-11-06): the Spending card
@@ -20,6 +21,7 @@ function define(name: string, value: unknown): void {
 
 let createRoot: typeof import('react-dom/client').createRoot;
 let cards: typeof import('./approvals-card');
+let notice: typeof import('./approval-notice');
 let SpendingCard: typeof import('./spending-card').SpendingCard;
 let useGameStore: typeof import('@/stores/game').useGameStore;
 let api: typeof import('@/lib/api').api;
@@ -68,6 +70,7 @@ beforeAll(async () => {
   ({ api } = await import('@/lib/api'));
   ({ useGameStore } = await import('@/stores/game'));
   cards = await import('./approvals-card');
+  notice = await import('./approval-notice');
   ({ SpendingCard } = await import('./spending-card'));
   const mutableApi = api as unknown as Record<string, unknown>;
   const names = ['me', 'getSpendPolicy', 'putSpendPolicy', 'spendPolicyChallenge', 'studiosApprovals', 'studiosApprovalChallenge', 'approveStudiosRequest', 'declineStudiosRequest', 'studiosImages'];
@@ -213,19 +216,67 @@ describe('ApprovalsCard', () => {
 });
 
 describe('ApprovalNotice (/game)', () => {
-  test('shows while a payment waits and opens the wallet panel', async () => {
-    await mount(createElement(cards.ApprovalNotice));
-    const notice = container?.querySelector('[data-testid="approval-notice"]');
-    expect(notice?.textContent).toContain('1 payment waits for your approval');
-    expect(notice?.className).toContain('z-[48]');
-    await click(notice!);
+  function asTouch(on: boolean) {
+    const w = testWindow as unknown as Record<string, unknown>;
+    if (on) w.ontouchstart = null;
+    else delete w.ontouchstart;
+  }
+  afterEach(() => asTouch(false));
+
+  test('desktop: the stand-alone pill shows while a payment waits and opens the wallet panel', async () => {
+    await mount(createElement(notice.ApprovalNotice));
+    const pill = container?.querySelector('[data-testid="approval-notice"]');
+    expect(pill?.textContent).toContain('1 payment waits for your approval');
+    expect(pill?.className).toContain('z-[48]');
+    await click(pill!);
     expect(useGameStore.getState().walletLinkModalOpen).toBe(true);
   });
 
   test('renders nothing when nothing waits', async () => {
     approvals = [];
-    await mount(createElement(cards.ApprovalNotice));
+    await mount(createElement(notice.ApprovalNotice));
     expect(container?.querySelector('[data-testid="approval-notice"]')).toBeNull();
+  });
+
+  test('touch: with the quest tracker mounted, the notice is ONE 44px button in the tracker row, never a second fixed pill', async () => {
+    asTouch(true);
+    // The tracker row as quest-tracker.tsx renders it: the pill, then the slot.
+    const row = createElement('div', { 'data-testid': 'tracker-row', className: 'flex items-start gap-2' },
+      createElement('div', { 'data-testid': 'quest-pill' }), createElement(notice.ApprovalTrackerSlot));
+    await mount(createElement('div', null, row, createElement(notice.ApprovalNotice)));
+    const all = container?.querySelectorAll('[data-testid="approval-notice"]') ?? [];
+    expect(all.length).toBe(1);
+    const slot = all[0] as HTMLElement;
+    // In flow after the pill: the row stacks them side by side, so it cannot cover the tracker.
+    expect(slot.parentElement?.getAttribute('data-testid')).toBe('tracker-row');
+    expect(slot.previousElementSibling?.getAttribute('data-testid')).toBe('quest-pill');
+    expect(slot.className).not.toContain('fixed');
+    expect(slot.className).toContain('min-h-[44px]');
+    expect(slot.className).toContain('min-w-[44px]');
+    expect(slot.getAttribute('aria-label')).toBe('1 payment to approve. Open the wallet.');
+    await click(slot);
+    expect(useGameStore.getState().walletLinkModalOpen).toBe(true);
+  });
+
+  test('touch: with no quest tracker, the stand-alone pill takes the tracker place', async () => {
+    asTouch(true);
+    await mount(createElement(notice.ApprovalNotice));
+    const pill = container?.querySelector('[data-testid="approval-notice"]');
+    expect(pill?.className).toContain('top-[7.75rem]');
+    expect(pill?.textContent).toBe('1 payment to approve');
+  });
+});
+
+describe('quest tracker row (source)', () => {
+  test('the touch placement renders the slot in its own flex row, right after the pill', () => {
+    const source = readFileSync(new URL('../quest-tracker.tsx', import.meta.url), 'utf8');
+    const mobileStart = source.indexOf('if (isMobile) {');
+    const desktopStart = source.indexOf('// Desktop: top-left below minimap.');
+    const mobile = source.slice(mobileStart, desktopStart);
+    expect(mobile).toContain('fixed top-[7.75rem] left-1/2 -translate-x-1/2 w-max flex items-start gap-2');
+    expect(mobile.indexOf('<ApprovalTrackerSlot />')).toBeGreaterThan(mobile.indexOf('<QuestPanel'));
+    expect(source.slice(desktopStart)).not.toContain('<ApprovalTrackerSlot />');
+    expect(mobile).not.toMatch(/\bmd:/);
   });
 });
 

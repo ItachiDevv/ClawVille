@@ -11,23 +11,19 @@
  * untrusted: it renders as plain React text only (never HTML, never markdown,
  * never a link).
  *
- * ApprovalNotice (/game): a small pill while a request waits; it opens the
- * wallet panel. Both read GET /api/vendors/studios/approvals (human session
- * only) and poll at a modest interval only while the human is signed in and
- * the rule is on or a request still waits.
+ * The /game notice and the shared read of GET /api/vendors/studios/approvals
+ * (human session only; polled only while signed in and the rule is on or a
+ * request still waits) live in `approval-notice.tsx`.
  */
 
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { VendorCallApprovalView } from '@clawville/shared';
 import { api, ApiError } from '@/lib/api';
 import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
-import { useIsMobile } from '@/hooks/use-is-mobile';
-import { useGameStore } from '@/stores/game';
-import { STUDIOS_APPROVALS_QUERY_KEY, useHumanSpendPolicy } from './spending-card';
+import { STUDIOS_APPROVALS_QUERY_KEY } from './spending-card';
+import { useStudiosApprovals } from './approval-notice';
 import { IMAGES_QUERY, studiosErrorText } from './studios-card';
-
-const POLL_MS = 30_000;
 
 /** Plain text for the time a request has left. */
 export function timeLeftText(expiresAt: string, nowMs: number): string {
@@ -73,23 +69,6 @@ export function approvalErrorText(error: unknown): string {
     }
   }
   return studiosErrorText(error);
-}
-
-export function useStudiosApprovals() {
-  const { signedIn, query: policyQuery } = useHumanSpendPolicy();
-  const query = useQuery({
-    queryKey: STUDIOS_APPROVALS_QUERY_KEY,
-    queryFn: api.studiosApprovals,
-    enabled: signedIn,
-    retry: false,
-    staleTime: 10_000,
-    // Poll only while the rule is on or a request still waits (one can wait
-    // after the human turned the rule off; it expires in 15 minutes).
-    refetchInterval: (q) => (
-      policyQuery.data?.requireApproval || (q.state.data?.approvals.length ?? 0) > 0 ? POLL_MS : false
-    ),
-  });
-  return { signedIn, query, approvals: query.data?.approvals ?? [] };
 }
 
 /** A clock for "time left", ticking every 15 seconds while something waits. */
@@ -182,32 +161,5 @@ export function ApprovalsCard() {
         )}
       </div>
     </div>
-  );
-}
-
-/**
- * The /game pill while a payment waits. Registered in `GAME_HUD` at
- * `HUD_Z.approvalNotice` (48): above the hotbar, below every dialog.
- */
-export function ApprovalNotice() {
-  const isMobile = useIsMobile();
-  const { approvals } = useStudiosApprovals();
-  const walletOpen = useGameStore((s) => s.walletLinkModalOpen);
-  const openWallet = useGameStore((s) => s.openWalletLink);
-  if (approvals.length === 0 || walletOpen) return null;
-  const count = approvals.length;
-  const label = isMobile
-    ? `${count} payment${count === 1 ? '' : 's'} to approve`
-    : `${count} payment${count === 1 ? '' : 's'} wait${count === 1 ? 's' : ''} for your approval. Open the wallet.`;
-  return (
-    <button
-      type="button"
-      onClick={openWallet}
-      data-testid="approval-notice"
-      className={`fixed left-1/2 -translate-x-1/2 z-[48] min-h-[44px] rounded-full border border-amber-300/50 bg-amber-500/90 text-slate-950 font-bold shadow-lg ${isMobile ? 'px-4 text-xs' : 'px-5 text-sm'}`}
-      style={{ top: 'calc(env(safe-area-inset-top, 0px) + 8.5rem)' }}
-    >
-      {label}
-    </button>
   );
 }
