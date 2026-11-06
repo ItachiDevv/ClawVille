@@ -198,6 +198,21 @@ export const GAME_HUD: readonly GameHudEntry[] = [
 ] as const;
 
 /**
+ * Upright phone: the top-centre row of `quest-tracker.tsx` (tracker pill +
+ * the approval badge of `wallet/approval-notice.tsx`) must keep
+ * 8 px from the columns beside it. Left: the Map button, `left: 16`, 44 px
+ * wide (`components/game/minimap.tsx`, PHONE_MAP_BUTTON_TOP_PX). Right: the controls-help
+ * button, `right: 12`, 44 px wide (`components/game/tutorial-overlay.tsx`), the widest-reaching
+ * of the right column. The row is centred, so it keeps the larger reserve on
+ * both sides: max(16, 12) + 44 + 8 = 68 px (plus the safe-area insets). At
+ * 390 px the row gets 254 px, so the pill shrinks (its title truncates) and
+ * the 44 px badge keeps its size. Wider screens never reach the cap.
+ */
+export const MOBILE_ROW_SIDE_RESERVE_PX = 68;
+export const MOBILE_ROW_MAX_WIDTH_CSS =
+  `calc(100vw - ${2 * MOBILE_ROW_SIDE_RESERVE_PX}px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))`;
+
+/**
  * Bottom touch-control band geometry, shared by every touch-control
  * component so a future device-safe-area tweak only needs one edit.
  */

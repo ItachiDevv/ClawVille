@@ -278,6 +278,43 @@ describe('quest tracker row (source)', () => {
     expect(source.slice(desktopStart)).not.toContain('<ApprovalTrackerSlot />');
     expect(mobile).not.toMatch(/\bmd:/);
   });
+
+  test('on an upright phone the row keeps 8 px from the Map button and the right column', async () => {
+    const { MOBILE_ROW_SIDE_RESERVE_PX, MOBILE_ROW_MAX_WIDTH_CSS } = await import('@/lib/hud/hud-layout');
+    const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+    // The reserve is built from the real column literals: Map at left 16, the
+    // controls-help button at right 12, both 44 px wide, plus the 8 px gap.
+    const minimap = read('../minimap.tsx');
+    expect(minimap).toContain("left: 'calc(env(safe-area-inset-left, 0px) + 16px)'");
+    expect(minimap).toContain('min-w-[44px]');
+    const controls = read('../tutorial-overlay.tsx');
+    expect(controls).toContain("right: 'calc(env(safe-area-inset-right, 0px) + 12px)'");
+    expect(controls).toContain('h-11 min-w-11');
+    expect(MOBILE_ROW_SIDE_RESERVE_PX).toBe(Math.max(16, 12) + 44 + 8);
+    // 390 px wide: 254 px for the row; the 44 px badge and the 8 px gap fit,
+    // and the pill (which may shrink: min-w-0, its title truncates) gets the rest.
+    const rowAt390 = 390 - 2 * MOBILE_ROW_SIDE_RESERVE_PX;
+    expect(rowAt390).toBe(254);
+    expect(rowAt390 - 44 - 8).toBeGreaterThanOrEqual(150);
+    const tracker = read('../quest-tracker.tsx');
+    expect(tracker).toContain('style={{ maxWidth: MOBILE_ROW_MAX_WIDTH_CSS }}');
+    expect(tracker).toContain("'w-[220px] max-w-[75vw] min-w-0'");
+    expect(MOBILE_ROW_MAX_WIDTH_CSS).toContain('100vw - 136px');
+  });
+
+  test('touch: the badge keeps its 44x44 size in a narrow row', async () => {
+    const w = testWindow as unknown as Record<string, unknown>;
+    w.ontouchstart = null;
+    try {
+      await mount(createElement(notice.ApprovalTrackerSlot));
+      const badge = container?.querySelector('[data-testid="approval-notice"]');
+      expect(badge?.className).toContain('shrink-0');
+      expect(badge?.className).toContain('min-w-[44px]');
+      expect(badge?.className).toContain('min-h-[44px]');
+    } finally {
+      delete w.ontouchstart;
+    }
+  });
 });
 
 describe('Spending card toggle', () => {
