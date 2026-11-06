@@ -631,6 +631,123 @@ describe('open requests outlive the wallet modal', () => {
     expect(button('Change the input to make a new request').disabled).toBe(true);
   });
 
+  const OTHER = '44444444-2222-4333-8444-555555555555';
+  const slotOf = (op: string) => store.readStudiosSlot(store.useStudiosRequestStore.getState().slots, `avatar-1:${op}`).pending;
+  const dup = (requestId: string, status: string) => new ApiError('duplicate_request_in_flight', 409, 'duplicate_request_in_flight', { requestId, requestStatus: status });
+
+  test('every form: a 409 duplicate_request_in_flight attaches to the first request and reads it, as a status, not an error', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    postAnswer = async () => {
+      throw dup(OTHER, 'running');
+    };
+    await mount(createElement(card.StudiosCard));
+    const cases: Array<{ section: string; op: string; fill: () => Promise<void>; label: string }> = [
+      { section: 'Image', op: 'image', label: 'Make image', fill: () => type(field('Describe the image'), 'a crab') },
+      { section: 'Video', op: 'video', label: 'Make video', fill: () => type(field('Describe the video'), 'a crab') },
+      { section: 'Character shots', op: 'character_shots', label: 'Make character shots', fill: () => type(field('Describe the character'), 'a knight') },
+      {
+        section: 'Recast', op: 'recast', label: 'Make recast clip', fill: async () => {
+          await type(field('Preset'), 'duo-dance');
+          await type(field('Photo of performer 1'), `/api/media/${MEDIA_IMG}`);
+          await type(field('Photo of performer 2'), `/api/media/${MEDIA_IMG}`);
+        },
+      },
+    ];
+    for (const c of cases) {
+      await openSection(c.section);
+      await c.fill();
+      log.length = 0;
+      await click(button(c.label));
+      expect(slotOf(c.op)?.requestId).toBe(OTHER);
+      expect(calls('poll').map((l) => l.arg)).toContain(OTHER);
+    }
+    const lines = [...(container?.querySelectorAll('p') ?? [])].filter((p) => p.textContent === 'This request is already running. The result shows here when it is ready.');
+    expect(lines.length).toBe(4);
+    for (const line of lines) expect(line.className).not.toContain('text-red');
+    expect(buttons().filter((b) => b.textContent === 'Running...').length).toBe(4);
+  });
+
+  test('a 409 for a request that waits for approval says so', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    postAnswer = async () => {
+      throw dup(OTHER, 'awaiting_approval');
+    };
+    requestView = { requestId: OTHER, operation: 'image', status: 'awaiting_approval', mode: 'account', mediaPath: null, media: [], code: null };
+    await mount(createElement(card.StudiosCard));
+    await openSection('Image');
+    await type(field('Describe the image'), 'a crab');
+    await click(button('Make image'));
+    expect(container?.textContent).toContain('this request waits in Approvals above');
+    expect(button('Waiting for your approval...').disabled).toBe(true);
+  });
+
+  test('a replay that answers approval_expired or approval_declined clears the key', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    for (const code of ['approval_expired', 'approval_declined']) {
+      store.resetStudiosRequestStoreForTests();
+      testWindow.sessionStorage.clear();
+      log.length = 0;
+      postAnswer = async () => {
+        throw new Error('network');
+      };
+      await mount(createElement(card.StudiosCard));
+      await openSection('Image');
+      await type(field('Describe the image'), 'a crab');
+      await click(button('Make image'));
+      const kept = slotOf('image')?.key;
+      expect(kept).toBeTruthy();
+      postAnswer = async () => {
+        throw new ApiError(code, 409, code);
+      };
+      await click(button('Make image'));
+      expect((calls('image')[1]!.arg as { key: string }).key).toBe(kept!);
+      expect(slotOf('image')).toBeNull();
+      postAnswer = async () => {
+        throw new Error('network');
+      };
+      await click(button('Make image'));
+      expect((calls('image')[2]!.arg as { key: string }).key).not.toBe(kept!);
+      await act(async () => root?.unmount());
+      container?.remove();
+      root = null;
+    }
+  });
+
+  test('a second tab (its own store) with the same input attaches through the 409', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    await mount(createElement(card.StudiosCard));
+    await openSection('Video');
+    await type(field('Describe the video'), 'a crab');
+    await click(button('Make video'));
+    const firstKey = (calls('video')[0]!.arg as { key: string }).key;
+    expect(slotOf('video')?.requestId).toBe(REQ);
+    await act(async () => root?.unmount());
+    container?.remove();
+    root = null;
+
+    // The other tab: empty memory, empty sessionStorage; the server knows the input.
+    store.resetStudiosRequestStoreForTests();
+    testWindow.sessionStorage.clear();
+    log.length = 0;
+    postAnswer = async () => {
+      throw dup(REQ, 'running');
+    };
+    await mount(createElement(card.StudiosCard));
+    await openSection('Video');
+    await type(field('Describe the video'), 'a crab');
+    await click(button('Make video'));
+    const secondKey = (calls('video')[0]!.arg as { key: string }).key;
+    expect(secondKey).not.toBe(firstKey);
+    expect(slotOf('video')?.requestId).toBe(REQ);
+    expect(calls('poll').map((l) => l.arg)).toEqual([REQ]);
+    expect(button('Running...').disabled).toBe(true);
+    expect(container?.textContent).toContain('This request is already running.');
+  });
+
   test('a sessionStorage that throws: the flow still works in memory', async () => {
     const throwing = { get: () => { throw new Error('denied'); }, configurable: true };
     Object.defineProperty(testWindow, 'sessionStorage', throwing);

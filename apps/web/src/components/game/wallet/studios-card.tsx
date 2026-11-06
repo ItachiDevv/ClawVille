@@ -70,6 +70,8 @@ export function studiosErrorText(error: unknown): string {
         return 'Too many Studios requests. Wait one minute.';
       case 'awaiting_approval':
         return '"Ask me before each payment" is on, so this request waits in Approvals above. Approve it there with your linked wallet.';
+      case 'already_running':
+        return 'This request is already running. The result shows here when it is ready.';
       case 'running':
         return 'Studios is working on it. This can take a few minutes. The result shows here and in Your media when it is ready.';
       case 'approval_declined':
@@ -216,7 +218,21 @@ const FINAL_NOTHING_CHARGED = new Set([
   'studios_key_invalid', 'studios_key_changed', 'studios_account_refused', 'daily_limit', 'hosted_daily_cap',
   'studios_key_missing', 'studios_signin_missing', 'studios_signin_broken', 'studios_signin_changed',
   'signin_option_unsupported', 'operation_needs_studios_key', 'interrupted_not_paid', 'job_failed', 'media_quota_full',
+  // A replay of a request the human declined, or that expired, ends it: a new click needs a new key.
+  'approval_declined', 'approval_expired',
 ]);
+
+/** Codes that say where a request is, not that something went wrong. */
+const STATUS_CODES = new Set(['running', 'awaiting_approval', 'already_running']);
+
+/**
+ * The status line for a request the form attached to after
+ * `409 duplicate_request_in_flight` (the same input already made it, in this
+ * or another tab). Its own status decides the text; polling shows the end.
+ */
+export function attachedStatusCode(status: string | undefined): 'awaiting_approval' | 'already_running' {
+  return status === 'awaiting_approval' ? 'awaiting_approval' : 'already_running';
+}
 
 
 export function keepsRequestKey(error: unknown): boolean {
@@ -406,6 +422,14 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
       queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
     },
     onError: (err, vars) => {
+      // The same input already made a request (this tab, another tab, or a
+      // lost reply): attach to it and read it until it ends. Not an error.
+      if (err instanceof ApiError && err.code === 'duplicate_request_in_flight' && err.requestId) {
+        update(vars.slotId, { pending: { ...vars.request, requestId: err.requestId } });
+        const code = attachedStatusCode(err.requestStatus);
+        setError(new ApiError(code, 202, code));
+        return;
+      }
       setError(err);
       // Outcomes that may have charged (the one shared list): the same input must not be sent again.
       if (err instanceof ApiError && isStudiosMayHaveCharged(err.code)) {
@@ -421,8 +445,9 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
   const waitingApproval = open && (requestQuery.data
     ? requestQuery.data.status === 'awaiting_approval'
     : error instanceof ApiError && error.code === 'awaiting_approval');
+  const runningCode = waitingApproval ? 'awaiting_approval' : error instanceof ApiError && error.code === 'already_running' ? 'already_running' : 'running';
   // A request restored after the modal reopened (or a reload) says what it waits for.
-  const shownError = error ?? (open ? new ApiError(waitingApproval ? 'awaiting_approval' : 'running', 202, waitingApproval ? 'awaiting_approval' : 'running') : null);
+  const shownError = error ?? (open ? new ApiError(runningCode, 202, runningCode) : null);
 
   const submit = (body: Record<string, unknown>) => {
     if (open || make.isPending || !slotId) return;
@@ -460,6 +485,10 @@ export function submitLabel(state: Pick<StudiosRequestState, 'sending' | 'open' 
 }
 
 /** The result and the error line under one form. */
+function isStatusLine(error: unknown): boolean {
+  return error instanceof ApiError && typeof error.code === 'string' && STATUS_CODES.has(error.code);
+}
+
 export function StudiosRequestResult({ state }: { state: StudiosRequestState }) {
   return (
     <>
@@ -469,7 +498,9 @@ export function StudiosRequestResult({ state }: { state: StudiosRequestState }) 
           <p className="text-xs text-emerald-300">{state.last.note}</p>
         </div>
       )}
-      {state.error !== null && <p className="text-xs text-red-300">{studiosErrorText(state.error)}</p>}
+      {state.error !== null && (
+        <p className={`text-xs ${isStatusLine(state.error) ? 'text-white/75' : 'text-red-300'}`}>{studiosErrorText(state.error)}</p>
+      )}
     </>
   );
 }

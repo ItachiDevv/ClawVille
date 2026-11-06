@@ -137,6 +137,12 @@ export class ApiError extends Error {
    * `GET /state`.
    */
   nextClaimAt?: string | null;
+  /**
+   * Present on the Studios `duplicate_request_in_flight` 409: the request the
+   * same input already made, and its status. The form attaches to it.
+   */
+  requestId?: string;
+  requestStatus?: string;
   constructor(
     message: string,
     status: number,
@@ -148,6 +154,8 @@ export class ApiError extends Error {
       holdAtRisk?: WithdrawHoldAtRisk;
       retryAfterMs?: number | null;
       nextClaimAt?: string | null;
+      requestId?: string;
+      requestStatus?: string;
     },
   ) {
     super(message);
@@ -160,6 +168,8 @@ export class ApiError extends Error {
     this.holdAtRisk = extras?.holdAtRisk;
     this.retryAfterMs = extras?.retryAfterMs;
     this.nextClaimAt = extras?.nextClaimAt;
+    this.requestId = extras?.requestId;
+    this.requestStatus = extras?.requestStatus;
   }
 }
 
@@ -216,6 +226,8 @@ function apiErrorExtras(err: Record<string, unknown>): {
   holdAtRisk?: WithdrawHoldAtRisk;
   retryAfterMs?: number | null;
   nextClaimAt?: string | null;
+  requestId?: string;
+  requestStatus?: string;
 } {
   return {
     detail: typeof err.detail === 'string' ? err.detail : undefined,
@@ -228,6 +240,8 @@ function apiErrorExtras(err: Record<string, unknown>): {
     nextClaimAt: typeof err.nextClaimAt === 'string' || err.nextClaimAt === null
       ? (err.nextClaimAt as string | null)
       : undefined,
+    requestId: typeof err.requestId === 'string' && /^[0-9a-f-]{36}$/i.test(err.requestId) ? err.requestId : undefined,
+    requestStatus: typeof err.status === 'string' && /^[a-z_]{1,32}$/.test(err.status) ? err.status : undefined,
   };
 }
 
