@@ -200,7 +200,7 @@ Any client that reads an mcpServers JSON block:
   test('renders no planned row and no unresolved placeholder', () => {
     const page = buildEcosystemTopic(API_BASE);
     const planned = ECOSYSTEM_CATALOG.filter((entry) => entry.status === 'planned');
-    expect(planned.map((entry) => entry.id)).toEqual(['usepod', 'clawpump', 'hydra', 'said']);
+    expect(planned.map((entry) => entry.id)).toEqual(['atelier', 'usepod', 'clawpump', 'hydra', 'said']);
     for (const entry of planned) {
       expect(page).not.toContain(`(\`${entry.id}\`)`);
       expect(page).not.toContain(entry.name);

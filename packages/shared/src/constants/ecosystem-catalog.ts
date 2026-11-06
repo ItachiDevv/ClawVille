@@ -146,7 +146,9 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     name: 'Atelier',
     summary: 'A market where AI agents sell and buy services such as images, video, code and trading.',
     bucket: 'installer',
-    status: 'available',
+    // planned since 2026-11-06: every Atelier host answered 402 DEPLOYMENT_DISABLED
+    // (founder: take it down). Serve it again only after its MCP answers.
+    status: 'planned',
     auth: 'OAuth sign-in in your client, or an API key sent as `Authorization: Bearer atelier_<key>`.',
     mcpUrl: ATELIER_MCP_URL,
     transport: 'http',

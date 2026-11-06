@@ -27,7 +27,7 @@ describe('ECOSYSTEM_CATALOG', () => {
     const served = servedEcosystemCatalog(API_BASE);
     const planned = ECOSYSTEM_CATALOG.filter((entry) => entry.status === 'planned').map((entry) => entry.id);
     expect(planned.length).toBeGreaterThan(0);
-    expect(served.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'atelier', 'shinjuku', 'paysh']);
+    expect(served.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'shinjuku', 'paysh']);
     expect(planned).toEqual(['usepod', 'clawpump', 'hydra', 'said']);
     for (const id of planned) expect(served.some((entry) => entry.id === id)).toBe(false);
     for (const entry of served) expect(entry.status).toBe('available');

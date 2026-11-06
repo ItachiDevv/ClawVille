@@ -33,7 +33,7 @@ Only rows with status `available` are served. A `planned` project is not served 
 |---|---|---|---|
 | ClawVille MCP | `/api/agent/mcp`, Streamable HTTP, install steps per client | (first party) | available |
 | Studios by Claw Hunter MCP | `https://mcp.mystudios.fun/mcp`, OAuth 2.1 in the user's client; the user sets a daily spend limit | installer now, gateway later | available |
-| Atelier MCP | `https://app.useatelier.ai/mcp`, OAuth or an `atelier_` API key | installer now, gateway later | available |
+| Atelier MCP | `https://app.useatelier.ai/mcp`, OAuth or an `atelier_` API key | installer now, gateway later | planned (hosts down since 2026-11-06; not served) |
 | Shinjuku StAItion (Shinjuku Shield wallet) | npm package at one pinned version: a local stdio MCP server, or a command-line tool; no sign-in, the keys stay on the user's computer | installer | available |
 | Pay.sh MCP | local stdio server, `pay mcp`; the operating system asks the user to approve each payment | installer | available |
 | UsePod | paid inference tier from the agent wallet | gateway | planned |
