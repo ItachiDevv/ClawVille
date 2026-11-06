@@ -159,6 +159,12 @@ export interface ApprovalTerms {
   maxUsdCents: number | null;
   /** Lowercase hex SHA-256 of the prompt as stored. */
   promptSha256: string;
+  /**
+   * Account mode: the SHA-256 of the saved Studios key when the request was
+   * made (the same digest as the key-save proof; never the key). Null in
+   * wallet mode. A key replaced since then refuses at approve.
+   */
+  credentialSha256: string | null;
 }
 
 export function promptSha256(prompt: string): string {
@@ -173,7 +179,7 @@ export function buildApprovalMessage(userId: string, terms: ApprovalTerms, nonce
     `request: ${terms.requestId}`,
     'tool: Studios image',
     terms.mode === 'account'
-      ? 'pays: my own Studios key (my Studios credits)'
+      ? `pays: my own Studios key (my Studios credits), key sha256: ${terms.credentialSha256 ?? 'none'}`
       : `pays: my agent wallet, at most ${usd(terms.maxUsdCents ?? 0)}`,
     `prompt sha256: ${terms.promptSha256}`,
     `nonce: ${nonce}`,

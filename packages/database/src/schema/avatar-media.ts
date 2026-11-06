@@ -68,6 +68,8 @@ export const vendorCallRequests = pgTable('vendor_call_requests', {
   decidedAt: timestamp('decided_at', { withTimezone: true }),
   decidedByUserId: uuid('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   failureCode: varchar('failure_code', { length: 48 }),
+  /** Account mode: SHA-256 of the saved key at queue time (never the key). */
+  credentialSha256: varchar('credential_sha256', { length: 64 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({

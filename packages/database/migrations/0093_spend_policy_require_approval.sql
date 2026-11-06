@@ -30,6 +30,9 @@ ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "expires_at" timesta
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "decided_at" timestamp with time zone;
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "decided_by_user_id" uuid;
 ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "failure_code" varchar(48);
+-- Account mode: SHA-256 (hex) of the saved Studios key when the request was
+-- queued (never the key). A key replaced before approve refuses the approve.
+ALTER TABLE "vendor_call_requests" ADD COLUMN IF NOT EXISTS "credential_sha256" varchar(64);
 
 DO $$
 BEGIN

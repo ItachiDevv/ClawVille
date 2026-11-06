@@ -84,7 +84,7 @@ mock.module('../../services/studios-images', () => ({
     return { result: nextResult, surface: 'api' };
   },
   readApprovalTerms: async (avatarId: string, requestId: string) => (requestId === REQ
-    ? { ok: true, terms: { avatarId, requestId, mode: 'wallet', maxUsdCents: 10, promptSha256: 'a'.repeat(64) } }
+    ? { ok: true, terms: { avatarId, requestId, mode: 'wallet', maxUsdCents: 10, promptSha256: 'a'.repeat(64), credentialSha256: null } }
     : { ok: false, result: { ok: false, code: 'approval_not_found', message: 'none', httpStatus: 404, ledgerId: null } }),
   declineStudiosRequest: async (input: { avatarId: string; userId: string; requestId: string }) => {
     decisions.push({ kind: 'decline', ...input });

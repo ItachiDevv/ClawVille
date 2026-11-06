@@ -49,7 +49,7 @@ import {
 } from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type VendorCallFailure } from './outbound-x402';
 import { toSpendPolicyView } from './spend-policy';
-import { promptSha256, type ApprovalTerms } from './spend-policy-proof';
+import { promptSha256, vendorKeyRef, type ApprovalTerms } from './spend-policy-proof';
 import { loadVendorKey } from './vendor-credentials';
 import {
   STUDIOS_IMAGE_MODELS,
@@ -245,7 +245,9 @@ async function expireOverdue(executor: Executor, avatarId: string): Promise<void
     .where(and(
       eq(vendorCallRequests.avatarId, avatarId),
       eq(vendorCallRequests.status, 'awaiting_approval'),
-      sql`${vendorCallRequests.expiresAt} <= now()`,
+      // The wall clock, not the transaction start: a call that waited on the
+      // avatar lock past the deadline must see the request as overdue.
+      sql`${vendorCallRequests.expiresAt} <= clock_timestamp()`,
     ));
 }
 
@@ -322,6 +324,8 @@ async function reserveRequest(input: {
   idempotencyKey: string;
   prompt: string;
   model: StudiosImageModel | undefined;
+  /** Account mode: SHA-256 of the saved key, so a key replaced before approve is seen. */
+  credentialSha256: string | null;
 }): Promise<Reservation> {
   return db.transaction(async (tx) => {
     await lockAvatarRequests(tx, input.avatarId);
@@ -400,6 +404,7 @@ async function reserveRequest(input: {
         idempotencyKey: input.idempotencyKey,
         prompt: input.prompt,
         model: input.model ?? null,
+        credentialSha256: input.credentialSha256,
         expiresAt,
       }).returning({ id: vendorCallRequests.id });
       if (!created) throw new Error('vendor_call_requests insert returned no row');
@@ -529,6 +534,7 @@ export async function generateStudiosImage(input: {
     idempotencyKey: input.idempotencyKey,
     prompt: input.prompt,
     model: input.model,
+    credentialSha256: key ? vendorKeyRef(key).sha256 : null,
   });
   if (reservation.kind === 'done') return reservation.result;
   return runReservedRequest({
@@ -551,6 +557,7 @@ type DecisionRow = {
   prompt: string | null;
   model: string | null;
   idempotencyKey: string;
+  credentialSha256: string | null;
 };
 
 /**
@@ -569,6 +576,7 @@ async function lockAwaitingRow(tx: Executor, avatarId: string, requestId: string
     prompt: vendorCallRequests.prompt,
     model: vendorCallRequests.model,
     idempotencyKey: vendorCallRequests.idempotencyKey,
+    credentialSha256: vendorCallRequests.credentialSha256,
   }).from(vendorCallRequests).where(and(
     eq(vendorCallRequests.id, requestId),
     eq(vendorCallRequests.avatarId, avatarId),
@@ -598,6 +606,7 @@ export async function readApprovalTerms(avatarId: string, requestId: string): Pr
     status: vendorCallRequests.status,
     mode: vendorCallRequests.mode,
     prompt: vendorCallRequests.prompt,
+    credentialSha256: vendorCallRequests.credentialSha256,
   }).from(vendorCallRequests).where(and(
     eq(vendorCallRequests.id, requestId),
     eq(vendorCallRequests.avatarId, avatarId),
@@ -615,6 +624,7 @@ export async function readApprovalTerms(avatarId: string, requestId: string): Pr
       mode,
       maxUsdCents: mode === 'account' ? null : walletMaxCents(await readPolicyRow(db, avatarId)),
       promptSha256: promptSha256(row.prompt),
+      credentialSha256: mode === 'account' ? row.credentialSha256 : null,
     },
   };
 }
@@ -641,15 +651,24 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
   const key = await loadKeyOrInvalid(input.avatarId);
   if (key === undefined) return { result: failure('studios_key_invalid'), surface: null };
   const currentMode = key ? 'account' : 'wallet';
+  const currentCredential = key ? vendorKeyRef(key).sha256 : null;
 
   const claim = await db.transaction(async (tx) => {
     const found = await lockAwaitingRow(tx, input.avatarId, input.requestId);
     if (!found.ok) return found;
     const { row } = found;
-    if (row.mode !== input.terms.mode || promptSha256(row.prompt!) !== input.terms.promptSha256) {
+    if (
+      row.mode !== input.terms.mode
+      || promptSha256(row.prompt!) !== input.terms.promptSha256
+      || (row.mode === 'account' ? row.credentialSha256 : null) !== input.terms.credentialSha256
+    ) {
       return { ok: false as const, result: failure('approval_terms_changed') };
     }
     if (row.mode !== currentMode) return { ok: false as const, result: failure('approval_mode_changed') };
+    // Key A replaced by key B (maybe another Studios account): B must not pay.
+    if (row.mode === 'account' && row.credentialSha256 !== currentCredential) {
+      return { ok: false as const, result: failure('approval_mode_changed') };
+    }
     if (row.mode === 'account') {
       const policy = await readPolicyRow(tx, input.avatarId);
       // This request counts too, on today: the requests that already ran today plus this one.
@@ -658,16 +677,24 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
         return { ok: false as const, result: failure('daily_limit') };
       }
     }
-    // A read outside this lock can expire the row between the select and here;
-    // then no row flips and nothing runs.
+    // Flip only a row that still waits and is not overdue NOW (wall clock):
+    // the checks above take time, and a read outside this lock can expire the
+    // row. Nothing flipped means nothing runs.
     const [flipped] = await tx.update(vendorCallRequests).set({
       status: 'pending',
       decidedAt: new Date(),
       decidedByUserId: input.userId,
       updatedAt: new Date(),
-    }).where(and(eq(vendorCallRequests.id, row.id), eq(vendorCallRequests.status, 'awaiting_approval')))
-      .returning({ id: vendorCallRequests.id });
-    if (!flipped) return { ok: false as const, result: failure('approval_not_awaiting') };
+    }).where(and(
+      eq(vendorCallRequests.id, row.id),
+      eq(vendorCallRequests.status, 'awaiting_approval'),
+      sql`${vendorCallRequests.expiresAt} > clock_timestamp()`,
+    )).returning({ id: vendorCallRequests.id });
+    if (!flipped) {
+      await expireOverdue(tx, input.avatarId);
+      const [now] = await tx.select({ status: vendorCallRequests.status }).from(vendorCallRequests).where(eq(vendorCallRequests.id, row.id)).limit(1);
+      return { ok: false as const, result: failure(now?.status === 'expired' ? 'approval_expired' : 'approval_not_awaiting') };
+    }
     return { ok: true as const, row };
   });
   if (!claim.ok) return { result: claim.result, surface: null };

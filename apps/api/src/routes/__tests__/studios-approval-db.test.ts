@@ -20,7 +20,7 @@ import {
   readApprovalTerms,
   readStudiosRequest,
 } from '../../services/studios-images';
-import { promptSha256 } from '../../services/spend-policy-proof';
+import { promptSha256, vendorKeyRef } from '../../services/spend-policy-proof';
 import { applySpendPolicyChange, readSpendPolicy, writeSpendPolicy } from '../../services/spend-policy';
 import { SOLANA_MAINNET } from '../../services/outbound-x402';
 import { deleteVendorKey, saveVendorKey } from '../../services/vendor-credentials';
@@ -189,7 +189,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
   it('the signed terms name the request, the payer, the amount and the prompt hash; other terms refuse', async () => {
     const r = await waitingRequest({ prompt: 'exact prompt' });
     const read = await readApprovalTerms(avatarId, r.requestId);
-    expect(read).toEqual({ ok: true, terms: { avatarId, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('exact prompt') } });
+    expect(read).toEqual({ ok: true, terms: { avatarId, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('exact prompt'), credentialSha256: vendorKeyRef(KEY).sha256 } });
     if (!read.ok) throw new Error('expected terms');
     const other = { ...read.terms, promptSha256: promptSha256('another prompt') };
     expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: other })).result).toMatchObject({ ok: false, code: 'approval_terms_changed' });
@@ -303,6 +303,43 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     await waitingRequest();
   });
 
+  it('refuses at approve when the saved key was replaced by another key (another Studios account must not pay)', async () => {
+    const r = await waitingRequest();
+    const signed = await readApprovalTerms(avatarId, r.requestId);
+    if (!signed.ok) throw new Error('expected terms');
+    expect(signed.terms.credentialSha256).toBe(vendorKeyRef(KEY).sha256);
+    const stored = first(await db.execute<{ credential_sha256: string }>(sql`SELECT credential_sha256 FROM vendor_call_requests WHERE id = ${r.requestId}`));
+    expect(stored.credential_sha256).toBe(vendorKeyRef(KEY).sha256);
+    expect(stored.credential_sha256).not.toContain('chk_');
+    await saveVendorKey(avatarId, 'studios', userId, `chk_${tag}otherkeyzzzzzzzzzz9999`);
+    expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: signed.terms })).result).toMatchObject({ ok: false, code: 'approval_mode_changed' });
+    expect(await statusOf(r.requestId)).toBe('awaiting_approval');
+    expect(vendorCalls).toBe(0);
+  });
+
+  it('an approve that waited on the avatar lock past the deadline refuses as expired', async () => {
+    const r = await waitingRequest();
+    const signed = await readApprovalTerms(avatarId, r.requestId);
+    if (!signed.ok) throw new Error('expected terms');
+    await db.execute(sql`UPDATE vendor_call_requests SET expires_at = clock_timestamp() + interval '600 milliseconds' WHERE id = ${r.requestId}`);
+    // Another transaction holds the avatar lock for 1.5 s; the approve starts
+    // before the deadline and gets the lock after it.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const holder = db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`vendor-call:${avatarId}`}))`);
+      await held;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const approving = approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: signed.terms });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    release();
+    await holder;
+    expect((await approving).result).toMatchObject({ ok: false, code: 'approval_expired' });
+    expect(await statusOf(r.requestId)).toBe('expired');
+    expect(vendorCalls).toBe(0);
+  });
+
   it('refuses at approve when the payer changed (the key was removed)', async () => {
     const r = await waitingRequest();
     await deleteVendorKey(avatarId, 'studios');
@@ -378,7 +415,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     const r = await waitingRequest();
     const other = '00000000-0000-4000-8000-000000000000';
     expect(await readStudiosRequest(other, r.requestId)).toBeNull();
-    expect((await approveStudiosRequest({ avatarId: other, userId, requestId: r.requestId, terms: { avatarId: other, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('a crab') } })).result).toMatchObject({ ok: false, code: 'approval_not_found' });
+    expect((await approveStudiosRequest({ avatarId: other, userId, requestId: r.requestId, terms: { avatarId: other, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('a crab'), credentialSha256: vendorKeyRef(KEY).sha256 } })).result).toMatchObject({ ok: false, code: 'approval_not_found' });
     expect(await declineStudiosRequest({ avatarId: other, userId, requestId: r.requestId })).toMatchObject({ ok: false, result: { code: 'approval_not_found' } });
     expect(await statusOf(r.requestId)).toBe('awaiting_approval');
   });
