@@ -145,10 +145,14 @@ function resolveEndpoint(endpoint: string | undefined): string {
 
 class Unauthorized extends Error {}
 
-/** Read a body up to MAX_RESPONSE_BYTES. */
-async function readCapped(res: Response): Promise<Uint8Array> {
+/** Read a body up to MAX_RESPONSE_BYTES (exported for tests). */
+export async function readCapped(res: Response): Promise<Uint8Array> {
   const declared = Number(res.headers.get('content-length') ?? '0');
-  if (declared > MAX_RESPONSE_BYTES) throw new StudiosMcpError('studios_mcp_bad_response', { httpStatus: res.status });
+  if (declared > MAX_RESPONSE_BYTES) {
+    // Release the connection before failing.
+    await res.body?.cancel().catch(() => {});
+    throw new StudiosMcpError('studios_mcp_bad_response', { httpStatus: res.status });
+  }
   if (!res.body) return new Uint8Array();
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];

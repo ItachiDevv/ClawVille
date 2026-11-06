@@ -299,6 +299,26 @@ async function revokeToken(token: string, hint: 'refresh_token' | 'access_token'
   }
 }
 
+/** Revoke tokens Studios just issued that no link will keep (best effort). */
+async function revokeIssued(tokens: StudiosTokenSet): Promise<void> {
+  await revokeToken(tokens.refreshToken ?? tokens.accessToken, tokens.refreshToken ? 'refresh_token' : 'access_token');
+}
+
+/** The refresh (else access) token of a stored link, for a best-effort revoke. */
+function storedTokenForRevoke(row: {
+  accessEnc: string; accessIv: string; accessTag: string;
+  refreshEnc: string | null; refreshIv: string | null; refreshTag: string | null;
+}): { token: string; hint: 'refresh_token' | 'access_token' } | null {
+  try {
+    if (row.refreshEnc && row.refreshIv && row.refreshTag) {
+      return { token: decryptToken(row.refreshEnc, row.refreshIv, row.refreshTag), hint: 'refresh_token' };
+    }
+    return { token: decryptToken(row.accessEnc, row.accessIv, row.accessTag), hint: 'access_token' };
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Sign-in start + callback
 // ---------------------------------------------------------------------------
@@ -414,31 +434,26 @@ export async function completeStudiosSignIn(input: {
 
   // Install only if an unlink did not cancel this sign-in while the exchange
   // ran. The state row lock orders this against unlinkStudiosOAuth.
-  const installed = await db.transaction(async (tx) => {
-    const [locked] = await tx.select({ cancelledAt: vendorOAuthStates.cancelledAt })
-      .from(vendorOAuthStates).where(eq(vendorOAuthStates.id, row.id)).for('update');
-    if (!locked || locked.cancelledAt) return false;
-    const sealed = sealTokens(result.tokens);
-    const at = new Date();
-    // A new link id every time: a refresh claimed on an earlier link can never
-    // write into this one.
-    const linkId = randomUUID();
-    await tx.insert(userVendorOAuthLinks)
-      .values({
-        avatarId: row.avatarId,
-        vendor: STUDIOS_OAUTH_VENDOR,
-        ...sealed,
-        status: 'active',
-        refreshStartedAt: null,
-        linkId,
-        refreshClaimId: null,
-        linkedByUserId: input.userId,
-        createdAt: at,
-        updatedAt: at,
-      })
-      .onConflictDoUpdate({
-        target: [userVendorOAuthLinks.avatarId, userVendorOAuthLinks.vendor],
-        set: {
+  type Install = { installed: false } | { installed: true; previous: ReturnType<typeof storedTokenForRevoke> };
+  let install: Install;
+  try {
+    install = await db.transaction(async (tx): Promise<Install> => {
+      const [locked] = await tx.select({ cancelledAt: vendorOAuthStates.cancelledAt })
+        .from(vendorOAuthStates).where(eq(vendorOAuthStates.id, row.id)).for('update');
+      if (!locked || locked.cancelledAt) return { installed: false };
+      // A link that this one replaces (another account, no unlink first): its
+      // token is revoked after this transaction commits.
+      const [previousRow] = await tx.select().from(userVendorOAuthLinks).where(linkRow(row.avatarId)).for('update');
+      const previous = previousRow ? storedTokenForRevoke(previousRow) : null;
+      const sealed = sealTokens(result.tokens);
+      const at = new Date();
+      // A new link id every time: a refresh claimed on an earlier link can never
+      // write into this one.
+      const linkId = randomUUID();
+      await tx.insert(userVendorOAuthLinks)
+        .values({
+          avatarId: row.avatarId,
+          vendor: STUDIOS_OAUTH_VENDOR,
           ...sealed,
           status: 'active',
           refreshStartedAt: null,
@@ -447,15 +462,32 @@ export async function completeStudiosSignIn(input: {
           linkedByUserId: input.userId,
           createdAt: at,
           updatedAt: at,
-        },
-      });
-    return true;
-  });
-  if (!installed) {
-    const t = result.tokens;
-    await revokeToken(t.refreshToken ?? t.accessToken, t.refreshToken ? 'refresh_token' : 'access_token');
+        })
+        .onConflictDoUpdate({
+          target: [userVendorOAuthLinks.avatarId, userVendorOAuthLinks.vendor],
+          set: {
+            ...sealed,
+            status: 'active',
+            refreshStartedAt: null,
+            linkId,
+            refreshClaimId: null,
+            linkedByUserId: input.userId,
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+      return { installed: true, previous };
+    });
+  } catch (err) {
+    // Studios issued tokens that were not stored: revoke them, then fail.
+    await revokeIssued(result.tokens);
+    throw err;
+  }
+  if (!install.installed) {
+    await revokeIssued(result.tokens);
     return { ok: false, reason: 'cancelled' };
   }
+  if (install.previous) await revokeToken(install.previous.token, install.previous.hint);
   return { ok: true };
 }
 
@@ -588,17 +620,24 @@ export async function getAccessToken(avatarId: string, options: { rejectedToken?
       resource: STUDIOS_MCP_RESOURCE,
     });
     if (result.kind === 'ok') {
-      // A server that does not rotate keeps the old refresh token valid.
-      const sealed = sealTokens({ ...result.tokens, refreshToken: result.tokens.refreshToken ?? claim.refreshToken });
-      const written = await db.update(userVendorOAuthLinks)
-        .set({ ...sealed, status: 'active', refreshStartedAt: null, refreshClaimId: null, updatedAt: new Date() })
-        .where(claimRow(avatarId, claim.claim))
-        .returning({ linkId: userVendorOAuthLinks.linkId });
+      let written: Array<{ linkId: string }>;
+      try {
+        // A server that does not rotate keeps the old refresh token valid.
+        const sealed = sealTokens({ ...result.tokens, refreshToken: result.tokens.refreshToken ?? claim.refreshToken });
+        written = await db.update(userVendorOAuthLinks)
+          .set({ ...sealed, status: 'active', refreshStartedAt: null, refreshClaimId: null, updatedAt: new Date() })
+          .where(claimRow(avatarId, claim.claim))
+          .returning({ linkId: userVendorOAuthLinks.linkId });
+      } catch (err) {
+        // The new tokens were not stored (the claim stays and goes stale ->
+        // broken): revoke what Studios just issued, then fail.
+        await revokeIssued(result.tokens);
+        throw err;
+      }
       if (written.length === 0) {
         // Unlinked, linked again, or marked broken meanwhile: these tokens
         // belong to no link.
-        const t = result.tokens;
-        await revokeToken(t.refreshToken ?? t.accessToken, t.refreshToken ? 'refresh_token' : 'access_token');
+        await revokeIssued(result.tokens);
         continue;
       }
       return result.tokens.accessToken;
@@ -636,17 +675,6 @@ export async function unlinkStudiosOAuth(input: { userId: string; avatarId: stri
     return row ?? null;
   });
   if (!removed) return;
-  let token: string | null = null;
-  let hint: 'refresh_token' | 'access_token' = 'refresh_token';
-  try {
-    if (removed.refreshEnc && removed.refreshIv && removed.refreshTag) {
-      token = decryptToken(removed.refreshEnc, removed.refreshIv, removed.refreshTag);
-    } else {
-      token = decryptToken(removed.accessEnc, removed.accessIv, removed.accessTag);
-      hint = 'access_token';
-    }
-  } catch {
-    token = null;
-  }
-  if (token) await revokeToken(token, hint);
+  const stored = storedTokenForRevoke(removed);
+  if (stored) await revokeToken(stored.token, stored.hint);
 }

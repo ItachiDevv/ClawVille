@@ -635,6 +635,67 @@ describeIfSchema('studios sign-in: executed DB contract', () => {
     expect(calls.filter((c) => c.url === STUDIOS_OAUTH_REVOKE_URL).map((c) => c.body.get('token'))).toContain('late-ref');
   });
 
+  it('callback: a link over another account without an unlink revokes the old token after the new row commits', async () => {
+    await link();
+    const { state } = await start();
+    fakeStudios((call) => call.url === STUDIOS_OAUTH_TOKEN_URL
+      ? json(200, { access_token: 'acc-B', token_type: 'Bearer', expires_in: 3600, refresh_token: 'ref-B' })
+      : new Response(null, { status: 200 }));
+    expect(reasonOf(await callback({ code: 'cB', state }))).toBe('linked');
+    expect((await storedTokens()).refresh).toBe('ref-B');
+    const revokes = calls.filter((c) => c.url === STUDIOS_OAUTH_REVOKE_URL);
+    expect(revokes.map((c) => [c.body.get('token'), c.body.get('token_type_hint')])).toEqual([['ref-1', 'refresh_token']]);
+  });
+
+  it('callback: when storing the new tokens fails, they are revoked and the browser gets reason=unavailable', async () => {
+    const { state } = await start();
+    let restore: string | undefined;
+    fakeStudios((call) => {
+      if (call.url === STUDIOS_OAUTH_TOKEN_URL) {
+        // The verifier is already decrypted; encrypting the tokens now throws.
+        restore = process.env.VANITY_ENCRYPTION_KEY;
+        delete process.env.VANITY_ENCRYPTION_KEY;
+        return json(200, { access_token: 'fail-acc', token_type: 'Bearer', expires_in: 3600, refresh_token: 'fail-ref' });
+      }
+      process.env.VANITY_ENCRYPTION_KEY = restore;
+      return new Response(null, { status: 200 });
+    });
+    try {
+      expect(reasonOf(await callback({ code: 'c', state }))).toBe('unavailable');
+    } finally {
+      if (restore) process.env.VANITY_ENCRYPTION_KEY = restore;
+    }
+    expect(await readStudiosOAuthStatus(avatarId)).toMatchObject({ linked: false });
+    expect(calls.filter((c) => c.url === STUDIOS_OAUTH_REVOKE_URL).map((c) => c.body.get('token'))).toEqual(['fail-ref']);
+  });
+
+  it('refresh: when storing the refreshed tokens fails, the new refresh token is revoked and the call fails', async () => {
+    await link();
+    await expireAccess();
+    let restore: string | undefined;
+    fakeStudios((call) => {
+      if (call.url === STUDIOS_OAUTH_TOKEN_URL) {
+        restore = process.env.VANITY_ENCRYPTION_KEY;
+        delete process.env.VANITY_ENCRYPTION_KEY;
+        return json(200, { access_token: 'new-a', token_type: 'Bearer', expires_in: 3600, refresh_token: 'new-r' });
+      }
+      process.env.VANITY_ENCRYPTION_KEY = restore;
+      return new Response(null, { status: 200 });
+    });
+    let err: unknown;
+    try {
+      err = await getAccessToken(avatarId).catch((e) => e);
+    } finally {
+      if (restore) process.env.VANITY_ENCRYPTION_KEY = restore;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(StudiosOAuthError);
+    expect(calls.filter((c) => c.url === STUDIOS_OAUTH_REVOKE_URL).map((c) => c.body.get('token'))).toEqual(['new-r']);
+    // The claim stays; it goes stale and then broken. The old pair is kept as is.
+    const stored = await storedTokens();
+    expect(stored).toMatchObject({ access: 'acc-1', refresh: 'ref-1', status: 'refreshing' });
+  });
+
   it('getAccessToken: no link -> studios_oauth_not_linked', async () => {
     expect(((await getAccessToken(avatarId).catch((e) => e)) as StudiosOAuthError).code).toBe('studios_oauth_not_linked');
   });

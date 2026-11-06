@@ -12,6 +12,7 @@ import {
   StudiosMcpError,
   callStudiosTool,
   listToolNamesForVerification,
+  readCapped,
   type GetStudiosToken,
 } from '../vendors/studios-mcp-client';
 
@@ -224,6 +225,18 @@ describe('studios MCP client', () => {
 
   it('lists tool names across pages for the ops check, names only', async () => {
     expect(await listToolNamesForVerification({ avatarId: 'a1', endpoint, getToken: tokenSource(['good']).getToken })).toEqual(['create_image', 'get_job']);
+  });
+
+  it('cancels the body before failing when the declared size is over the limit', async () => {
+    let cancelled = false;
+    const body = new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{}')); },
+      cancel() { cancelled = true; },
+    });
+    const res = new Response(body, { headers: { 'Content-Type': 'application/json', 'Content-Length': String(25 * 1024 * 1024) } });
+    const err = await readCapped(res).catch((e) => e);
+    expect((err as StudiosMcpError).code).toBe('studios_mcp_bad_response');
+    expect(cancelled).toBe(true);
   });
 
   it('refuses a non-loopback endpoint override', async () => {
