@@ -411,6 +411,41 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
     calls: (_c, i) => [{ method: 'POST', path: '/api/vendors/studios/images', body: pick(i, ['prompt']), headers: idem(i) }],
     next: 'Report data to your human; retry only with the SAME idempotencyKey. Never retry payment_ambiguous. Status 202 (data.status awaiting_approval) means your human must approve it: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute.',
   },
+  clawville_studios_video: {
+    sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/videos')],
+    calls: (_c, i) => [{
+      method: 'POST',
+      path: '/api/vendors/studios/videos',
+      body: pick(i, ['prompt', 'model', 'imageUrl', 'durationSeconds', 'resolution', 'aspectRatio', 'audio']),
+      headers: idem(i),
+    }],
+    next: 'Status 202 with data.status running or awaiting_approval: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute until status is done (data.mediaPath) or failed. Retry only with the SAME idempotencyKey. Never retry payment_ambiguous.',
+  },
+  clawville_studios_character: {
+    sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/characters')],
+    calls: (_c, i) => [{
+      method: 'POST',
+      path: '/api/vendors/studios/characters',
+      body: pick(i, ['shots', 'picks', 'random', 'prompt', 'imageUrl', 'imageKind', 'style', 'quality', 'resolution']),
+      headers: idem(i),
+    }],
+    next: 'data.media lists one mediaPath per stored shot (data.note media_not_copied: it is only in your human\'s Studios My Media). Status 202 (awaiting_approval): your human must approve it; read GET /api/vendors/studios/requests/<data.requestId> at most once a minute. Retry only with the SAME idempotencyKey.',
+  },
+  clawville_studios_recast: {
+    sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/recasts')],
+    calls: (_c, i) => [{
+      method: 'POST',
+      path: '/api/vendors/studios/recasts',
+      body: pick(i, ['preset', 'videoUrl', 'imageUrls', 'direction', 'resolution']),
+      headers: idem(i),
+    }],
+    next: 'Status 202 with data.status running or awaiting_approval: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute (a recast takes several minutes). Retry only with the SAME idempotencyKey.',
+  },
+  clawville_studios_options: {
+    sources: [src('vendor-studios.ts', 'get', '/api/vendors/studios', '/options/:menu')],
+    calls: (_c, i) => [{ method: 'GET', path: `/api/vendors/studios/options/${seg(i.menu)}` }],
+    next: 'Use these ids in clawville_studios_video (model), clawville_studios_character (picks, style) and clawville_studios_recast (preset). Prices are in US dollars.',
+  },
   clawville_redeem_earned: {
     sources: [src('tokenomics-redeem.ts', 'post', '/api/tokenomics/redeem', '/')],
     calls: (_c, i) => [{ method: 'POST', path: '/api/tokenomics/redeem', body: pick(i, ['amountVclaw']), headers: idem(i) }],

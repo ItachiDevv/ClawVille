@@ -11,7 +11,10 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   SPEND_CAP_MAX_USD_CENTS,
+  STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT,
   STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+  STUDIOS_RECASTS_PER_DAY_DEFAULT,
+  STUDIOS_VIDEOS_PER_DAY_DEFAULT,
   STUDIOS_KEY_IMAGES_PER_DAY_MAX,
   isSpendPolicyRaise,
   type SpendVendorId,
@@ -106,9 +109,20 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
         perCallCapUsdCents: null,
         allowedVendors: [],
         studiosKeyImagesPerDay: STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+        studiosVideosPerDay: STUDIOS_VIDEOS_PER_DAY_DEFAULT,
+        studiosCharacterShotsPerDay: STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT,
+        studiosRecastsPerDay: STUDIOS_RECASTS_PER_DAY_DEFAULT,
         requireApproval: false,
       };
-      if (!isSpendPolicyRaise(current, next)) return api.putSpendPolicy(next);
+      // This card does not edit the per-class Studios counts (migration 0095):
+      // the PUT leaves them out, so the server keeps the saved values.
+      const compared = {
+        ...next,
+        studiosVideosPerDay: current.studiosVideosPerDay,
+        studiosCharacterShotsPerDay: current.studiosCharacterShotsPerDay,
+        studiosRecastsPerDay: current.studiosRecastsPerDay,
+      };
+      if (!isSpendPolicyRaise(current, compared)) return api.putSpendPolicy(next);
       // A raise (turning "ask me before each payment" off is one) needs the
       // human's own linked wallet to sign the exact values.
       const challenge = await api.spendPolicyChallenge(next);

@@ -20,6 +20,10 @@ export const userSpendPolicies = pgTable('user_spend_policies', {
   studiosKeyImagesPerDay: integer('studios_key_images_per_day'),
   /** "Ask me before each payment" (migration 0093): agent requests wait for the human. */
   requireApproval: boolean('require_approval').notNull().default(false),
+  /** Per-UTC-day counts per Studios operation class, key AND wallet mode (migration 0095); NULL = the code default, 0 = off. */
+  studiosVideosPerDay: integer('studios_videos_per_day'),
+  studiosCharacterShotsPerDay: integer('studios_character_shots_per_day'),
+  studiosRecastsPerDay: integer('studios_recasts_per_day'),
   updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

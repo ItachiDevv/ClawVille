@@ -1,79 +1,112 @@
 /**
- * Studios image generation for an avatar, in the mode its human chose
- * (MCP hub step 2 phase 2b). ONE service for every surface: the human web
- * form and REST route, the MCP tool and the hosted-agent `[ACTION:]` verb.
+ * Studios calls for an avatar, in the mode its human chose (MCP hub step 2
+ * phase 2b; every operation since phase 3b). ONE service for every surface:
+ * the human web form and REST routes, the MCP tools and the hosted-agent
+ * `[ACTION:]` verbs. The operations and their rules live in
+ * `vendors/studios-operations.ts` (image, video, character_shots, recast).
  *
  *   - mode 'account' (A): the human saved their own Studios API key. Studios
- *     bills the human's Studios credits and saves the image to their My Media.
+ *     bills the human's Studios credits and saves the result to their My Media.
  *     ClawVille moves no money and writes no spend-ledger row.
  *   - mode 'wallet' (B): no key saved. The avatar wallet pays with x402 inside
- *     the human's spend rules (`outbound-x402.ts`).
+ *     the human's spend rules (`outbound-x402.ts`). Only image and video take
+ *     x402; character shots and recast refuse with `operation_needs_studios_key`.
  *
  * Every request first reserves a `vendor_call_requests` row (unique per
  * avatar + idempotency key) under a per-avatar advisory lock, so a retry never
  * bills twice in either mode. A retry of a finished request returns the same
- * image; a retry of an unfinished or failed one is `duplicate_request`.
+ * result; a retry of a running one returns 'running'; a retry of a failed one
+ * is `duplicate_request`. In account mode the row keeps the SHA-256 of the key
+ * it was made with (never the key).
+ *
+ * Long jobs (video, recast) never hold an HTTP request: the row is 'running'
+ * and `studios-job-runner.ts` finishes it in the API process; the agent reads
+ * GET /api/vendors/studios/requests/:id. An ambiguous outcome is never retried.
  *
  * "Ask me before each payment" (founder go 2026-11-06, migration 0093): when
  * the human turns `requireApproval` on, EVERY request (any actor, any
  * surface, the human's own web form too) runs only the checks that need no
  * vendor call, then its row waits as `awaiting_approval` for 15 minutes.
  * Nothing is called, signed or paid. The human approves with a signature from
- * their linked wallet (`approveStudiosRequest`: the SAME pipeline, every cap
- * and limit checked again at that moment) or declines it; nobody answering
- * makes it `expired` (lazily, on the next read or write of that avatar's rows).
+ * their linked wallet over terms that name the operation (`approveStudiosRequest`:
+ * the SAME pipeline, every cap and limit checked again at that moment) or
+ * declines it; nobody answering makes it `expired` (lazily, on the next read
+ * or write of that avatar's rows).
  *
- * Limits are the human's own (founder 2026-11-05: each user's agent pays for
- * its own tools; ClawVille sets no fixed image count). The spend caps bound
- * the wallet mode. They do not cover the human's Studios credits, so mode
- * 'account' is bounded by the human's `studiosKeyImagesPerDay` spend rule:
- * the avatar's mode-'account' requests of this UTC day, ANY actor and surface
- * (an agent that holds its owner's magic-link session looks like the human),
- * counted from the same rows under the same lock, so it survives a restart.
- * A request counts on the UTC day it ran (an approved one on its approve
- * day); a waiting request counts as a reservation; a declined or expired one
- * does not (it never reached Studios).
+ * Limits are the human's own (founder 2026-11-05). The spend caps bound the
+ * wallet mode. Per-UTC-day counts bound each operation class: images on the
+ * human's own key (`studiosKeyImagesPerDay`, key mode only, as in phase 2b),
+ * and videos, character shots and recasts in BOTH modes (phase 3b). The
+ * hosted verbs also have a fixed per-avatar daily cap (`hostedPerDay`). A
+ * request counts on the UTC day it ran (an approved one on its approve day); a
+ * waiting request counts as a reservation; a declined or expired one does not.
  *
- * The image is stored in `avatar_media` (checked png/jpeg/webp bytes only; a
- * reply with only a link is `image_missing`) and served at GET /api/media/:id.
- * Vendor text is untrusted: only the image and our own status leave here.
+ * Media is stored in `avatar_media` (`studios-media.ts`: checked bytes, a
+ * per-avatar quota checked BEFORE any spend) and served at GET /api/media/:id.
+ * Vendor text is untrusted: only media and our own status leave here.
  */
 
+import { createHash } from 'crypto';
 import { and, asc, avatarMedia, db, desc, eq, inArray, or, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
 import {
   SPEND_APPROVAL_MAX_AWAITING,
   SPEND_APPROVAL_TTL_MS,
-  STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT,
+  type StudiosOperationId,
   type VendorCallApprovalView,
   type VendorCallStatus,
 } from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type VendorCallFailure } from './outbound-x402';
-import { toSpendPolicyView } from './spend-policy';
+import { policyColumns, toSpendPolicyView } from './spend-policy';
 import { promptSha256, vendorKeyRef, type ApprovalTerms } from './spend-policy-proof';
 import { loadVendorKey } from './vendor-credentials';
+import { STUDIOS_IMAGE_MODELS, STUDIOS_PAY_TO, type StudiosImageModel } from './vendors/studios';
 import {
-  STUDIOS_IMAGE_MODELS,
-  STUDIOS_MAX_CALL_ATOMIC,
-  STUDIOS_PAY_TO,
-  buildStudiosImageRequest,
-  parseStudiosImage,
-  type StudiosImageModel,
-} from './vendors/studios';
+  MEDIA_QUOTA_BYTES_PER_AVATAR,
+  fetchStudiosArtifact,
+  maxBytesFor,
+  sniffMedia,
+  storedMediaBytes,
+  type MediaKind,
+} from './studios-media';
+import {
+  STUDIOS_OPERATIONS,
+  canonicalJson,
+  perDayLimit,
+  readRecastPoll,
+  readRecastStart,
+  recastPollUrl,
+  type MediaSource,
+  type StudiosMode,
+  type StudiosOperationDef,
+  type StudiosParams,
+} from './vendors/studios-operations';
 
 export const MEDIA_KEEP_PER_AVATAR = 50;
-const ACCOUNT_CALL_TIMEOUT_MS = 120_000;
 const ATOMIC_PER_CENT = 10_000n;
-/** The most one Studios call can cost, in US cents (the hard ceiling in vendors/studios.ts). */
-const STUDIOS_MAX_CALL_CENTS = Number(STUDIOS_MAX_CALL_ATOMIC / ATOMIC_PER_CENT);
 /** The hosted verb keeps at most one request waiting; it must not queue more. */
 const HOSTED_MAX_AWAITING = 1;
+/** A long job's lease; the runner renews it every LEASE_RENEW_MS. */
+export const JOB_LEASE_MS = 120_000;
+/** Hard end of a recast job after its start call. */
+export const RECAST_DEADLINE_MS = 30 * 60_000;
+export const RECAST_POLL_MS = 15_000;
 
 export type StudiosImageFailure =
   | VendorCallFailure
   | 'studios_key_invalid'
+  | 'studios_key_changed'
   | 'studios_account_refused'
+  | 'operation_needs_studios_key'
   | 'image_missing'
+  | 'media_missing'
+  | 'media_quota_full'
   | 'daily_limit'
+  | 'hosted_daily_cap'
+  | 'outcome_unknown'
+  | 'interrupted_not_paid'
+  | 'result_lost'
+  | 'job_failed'
+  | 'job_timeout'
   | 'approval_pending_limit'
   | 'approval_declined'
   | 'approval_expired'
@@ -93,29 +126,68 @@ export interface StudiosImageAwaiting {
   expiresAt: string;
 }
 
-export type StudiosImageResult =
-  | {
-    ok: true;
-    mode: 'wallet' | 'account';
-    mediaId: string;
-    /** Path on the ClawVille API (prefix the API base URL). */
-    mediaPath: string;
-    /** Wallet mode only. */
-    ledgerId: string | null;
-    paidUsdCents: number | null;
-    txSignature: string | null;
-  }
-  | StudiosImageRefusal
-  | StudiosImageAwaiting;
+/** A long job runs in the background (HTTP 202). Read the request for the result. */
+export interface StudiosRunning {
+  ok: false;
+  code: 'running';
+  httpStatus: 202;
+  message: string;
+  ledgerId: null;
+  requestId: string;
+}
+
+/** A finished image (phase 2b shape, unchanged). */
+export interface StudiosImageSuccess {
+  ok: true;
+  mode: 'wallet' | 'account';
+  mediaId: string;
+  /** Path on the ClawVille API (prefix the API base URL). */
+  mediaPath: string;
+  /** Wallet mode only. */
+  ledgerId: string | null;
+  paidUsdCents: number | null;
+  txSignature: string | null;
+}
+
+export interface StudiosMediaItem {
+  slot: string;
+  mediaId: string;
+  mediaPath: string;
+}
+
+/** A finished video, character-shot or recast request. */
+export interface StudiosOperationSuccess {
+  ok: true;
+  operation: Exclude<StudiosOperationId, 'image'>;
+  requestId: string;
+  mode: 'wallet' | 'account';
+  /** The first stored item; null when nothing was copied (see `note`). */
+  mediaId: string | null;
+  mediaPath: string | null;
+  media: StudiosMediaItem[];
+  /** Key mode: the item in the human's Studios My Media (reference only). */
+  vendorMediaId: string | null;
+  /** 'media_not_copied': Studios made it (key mode, it is in My Media) but ClawVille could not copy it. */
+  note: 'media_not_copied' | null;
+  ledgerId: string | null;
+  paidUsdCents: number | null;
+  txSignature: string | null;
+}
+
+export type StudiosImageResult = StudiosImageSuccess | StudiosImageRefusal | StudiosImageAwaiting;
+export type StudiosOperationResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning;
 
 /** A refusal or failure with our own code and message. */
 export interface StudiosImageRefusal { ok: false; code: StudiosImageFailure; message: string; httpStatus: FailureStatus; ledgerId: string | null }
 
-type FailureStatus = 400 | 402 | 403 | 404 | 409 | 429 | 502;
+type FailureStatus = 400 | 402 | 403 | 404 | 409 | 413 | 429 | 502;
 
 const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message: string }> = {
   duplicate_request: { httpStatus: 409, message: 'This Idempotency-Key was already used for a request that did not finish. Do not retry it; use a new key only for a new image.' },
   daily_limit: { httpStatus: 429, message: "Your human's daily limit for images on their own Studios key is used up. Try again after 00:00 UTC, or ask your human to raise it in the wallet panel (Spending)." },
+  hosted_daily_cap: { httpStatus: 429, message: 'Your hosted agent reached its own daily cap for this Studios action. Try again after 00:00 UTC.' },
+  media_quota_full: { httpStatus: 413, message: 'Your avatar media storage is full (500 MB). Nothing was called or paid. Ask your human to delete old media in ClawVille first.' },
+  operation_needs_studios_key: { httpStatus: 403, message: "This Studios action works only with your human's own Studios key (Studios takes no wallet payment for it). Nothing was paid. Ask your human to save their Studios key in the wallet panel." },
   vendor_unreachable: { httpStatus: 502, message: 'Studios did not answer. Nothing was paid. Try again later.' },
   vendor_refused: { httpStatus: 502, message: 'Studios refused the request before payment. Nothing was paid.' },
   vendor_quote_invalid: { httpStatus: 502, message: 'Studios sent a price ClawVille cannot accept. Nothing was paid.' },
@@ -128,19 +200,39 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message
   payment_prepare_failed: { httpStatus: 502, message: 'The payment could not be signed. Nothing was paid. Try again later.' },
   payment_ambiguous: { httpStatus: 502, message: 'Studios did not confirm the result. The payment may have gone through (for example, the wallet may not hold enough USDC, or the reply was lost). Do not retry; it counts toward the daily cap until it is checked on chain.' },
   studios_key_invalid: { httpStatus: 403, message: 'The saved Studios API key does not work. Ask your human to save it again in the wallet panel. Nothing was paid.' },
+  studios_key_changed: { httpStatus: 409, message: 'The saved Studios key changed after this request was made, so it was not sent. Nothing was paid. Send a new request.' },
   studios_account_refused: { httpStatus: 402, message: "Studios refused the call on your human's Studios account (for example, no credits left). ClawVille paid nothing." },
   image_missing: { httpStatus: 502, message: 'Studios sent no readable image. Do not retry; contact support with the ledgerId if one is shown.' },
+  media_missing: { httpStatus: 502, message: 'Studios sent no media that ClawVille could store. Do not retry; contact support with the ledgerId if one is shown.' },
+  outcome_unknown: { httpStatus: 502, message: "ClawVille lost the answer from Studios. Studios may have billed your human's Studios credits; the result may be in their Studios My Media. Do not retry." },
+  interrupted_not_paid: { httpStatus: 502, message: 'The ClawVille server restarted before this request paid anything. Nothing was paid. Send a new request with a new key.' },
+  result_lost: { httpStatus: 502, message: 'The wallet paid, but the ClawVille server restarted before it stored the result. Do not retry; contact support with the ledgerId.' },
+  job_failed: { httpStatus: 502, message: 'Studios says the job failed (Studios refunds a failed job). Do not retry the same request.' },
+  job_timeout: { httpStatus: 502, message: "The job did not finish in 30 minutes, so ClawVille stopped waiting. It may still finish in your human's Studios My Media. Do not retry." },
   approval_pending_limit: { httpStatus: 429, message: "Earlier requests still wait for your human's approval. Do not send another one; wait until your human approves or declines them in the wallet panel (each one expires after 15 minutes)." },
   approval_declined: { httpStatus: 403, message: 'Your human declined this request. Nothing was called or paid. Do not send it again.' },
   approval_expired: { httpStatus: 409, message: 'Nobody approved this request within 15 minutes, so it expired. Nothing was called or paid.' },
-  approval_not_found: { httpStatus: 404, message: 'There is no such image request for this avatar.' },
+  approval_not_found: { httpStatus: 404, message: 'There is no such Studios request for this avatar.' },
   approval_not_awaiting: { httpStatus: 409, message: 'This request does not wait for approval any more: it was already approved, declined or finished.' },
   approval_terms_changed: { httpStatus: 409, message: 'The request or its price limit changed after the signature. Nothing was paid. Approve it again and sign the new message.' },
   approval_mode_changed: { httpStatus: 409, message: 'The Studios key was saved or removed after this request was made, so a different account would pay now. Nothing was paid. Decline it; your agent can send a new request.' },
 };
 
-function failure(code: StudiosImageFailure, ledgerId: string | null = null): StudiosImageRefusal {
-  return { ok: false, code, ...MESSAGES[code], ledgerId };
+const DAILY_LIMIT_MESSAGES: Record<Exclude<StudiosOperationId, 'image'>, string> = {
+  video: "Your human's daily limit for Studios videos is used up (or set to 0). Try again after 00:00 UTC, or ask your human to raise it in the wallet panel (Spending).",
+  character_shots: "Your human's daily limit for Studios character shots is used up (or set to 0). Try again after 00:00 UTC, or ask your human to raise it in the wallet panel (Spending).",
+  recast: "Your human's daily limit for Studios recasts is used up (or set to 0). Try again after 00:00 UTC, or ask your human to raise it in the wallet panel (Spending).",
+};
+
+function failure(code: StudiosImageFailure, ledgerId: string | null = null, operation: StudiosOperationId = 'image'): StudiosImageRefusal {
+  const base = MESSAGES[code];
+  const message = code === 'daily_limit' && operation !== 'image' ? DAILY_LIMIT_MESSAGES[operation] : base.message;
+  return { ok: false, code, httpStatus: base.httpStatus, message, ledgerId };
+}
+
+/** Our own refusal (code, message, status) for a stored failure code, or null for an unknown code. */
+export function studiosRefusalFor(code: string, operation: StudiosOperationId = 'image'): StudiosImageRefusal | null {
+  return Object.prototype.hasOwnProperty.call(MESSAGES, code) ? failure(code as StudiosImageFailure, null, operation) : null;
 }
 
 function awaiting(requestId: string, expiresAt: Date | string): StudiosImageAwaiting {
@@ -155,34 +247,37 @@ function awaiting(requestId: string, expiresAt: Date | string): StudiosImageAwai
   };
 }
 
+function running(requestId: string): StudiosRunning {
+  return {
+    ok: false,
+    code: 'running',
+    httpStatus: 202,
+    message: `Studios is making it now (a video or recast can take several minutes). Do not send it again; read GET /api/vendors/studios/requests/${requestId} at most once a minute for the result.`,
+    ledgerId: null,
+    requestId,
+  };
+}
+
 function storedModel(model: string | null): StudiosImageModel | undefined {
   return (STUDIOS_IMAGE_MODELS as readonly string[]).includes(model ?? '') ? (model as StudiosImageModel) : undefined;
 }
 
-const MAGIC: Array<{ mime: string; test: (b: Buffer) => boolean }> = [
-  { mime: 'image/png', test: (b) => b.length > 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
-  { mime: 'image/jpeg', test: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
-  { mime: 'image/webp', test: (b) => b.length > 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP' },
-];
-
-/** Image bytes and type from base64, or null when it is not a png, jpeg or webp. */
+/** Image bytes and type from base64, or null when it is not a png, jpeg or webp of at most 8 MB. */
 export function decodeImage(base64: string): { bytes: Buffer; mime: string } | null {
   const bytes = Buffer.from(base64, 'base64');
-  if (bytes.length === 0 || bytes.length > 8 * 1024 * 1024) return null;
-  const kind = MAGIC.find((m) => m.test(bytes));
+  const kind = sniffMedia(bytes, 'image');
   return kind ? { bytes, mime: kind.mime } : null;
 }
 
-async function storeMedia(input: {
+async function storeMediaBytes(input: {
   avatarId: string;
   mode: 'wallet' | 'account';
   actor: 'human' | 'agent';
   prompt: string;
   ledgerId: string | null;
-  imageBase64: string;
+  bytes: Buffer;
+  mime: string;
 }): Promise<string | null> {
-  const decoded = decodeImage(input.imageBase64);
-  if (!decoded) return null;
   const [row] = await db
     .insert(avatarMedia)
     .values({
@@ -190,8 +285,8 @@ async function storeMedia(input: {
       vendor: 'studios',
       mode: input.mode,
       actor: input.actor,
-      mimeType: decoded.mime,
-      bytes: decoded.bytes,
+      mimeType: input.mime,
+      bytes: input.bytes,
       prompt: input.prompt,
       ledgerId: input.ledgerId,
     })
@@ -210,22 +305,74 @@ async function storeMedia(input: {
   return row?.id ?? null;
 }
 
-async function callWithAccountKey(key: string, request: { url: string; body: Record<string, unknown> }): Promise<
-  { ok: true; json: unknown } | { ok: false; code: 'studios_key_invalid' | 'studios_account_refused' | 'vendor_refused' | 'vendor_unreachable' }
-> {
+const KIND_OF: Record<StudiosOperationId, MediaKind> = { image: 'image', video: 'video', character_shots: 'image', recast: 'video' };
+
+/**
+ * Check and store each slot of a reply (the first source of a slot that
+ * stores wins; recast lists the full clip, then the lighter copy). A URL is
+ * downloaded only from Studios' own host (`fetchStudiosArtifact`).
+ */
+async function storeSources(input: {
+  avatarId: string;
+  mode: 'wallet' | 'account';
+  actor: 'human' | 'agent';
+  prompt: string;
+  ledgerId: string | null;
+  operation: StudiosOperationId;
+  sources: MediaSource[];
+}): Promise<StudiosMediaItem[]> {
+  const kind = KIND_OF[input.operation];
+  const stored: StudiosMediaItem[] = [];
+  for (const source of input.sources) {
+    if (stored.some((item) => item.slot === source.slot)) continue;
+    let bytes: Buffer | null = null;
+    if ('base64' in source) {
+      bytes = Buffer.from(source.base64, 'base64');
+    } else {
+      const fetched = await fetchStudiosArtifact(source.url, maxBytesFor(kind));
+      if (fetched.ok) bytes = fetched.bytes;
+    }
+    const checked = bytes ? sniffMedia(bytes, kind) : null;
+    if (!bytes || !checked) continue;
+    const mediaId = await storeMediaBytes({ ...input, bytes, mime: checked.mime });
+    if (mediaId) stored.push({ slot: source.slot, mediaId, mediaPath: `/api/media/${mediaId}` });
+  }
+  return stored;
+}
+
+type AccountCall =
+  | { ok: true; json: unknown }
+  | { ok: false; code: 'studios_key_invalid' | 'studios_account_refused' | 'vendor_refused' | 'vendor_unreachable' | 'outcome_unknown' };
+
+/**
+ * One call with the human's own key. `unknownOnError`: a timeout or a broken
+ * connection after sending may have billed the key (a video render), so it is
+ * `outcome_unknown`, never retried; for an image it stays `vendor_unreachable`
+ * (phase 2b).
+ */
+async function callWithAccountKey(
+  key: string,
+  request: { method?: 'POST' | 'GET'; url: string; body?: Record<string, unknown>; headers?: Record<string, string> },
+  opts: { timeoutMs: number; replyMaxBytes?: number; unknownOnError?: boolean },
+): Promise<AccountCall> {
   let res: Response;
   try {
     res = await fetch(request.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(request.body),
-      signal: AbortSignal.timeout(ACCOUNT_CALL_TIMEOUT_MS),
+      method: request.method ?? 'POST',
+      headers: {
+        Accept: 'application/json',
+        ...(request.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(request.headers ?? {}),
+        Authorization: `Bearer ${key}`,
+      },
+      ...(request.body ? { body: JSON.stringify(request.body) } : {}),
+      signal: AbortSignal.timeout(opts.timeoutMs),
       redirect: 'error',
     });
   } catch {
-    return { ok: false, code: 'vendor_unreachable' };
+    return { ok: false, code: opts.unknownOnError ? 'outcome_unknown' : 'vendor_unreachable' };
   }
-  if (res.ok) return { ok: true, json: await readJsonCapped(res).catch(() => null) };
+  if (res.ok) return { ok: true, json: await readJsonCapped(res, opts.replyMaxBytes).catch(() => null) };
   await res.body?.cancel().catch(() => {});
   if (res.status === 401 || res.status === 403) return { ok: false, code: 'studios_key_invalid' };
   if (res.status === 402) return { ok: false, code: 'studios_account_refused' };
@@ -253,20 +400,30 @@ async function expireOverdue(executor: Executor, avatarId: string): Promise<void
 
 const DAY_START = sql`(date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`;
 
-const EXECUTED_STATUSES: VendorCallStatus[] = ['pending', 'done', 'failed'];
+const EXECUTED_STATUSES: VendorCallStatus[] = ['pending', 'running', 'done', 'failed', 'ambiguous'];
+const UNFINISHED_STATUSES: VendorCallStatus[] = ['awaiting_approval', 'pending', 'running'];
 
 /**
- * The avatar's own-key requests that count toward the human's per-day rule for
+ * The avatar's requests of one operation that count toward a per-day rule for
  * this UTC day. A request counts on the day it RAN: `decided_at` for an
- * approved request (approved at 00:01, it counts for the new day even when it
- * was made at 23:59), else `created_at`. `includeWaiting`: also every request
+ * approved request, else `created_at`. `includeWaiting`: also every request
  * that still waits, whatever day it was made (a reservation; it expires in 15
- * minutes). Declined and expired requests never reached Studios and never count.
+ * minutes). Declined and expired requests never reached Studios and never
+ * count. `mode` limits the count to one mode (images: the human's own key);
+ * `surface` to one surface (the hosted verb's own cap).
  */
-async function ownKeyRequestsToday(executor: Executor, avatarId: string, opts: { includeWaiting: boolean; exceptId?: string }): Promise<number> {
+async function requestsToday(executor: Executor, avatarId: string, opts: {
+  operation: StudiosOperationId;
+  mode?: StudiosMode;
+  surface?: 'api' | 'hosted';
+  includeWaiting: boolean;
+  exceptId?: string;
+}): Promise<number> {
   const [row] = await executor.select({ n: sql<number>`count(*)::int` }).from(vendorCallRequests).where(and(
     eq(vendorCallRequests.avatarId, avatarId),
-    eq(vendorCallRequests.mode, 'account'),
+    eq(vendorCallRequests.operation, opts.operation),
+    opts.mode ? eq(vendorCallRequests.mode, opts.mode) : sql`true`,
+    opts.surface ? eq(vendorCallRequests.surface, opts.surface) : sql`true`,
     opts.exceptId ? sql`${vendorCallRequests.id} <> ${opts.exceptId}` : sql`true`,
     or(
       and(
@@ -279,15 +436,65 @@ async function ownKeyRequestsToday(executor: Executor, avatarId: string, opts: {
   return row?.n ?? 0;
 }
 
+/**
+ * The per-day refusal for one more request of `op` (the human's class count,
+ * then the hosted verb's own cap), or null. `includeWaiting` counts waiting
+ * requests as reservations (a new request); at approve the request itself
+ * counts on today instead.
+ */
+async function dayLimitRefusal(executor: Executor, input: {
+  avatarId: string;
+  op: StudiosOperationDef;
+  mode: StudiosMode;
+  surface: 'api' | 'hosted';
+  policy: ReturnType<typeof toSpendPolicyView>;
+  includeWaiting: boolean;
+  exceptId?: string;
+}): Promise<'daily_limit' | 'hosted_daily_cap' | null> {
+  const { op } = input;
+  const perDay = perDayLimit(op, input.mode, input.policy);
+  if (perDay !== null) {
+    // Images count the human's own key only (phase 2b); the other classes count both modes.
+    const used = await requestsToday(executor, input.avatarId, {
+      operation: op.id,
+      mode: op.limit.modes.length === 1 ? op.limit.modes[0] : undefined,
+      includeWaiting: input.includeWaiting,
+      exceptId: input.exceptId,
+    });
+    if (used + 1 > perDay) return 'daily_limit';
+  }
+  if (input.surface === 'hosted' && op.hostedPerDay !== null) {
+    const used = await requestsToday(executor, input.avatarId, {
+      operation: op.id,
+      surface: 'hosted',
+      includeWaiting: input.includeWaiting,
+      exceptId: input.exceptId,
+    });
+    if (used + 1 > op.hostedPerDay) return 'hosted_daily_cap';
+  }
+  return null;
+}
+
+/**
+ * True when the stored media, plus the reserve of every unfinished request,
+ * plus this request's reserve, passes the avatar's quota.
+ */
+async function overMediaQuota(executor: Executor, avatarId: string, reserve: number, exceptId?: string): Promise<boolean> {
+  const stored = await storedMediaBytes(executor, avatarId);
+  const open = await executor.select({ id: vendorCallRequests.id, operation: vendorCallRequests.operation, params: vendorCallRequests.params })
+    .from(vendorCallRequests)
+    .where(and(eq(vendorCallRequests.avatarId, avatarId), inArray(vendorCallRequests.status, UNFINISHED_STATUSES)));
+  let reserved = 0;
+  for (const row of open) {
+    if (row.id === exceptId) continue;
+    const op = STUDIOS_OPERATIONS[row.operation as StudiosOperationId] ?? STUDIOS_OPERATIONS.image;
+    reserved += op.reserveBytes((row.params ?? {}) as StudiosParams);
+  }
+  return stored + reserved + reserve > MEDIA_QUOTA_BYTES_PER_AVATAR;
+}
+
 async function readPolicyRow(executor: Executor, avatarId: string) {
-  const [row] = await executor.select({
-    dailyCapUsdCents: userSpendPolicies.dailyCapUsdCents,
-    perCallCapUsdCents: userSpendPolicies.perCallCapUsdCents,
-    allowedVendors: userSpendPolicies.allowedVendors,
-    studiosKeyImagesPerDay: userSpendPolicies.studiosKeyImagesPerDay,
-    requireApproval: userSpendPolicies.requireApproval,
-    updatedAt: userSpendPolicies.updatedAt,
-  }).from(userSpendPolicies).where(eq(userSpendPolicies.avatarId, avatarId)).limit(1);
+  const [row] = await executor.select(policyColumns).from(userSpendPolicies).where(eq(userSpendPolicies.avatarId, avatarId)).limit(1);
   return toSpendPolicyView(row);
 }
 
@@ -311,34 +518,79 @@ async function walletPrecheck(executor: Executor, avatarId: string, policy: Retu
   return null;
 }
 
+type RequestRow = typeof vendorCallRequests.$inferSelect;
+
+/** The finished result of a 'done' row, our own fields only. */
+async function successFromRow(executor: Executor, row: RequestRow): Promise<StudiosOperationResult> {
+  const [ledger] = row.ledgerId
+    ? await executor.select({ usdCents: vendorSpendLedger.usdCents, txSignature: vendorSpendLedger.txSignature })
+      .from(vendorSpendLedger).where(eq(vendorSpendLedger.id, row.ledgerId)).limit(1)
+    : [];
+  const mode = row.mode === 'account' ? 'account' : 'wallet';
+  if (row.operation === 'image') {
+    if (!row.mediaId) return failure('duplicate_request', row.ledgerId);
+    return {
+      ok: true,
+      mode,
+      mediaId: row.mediaId,
+      mediaPath: `/api/media/${row.mediaId}`,
+      ledgerId: row.ledgerId,
+      paidUsdCents: ledger?.usdCents ?? null,
+      txSignature: ledger?.txSignature ?? null,
+    };
+  }
+  const media = mediaItemsOf(row.result);
+  return {
+    ok: true,
+    operation: row.operation as Exclude<StudiosOperationId, 'image'>,
+    requestId: row.id,
+    mode,
+    mediaId: media[0]?.mediaId ?? null,
+    mediaPath: media[0]?.mediaPath ?? null,
+    media,
+    vendorMediaId: row.vendorMediaId,
+    note: media.length === 0 ? 'media_not_copied' : null,
+    ledgerId: row.ledgerId,
+    paidUsdCents: ledger?.usdCents ?? null,
+    txSignature: ledger?.txSignature ?? null,
+  };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function mediaItemsOf(result: unknown): StudiosMediaItem[] {
+  const media = (result as { media?: unknown } | null)?.media;
+  if (!Array.isArray(media)) return [];
+  return media.flatMap((m) => {
+    const item = m as { slot?: unknown; mediaId?: unknown };
+    return typeof item?.slot === 'string' && typeof item.mediaId === 'string' && UUID_RE.test(item.mediaId)
+      ? [{ slot: item.slot, mediaId: item.mediaId, mediaPath: `/api/media/${item.mediaId}` }]
+      : [];
+  });
+}
+
 type Reservation =
   | { kind: 'new'; requestId: string }
-  | { kind: 'done'; result: StudiosImageResult };
+  | { kind: 'done'; result: StudiosOperationResult };
 
 /** Reserve the request, or find the earlier one, under the avatar's lock. */
 async function reserveRequest(input: {
   avatarId: string;
   actor: 'human' | 'agent';
   surface: 'api' | 'hosted';
-  mode: 'wallet' | 'account';
+  mode: StudiosMode;
+  op: StudiosOperationDef;
+  params: StudiosParams;
   idempotencyKey: string;
-  prompt: string;
-  model: StudiosImageModel | undefined;
-  /** Account mode: SHA-256 of the saved key, so a key replaced before approve is seen. */
+  /** Account mode: SHA-256 of the saved key, bound to the request (never the key). */
   credentialSha256: string | null;
 }): Promise<Reservation> {
+  const { op } = input;
   return db.transaction(async (tx) => {
     await lockAvatarRequests(tx, input.avatarId);
     await expireOverdue(tx, input.avatarId);
     const [prior] = await tx
-      .select({
-        id: vendorCallRequests.id,
-        status: vendorCallRequests.status,
-        mode: vendorCallRequests.mode,
-        mediaId: vendorCallRequests.mediaId,
-        ledgerId: vendorCallRequests.ledgerId,
-        expiresAt: vendorCallRequests.expiresAt,
-      })
+      .select()
       .from(vendorCallRequests)
       .where(and(
         eq(vendorCallRequests.avatarId, input.avatarId),
@@ -347,37 +599,40 @@ async function reserveRequest(input: {
       ))
       .limit(1);
     if (prior) {
-      if (prior.status === 'done' && prior.mediaId) {
-        const [ledger] = prior.ledgerId
-          ? await tx.select({ usdCents: vendorSpendLedger.usdCents, txSignature: vendorSpendLedger.txSignature })
-            .from(vendorSpendLedger).where(eq(vendorSpendLedger.id, prior.ledgerId)).limit(1)
-          : [];
-        return {
-          kind: 'done',
-          result: {
-            ok: true,
-            mode: prior.mode === 'account' ? 'account' : 'wallet',
-            mediaId: prior.mediaId,
-            mediaPath: `/api/media/${prior.mediaId}`,
-            ledgerId: prior.ledgerId,
-            paidUsdCents: ledger?.usdCents ?? null,
-            txSignature: ledger?.txSignature ?? null,
-          },
-        };
-      }
-      // The same key again returns the same waiting request, never a new row.
+      // One key, one request: a key reused for another operation never runs.
+      if (prior.operation !== op.id) return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
+      if (prior.status === 'done') return { kind: 'done', result: await successFromRow(tx, prior) };
+      // The same key again returns the same waiting or running request, never a new row.
       if (prior.status === 'awaiting_approval' && prior.expiresAt) return { kind: 'done', result: awaiting(prior.id, prior.expiresAt) };
+      if (prior.status === 'running') return { kind: 'done', result: running(prior.id) };
       if (prior.status === 'declined') return { kind: 'done', result: failure('approval_declined') };
       if (prior.status === 'expired') return { kind: 'done', result: failure('approval_expired') };
+      if (prior.status === 'ambiguous') return { kind: 'done', result: failure('payment_ambiguous', prior.ledgerId) };
       return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
     }
+    if (!op.modes.includes(input.mode)) return { kind: 'done', result: failure('operation_needs_studios_key') };
     const policy = await readPolicyRow(tx, input.avatarId);
-    if (input.mode === 'account') {
-      const perDay = policy.studiosKeyImagesPerDay ?? STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT;
-      if (await ownKeyRequestsToday(tx, input.avatarId, { includeWaiting: true }) >= perDay) {
-        return { kind: 'done', result: failure('daily_limit') };
-      }
+    const limited = await dayLimitRefusal(tx, {
+      avatarId: input.avatarId, op, mode: input.mode, surface: input.surface, policy, includeWaiting: true,
+    });
+    if (limited) return { kind: 'done', result: failure(limited, null, op.id) };
+    if (await overMediaQuota(tx, input.avatarId, op.reserveBytes(input.params))) {
+      return { kind: 'done', result: failure('media_quota_full') };
     }
+    const base = {
+      avatarId: input.avatarId,
+      vendor: 'studios',
+      actor: input.actor,
+      surface: input.surface,
+      mode: input.mode,
+      idempotencyKey: input.idempotencyKey,
+      operation: op.id,
+      prompt: op.promptOf(input.params),
+      model: op.modelOf(input.params),
+      // Image keeps its phase 2b columns (prompt + model); the others keep their settings.
+      params: op.id === 'image' ? null : input.params,
+      credentialSha256: input.credentialSha256,
+    };
     // "Ask me before each payment": EVERY request waits, the human's own web
     // form too (lead decision 2026-11-06, Codex review): a magic link passes
     // through the agent, so a cookie cannot prove the human pressed the
@@ -394,106 +649,202 @@ async function reserveRequest(input: {
       const maxAwaiting = input.surface === 'hosted' ? HOSTED_MAX_AWAITING : SPEND_APPROVAL_MAX_AWAITING;
       if ((waiting?.n ?? 0) >= maxAwaiting) return { kind: 'done', result: failure('approval_pending_limit') };
       const expiresAt = new Date(Date.now() + SPEND_APPROVAL_TTL_MS);
-      const [created] = await tx.insert(vendorCallRequests).values({
-        avatarId: input.avatarId,
-        vendor: 'studios',
-        actor: input.actor,
-        surface: input.surface,
-        mode: input.mode,
-        status: 'awaiting_approval',
-        idempotencyKey: input.idempotencyKey,
-        prompt: input.prompt,
-        model: input.model ?? null,
-        credentialSha256: input.credentialSha256,
-        expiresAt,
-      }).returning({ id: vendorCallRequests.id });
+      const [created] = await tx.insert(vendorCallRequests).values({ ...base, status: 'awaiting_approval', expiresAt })
+        .returning({ id: vendorCallRequests.id });
       if (!created) throw new Error('vendor_call_requests insert returned no row');
       return { kind: 'done', result: awaiting(created.id, expiresAt) };
     }
     const [created] = await tx.insert(vendorCallRequests).values({
-      avatarId: input.avatarId,
-      vendor: 'studios',
-      actor: input.actor,
-      surface: input.surface,
-      mode: input.mode,
-      idempotencyKey: input.idempotencyKey,
-      prompt: input.prompt,
-      model: input.model ?? null,
+      ...base,
+      // A long job is 'running' from the start, with a lease its runner renews.
+      ...(op.long ? { status: 'running', leaseUntil: new Date(Date.now() + JOB_LEASE_MS) } : {}),
     }).returning({ id: vendorCallRequests.id });
     if (!created) throw new Error('vendor_call_requests insert returned no row');
     return { kind: 'new', requestId: created.id };
   });
 }
 
-/** Record the outcome on the request row, then return it unchanged. */
-async function finishRequest(requestId: string, result: StudiosImageResult): Promise<StudiosImageResult> {
+/**
+ * Record the outcome on the request row, then return it unchanged. Only a row
+ * that still runs is written, so a row a recovery pass already settled stays.
+ */
+async function finishRequest<T extends StudiosOperationResult>(
+  requestId: string,
+  result: T,
+  extra: { result?: unknown; vendorMediaId?: string | null; status?: 'done' | 'failed' | 'ambiguous' } = {},
+): Promise<T> {
   await db.update(vendorCallRequests).set({
-    status: result.ok ? 'done' : 'failed',
+    status: extra.status ?? (result.ok ? 'done' : 'failed'),
     mediaId: result.ok ? result.mediaId : null,
     ledgerId: result.ledgerId,
     failureCode: result.ok ? null : result.code,
+    ...(extra.result !== undefined ? { result: extra.result } : {}),
+    ...(extra.vendorMediaId !== undefined ? { vendorMediaId: extra.vendorMediaId } : {}),
+    leaseUntil: null,
     updatedAt: new Date(),
-  }).where(eq(vendorCallRequests.id, requestId));
+  }).where(and(eq(vendorCallRequests.id, requestId), inArray(vendorCallRequests.status, ['pending', 'running'])));
   return result;
 }
 
-/**
- * Run one reserved ('pending') request: the human's own key when `key` is
- * set, else the avatar wallet inside the spend rules. The row's idempotency
- * key is also the spend-ledger key, so a payment is never made twice.
- */
-async function runReservedRequest(input: {
+/** The finished result of a non-image operation, written to the row. */
+async function finishOperation(input: {
+  requestId: string;
+  op: StudiosOperationDef;
+  mode: StudiosMode;
+  media: StudiosMediaItem[];
+  vendorMediaId: string | null;
+  ledgerId: string | null;
+  paidUsdCents: number | null;
+  txSignature: string | null;
+}): Promise<StudiosOperationResult> {
+  // Wallet mode: nothing stored means the paid result is lost (Studios keeps
+  // no copy of an x402 call). Key mode: Studios keeps it in My Media.
+  if (input.media.length === 0 && input.mode === 'wallet') {
+    return finishRequest(input.requestId, failure('media_missing', input.ledgerId));
+  }
+  const success: StudiosOperationSuccess = {
+    ok: true,
+    operation: input.op.id as Exclude<StudiosOperationId, 'image'>,
+    requestId: input.requestId,
+    mode: input.mode,
+    mediaId: input.media[0]?.mediaId ?? null,
+    mediaPath: input.media[0]?.mediaPath ?? null,
+    media: input.media,
+    vendorMediaId: input.vendorMediaId,
+    note: input.media.length === 0 ? 'media_not_copied' : null,
+    ledgerId: input.ledgerId,
+    paidUsdCents: input.paidUsdCents,
+    txSignature: input.txSignature,
+  };
+  return finishRequest(input.requestId, success, {
+    result: { media: input.media.map(({ slot, mediaId }) => ({ slot, mediaId })) },
+    vendorMediaId: input.vendorMediaId,
+  });
+}
+
+interface RunInput {
   requestId: string;
   avatarId: string;
   actor: 'human' | 'agent';
-  prompt: string;
-  model: StudiosImageModel | undefined;
+  op: StudiosOperationDef;
+  params: StudiosParams;
   idempotencyKey: string;
   key: string | null;
   /** Approve only: the most the human signed for (wallet mode); a higher quote pays nothing. */
   maxCallAtomic?: bigint;
-}): Promise<StudiosImageResult> {
-  const request = buildStudiosImageRequest({ prompt: input.prompt, model: input.model });
-  const maxCallAtomic = input.maxCallAtomic !== undefined && input.maxCallAtomic < STUDIOS_MAX_CALL_ATOMIC
-    ? input.maxCallAtomic
-    : STUDIOS_MAX_CALL_ATOMIC;
-  const { requestId } = input;
+}
+
+function walletPin(op: StudiosOperationDef, signedMax: bigint | undefined): bigint {
+  const ceiling = op.maxCallAtomic ?? 0n;
+  return signedMax !== undefined && signedMax < ceiling ? signedMax : ceiling;
+}
+
+/**
+ * Run one reserved request that makes its media in one call (image,
+ * character shots, video): the human's own key when `key` is set, else the
+ * avatar wallet inside the spend rules. The row's idempotency key is also the
+ * spend-ledger key, so a payment is never made twice.
+ */
+async function runOneCall(input: RunInput): Promise<StudiosOperationResult> {
+  const { op, requestId } = input;
+  const request = op.build(input.params, { requestId });
+  const prompt = op.promptOf(input.params);
+  const isImage = op.id === 'image';
 
   if (input.key) {
-    const result = await callWithAccountKey(input.key, request);
+    const result = await callWithAccountKey(input.key, request, {
+      timeoutMs: op.callTimeoutMs,
+      replyMaxBytes: op.replyMaxBytes,
+      unknownOnError: !isImage,
+    });
     if (!result.ok) return finishRequest(requestId, failure(result.code));
-    const image = parseStudiosImage(result.json);
-    const mediaId = image
-      ? await storeMedia({ avatarId: input.avatarId, mode: 'account', actor: input.actor, prompt: input.prompt, ledgerId: null, imageBase64: image.imageBase64 })
-      : null;
-    if (!mediaId) return finishRequest(requestId, failure('image_missing'));
-    return finishRequest(requestId, { ok: true, mode: 'account', mediaId, mediaPath: `/api/media/${mediaId}`, ledgerId: null, paidUsdCents: null, txSignature: null });
+    const media = await storeSources({ avatarId: input.avatarId, mode: 'account', actor: input.actor, prompt, ledgerId: null, operation: op.id, sources: op.readMedia(result.json) });
+    if (isImage) {
+      if (!media[0]) return finishRequest(requestId, failure('image_missing'));
+      return finishRequest(requestId, { ok: true, mode: 'account', mediaId: media[0].mediaId, mediaPath: media[0].mediaPath, ledgerId: null, paidUsdCents: null, txSignature: null });
+    }
+    return finishOperation({ requestId, op, mode: 'account', media, vendorMediaId: null, ledgerId: null, paidUsdCents: null, txSignature: null });
   }
 
+  if (!op.modes.includes('wallet') || op.maxCallAtomic === null) return finishRequest(requestId, failure('operation_needs_studios_key'));
   const paid = await callVendorWithAvatarWallet({
     avatarId: input.avatarId,
     actor: input.actor,
-    pin: { vendor: 'studios', payTo: STUDIOS_PAY_TO, maxCallAtomic },
-    tool: 'images.generations',
+    pin: { vendor: 'studios', payTo: STUDIOS_PAY_TO, maxCallAtomic: walletPin(op, input.maxCallAtomic) },
+    tool: isImage ? 'images.generations' : 'videos.generations',
     idempotencyKey: input.idempotencyKey,
     url: request.url,
     body: request.body,
+    ...(isImage ? {} : { paidTimeoutMs: op.callTimeoutMs, replyMaxBytes: op.replyMaxBytes }),
   });
-  if (!paid.ok) return finishRequest(requestId, failure(paid.code, paid.ledgerId ?? null));
-  const image = parseStudiosImage(paid.responseJson);
-  const mediaId = image
-    ? await storeMedia({ avatarId: input.avatarId, mode: 'wallet', actor: input.actor, prompt: input.prompt, ledgerId: paid.ledgerId, imageBase64: image.imageBase64 })
-    : null;
-  if (!mediaId) return finishRequest(requestId, failure('image_missing', paid.ledgerId));
-  return finishRequest(requestId, {
-    ok: true,
-    mode: 'wallet',
-    mediaId,
-    mediaPath: `/api/media/${mediaId}`,
-    ledgerId: paid.ledgerId,
-    paidUsdCents: paid.usdCents,
-    txSignature: paid.txSignature,
-  });
+  if (!paid.ok) {
+    return finishRequest(requestId, failure(paid.code, paid.ledgerId ?? null), paid.code === 'payment_ambiguous' && !isImage ? { status: 'ambiguous' } : {});
+  }
+  const media = await storeSources({ avatarId: input.avatarId, mode: 'wallet', actor: input.actor, prompt, ledgerId: paid.ledgerId, operation: op.id, sources: op.readMedia(paid.responseJson) });
+  if (isImage) {
+    if (!media[0]) return finishRequest(requestId, failure('image_missing', paid.ledgerId));
+    return finishRequest(requestId, {
+      ok: true,
+      mode: 'wallet',
+      mediaId: media[0].mediaId,
+      mediaPath: media[0].mediaPath,
+      ledgerId: paid.ledgerId,
+      paidUsdCents: paid.usdCents,
+      txSignature: paid.txSignature,
+    });
+  }
+  return finishOperation({ requestId, op, mode: 'wallet', media, vendorMediaId: null, ledgerId: paid.ledgerId, paidUsdCents: paid.usdCents, txSignature: paid.txSignature });
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Test seam for the recast poll interval. */
+export const recastTiming = { pollMs: RECAST_POLL_MS, deadlineMs: RECAST_DEADLINE_MS };
+
+/**
+ * A key-mode recast: start the job once (its id is stored at once), then
+ * poll every 15 s until it finishes or the hard deadline passes. A start
+ * that cannot be read is `outcome_unknown` and never sent again.
+ */
+async function runRecast(input: RunInput & { vendorJobId: string | null; deadlineAt: Date | null }): Promise<StudiosOperationResult> {
+  const { op, requestId, key } = input;
+  if (!key) return finishRequest(requestId, failure('operation_needs_studios_key'));
+  let jobId = input.vendorJobId;
+  let deadline = input.deadlineAt?.getTime() ?? null;
+  if (!jobId) {
+    const start = await callWithAccountKey(key, op.build(input.params, { requestId }), {
+      timeoutMs: op.callTimeoutMs,
+      replyMaxBytes: op.replyMaxBytes,
+      unknownOnError: true,
+    });
+    if (!start.ok) return finishRequest(requestId, failure(start.code));
+    jobId = readRecastStart(start.json);
+    if (!jobId) return finishRequest(requestId, failure('outcome_unknown'));
+    deadline = Date.now() + recastTiming.deadlineMs;
+    await db.update(vendorCallRequests)
+      .set({ vendorJobId: jobId, jobDeadlineAt: new Date(deadline), updatedAt: new Date() })
+      .where(and(eq(vendorCallRequests.id, requestId), eq(vendorCallRequests.status, 'running')));
+  }
+  const pollUrl = recastPollUrl(jobId);
+  if (!pollUrl) return finishRequest(requestId, failure('outcome_unknown'));
+  const end = deadline ?? Date.now() + recastTiming.deadlineMs;
+  for (;;) {
+    if (Date.now() >= end) return finishRequest(requestId, failure('job_timeout'));
+    await sleep(Math.min(recastTiming.pollMs, Math.max(0, end - Date.now())));
+    if (Date.now() >= end) return finishRequest(requestId, failure('job_timeout'));
+    const reply = await callWithAccountKey(key, { method: 'GET', url: pollUrl }, { timeoutMs: 30_000, replyMaxBytes: op.replyMaxBytes });
+    if (!reply.ok) {
+      if (reply.code === 'studios_key_invalid') return finishRequest(requestId, failure('studios_key_invalid'));
+      continue; // A poll that fails changes nothing; try again until the deadline.
+    }
+    const poll = readRecastPoll(reply.json);
+    if (!poll || poll.state === 'running') continue;
+    if (poll.state === 'failed') return finishRequest(requestId, failure('job_failed'));
+    const media = await storeSources({
+      avatarId: input.avatarId, mode: 'account', actor: input.actor, prompt: op.promptOf(input.params), ledgerId: null, operation: op.id, sources: poll.sources,
+    });
+    return finishOperation({ requestId, op, mode: 'account', media, vendorMediaId: poll.vendorMediaId, ledgerId: null, paidUsdCents: null, txSignature: null });
+  }
 }
 
 /** The saved key, `undefined` when it cannot be read (never a silent switch to the wallet). */
@@ -505,22 +856,68 @@ async function loadKeyOrInvalid(avatarId: string): Promise<string | null | undef
   }
 }
 
+function keySha(key: string | null): string | null {
+  return key ? vendorKeyRef(key).sha256 : null;
+}
+
 /**
- * Make one Studios image for `avatarId`. The caller has already proved the
- * caller acts for this avatar (human session, ledger-capable agent session,
- * or the hosted runtime of this avatar). `actor` decides whether the request
- * waits for the human when "ask me before each payment" is on: pass 'agent'
- * for every request that the human did not make themselves.
+ * Run one 'running' row to its end (video or recast). Called by the runner
+ * right after the reservation or the approve, and by its recovery pass for a
+ * recast that already has a job id. `key` is the key the request was made or
+ * approved with; when absent it is loaded again and must still be the key the
+ * row was made with (the credential digest is bound to the request).
  */
-export async function generateStudiosImage(input: {
+export async function executeLongJob(requestId: string, key?: string | null): Promise<StudiosOperationResult | null> {
+  const [row] = await db.select().from(vendorCallRequests).where(eq(vendorCallRequests.id, requestId)).limit(1);
+  if (!row || row.status !== 'running') return null;
+  const op = STUDIOS_OPERATIONS[row.operation as StudiosOperationId];
+  if (!op?.long) return finishRequest(requestId, failure('outcome_unknown'));
+  const params = (row.params ?? {}) as StudiosParams;
+  const actor = row.actor === 'human' ? 'human' : 'agent';
+  let useKey: string | null = null;
+  if (row.mode === 'account') {
+    const current = key === undefined ? await loadKeyOrInvalid(row.avatarId) : key;
+    if (current === undefined) return finishRequest(requestId, failure('studios_key_invalid'));
+    if (!current || keySha(current) !== row.credentialSha256) return finishRequest(requestId, failure('studios_key_changed'));
+    useKey = current;
+  }
+  const maxCallAtomic = (row.result as { signedMaxAtomic?: unknown } | null)?.signedMaxAtomic;
+  const base: RunInput = {
+    requestId,
+    avatarId: row.avatarId,
+    actor,
+    op,
+    params,
+    idempotencyKey: row.idempotencyKey,
+    key: useKey,
+    maxCallAtomic: typeof maxCallAtomic === 'string' && /^\d{1,18}$/.test(maxCallAtomic) ? BigInt(maxCallAtomic) : undefined,
+  };
+  if (op.id === 'recast') return runRecast({ ...base, vendorJobId: row.vendorJobId, deadlineAt: row.jobDeadlineAt });
+  return runOneCall(base);
+}
+
+async function startLongJob(requestId: string, key: string | null): Promise<void> {
+  const { startStudiosJob } = await import('./studios-job-runner');
+  startStudiosJob(requestId, key);
+}
+
+/**
+ * Run one Studios operation for `avatarId`. The caller has already proved the
+ * caller acts for this avatar (human session, ledger-capable agent session, or
+ * the hosted runtime of this avatar) and validated `params` with the
+ * operation's schema. `actor` is recorded: pass 'agent' for every request that
+ * the human did not make themselves.
+ */
+export async function requestStudiosOperation(input: {
   avatarId: string;
   actor: 'human' | 'agent';
-  prompt: string;
+  operation: StudiosOperationId;
+  params: StudiosParams;
   idempotencyKey: string;
-  model?: StudiosImageModel;
-  /** 'hosted' = the [ACTION:] verb (recorded on the request row). Default 'api'. */
+  /** 'hosted' = an [ACTION:] verb (recorded on the request row). Default 'api'. */
   surface?: 'api' | 'hosted';
-}): Promise<StudiosImageResult> {
+}): Promise<StudiosOperationResult> {
+  const op = STUDIOS_OPERATIONS[input.operation];
   // A saved key that cannot be read is an error, never a silent switch to the
   // wallet: the human chose their own account.
   const key = await loadKeyOrInvalid(input.avatarId);
@@ -531,80 +928,102 @@ export async function generateStudiosImage(input: {
     actor: input.actor,
     surface: input.surface ?? 'api',
     mode: key ? 'account' : 'wallet',
+    op,
+    params: input.params,
     idempotencyKey: input.idempotencyKey,
-    prompt: input.prompt,
-    model: input.model,
-    credentialSha256: key ? vendorKeyRef(key).sha256 : null,
+    credentialSha256: keySha(key),
   });
   if (reservation.kind === 'done') return reservation.result;
-  return runReservedRequest({
+  if (op.long) {
+    await startLongJob(reservation.requestId, key);
+    return running(reservation.requestId);
+  }
+  return runOneCall({
     requestId: reservation.requestId,
     avatarId: input.avatarId,
     actor: input.actor,
-    prompt: input.prompt,
-    model: input.model,
+    op,
+    params: input.params,
     idempotencyKey: input.idempotencyKey,
     key,
   });
 }
 
-type DecisionRow = {
-  id: string;
-  status: string;
-  mode: string;
-  actor: string;
-  surface: string;
-  prompt: string | null;
-  model: string | null;
+/**
+ * Make one Studios image for `avatarId` (phase 2b entry point, unchanged
+ * behaviour). `actor` decides nothing about the wait: with "ask me before each
+ * payment" on, every request waits for the human.
+ */
+export async function generateStudiosImage(input: {
+  avatarId: string;
+  actor: 'human' | 'agent';
+  prompt: string;
   idempotencyKey: string;
-  credentialSha256: string | null;
-};
+  model?: StudiosImageModel;
+  /** 'hosted' = the [ACTION:] verb (recorded on the request row). Default 'api'. */
+  surface?: 'api' | 'hosted';
+}): Promise<StudiosImageResult> {
+  const result = await requestStudiosOperation({
+    avatarId: input.avatarId,
+    actor: input.actor,
+    operation: 'image',
+    params: { prompt: input.prompt, ...(input.model ? { model: input.model } : {}) },
+    idempotencyKey: input.idempotencyKey,
+    surface: input.surface,
+  });
+  // The image operation never answers 'running' or a non-image success.
+  return result as StudiosImageResult;
+}
 
 /**
  * Lock this avatar's requests, expire overdue ones, and return the request row
  * when it still waits, or the refusal. Runs inside the caller's transaction.
  */
-async function lockAwaitingRow(tx: Executor, avatarId: string, requestId: string): Promise<{ ok: true; row: DecisionRow } | { ok: false; result: StudiosImageRefusal }> {
+async function lockAwaitingRow(tx: Executor, avatarId: string, requestId: string): Promise<{ ok: true; row: RequestRow } | { ok: false; result: StudiosImageRefusal }> {
   await lockAvatarRequests(tx, avatarId);
   await expireOverdue(tx, avatarId);
-  const [row] = await tx.select({
-    id: vendorCallRequests.id,
-    status: vendorCallRequests.status,
-    mode: vendorCallRequests.mode,
-    actor: vendorCallRequests.actor,
-    surface: vendorCallRequests.surface,
-    prompt: vendorCallRequests.prompt,
-    model: vendorCallRequests.model,
-    idempotencyKey: vendorCallRequests.idempotencyKey,
-    credentialSha256: vendorCallRequests.credentialSha256,
-  }).from(vendorCallRequests).where(and(
+  const [row] = await tx.select().from(vendorCallRequests).where(and(
     eq(vendorCallRequests.id, requestId),
     eq(vendorCallRequests.avatarId, avatarId),
     eq(vendorCallRequests.vendor, 'studios'),
   )).limit(1);
   if (!row) return { ok: false, result: failure('approval_not_found') };
   if (row.status === 'expired') return { ok: false, result: failure('approval_expired') };
-  if (row.status !== 'awaiting_approval' || !row.prompt) return { ok: false, result: failure('approval_not_awaiting') };
+  if (row.status !== 'awaiting_approval' || row.prompt === null) return { ok: false, result: failure('approval_not_awaiting') };
   return { ok: true, row };
 }
 
-export type StudiosDecision = { result: StudiosImageResult; surface: 'api' | 'hosted' | null };
+export type StudiosDecision = { result: StudiosOperationResult; surface: 'api' | 'hosted' | null; operation: StudiosOperationId | null };
 
-/** The most a wallet-mode request may cost, from the current spend rules. */
-function walletMaxCents(policy: ReturnType<typeof toSpendPolicyView>): number {
-  return Math.min(policy.perCallCapUsdCents ?? 0, STUDIOS_MAX_CALL_CENTS);
+/** The most a wallet-mode request may cost, from the current spend rules and the operation's ceiling. */
+function walletMaxCents(policy: ReturnType<typeof toSpendPolicyView>, op: StudiosOperationDef): number {
+  const ceilingCents = Number((op.maxCallAtomic ?? 0n) / ATOMIC_PER_CENT);
+  return Math.min(policy.perCallCapUsdCents ?? 0, ceilingCents);
+}
+
+/** SHA-256 of the canonical settings; null for image (its prompt hash covers it). */
+function paramsSha256(row: { operation: string; params: unknown }): string | null {
+  if (row.operation === 'image') return null;
+  return createHash('sha256').update(canonicalJson(row.params ?? null), 'utf8').digest('hex');
+}
+
+function operationOf(row: { operation: string }): StudiosOperationDef {
+  return STUDIOS_OPERATIONS[row.operation as StudiosOperationId] ?? STUDIOS_OPERATIONS.image;
 }
 
 /**
  * The terms the human's linked wallet signs to approve one waiting request:
- * the avatar, the request, who pays, the most it can cost now, and the SHA-256
- * of the prompt. Refuses a request that does not wait any more.
+ * the avatar, the request, the operation, who pays, the most it can cost now,
+ * the SHA-256 of the prompt and of the settings. Refuses a request that does
+ * not wait any more.
  */
 export async function readApprovalTerms(avatarId: string, requestId: string): Promise<{ ok: true; terms: ApprovalTerms } | { ok: false; result: StudiosImageRefusal }> {
   await expireOverdue(db, avatarId);
   const [row] = await db.select({
     status: vendorCallRequests.status,
     mode: vendorCallRequests.mode,
+    operation: vendorCallRequests.operation,
+    params: vendorCallRequests.params,
     prompt: vendorCallRequests.prompt,
     credentialSha256: vendorCallRequests.credentialSha256,
   }).from(vendorCallRequests).where(and(
@@ -616,14 +1035,17 @@ export async function readApprovalTerms(avatarId: string, requestId: string): Pr
   if (row.status === 'expired') return { ok: false, result: failure('approval_expired') };
   if (row.status !== 'awaiting_approval' || row.prompt === null) return { ok: false, result: failure('approval_not_awaiting') };
   const mode = row.mode === 'account' ? 'account' : 'wallet';
+  const op = operationOf(row);
   return {
     ok: true,
     terms: {
       avatarId,
       requestId,
+      operation: op.id,
       mode,
-      maxUsdCents: mode === 'account' ? null : walletMaxCents(await readPolicyRow(db, avatarId)),
+      maxUsdCents: mode === 'account' ? null : walletMaxCents(await readPolicyRow(db, avatarId), op),
       promptSha256: promptSha256(row.prompt),
+      paramsSha256: paramsSha256(row),
       credentialSha256: mode === 'account' ? row.credentialSha256 : null,
     },
   };
@@ -633,33 +1055,37 @@ export async function readApprovalTerms(avatarId: string, requestId: string): Pr
  * The human approves one waiting request. The route has verified the linked
  * wallet's signature over `terms` (`readApprovalTerms`, `verifyApprovalProof`);
  * a session alone never gets here. Under the avatar's lock: the row must still
- * wait and not be expired, its mode and prompt must equal the signed terms,
- * the payer must be the same as when it was made (a key saved or removed since
- * then refuses), and the own-key day limit is checked again, counting this
- * request on today (the day it runs). In wallet mode the call may cost at most
- * the signed amount. The
- * row then becomes 'pending' in the same transaction, so a second approve
- * click finds it not waiting and pays nothing. The SAME pipeline as a direct
- * request runs next; the wallet mode checks every cap again with the real
- * price (`admit`), writes the ledger row before signing, and never retries an
- * ambiguous payment.
+ * wait and not be expired; its operation, mode, prompt and settings must equal
+ * the signed terms; the payer must be the same as when it was made (a key
+ * saved, removed or replaced since then refuses); the per-day counts and the
+ * media quota are checked again, counting this request on today (the day it
+ * runs). In wallet mode the call may cost at most the signed amount. The row
+ * then becomes 'pending' (or 'running' for a long job) in the same
+ * transaction, so a second approve click finds it not waiting and pays
+ * nothing. The SAME pipeline as a direct request runs next; the wallet mode
+ * checks every cap again with the real price (`admit`), writes the ledger row
+ * before signing, and never retries an ambiguous payment.
  */
 export async function approveStudiosRequest(input: { avatarId: string; userId: string; requestId: string; terms: ApprovalTerms }): Promise<StudiosDecision> {
   if (input.terms.requestId !== input.requestId || input.terms.avatarId !== input.avatarId) {
-    return { result: failure('approval_terms_changed'), surface: null };
+    return { result: failure('approval_terms_changed'), surface: null, operation: null };
   }
   const key = await loadKeyOrInvalid(input.avatarId);
-  if (key === undefined) return { result: failure('studios_key_invalid'), surface: null };
+  if (key === undefined) return { result: failure('studios_key_invalid'), surface: null, operation: null };
   const currentMode = key ? 'account' : 'wallet';
-  const currentCredential = key ? vendorKeyRef(key).sha256 : null;
+  const currentCredential = keySha(key);
+  const signedMaxAtomic = input.terms.mode === 'wallet' ? BigInt(input.terms.maxUsdCents ?? 0) * ATOMIC_PER_CENT : undefined;
 
   const claim = await db.transaction(async (tx) => {
     const found = await lockAwaitingRow(tx, input.avatarId, input.requestId);
     if (!found.ok) return found;
     const { row } = found;
+    const op = operationOf(row);
     if (
-      row.mode !== input.terms.mode
+      row.operation !== input.terms.operation
+      || row.mode !== input.terms.mode
       || promptSha256(row.prompt!) !== input.terms.promptSha256
+      || paramsSha256(row) !== input.terms.paramsSha256
       || (row.mode === 'account' ? row.credentialSha256 : null) !== input.terms.credentialSha256
     ) {
       return { ok: false as const, result: failure('approval_terms_changed') };
@@ -669,19 +1095,31 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
     if (row.mode === 'account' && row.credentialSha256 !== currentCredential) {
       return { ok: false as const, result: failure('approval_mode_changed') };
     }
-    if (row.mode === 'account') {
-      const policy = await readPolicyRow(tx, input.avatarId);
-      // This request counts too, on today: the requests that already ran today plus this one.
-      const ranToday = await ownKeyRequestsToday(tx, input.avatarId, { includeWaiting: false, exceptId: row.id });
-      if (ranToday + 1 > policy.studiosKeyImagesPerDay) {
-        return { ok: false as const, result: failure('daily_limit') };
-      }
+    const policy = await readPolicyRow(tx, input.avatarId);
+    // This request counts too, on today: the requests that already ran today plus this one.
+    const limited = await dayLimitRefusal(tx, {
+      avatarId: input.avatarId,
+      op,
+      mode: row.mode === 'account' ? 'account' : 'wallet',
+      surface: row.surface === 'hosted' ? 'hosted' : 'api',
+      policy,
+      includeWaiting: false,
+      exceptId: row.id,
+    });
+    if (limited) return { ok: false as const, result: failure(limited, null, op.id) };
+    if (await overMediaQuota(tx, input.avatarId, op.reserveBytes((row.params ?? { prompt: row.prompt }) as StudiosParams), row.id)) {
+      return { ok: false as const, result: failure('media_quota_full') };
     }
     // Flip only a row that still waits and is not overdue NOW (wall clock):
     // the checks above take time, and a read outside this lock can expire the
     // row. Nothing flipped means nothing runs.
     const [flipped] = await tx.update(vendorCallRequests).set({
-      status: 'pending',
+      status: op.long ? 'running' : 'pending',
+      ...(op.long ? {
+        leaseUntil: new Date(Date.now() + JOB_LEASE_MS),
+        // The signed amount travels with the row to the runner (our own value).
+        result: signedMaxAtomic !== undefined ? { signedMaxAtomic: signedMaxAtomic.toString() } : null,
+      } : {}),
       decidedAt: new Date(),
       decidedByUserId: input.userId,
       updatedAt: new Date(),
@@ -695,26 +1133,33 @@ export async function approveStudiosRequest(input: { avatarId: string; userId: s
       const [now] = await tx.select({ status: vendorCallRequests.status }).from(vendorCallRequests).where(eq(vendorCallRequests.id, row.id)).limit(1);
       return { ok: false as const, result: failure(now?.status === 'expired' ? 'approval_expired' : 'approval_not_awaiting') };
     }
-    return { ok: true as const, row };
+    return { ok: true as const, row, op };
   });
-  if (!claim.ok) return { result: claim.result, surface: null };
-  const { row } = claim;
-  const result = await runReservedRequest({
+  if (!claim.ok) return { result: claim.result, surface: null, operation: null };
+  const { row, op } = claim;
+  const surface = row.surface === 'hosted' ? 'hosted' : 'api';
+  if (op.long) {
+    await startLongJob(row.id, key);
+    return { result: running(row.id), surface, operation: op.id };
+  }
+  const result = await runOneCall({
     requestId: row.id,
     avatarId: input.avatarId,
     actor: row.actor === 'human' ? 'human' : 'agent',
-    prompt: row.prompt!,
-    model: storedModel(row.model),
+    op,
+    params: op.id === 'image'
+      ? { prompt: row.prompt!, ...(storedModel(row.model) ? { model: storedModel(row.model) } : {}) }
+      : (row.params as StudiosParams),
     idempotencyKey: row.idempotencyKey,
     key,
-    maxCallAtomic: input.terms.mode === 'wallet' ? BigInt(input.terms.maxUsdCents ?? 0) * ATOMIC_PER_CENT : undefined,
+    maxCallAtomic: signedMaxAtomic,
   });
-  return { result, surface: row.surface === 'hosted' ? 'hosted' : 'api' };
+  return { result, surface, operation: op.id };
 }
 
 /** The human declines one waiting request. Nothing is called or paid. */
 export async function declineStudiosRequest(input: { avatarId: string; userId: string; requestId: string }): Promise<
-  { ok: true; requestId: string; status: 'declined'; surface: 'api' | 'hosted' } | { ok: false; result: StudiosImageRefusal }
+  { ok: true; requestId: string; status: 'declined'; surface: 'api' | 'hosted'; operation: StudiosOperationId } | { ok: false; result: StudiosImageRefusal }
 > {
   return db.transaction(async (tx) => {
     const found = await lockAwaitingRow(tx, input.avatarId, input.requestId);
@@ -727,7 +1172,13 @@ export async function declineStudiosRequest(input: { avatarId: string; userId: s
     }).where(and(eq(vendorCallRequests.id, found.row.id), eq(vendorCallRequests.status, 'awaiting_approval')))
       .returning({ id: vendorCallRequests.id });
     if (!flipped) return { ok: false as const, result: failure('approval_not_awaiting') };
-    return { ok: true as const, requestId: found.row.id, status: 'declined' as const, surface: found.row.surface === 'hosted' ? 'hosted' as const : 'api' as const };
+    return {
+      ok: true as const,
+      requestId: found.row.id,
+      status: 'declined' as const,
+      surface: found.row.surface === 'hosted' ? 'hosted' as const : 'api' as const,
+      operation: operationOf(found.row).id,
+    };
   });
 }
 
@@ -736,6 +1187,7 @@ export async function listAwaitingApprovals(avatarId: string): Promise<VendorCal
   await expireOverdue(db, avatarId);
   const rows = await db.select({
     id: vendorCallRequests.id,
+    operation: vendorCallRequests.operation,
     prompt: vendorCallRequests.prompt,
     model: vendorCallRequests.model,
     mode: vendorCallRequests.mode,
@@ -748,22 +1200,26 @@ export async function listAwaitingApprovals(avatarId: string): Promise<VendorCal
     eq(vendorCallRequests.status, 'awaiting_approval'),
   )).orderBy(asc(vendorCallRequests.createdAt)).limit(SPEND_APPROVAL_MAX_AWAITING * 2);
   const policy = await readPolicyRow(db, avatarId);
-  const walletMax = walletMaxCents(policy);
-  return rows.map((r) => ({
-    requestId: r.id,
-    vendor: 'studios',
-    prompt: r.prompt ?? '',
-    model: r.model,
-    mode: r.mode === 'account' ? 'account' : 'wallet',
-    surface: r.surface === 'hosted' ? 'hosted' : 'api',
-    maxUsdCents: r.mode === 'account' ? null : walletMax,
-    createdAt: new Date(r.createdAt).toISOString(),
-    expiresAt: new Date(r.expiresAt ?? r.createdAt).toISOString(),
-  }));
+  return rows.map((r) => {
+    const op = operationOf(r);
+    return {
+      requestId: r.id,
+      vendor: 'studios',
+      operation: op.id,
+      prompt: r.prompt ?? '',
+      model: r.model,
+      mode: r.mode === 'account' ? 'account' : 'wallet',
+      surface: r.surface === 'hosted' ? 'hosted' : 'api',
+      maxUsdCents: r.mode === 'account' ? null : walletMaxCents(policy, op),
+      createdAt: new Date(r.createdAt).toISOString(),
+      expiresAt: new Date(r.expiresAt ?? r.createdAt).toISOString(),
+    };
+  });
 }
 
 export interface StudiosRequestStatusView {
   requestId: string;
+  operation: StudiosOperationId;
   status: VendorCallStatus;
   mode: 'wallet' | 'account';
   createdAt: string;
@@ -772,7 +1228,11 @@ export interface StudiosRequestStatusView {
   decidedAt: string | null;
   mediaId: string | null;
   mediaPath: string | null;
-  /** Our own refusal code for a failed request (never vendor text). */
+  /** Every stored item (character shots: one per shot). */
+  media: StudiosMediaItem[];
+  /** Key mode: the item in the human's Studios My Media (reference only). */
+  vendorMediaId: string | null;
+  /** Our own refusal code for a failed or ambiguous request (never vendor text). */
   code: string | null;
   ledgerId: string | null;
 }
@@ -780,24 +1240,18 @@ export interface StudiosRequestStatusView {
 /** One request of this avatar, for its agent or its human. Null when not found. */
 export async function readStudiosRequest(avatarId: string, requestId: string): Promise<StudiosRequestStatusView | null> {
   await expireOverdue(db, avatarId);
-  const [row] = await db.select({
-    id: vendorCallRequests.id,
-    status: vendorCallRequests.status,
-    mode: vendorCallRequests.mode,
-    createdAt: vendorCallRequests.createdAt,
-    expiresAt: vendorCallRequests.expiresAt,
-    decidedAt: vendorCallRequests.decidedAt,
-    mediaId: vendorCallRequests.mediaId,
-    failureCode: vendorCallRequests.failureCode,
-    ledgerId: vendorCallRequests.ledgerId,
-  }).from(vendorCallRequests).where(and(
+  const [row] = await db.select().from(vendorCallRequests).where(and(
     eq(vendorCallRequests.id, requestId),
     eq(vendorCallRequests.avatarId, avatarId),
     eq(vendorCallRequests.vendor, 'studios'),
   )).limit(1);
   if (!row) return null;
+  const media = row.operation === 'image'
+    ? (row.mediaId ? [{ slot: 'image', mediaId: row.mediaId, mediaPath: `/api/media/${row.mediaId}` }] : [])
+    : mediaItemsOf(row.result);
   return {
     requestId: row.id,
+    operation: operationOf(row).id,
     status: row.status as VendorCallStatus,
     mode: row.mode === 'account' ? 'account' : 'wallet',
     createdAt: new Date(row.createdAt).toISOString(),
@@ -805,12 +1259,14 @@ export async function readStudiosRequest(avatarId: string, requestId: string): P
     decidedAt: row.decidedAt ? new Date(row.decidedAt).toISOString() : null,
     mediaId: row.mediaId,
     mediaPath: row.mediaId ? `/api/media/${row.mediaId}` : null,
+    media,
+    vendorMediaId: row.vendorMediaId,
     code: row.failureCode,
     ledgerId: row.ledgerId,
   };
 }
 
-/** One stored image, for GET /api/media/:id. */
+/** One stored item, for GET /api/media/:id. */
 export async function readMedia(id: string): Promise<{ mime: string; bytes: Buffer } | null> {
   const row = await db.query.avatarMedia.findFirst({
     where: eq(avatarMedia.id, id),
@@ -819,13 +1275,78 @@ export async function readMedia(id: string): Promise<{ mime: string; bytes: Buff
   return row ? { mime: row.mimeType, bytes: Buffer.from(row.bytes) } : null;
 }
 
-/** The newest images of one avatar (ids and prompts only). */
-export async function listMedia(avatarId: string, limit = 20): Promise<Array<{ id: string; mediaPath: string; prompt: string; mode: string; actor: string; createdAt: string }>> {
+/** The newest media of one avatar (ids, types and prompts only). */
+export async function listMedia(avatarId: string, limit = 20): Promise<Array<{ id: string; mediaPath: string; mimeType: string; prompt: string; mode: string; actor: string; createdAt: string }>> {
   const rows = await db
-    .select({ id: avatarMedia.id, prompt: avatarMedia.prompt, mode: avatarMedia.mode, actor: avatarMedia.actor, createdAt: avatarMedia.createdAt })
+    .select({ id: avatarMedia.id, mimeType: avatarMedia.mimeType, prompt: avatarMedia.prompt, mode: avatarMedia.mode, actor: avatarMedia.actor, createdAt: avatarMedia.createdAt })
     .from(avatarMedia)
     .where(eq(avatarMedia.avatarId, avatarId))
     .orderBy(desc(avatarMedia.createdAt))
     .limit(Math.min(Math.max(limit, 1), 50));
   return rows.map((r) => ({ ...r, mediaPath: `/api/media/${r.id}`, createdAt: new Date(r.createdAt).toISOString() }));
+}
+
+// ---------------------------------------------------------------------------
+// Recovery of unfinished rows (the runner calls this; never pays or calls again)
+// ---------------------------------------------------------------------------
+
+export type RecoveryOutcome = 'resume' | 'failed' | 'ambiguous' | 'skipped';
+
+/**
+ * Settle one unfinished row whose runner is gone (an API restart): a 'running'
+ * row with an expired lease, or a 'pending' row (a one-call request) older than
+ * 15 minutes. The runner claimed it (renewed lease) first.
+ *   - key-mode recast with a stored job id: 'resume' (the runner polls it
+ *     again; no new start) when `resumeRecast`, else `outcome_unknown`.
+ *   - wallet mode: read the spend-ledger row by (avatar, idempotency key).
+ *     None, or no stored payer signature: nothing was sent -> failed
+ *     `interrupted_not_paid` (the reconcile pass marks the ledger never_sent).
+ *     A stored payer signature: the payment may have settled -> the request is
+ *     'ambiguous' (terminal) and a 'pending' ledger row becomes 'ambiguous' for
+ *     the existing reconcile path. A 'paid' ledger row: paid, result lost ->
+ *     failed `result_lost`. Never called or paid again.
+ *   - any other key-mode row: Studios may have billed the key -> failed
+ *     `outcome_unknown` (not sent again).
+ */
+export async function recoverUnfinishedRequest(requestId: string, opts: { resumeRecast: boolean }): Promise<RecoveryOutcome> {
+  const [row] = await db.select().from(vendorCallRequests).where(eq(vendorCallRequests.id, requestId)).limit(1);
+  if (!row || (row.status !== 'running' && row.status !== 'pending')) return 'skipped';
+  if (opts.resumeRecast && row.operation === 'recast' && row.mode === 'account' && row.status === 'running' && row.vendorJobId) {
+    return 'resume';
+  }
+  if (row.mode === 'wallet') {
+    const [ledger] = await db.select({
+      id: vendorSpendLedger.id,
+      status: vendorSpendLedger.status,
+      payerSignature: vendorSpendLedger.payerSignature,
+    }).from(vendorSpendLedger).where(and(
+      eq(vendorSpendLedger.avatarId, row.avatarId),
+      eq(vendorSpendLedger.idempotencyKey, row.idempotencyKey),
+    )).limit(1);
+    if (!ledger) {
+      await finishRequest(row.id, failure('interrupted_not_paid'));
+      return 'failed';
+    }
+    if (ledger.status === 'paid') {
+      await finishRequest(row.id, failure('result_lost', ledger.id));
+      return 'failed';
+    }
+    if (ledger.status === 'failed') {
+      await finishRequest(row.id, failure('payment_prepare_failed', ledger.id));
+      return 'failed';
+    }
+    // 'pending' with no stored signature was never sent (the signature is
+    // stored before sending); the reconcile pass marks it never_sent.
+    if (ledger.status === 'pending' && !ledger.payerSignature) {
+      await finishRequest(row.id, failure('interrupted_not_paid', ledger.id));
+      return 'failed';
+    }
+    await db.update(vendorSpendLedger)
+      .set({ status: 'ambiguous', failureReason: 'runner_interrupted_after_signing', updatedAt: new Date() })
+      .where(and(eq(vendorSpendLedger.id, ledger.id), eq(vendorSpendLedger.status, 'pending')));
+    await finishRequest(row.id, failure('payment_ambiguous', ledger.id), { status: 'ambiguous' });
+    return 'ambiguous';
+  }
+  await finishRequest(row.id, failure('outcome_unknown'));
+  return 'failed';
 }

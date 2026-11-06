@@ -4,7 +4,11 @@
  * and MCP-Protocol-Version headers, notifications/initialized, a 401 followed
  * by one refresh, the fixed tool allowlist, JSON-RPC errors and isError.
  */
-if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
+// A placeholder only while the modules load (the db client reads it at import);
+// removed after the imports so later suites in a shared `bun test` process
+// do not see a database that does not exist.
+const databaseUrlWasSet = !!process.env.DATABASE_URL;
+if (!databaseUrlWasSet) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import {
@@ -249,3 +253,5 @@ describe('studios MCP client', () => {
     expect((err as StudiosMcpError).code).toBe('studios_mcp_unavailable');
   });
 });
+
+if (!databaseUrlWasSet) delete process.env.DATABASE_URL;

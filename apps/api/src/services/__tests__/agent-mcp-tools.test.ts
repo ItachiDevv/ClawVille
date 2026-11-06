@@ -409,6 +409,32 @@ describe('game tool execution', () => {
     expect(body.next).toContain('payment_ambiguous');
   });
 
+  test('the phase 3b Studios tools forward only their own fields and the Idempotency-Key to their routes', async () => {
+    const { rt, calls } = stubRuntime(() => ({ status: 202, ok: true, data: { status: 'running', requestId: 'r1' } }));
+    const video = parse(answerText(await runMcpTool('clawville_studios_video', {
+      prompt: 'a boat', durationSeconds: 5, audio: false, idempotencyKey: 'vid-0001', avatarId: 'someone-else',
+    }, rt)));
+    await runMcpTool('clawville_studios_character', { random: true, shots: ['headshot'], picks: { species: 'animal' }, idempotencyKey: 'chr-0001', mode: 'wallet' }, rt);
+    await runMcpTool('clawville_studios_recast', { preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/a.png'], idempotencyKey: 'rec-0001' }, rt);
+    await runMcpTool('clawville_studios_options', { menu: 'recast-presets' }, rt);
+    expect(calls).toEqual([
+      { method: 'POST', path: '/api/vendors/studios/videos', body: { prompt: 'a boat', durationSeconds: 5, audio: false }, headers: { 'Idempotency-Key': 'vid-0001' } },
+      { method: 'POST', path: '/api/vendors/studios/characters', body: { shots: ['headshot'], picks: { species: 'animal' }, random: true }, headers: { 'Idempotency-Key': 'chr-0001' } },
+      { method: 'POST', path: '/api/vendors/studios/recasts', body: { preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/a.png'] }, headers: { 'Idempotency-Key': 'rec-0001' } },
+      { method: 'GET', path: '/api/vendors/studios/options/recast-presets' },
+    ]);
+    expect(video.next).toContain('GET /api/vendors/studios/requests/');
+    expect(video.next).toContain('payment_ambiguous');
+  });
+
+  test('the phase 3b Studios tools refuse a missing key or an unknown menu before any call', async () => {
+    const { rt, calls } = stubRuntime();
+    expect(parse(answerText(await runMcpTool('clawville_studios_video', { prompt: 'a boat' }, rt))).error).toBe('invalid_input');
+    expect(parse(answerText(await runMcpTool('clawville_studios_recast', { preset: 'p', imageUrls: [] }, rt))).error).toBe('invalid_input');
+    expect(parse(answerText(await runMcpTool('clawville_studios_options', { menu: 'chat-models' }, rt))).error).toBe('invalid_input');
+    expect(calls).toHaveLength(0);
+  });
+
   test('clawville_studios_image without an idempotencyKey is refused before any call', async () => {
     const { rt, calls } = stubRuntime();
     const body = parse(answerText(await runMcpTool('clawville_studios_image', { prompt: 'a crab' }, rt)));

@@ -74,6 +74,10 @@ mock.module('../../services/studios-images', () => ({
     calls.push(input);
     return nextResult;
   },
+  requestStudiosOperation: async (input: Record<string, unknown>) => {
+    opCalls.push(input);
+    return nextOpResult;
+  },
   listMedia: async () => [],
   listAwaitingApprovals: async (avatarId: string) => {
     decisions.push({ kind: 'list', avatarId });
@@ -84,7 +88,7 @@ mock.module('../../services/studios-images', () => ({
     return { result: nextResult, surface: 'api' };
   },
   readApprovalTerms: async (avatarId: string, requestId: string) => (requestId === REQ
-    ? { ok: true, terms: { avatarId, requestId, mode: 'wallet', maxUsdCents: 10, promptSha256: 'a'.repeat(64), credentialSha256: null } }
+    ? { ok: true, terms: { avatarId, requestId, operation: 'image', mode: 'wallet', maxUsdCents: 10, promptSha256: 'a'.repeat(64), paramsSha256: null, credentialSha256: null } }
     : { ok: false, result: { ok: false, code: 'approval_not_found', message: 'none', httpStatus: 404, ledgerId: null } }),
   declineStudiosRequest: async (input: { avatarId: string; userId: string; requestId: string }) => {
     decisions.push({ kind: 'decline', ...input });
@@ -94,6 +98,12 @@ mock.module('../../services/studios-images', () => ({
     decisions.push({ kind: 'read', avatarId, requestId });
     return avatarId === 'a1' && requestId === REQ ? { requestId, status: 'awaiting_approval', mode: 'wallet' } : null;
   },
+}));
+const opCalls: Array<Record<string, unknown>> = [];
+let nextOpResult: unknown = { ok: false, code: 'running', httpStatus: 202, message: 'running', ledgerId: null, requestId: REQ };
+mock.module('../../services/studios-menus', () => ({
+  readStudiosMenu: async (menu: string) => (menu === 'recast-presets' ? { presets: [{ id: 'recast-x-wan', priceUsd: 1 }] } : null),
+  resetStudiosMenuCache: () => {},
 }));
 mock.module('../../services/vendor-credentials', () => ({
   ...realCreds,
@@ -213,6 +223,49 @@ describe('POST /api/vendors/studios/images', () => {
     const res = await post({ prompt: 'crab' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(nextResult);
+  });
+});
+
+describe('POST /videos, /characters, /recasts and GET /options/:menu (phase 3b)', () => {
+  function postOp(path: string, body: unknown, key: string | null = 'key-12345678') {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers['Idempotency-Key'] = key;
+    return app.request(`/api/vendors/studios${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  }
+
+  it('each route checks the session, the key and the body with the operation schema, then calls the shared service', async () => {
+    opCalls.length = 0;
+    identity = { kind: 'agent', userId: 'u1', avatarId: 'a1', agentId: 'g1', ledgerCapable: false };
+    expect((await postOp('/videos', { prompt: 'boat' })).status).toBe(403);
+    identity = { kind: 'agent', userId: 'u1', avatarId: 'a1', agentId: 'g1', ledgerCapable: true };
+    expect((await postOp('/videos', { prompt: 'boat' }, null)).status).toBe(400);
+    expect((await postOp('/videos', { prompt: 'boat', imageUrl: 'https://127.0.0.1/x.png' })).status).toBe(400);
+    expect((await postOp('/characters', {})).status).toBe(400);
+    expect((await postOp('/recasts', { preset: 'p', imageUrls: ['http://cdn.example.org/a.png'] })).status).toBe(400);
+    expect(opCalls).toHaveLength(0);
+    const video = await postOp('/videos', { prompt: 'boat', durationSeconds: 5 });
+    expect(video.status).toBe(202);
+    expect(await video.json()).toEqual({ status: 'running', requestId: REQ, message: 'running' });
+    nextOpResult = { ok: false, code: 'operation_needs_studios_key', httpStatus: 403, message: 'key only', ledgerId: null };
+    const chars = await postOp('/characters', { random: true });
+    expect(chars.status).toBe(403);
+    expect(await chars.json()).toMatchObject({ code: 'operation_needs_studios_key' });
+    nextOpResult = { ok: false, code: 'running', httpStatus: 202, message: 'running', ledgerId: null, requestId: REQ };
+    expect((await postOp('/recasts', { preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/a.png'] })).status).toBe(202);
+    expect(opCalls.map((c) => [c.operation, c.actor, c.avatarId, c.idempotencyKey])).toEqual([
+      ['video', 'agent', 'a1', 'key-12345678'],
+      ['character_shots', 'agent', 'a1', 'key-12345678'],
+      ['recast', 'agent', 'a1', 'key-12345678'],
+    ]);
+    expect(opCalls[0]!.params).toEqual({ prompt: 'boat', durationSeconds: 5 });
+  });
+
+  it('serves a known menu and refuses an unknown one', async () => {
+    const ok = await app.request('/api/vendors/studios/options/recast-presets');
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ menu: 'recast-presets', presets: [{ id: 'recast-x-wan', priceUsd: 1 }] });
+    expect((await app.request('/api/vendors/studios/options/chat-models')).status).toBe(400);
+    expect((await app.request('/api/vendors/studios/options/builder')).status).toBe(502);
   });
 });
 

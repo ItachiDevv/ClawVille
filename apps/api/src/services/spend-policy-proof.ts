@@ -15,7 +15,7 @@
 import { createHash, randomBytes } from 'crypto';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
-import type { SpendPolicyValues } from '@clawville/shared';
+import type { SpendPolicyValues, StudiosOperationId } from '@clawville/shared';
 
 const NONCE_TTL_MS = 120 * 1000;
 const MAX_NONCES = 10_000;
@@ -55,6 +55,9 @@ export function buildSpendRulesMessage(userId: string, values: SpendPolicyValues
     `per-call cap: ${usd(values.perCallCapUsdCents)}`,
     `paid tools: ${vendors.length ? vendors.join(', ') : 'none'}`,
     `Studios images per day with my own key: ${values.studiosKeyImagesPerDay}`,
+    `Studios videos per day: ${values.studiosVideosPerDay}`,
+    `Studios character shots per day: ${values.studiosCharacterShotsPerDay}`,
+    `Studios recasts per day: ${values.studiosRecastsPerDay}`,
     `ask me before each payment: ${values.requireApproval ? 'yes' : 'no'}`,
     `nonce: ${nonce}`,
   ].join('\n');
@@ -148,17 +151,22 @@ export function verifyVendorKeyProof(input: {
  * Approving one waiting paid-tool request ("ask me before each payment", lead
  * decision 2026-11-06 after the Codex review): a magic link passes through the
  * agent, so a session cookie alone never approves a payment. The human's linked
- * wallet signs a message that names the account, the avatar, the request, who
- * pays and the most it can cost, and the SHA-256 of the prompt.
+ * wallet signs a message that names the account, the avatar, the request, the
+ * Studios operation, who pays and the most it can cost, the SHA-256 of the
+ * prompt, and (every operation but image) the SHA-256 of its settings.
  */
 export interface ApprovalTerms {
   avatarId: string;
   requestId: string;
+  /** The Studios operation that runs (phase 3b). */
+  operation: StudiosOperationId;
   mode: 'wallet' | 'account';
   /** Wallet mode: the most the call may cost; the approve enforces it. Null in account mode. */
   maxUsdCents: number | null;
   /** Lowercase hex SHA-256 of the prompt as stored. */
   promptSha256: string;
+  /** Lowercase hex SHA-256 of the canonical JSON of the stored settings; null for image (prompt and model only). */
+  paramsSha256: string | null;
   /**
    * Account mode: the SHA-256 of the saved Studios key when the request was
    * made (the same digest as the key-save proof; never the key). Null in
@@ -171,17 +179,25 @@ export function promptSha256(prompt: string): string {
   return createHash('sha256').update(prompt, 'utf8').digest('hex');
 }
 
+const OPERATION_LABELS: Record<StudiosOperationId, string> = {
+  image: 'image',
+  video: 'video',
+  character_shots: 'character shots',
+  recast: 'recast',
+};
+
 export function buildApprovalMessage(userId: string, terms: ApprovalTerms, nonce: string): string {
   return [
     'ClawVille payment approval',
     `account: ${userId}`,
     `avatar: ${terms.avatarId}`,
     `request: ${terms.requestId}`,
-    'tool: Studios image',
+    `tool: Studios ${OPERATION_LABELS[terms.operation] ?? 'unknown'}`,
     terms.mode === 'account'
       ? `pays: my own Studios key (my Studios credits), key sha256: ${terms.credentialSha256 ?? 'none'}`
       : `pays: my agent wallet, at most ${usd(terms.maxUsdCents ?? 0)}`,
     `prompt sha256: ${terms.promptSha256}`,
+    ...(terms.paramsSha256 === null ? [] : [`settings sha256: ${terms.paramsSha256}`]),
     `nonce: ${nonce}`,
   ].join('\n');
 }

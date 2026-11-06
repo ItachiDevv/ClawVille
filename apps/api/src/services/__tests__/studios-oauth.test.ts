@@ -3,7 +3,11 @@
  * Client ID Metadata Document per environment, and the redirect URLs.
  * The DB-backed flow is in routes/__tests__/studios-oauth-db.test.ts.
  */
-if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
+// A placeholder only while the modules load (the db client reads it at import);
+// removed after the imports so later suites in a shared `bun test` process
+// do not see a database that does not exist.
+const databaseUrlWasSet = !!process.env.DATABASE_URL;
+if (!databaseUrlWasSet) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
 
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
@@ -69,3 +73,5 @@ describe('web origin for the post-sign-in redirect', () => {
     expect(studiosWebOrigin()).toBe('https://clawville.world');
   });
 });
+
+if (!databaseUrlWasSet) delete process.env.DATABASE_URL;

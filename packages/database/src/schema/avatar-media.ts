@@ -1,10 +1,10 @@
 /**
- * Images made by an avatar's paid tools, and a human's own vendor API keys
+ * Images and videos (0095) made by an avatar's paid tools, and a human's own vendor API keys
  * (migration 0091, MCP hub step 2 phase 2b). Written only by
  * `apps/api/src/services/studios-images.ts` and `services/vendor-credentials.ts`.
  */
 
-import { customType, index, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
+import { customType, index, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
 import { avatars } from './avatars';
 import { users } from './users';
 import { vendorSpendLedger } from './vendor-spend-ledger';
@@ -45,7 +45,7 @@ export const userVendorCredentials = pgTable('user_vendor_credentials', {
 }));
 
 /**
- * One row per image request in either mode, inserted BEFORE the vendor call:
+ * One row per Studios request (any operation) in either mode, inserted BEFORE the vendor call:
  * the unique idempotency key stops a retry from billing twice, and the rows
  * give per-avatar daily limits that survive a restart.
  */
@@ -70,6 +70,19 @@ export const vendorCallRequests = pgTable('vendor_call_requests', {
   failureCode: varchar('failure_code', { length: 48 }),
   /** Account mode: SHA-256 of the saved key at queue time (never the key). */
   credentialSha256: varchar('credential_sha256', { length: 64 }),
+  // Migration 0095 (phase 3b): every Studios operation, long jobs, recovery.
+  operation: varchar('operation', { length: 32 }).notNull().default('image'),
+  /** The operation's validated input (our own shape); the approval signs its SHA-256. */
+  params: jsonb('params'),
+  /** Studios' job id of an asynchronous job (recast), stored right after the start call. */
+  vendorJobId: varchar('vendor_job_id', { length: 128 }),
+  /** Studios My Media id reported for a key-mode job (reference only). */
+  vendorMediaId: varchar('vendor_media_id', { length: 128 }),
+  /** Our own result fields (media ids of character shots). */
+  result: jsonb('result'),
+  /** A long job's runner renews this while it works; an expired lease on a 'running' row is recovered. */
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  jobDeadlineAt: timestamp('job_deadline_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({

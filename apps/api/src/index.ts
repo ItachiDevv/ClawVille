@@ -951,6 +951,15 @@ process.on('uncaughtException', (err) => {
     console.error('[API] vendor ledger reconcile worker failed to start:', err);
   }
 
+  // MCP hub phase 3b: long Studios jobs (video, recast) run in this process;
+  // every minute, recover rows a dead runner left (never calls or pays again).
+  try {
+    const { startStudiosJobRunner } = await import('./services/studios-job-runner');
+    startStudiosJobRunner();
+  } catch (err) {
+    console.error('[API] studios job runner failed to start:', err);
+  }
+
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
   // via LAZY restore (`agent-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
@@ -1932,6 +1941,12 @@ async function gracefulShutdown(signal: string) {
       stopX402AutoReconcile();
     } catch {
       // If the worker module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopStudiosJobRunner } = await import('./services/studios-job-runner');
+      stopStudiosJobRunner();
+    } catch {
+      // If the runner module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopWagerIntentReconciler } = await import(

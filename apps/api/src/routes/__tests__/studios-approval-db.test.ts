@@ -189,7 +189,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
   it('the signed terms name the request, the payer, the amount and the prompt hash; other terms refuse', async () => {
     const r = await waitingRequest({ prompt: 'exact prompt' });
     const read = await readApprovalTerms(avatarId, r.requestId);
-    expect(read).toEqual({ ok: true, terms: { avatarId, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('exact prompt'), credentialSha256: vendorKeyRef(KEY).sha256 } });
+    expect(read).toEqual({ ok: true, terms: { avatarId, requestId: r.requestId, operation: 'image', mode: 'account', maxUsdCents: null, promptSha256: promptSha256('exact prompt'), paramsSha256: null, credentialSha256: vendorKeyRef(KEY).sha256 } });
     if (!read.ok) throw new Error('expected terms');
     const other = { ...read.terms, promptSha256: promptSha256('another prompt') };
     expect((await approveStudiosRequest({ avatarId, userId, requestId: r.requestId, terms: other })).result).toMatchObject({ ok: false, code: 'approval_terms_changed' });
@@ -415,7 +415,7 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
     const r = await waitingRequest();
     const other = '00000000-0000-4000-8000-000000000000';
     expect(await readStudiosRequest(other, r.requestId)).toBeNull();
-    expect((await approveStudiosRequest({ avatarId: other, userId, requestId: r.requestId, terms: { avatarId: other, requestId: r.requestId, mode: 'account', maxUsdCents: null, promptSha256: promptSha256('a crab'), credentialSha256: vendorKeyRef(KEY).sha256 } })).result).toMatchObject({ ok: false, code: 'approval_not_found' });
+    expect((await approveStudiosRequest({ avatarId: other, userId, requestId: r.requestId, terms: { avatarId: other, requestId: r.requestId, operation: 'image', mode: 'account', maxUsdCents: null, promptSha256: promptSha256('a crab'), paramsSha256: null, credentialSha256: vendorKeyRef(KEY).sha256 } })).result).toMatchObject({ ok: false, code: 'approval_not_found' });
     expect(await declineStudiosRequest({ avatarId: other, userId, requestId: r.requestId })).toMatchObject({ ok: false, result: { code: 'approval_not_found' } });
     expect(await statusOf(r.requestId)).toBe('awaiting_approval');
   });

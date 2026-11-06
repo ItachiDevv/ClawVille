@@ -6,8 +6,15 @@
  *          bills the human's own account. Mode B (no key): the avatar wallet
  *          pays with x402 inside the spend rules. Returns the stored image path.
  *   GET    /api/vendors/studios/images  the avatar's newest images.
- *   GET    /api/vendors/studios/requests/:id  one image request of this
- *          avatar (agent or human): status, and the image path when done.
+ *   POST   /api/vendors/studios/videos      video (wallet or key mode), 202 running
+ *   POST   /api/vendors/studios/characters  character shots (key mode only)
+ *   POST   /api/vendors/studios/recasts     recast (key mode only), 202 running
+ *          (phase 3b; same headers, rate limit and approval flow as images;
+ *          bodies = `vendors/studios-operations.ts` schemas).
+ *   GET    /api/vendors/studios/options/:menu  a free Studios menu (ids,
+ *          prices, option values only), cached 10 minutes.
+ *   GET    /api/vendors/studios/requests/:id  one Studios request of this
+ *          avatar (agent or human): status, and the media paths when done.
  *   GET    /api/vendors/studios/approvals  the requests that wait for the
  *          human ("ask me before each payment"). Human only.
  *   POST   /api/vendors/studios/approvals/:id/challenge  the message for
@@ -27,10 +34,12 @@
  *          wallet `proof`. Human only.
  *
  * PARITY (Rule E5): human path = these routes with a Lucia session (wallet
- * panel, Studios card); agent path = the same image routes with the agent
- * session header (ledger-capable for POST), the MCP tool
- * `clawville_studios_image` and the hosted `[ACTION:] generate_image` verb,
- * all through `services/studios-images.ts`. The key routes are human-only by
+ * panel, Studios card); agent path = the same routes with the agent session
+ * header (ledger-capable for POST), the MCP tools `clawville_studios_image`,
+ * `clawville_studios_video`, `clawville_studios_character`,
+ * `clawville_studios_recast`, `clawville_studios_options` and the hosted
+ * `[ACTION:]` verbs `generate_image`, `generate_video`, `make_character`,
+ * `recast_character`, all through `services/studios-images.ts`. The key routes are human-only by
  * design: the human chooses whose account pays, and the linked wallet signs
  * each change (a magic-link session alone does not prove a human).
  * "Ask me before each payment": every image request (the human's web form
@@ -42,7 +51,7 @@
  * spend-rules write.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -77,9 +86,21 @@ import {
   listMedia,
   readApprovalTerms,
   readStudiosRequest,
+  requestStudiosOperation,
+  type StudiosImageResult,
+  type StudiosOperationResult,
 } from '../services/studios-images';
+import { readStudiosMenu } from '../services/studios-menus';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
-import { STUDIOS_IMAGE_MODELS, STUDIOS_PROMPT_MAX } from '../services/vendors/studios';
+import {
+  STUDIOS_MENU_IDS,
+  characterParamsSchema,
+  imageParamsSchema,
+  recastParamsSchema,
+  videoParamsSchema,
+  type StudiosMenuId,
+  type StudiosParams,
+} from '../services/vendors/studios-operations';
 
 export const vendorStudiosRoutes = new Hono<ActivityAuthContext>();
 vendorStudiosRoutes.use('*', sessionMiddleware, noStorePrivate);
@@ -94,16 +115,21 @@ export function resetStudiosRateLimit(): void {
 }
 
 const idempotencyKeySchema = z.string().trim().regex(/^[A-Za-z0-9._:-]{8,64}$/);
-const bodySchema = z.object({
-  prompt: z.string().trim().min(1).max(STUDIOS_PROMPT_MAX),
-  model: z.enum(STUDIOS_IMAGE_MODELS).optional(),
-}).strict();
 const smallBody = bodyLimit({
   maxSize: 16 * 1024,
   onError: (c) => c.json({ error: 'payload_too_large', code: 'payload_too_large' }, 413),
 });
 
-vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+type PaidContext = Context<ActivityAuthContext>;
+
+/**
+ * The checks every paid Studios POST shares: a ledger-capable session, an
+ * Idempotency-Key header, a valid body and the per-avatar rate limit. Returns
+ * the refusal response, or what the call needs.
+ */
+async function readPaidRequest<T>(c: PaidContext, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<
+  Response | { avatarId: string; actor: 'human' | 'agent'; idempotencyKey: string; body: T }
+> {
   const identity = c.get('identity');
   if (identity.kind === 'agent' && identity.ledgerCapable !== true) {
     return c.json({ error: 'agent_session_not_ledger_authorized', code: 'agent_session_not_ledger_authorized' }, 403);
@@ -116,34 +142,75 @@ vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requir
       message: 'Send an Idempotency-Key header: 8-64 letters, digits, dots, underscores, colons or hyphens.',
     }, 400);
   }
-  const body = bodySchema.safeParse(await c.req.json().catch(() => null));
+  const body = schema.safeParse(await c.req.json().catch(() => null));
   if (!body.success) {
     return c.json({ error: 'invalid_request', code: 'invalid_request', issues: body.error.issues }, 400);
   }
   if (!studiosRateLimiter.check(identity.avatarId)) {
-    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many image calls. Wait one minute.' }, 429);
+    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios calls. Wait one minute.' }, 429);
   }
-
   // The recorded actor: a cookie counts as the human only when a human
   // sign-in made it ('agent_exchange' and pre-0089 sessions count as the
   // agent). It does not decide the wait: with "ask me before each payment" on,
   // every request waits for the linked wallet's signature.
   const createdVia = (c.get('session') as { createdVia?: SessionCreatedVia | null } | null | undefined)?.createdVia ?? null;
   const humanPressed = identity.kind === 'user' && createdVia !== null && HUMAN_SESSION_ORIGINS.has(createdVia);
-  const result = await generateStudiosImage({
-    avatarId: identity.avatarId,
-    actor: humanPressed ? 'human' : 'agent',
-    prompt: body.data.prompt,
-    model: body.data.model,
-    idempotencyKey: idempotencyKey.data,
-  });
+  return { avatarId: identity.avatarId, actor: humanPressed ? 'human' : 'agent', idempotencyKey: idempotencyKey.data, body: body.data };
+}
+
+/** The HTTP answer for a Studios result: 202 while it waits or runs. */
+function answer(c: Context, result: StudiosOperationResult | StudiosImageResult): Response {
   if (!result.ok && result.code === 'awaiting_approval') {
     return c.json({ status: 'awaiting_approval', requestId: result.requestId, expiresAt: result.expiresAt, message: result.message }, 202);
+  }
+  if (!result.ok && result.code === 'running') {
+    return c.json({ status: 'running', requestId: result.requestId, message: result.message }, 202);
   }
   if (!result.ok) {
     return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId }, result.httpStatus);
   }
   return c.json(result);
+}
+
+vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const read = await readPaidRequest(c, imageParamsSchema);
+  if (read instanceof Response) return read;
+  return answer(c, await generateStudiosImage({
+    avatarId: read.avatarId,
+    actor: read.actor,
+    prompt: read.body.prompt,
+    model: read.body.model,
+    idempotencyKey: read.idempotencyKey,
+  }));
+});
+
+/** One paid Studios operation route (phase 3b). */
+function operationHandler<T extends StudiosParams>(operation: 'video' | 'character_shots' | 'recast', schema: z.ZodType<T, z.ZodTypeDef, unknown>) {
+  return async (c: PaidContext) => {
+    const read = await readPaidRequest(c, schema);
+    if (read instanceof Response) return read;
+    return answer(c, await requestStudiosOperation({
+      avatarId: read.avatarId,
+      actor: read.actor,
+      operation,
+      params: read.body,
+      idempotencyKey: read.idempotencyKey,
+    }));
+  };
+}
+
+vendorStudiosRoutes.post('/videos', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, operationHandler('video', videoParamsSchema));
+vendorStudiosRoutes.post('/characters', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, operationHandler('character_shots', characterParamsSchema));
+vendorStudiosRoutes.post('/recasts', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, operationHandler('recast', recastParamsSchema));
+
+vendorStudiosRoutes.get('/options/:menu', requireAuthOrAgentSession, async (c) => {
+  const menu = c.req.param('menu');
+  if (!(STUDIOS_MENU_IDS as readonly string[]).includes(menu)) {
+    return c.json({ error: 'unknown_menu', code: 'unknown_menu', menus: STUDIOS_MENU_IDS }, 400);
+  }
+  const data = await readStudiosMenu(menu as StudiosMenuId);
+  if (!data) return c.json({ error: 'vendor_unreachable', code: 'vendor_unreachable', message: 'Studios did not answer. Try again later.' }, 502);
+  return c.json({ menu, ...data });
 });
 
 vendorStudiosRoutes.get('/images', requireAuthOrAgentSession, async (c) => {
@@ -299,15 +366,14 @@ vendorStudiosRoutes.post('/approvals/:id/approve', smallBody, ...approvalGate, a
     walletPubkey: wallet,
   });
   if (verdict !== 'ok') return c.json(APPROVAL_INVALID_WALLET_PROOF, 401);
-  const { result, surface } = await approveStudiosRequest({ avatarId, userId: user.id, requestId: id.data, terms: read.terms });
+  const { result, surface, operation } = await approveStudiosRequest({ avatarId, userId: user.id, requestId: id.data, terms: read.terms });
   if (surface === 'hosted') {
-    const { formatGeneratedImageResult } = await import('../services/npc-simulation');
-    await tellHostedAgent(user.id, avatarId, formatGeneratedImageResult(result));
+    const { formatGeneratedImageResult, formatStudiosJobLine } = await import('../services/npc-simulation');
+    await tellHostedAgent(user.id, avatarId, operation === 'image' || operation === null
+      ? formatGeneratedImageResult(result as StudiosImageResult)
+      : formatStudiosJobLine(operation, result));
   }
-  if (!result.ok) {
-    return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId }, result.httpStatus);
-  }
-  return c.json(result);
+  return answer(c, result);
 });
 
 vendorStudiosRoutes.post('/approvals/:id/decline', ...approvalGate, async (c) => {
@@ -321,8 +387,10 @@ vendorStudiosRoutes.post('/approvals/:id/decline', ...approvalGate, async (c) =>
     return c.json({ error: result.code, code: result.code, message: result.message }, result.httpStatus);
   }
   if (declined.surface === 'hosted') {
-    const { formatGenerateImageDeclined } = await import('../services/npc-simulation');
-    await tellHostedAgent(user.id, avatarId, formatGenerateImageDeclined());
+    const { formatGenerateImageDeclined, formatStudiosJobLine } = await import('../services/npc-simulation');
+    await tellHostedAgent(user.id, avatarId, declined.operation === 'image'
+      ? formatGenerateImageDeclined()
+      : formatStudiosJobLine(declined.operation, { ok: false, code: 'approval_declined' }));
   }
   return c.json({ requestId: declined.requestId, status: declined.status });
 });

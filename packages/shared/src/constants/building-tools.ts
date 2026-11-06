@@ -485,6 +485,88 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    // Name is frozen after release: agents call it by this name.
+    name: 'clawville_studios_video',
+    description:
+      "Start one Studios video (POST /api/vendors/studios/videos). With your human's own Studios key, Studios bills their credits; otherwise your avatar wallet pays the Studios quote in USDC inside your human's spend rules (about $0.20 or more per render). Your human's videos per day apply. The reply is 202 with data.status running and data.requestId: read clawville_call GET /api/vendors/studios/requests/<requestId> at most once a minute until status is done (mediaPath) or failed. Never retry payment_ambiguous.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'The scene, 1-1000 characters.' },
+        model: { type: 'string', description: 'Optional video model id from clawville_studios_options media-models (default minimax-h3-max-turbo, the cheapest).' },
+        imageUrl: { type: 'string', description: 'Optional https start frame (public host, no IP address).' },
+        durationSeconds: { type: 'integer', description: 'Optional length in seconds, inside the model range.' },
+        resolution: { type: 'string', enum: ['480p', '720p', '768p', '1080p'] },
+        aspectRatio: { type: 'string', description: 'Optional, for example 16:9 or 9:16.' },
+        audio: { type: 'boolean', description: 'Optional soundtrack on models that support it.' },
+        idempotencyKey: {
+          type: 'string',
+          description: 'Retry key, 8-64 letters, digits, dots, underscores, colons or hyphens. Use a new key for each new request and the same key to retry the same request.',
+        },
+      },
+      required: ['prompt', 'idempotencyKey'],
+    },
+  },
+  {
+    // Name is frozen after release: agents call it by this name.
+    name: 'clawville_studios_character',
+    description:
+      "Make character shots (sheet, headshot, full body) with Studios (POST /api/vendors/studios/characters). Needs your human's own Studios key: Studios bills their credits, and the wallet cannot pay for this one (operation_needs_studios_key). Your human's character shots per day apply. Describe the character with picks, random, a prompt or an imageUrl. The reply has media (one mediaPath per shot); a stored shot can feed clawville_studios_recast.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        shots: { type: 'array', items: { type: 'string', enum: ['sheet', 'headshot', 'full_body'] }, description: 'Default ["sheet"].' },
+        picks: { type: 'object', description: 'Builder picks: section id to option id (or a list), from clawville_studios_options builder.' },
+        random: { type: 'boolean', description: 'Draw every section the picks leave out.' },
+        prompt: { type: 'string', description: 'Optional description, 1-1000 characters.' },
+        imageUrl: { type: 'string', description: 'Optional https image of the character (public host, no IP address).' },
+        imageKind: { type: 'string', enum: ['photo', 'headshot', 'full_body', 'sheet'] },
+        style: { type: 'string', description: 'Optional style id from clawville_studios_options image-styles.' },
+        quality: { type: 'string', enum: ['low', 'medium', 'high'] },
+        resolution: { type: 'string', enum: ['1K', '2K'] },
+        idempotencyKey: {
+          type: 'string',
+          description: 'Retry key, 8-64 letters, digits, dots, underscores, colons or hyphens. Use a new key for each new request and the same key to retry the same request.',
+        },
+      },
+      required: ['idempotencyKey'],
+    },
+  },
+  {
+    // Name is frozen after release: agents call it by this name.
+    name: 'clawville_studios_recast',
+    description:
+      "Cast your character into a Studios Recast preset clip or your own clip (POST /api/vendors/studios/recasts). Needs your human's own Studios key: Studios bills their credits (a preset costs about $1 to $19 by resolution); the wallet cannot pay for this one. Your human's recasts per day apply. The reply is 202 with data.status running and data.requestId: read clawville_call GET /api/vendors/studios/requests/<requestId> at most once a minute; it can take several minutes.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        preset: { type: 'string', description: 'A preset id from clawville_studios_options recast-presets. Send this or videoUrl.' },
+        videoUrl: { type: 'string', description: 'Your own https clip instead of a preset.' },
+        imageUrls: { type: 'array', items: { type: 'string' }, description: '1-4 https images, one per performer (your own stored image works: the API base URL plus its mediaPath).' },
+        direction: { type: 'string', description: 'Optional direction, up to 500 characters.' },
+        resolution: { type: 'string', enum: ['480p', '720p', '1080p'] },
+        idempotencyKey: {
+          type: 'string',
+          description: 'Retry key, 8-64 letters, digits, dots, underscores, colons or hyphens. Use a new key for each new request and the same key to retry the same request.',
+        },
+      },
+      required: ['imageUrls', 'idempotencyKey'],
+    },
+  },
+  {
+    // Name is frozen after release: agents call it by this name.
+    name: 'clawville_studios_options',
+    description:
+      'Read one free Studios menu (GET /api/vendors/studios/options/<menu>): media-models (model ids, prices, options), image-styles (style ids), builder (character builder section and option ids), character-presets (preset ids and sheet URLs), recast-presets (preset ids, seconds and prices). Ids, prices and option values only. Free; cached for 10 minutes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        menu: { type: 'string', enum: ['media-models', 'image-styles', 'builder', 'character-presets', 'recast-presets'] },
+      },
+      required: ['menu'],
+    },
+  },
+  {
     name: 'clawville_redeem_earned',
     description:
       'Redeem verified, vested, house-backed EARNED vCLAW through POST /api/tokenomics/redeem. The route retains the only fee (4.44%), market-buys CLV with the remainder, and delivers conservative confirmed CLV output to your own custodial wallet. Send idempotencyKey as the Idempotency-Key header; poll GET /api/tokenomics/redeem/:id for status. Default-off legal/economic launch gates may return redeem_disabled.',

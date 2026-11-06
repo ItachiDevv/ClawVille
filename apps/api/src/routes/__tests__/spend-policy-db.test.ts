@@ -137,7 +137,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
   it('needs a linked wallet and its signature to raise, never to lower', async () => {
     await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = NULL WHERE id = ${userId}`);
-    const raise = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, requireApproval: false };
+    const raise = { dailyCapUsdCents: 500, perCallCapUsdCents: 50, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false };
 
     expect(await applySpendPolicyChange(avatarId, userId, raise, null)).toEqual({ kind: 'needs_wallet_link' });
 
@@ -177,14 +177,41 @@ describeIfSchema('spend rules: executed DB contract', () => {
     // Back up to 30: a raise, so it needs the linked wallet's signature over 30.
     const more = { ...unset, studiosKeyImagesPerDay: 30 };
     expect(await applySpendPolicyChange(avatarId, userId, more, null)).toEqual({ kind: 'needs_wallet_proof' });
-    const lowProof = issueSpendProofChallenge(userId, { ...unset, studiosKeyImagesPerDay: 4 });
+    const classes = { studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1 };
+    const lowProof = issueSpendProofChallenge(userId, { ...unset, ...classes, studiosKeyImagesPerDay: 4 });
     const lowSig = bs58.encode(nacl.sign.detached(new TextEncoder().encode(lowProof.messageToSign), wallet.secretKey));
     expect(await applySpendPolicyChange(avatarId, userId, more, { nonce: lowProof.nonce, signature: lowSig }))
       .toEqual({ kind: 'invalid_proof', reason: 'invalid_challenge' });
-    const challenge = issueSpendProofChallenge(userId, more);
+    const challenge = issueSpendProofChallenge(userId, { ...more, ...classes });
     const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), wallet.secretKey));
     expect((await applySpendPolicyChange(avatarId, userId, more, { nonce: challenge.nonce, signature })).kind).toBe('saved');
     expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosKeyImagesPerDay: 30 });
+  });
+
+  it('per-class Studios counts (migration 0095): defaults, 0 turns a class off without a signature, a raise needs one', async () => {
+    await db.execute(sql`DELETE FROM user_spend_policies WHERE avatar_id = ${avatarId}`);
+    const wallet = nacl.sign.keyPair();
+    await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${bs58.encode(wallet.publicKey)} WHERE id = ${userId}`);
+    const unset = { dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [] as 'studios'[], requireApproval: false };
+    expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1 });
+    expect((await applySpendPolicyChange(avatarId, userId, { ...unset, studiosVideosPerDay: 0, studiosRecastsPerDay: 0 }, null)).kind).toBe('saved');
+    expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosVideosPerDay: 0, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 0 });
+    const raise = { ...unset, studiosVideosPerDay: 3 };
+    expect(await applySpendPolicyChange(avatarId, userId, raise, null)).toEqual({ kind: 'needs_wallet_proof' });
+    const values = { ...unset, studiosKeyImagesPerDay: 10, studiosVideosPerDay: 3, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 0 };
+    const challenge = issueSpendProofChallenge(userId, values);
+    expect(challenge.messageToSign).toContain('Studios videos per day: 3\nStudios character shots per day: 5\nStudios recasts per day: 0\n');
+    const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), wallet.secretKey));
+    expect((await applySpendPolicyChange(avatarId, userId, raise, { nonce: challenge.nonce, signature })).kind).toBe('saved');
+    expect(await readSpendPolicy(avatarId)).toMatchObject({ studiosVideosPerDay: 3, studiosRecastsPerDay: 0 });
+    // The typo guard is the CHECK in 0095 too.
+    let refused = false;
+    try {
+      await db.execute(sql`UPDATE user_spend_policies SET studios_recasts_per_day = 1001 WHERE avatar_id = ${avatarId}`);
+    } catch {
+      refused = true;
+    }
+    expect(refused).toBe(true);
   });
 
   it('never lets an unchecked write become a raise under a concurrent lower change', async () => {
@@ -209,7 +236,7 @@ describeIfSchema('spend rules: executed DB contract', () => {
     const pubA = bs58.encode(walletA.publicKey);
     const pubB = bs58.encode(nacl.sign.keyPair().publicKey);
     await db.execute(sql`UPDATE users SET linked_wallet_pubkey = ${pubA} WHERE id = ${userId}`);
-    const raise = { dailyCapUsdCents: 700, perCallCapUsdCents: 70, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, requireApproval: false };
+    const raise = { dailyCapUsdCents: 700, perCallCapUsdCents: 70, allowedVendors: ['studios' as const], studiosKeyImagesPerDay: 10, studiosVideosPerDay: 2, studiosCharacterShotsPerDay: 5, studiosRecastsPerDay: 1, requireApproval: false };
     const challenge = issueSpendProofChallenge(userId, raise);
     const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), walletA.secretKey));
 

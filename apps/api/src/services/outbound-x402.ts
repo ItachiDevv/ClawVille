@@ -64,6 +64,10 @@ export interface VendorCallInput {
   idempotencyKey: string;
   url: string;
   body: Record<string, unknown>;
+  /** Time limit for the paid request (default 120 s; a Studios video waits up to 5 minutes). */
+  paidTimeoutMs?: number;
+  /** Largest reply read (default 12 MB). */
+  replyMaxBytes?: number;
 }
 
 export type VendorCallFailure =
@@ -385,10 +389,10 @@ async function finish(
   }
 }
 
-/** Read a JSON reply up to MAX_REPLY_BYTES; null when larger or not JSON. */
-export async function readJsonCapped(res: Response): Promise<unknown> {
+/** Read a JSON reply up to `maxBytes` (default MAX_REPLY_BYTES); null when larger or not JSON. */
+export async function readJsonCapped(res: Response, maxBytes = MAX_REPLY_BYTES): Promise<unknown> {
   const declared = Number(res.headers.get('content-length') ?? '0');
-  if (declared > MAX_REPLY_BYTES) {
+  if (declared > maxBytes) {
     await res.body?.cancel().catch(() => {});
     return null;
   }
@@ -400,7 +404,7 @@ export async function readJsonCapped(res: Response): Promise<unknown> {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_REPLY_BYTES) {
+    if (total > maxBytes) {
       await reader.cancel().catch(() => {});
       return null;
     }
@@ -490,7 +494,7 @@ export async function callVendorWithAvatarWallet(
   // 5) Paid request. From here on the payment may have settled.
   let paidRes: Response;
   try {
-    paidRes = await postJson(deps.fetch, input.url, input.body, PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': signed.header });
+    paidRes = await postJson(deps.fetch, input.url, input.body, input.paidTimeoutMs ?? PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': signed.header });
   } catch {
     await finish(admission.ledgerId, 'ambiguous', { failureReason: 'no_response_after_payment' });
     console.warn(`[outbound-x402] ${input.pin.vendor} ${input.tool}: no response after payment; ledger ${admission.ledgerId} ambiguous`);
@@ -501,7 +505,7 @@ export async function callVendorWithAvatarWallet(
   if (paidRes.ok) {
     let json: unknown = null;
     try {
-      json = await readJsonCapped(paidRes);
+      json = await readJsonCapped(paidRes, input.replyMaxBytes);
     } catch {
       json = null;
     }

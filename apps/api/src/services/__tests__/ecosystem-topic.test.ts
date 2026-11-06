@@ -77,10 +77,34 @@ describe('protocol `ecosystem` page', () => {
     const { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } = await import('@clawville/shared');
     expect(page).toContain(`(\`studiosKeyImagesPerDay\` in the spend rules, ${STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT} until they change it)`);
     expect(page).toContain('ClawVille sets no image count of its own.');
-    expect(page).toContain('`studiosKeyImagesPerDay`, `requireApproval` and `configured`');
-    expect(page).toContain('or to raise the images per day');
+    expect(page).toContain('`studiosKeyImagesPerDay`, `studiosVideosPerDay`, `studiosCharacterShotsPerDay`, `studiosRecastsPerDay`, `requireApproval` and `configured`');
+    expect(page).toContain('or to raise the images, videos, character shots or recasts per day');
     expect(page).not.toMatch(/at most \d+ (images )?per UTC day/);
     expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
+  });
+
+  test('v114: the manual covers video, character shots, recast, long jobs, menus, class limits and storage, without em dashes', async () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const shared = await import('@clawville/shared');
+    for (const text of [
+      `POST ${API_BASE}/api/vendors/studios/videos`,
+      `POST ${API_BASE}/api/vendors/studios/characters`,
+      `POST ${API_BASE}/api/vendors/studios/recasts`,
+      `GET ${API_BASE}/api/vendors/studios/options/<menu>`,
+      '`clawville_studios_video`', '`clawville_studios_character`', '`clawville_studios_recast`', '`clawville_studios_options`',
+      '403 operation_needs_studios_key',
+      '{ "status": "running", "requestId": "..." }',
+      `(\`studiosVideosPerDay\`, ${shared.STUDIOS_VIDEOS_PER_DAY_DEFAULT} until they change it)`,
+      `(\`studiosCharacterShotsPerDay\`, ${shared.STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT})`,
+      `(\`studiosRecastsPerDay\`, ${shared.STUDIOS_RECASTS_PER_DAY_DEFAULT})`,
+      '`413 media_quota_full`',
+      '`hosted_daily_cap`',
+      'the Studios operation, who pays',
+    ]) {
+      expect(page).toContain(text);
+    }
+    const section = page.slice(page.indexOf('### Studios videos, character shots and recast'));
+    expect(section).not.toContain('\u2014');
   });
 
   test('v111: the manual names the /game spend-cap prompt with its exact title', () => {
