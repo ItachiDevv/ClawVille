@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-05 10:29Z (protocol 110: Studios image limits are the user's own: the fixed 3/20/50 counts are gone; the Spending card gains "Images per day with your own Studios key", default 10, signed when raised.)**
+**Last Audited: 2026-11-06 06:49Z (HUD: the emote hotbar no longer draws over modals; protocol 111: the agent manual names the /game spend-cap prompt.)** Drift note: the 4-slot emote hotbar sat at z-[110], above every modal; on a 390x844 phone it covered the spend-cap prompt and the "Images per day with your own Studios key" field. It now sits at z-[47] (`HUD_Z.hotbar` in `apps/web/src/lib/hud/hud-layout.ts`): above the joysticks and the bottom prompt pills, below the z-50 dialogs, the z-[95] spend-cap prompt and the z-[100] modals. No gameplay, economy or agent change. PARITY: human-only HUD layering; the agent emote path is unchanged.
+
+**Prior Last Audited: 2026-11-05 10:29Z (protocol 110: Studios image limits are the user's own: the fixed 3/20/50 counts are gone; the Spending card gains "Images per day with your own Studios key", default 10, signed when raised.)**
 
 **Prior Last Audited: 2026-11-05 06:45Z (agent connection: Studios images phase 2b, protocol 109: a Studios images card in the wallet panel for humans; two pay modes (the human's own Studios key, or the avatar wallet inside the caps); the MCP tool `clawville_studios_image`; the hosted verb `generate_image`, 3 per day; images stored at `/api/media/<id>`.)**
 

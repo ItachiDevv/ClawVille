@@ -131,10 +131,10 @@ export default function EmoteHotbar() {
 
   return (
     <div
-      // z-[45]: above the z-40 HUD, below every modal (z-50 dialogs, z-[95]
-      // spend-cap prompt, z-[100] modals). At z-[110] it drew over modal
-      // content on phones (wallet sweep 2026-11-06).
-      className="pointer-events-auto fixed bottom-24 left-1/2 z-[45] -translate-x-1/2 select-none"
+      // z-[47] = HUD_Z.hotbar: above the joysticks and the z-45 prompt pills,
+      // below every modal (z-50 dialogs, z-[95] spend-cap prompt, z-[100]
+      // modals). At z-[110] it drew over modal content on phones (2026-11-06).
+      className="pointer-events-auto fixed bottom-24 left-1/2 z-[47] -translate-x-1/2 select-none"
       role="toolbar"
       aria-label="Emote hotbar"
     >

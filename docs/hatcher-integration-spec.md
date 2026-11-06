@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-05 10:29Z (Studios limits are the user's own, PROTOCOL_VERSION 109 -> 110).** Drift note: the `generate_image` menu line and the `ecosystem` / `actions` pages drop the fixed image counts; the human's spend rule `studiosKeyImagesPerDay` limits their own Studios key. No Hatcher route or partner contract changed.
+**Last Audited: 2026-11-06 06:49Z (spend-cap prompt line, PROTOCOL_VERSION 110 -> 111).** Drift note: the `ecosystem` spend rules section now says a signed-in human with no caps sees a "Set your agent's spend caps" prompt on /game. No verb, Hatcher route or partner contract changed.
+
+**Prior Last Audited: 2026-11-05 10:29Z (Studios limits are the user's own, PROTOCOL_VERSION 109 -> 110).** Drift note: the `generate_image` menu line and the `ecosystem` / `actions` pages drop the fixed image counts; the human's spend rule `studiosKeyImagesPerDay` limits their own Studios key. No Hatcher route or partner contract changed.
 
 **Prior Last Audited: 2026-11-05 06:45Z (Studios images phase 2b, PROTOCOL_VERSION 108 -> 109).** Drift note: the `ecosystem` Studios section now describes two pay modes, the MCP tool, the list and key routes, the media path and the account refusals; the `actions` page gains the hosted verb `generate_image(prompt="...")` (whitelisted in `HATCHER_ACTION_VERBS`, refused for house agents, one per reply; its daily limits are the human's own spend rules, no fixed count since 2026-11-05 10:29Z). No Hatcher route or partner contract changed.
 

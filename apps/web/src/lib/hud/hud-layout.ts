@@ -63,10 +63,15 @@ export const HUD_Z = {
   worldHudOverPrompt: 46,
   /** In-world seated action HUDs (e.g. the seated hold'em action panel); also the value most of `/game`'s top-of-stack chrome happens to share — see Slice 2 note above. */
   seatedGameHud: 50,
+  /**
+   * Emote hotbar: above the touch input, the z-45 bottom prompt pills and
+   * `worldHudOverPrompt`, and below every dialog (z-50 Radix dialogs, the
+   * z-[95] spend-cap prompt, the z-[100] modals). It was 110 until
+   * 2026-11-06; at 110 it drew over modal content on a 390x844 phone.
+   */
+  hotbar: 47,
   /** Interact button, floating prompts. */
   overlay: 51,
-  /** Emote hotbar — sits above ordinary HUD chrome, below game modals. */
-  hotbar: 110,
   /** Full game modals (slots / blackjack / hold'em / baccarat). */
   gameModal: 9990,
 } as const;

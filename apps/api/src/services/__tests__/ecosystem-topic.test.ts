@@ -83,6 +83,12 @@ describe('protocol `ecosystem` page', () => {
     expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
   });
 
+  test('v111: the manual names the /game spend-cap prompt with its exact title', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain('a signed-in human also sees a "Set your agent\'s spend caps" prompt on /game');
+    expect(page).toContain('"Set later" hides it until their next browser session');
+  });
+
   test('renders every served row with its URL, auth and install lines', () => {
     const page = buildEcosystemTopic(API_BASE);
     for (const entry of servedEcosystemCatalog(API_BASE)) {
