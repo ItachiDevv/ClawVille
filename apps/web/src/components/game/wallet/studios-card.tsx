@@ -18,6 +18,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { isStudiosMayHaveCharged } from '@clawville/shared';
 import { api, ApiError, type StudiosAccepted, type StudiosOperationDone, type StudiosRequestView } from '@/lib/api';
 import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { useAvatar } from '@/hooks/use-avatar';
@@ -217,8 +218,6 @@ const FINAL_NOTHING_CHARGED = new Set([
   'signin_option_unsupported', 'operation_needs_studios_key', 'interrupted_not_paid', 'job_failed', 'media_quota_full',
 ]);
 
-/** Outcomes that may have charged: the same input must not be sent again. */
-const MAY_HAVE_CHARGED = new Set(['payment_ambiguous', 'image_missing', 'media_missing', 'outcome_unknown', 'result_lost', 'job_timeout']);
 
 export function keepsRequestKey(error: unknown): boolean {
   return !(error instanceof ApiError && typeof error.code === 'string' && FINAL_NOTHING_CHARGED.has(error.code));
@@ -408,7 +407,8 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
     },
     onError: (err, vars) => {
       setError(err);
-      if (err instanceof ApiError && typeof err.code === 'string' && MAY_HAVE_CHARGED.has(err.code)) {
+      // Outcomes that may have charged (the one shared list): the same input must not be sent again.
+      if (err instanceof ApiError && isStudiosMayHaveCharged(err.code)) {
         update(vars.slotId, { blockedInput: vars.request.input });
       }
       if (!keepsRequestKey(err)) update(vars.slotId, { pending: null });

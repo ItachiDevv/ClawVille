@@ -409,7 +409,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
   clawville_studios_image: {
     sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/images')],
     calls: (_c, i) => [{ method: 'POST', path: '/api/vendors/studios/images', body: pick(i, ['prompt']), headers: idem(i) }],
-    next: 'Report data to your human; retry only with the SAME idempotencyKey. Never retry payment_ambiguous. Status 202 (data.status awaiting_approval, or running when your human pays with their Studios sign-in) means do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute.',
+    next: 'Report data to your human; retry only with the SAME idempotencyKey. Never retry payment_ambiguous. Status 202 (data.status awaiting_approval, or running when your human pays with their Studios sign-in) means do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute. 409 duplicate_request_in_flight: the same request already runs as data.requestId; read that request, do not send it again.',
   },
   clawville_studios_video: {
     sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/videos')],
@@ -419,7 +419,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
       body: pick(i, ['prompt', 'model', 'imageUrl', 'durationSeconds', 'resolution', 'aspectRatio', 'audio']),
       headers: idem(i),
     }],
-    next: 'Status 202 with data.status running or awaiting_approval: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute until status is done (data.mediaPath) or failed. Retry only with the SAME idempotencyKey. Never retry payment_ambiguous.',
+    next: 'Status 202 with data.status running or awaiting_approval: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute until status is done (data.mediaPath) or failed. Retry only with the SAME idempotencyKey. Never retry payment_ambiguous. 409 duplicate_request_in_flight: the same request already runs as data.requestId; read that request, do not send it again.',
   },
   clawville_studios_character: {
     sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/characters')],
@@ -429,7 +429,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
       body: pick(i, ['shots', 'picks', 'random', 'prompt', 'imageUrl', 'imageKind', 'style', 'quality', 'resolution']),
       headers: idem(i),
     }],
-    next: 'data.media lists one mediaPath per stored shot (data.note media_not_copied: it is only in your human\'s Studios My Media). Status 202 (awaiting_approval): your human must approve it; read GET /api/vendors/studios/requests/<data.requestId> at most once a minute. Retry only with the SAME idempotencyKey.',
+    next: 'data.media lists one mediaPath per stored shot (data.note media_not_copied: it is only in your human\'s Studios My Media). Status 202 (awaiting_approval): your human must approve it; read GET /api/vendors/studios/requests/<data.requestId> at most once a minute. Retry only with the SAME idempotencyKey. 409 duplicate_request_in_flight: the same request already runs as data.requestId; read that request, do not send it again.',
   },
   clawville_studios_recast: {
     sources: [src('vendor-studios.ts', 'post', '/api/vendors/studios', '/recasts')],
@@ -439,7 +439,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
       body: pick(i, ['preset', 'videoUrl', 'imageUrls', 'direction', 'resolution']),
       headers: idem(i),
     }],
-    next: 'Status 202 with data.status running or awaiting_approval: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute (a recast takes several minutes). Retry only with the SAME idempotencyKey.',
+    next: 'Status 202 with data.status running or awaiting_approval: do not send it again; read clawville_call GET /api/vendors/studios/requests/<data.requestId> at most once a minute (a recast takes several minutes). Retry only with the SAME idempotencyKey. 409 duplicate_request_in_flight: the same request already runs as data.requestId; read that request, do not send it again.',
   },
   clawville_studios_options: {
     sources: [src('vendor-studios.ts', 'get', '/api/vendors/studios', '/options/:menu')],

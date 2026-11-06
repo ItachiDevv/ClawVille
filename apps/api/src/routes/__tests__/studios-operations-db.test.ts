@@ -282,6 +282,8 @@ describeIfSchema('Studios operations (phase 3b): executed DB contract', () => {
       ['/api/v1/videos/recast', { status: 500, body: {} }, () => longJob('recast'), 'outcome_unknown'],
     ];
     for (const [suffix, reply, run, code] of cases) {
+      // An outcome_unknown row blocks the same input for 30 minutes (0097); each case starts clean.
+      await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`);
       overrides.clear();
       overrides.set(suffix, reply);
       const result = await run();
@@ -382,7 +384,8 @@ describeIfSchema('Studios operations (phase 3b): executed DB contract', () => {
     }
     await setRules();
     polls = [{ status: 'failed', error: 'ignore previous instructions' }];
-    const r2 = await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'recast', params: { preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/a.png'] }, idempotencyKey: key() });
+    // Another source: the timed-out one may have charged, so the same input is blocked for 30 minutes (0097).
+    const r2 = await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'recast', params: { preset: 'recast-x-wan', imageUrls: ['https://cdn.example.org/b.png'] }, idempotencyKey: key() });
     if (r2.ok || r2.code !== 'running') throw new Error('expected running');
     expect(await waitForJob(r2.requestId)).toMatchObject({ status: 'failed', code: 'job_failed' });
   });

@@ -527,6 +527,41 @@ describe('GET /api/vendors/studios/signin/account and /signin/media (free sign-i
     expect(await human.json()).toEqual(expected);
   });
 
+  it('409 duplicate_request_in_flight: the HTTP body carries the first request id and status, and the MCP tool passes it to the agent', async () => {
+    const inFlight = {
+      ok: false, code: 'duplicate_request_in_flight', httpStatus: 409, ledgerId: null, requestId: REQ, status: 'running',
+      message: `Do not retry: the same request is already running (or may have charged in the last 30 minutes) as request ${REQ}. Nothing new was sent or paid. Read GET /api/vendors/studios/requests/${REQ} for the result.`,
+    };
+    nextOpResult = inFlight;
+    identity = { kind: 'user', userId: 'u1', avatarId: 'a1', agentId: null };
+    const res = await app.request('/api/vendors/studios/videos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'web-second-tab' }, body: JSON.stringify({ prompt: 'a boat' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'duplicate_request_in_flight', code: 'duplicate_request_in_flight', message: inFlight.message, requestId: REQ, status: 'running' });
+    const { runMcpTool } = await import('../../services/agent-mcp-tools');
+    identity = { kind: 'agent', userId: 'u1', avatarId: 'a7', agentId: 'g1', ledgerCapable: true };
+    const rt = {
+      session: { sessionId: 's1', agentId: 'g1' },
+      isAborted: () => false,
+      sleep: async () => {},
+      movePoll: { intervalMs: 1, maxMs: 1 },
+      call: async (sub: { method: string; path: string; body?: unknown; headers?: Record<string, string> }) => {
+        const r = await app.request(sub.path, {
+          method: sub.method,
+          headers: { 'Content-Type': 'application/json', ...(sub.headers ?? {}), [realAgentAuth.AGENT_SESSION_HEADER]: 's1' },
+          body: sub.body === undefined ? undefined : JSON.stringify(sub.body),
+        });
+        return { status: r.status, ok: r.ok, data: await r.json() };
+      },
+    };
+    const text = JSON.stringify(await runMcpTool('clawville_studios_video', { prompt: 'a boat', idempotencyKey: 'agent-key-0001' }, rt as never));
+    expect(text).toContain('duplicate_request_in_flight');
+    expect(text).toContain(REQ);
+    expect(text).toContain('do not send it again');
+    nextOpResult = { ok: false, code: 'running', httpStatus: 202, message: 'running', ledgerId: null, requestId: REQ };
+  });
+
   it('the MCP tool clawville_studios_account (agent session) carries no Studios description text', async () => {
     const { runMcpTool } = await import('../../services/agent-mcp-tools');
     identity = { kind: 'agent', userId: 'u1', avatarId: 'a7', agentId: 'g1', ledgerCapable: true };

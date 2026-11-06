@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import * as dbMod from '@clawville/database';
+import { STUDIOS_MAY_HAVE_CHARGED_CODES, type VendorCallStatus } from '@clawville/shared';
 import {
   approveStudiosRequest,
   executeLongJob,
@@ -492,7 +493,8 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     await setRules({ requireApproval: true });
     handlers.create_image = () => finished([], 'job-ap');
     const ask = async () => {
-      const r = await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'image', params: { prompt: 'approve me' }, idempotencyKey: key() });
+      // A new prompt each time: the earlier request still waits (same input = a duplicate in flight).
+      const r = await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'image', params: { prompt: `approve me ${key()}` }, idempotencyKey: key() });
       if (r.ok || r.code !== 'awaiting_approval') throw new Error('expected awaiting_approval');
       const terms = await readApprovalTerms(avatarId, r.requestId);
       if (!terms.ok) throw new Error('expected terms');
@@ -632,7 +634,8 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     handlers.create_video = () => ({ http: 500 });
     const unknown = await waitForJob(await started(await requestStudiosOperation(videoReq())));
     expect(unknown).toMatchObject({ status: 'failed', code: 'outcome_unknown' });
-    expect(await requestStudiosOperation(videoReq())).toMatchObject({ ok: false, code: 'daily_limit' });
+    // Another prompt: the same one would be a duplicate in flight (outcome_unknown blocks it).
+    expect(await requestStudiosOperation({ ...videoReq(), params: { prompt: 'another boat' } })).toMatchObject({ ok: false, code: 'daily_limit' });
   });
   // ---------------------------------------------------------------------------
   // The payer is read under the spend-rules lock (Codex review 2026-11-06)
@@ -688,6 +691,125 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     expect(await requesting).toMatchObject({ ok: false, code: 'studios_key_missing', httpStatus: 403 });
     expect(await rows()).toBe(0);
     expect(toolCalls).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Server-side dedupe of the same input under a new key (0097, Codex 2026-11-06)
+  // ---------------------------------------------------------------------------
+
+  const boat = (actor: 'agent' | 'human', prompt = 'a boat', idempotencyKey = key()) =>
+    requestStudiosOperation({ avatarId, actor, operation: 'video', params: { prompt }, idempotencyKey });
+  async function waiting(result: Awaited<ReturnType<typeof requestStudiosOperation>>): Promise<string> {
+    if (result.ok || result.code !== 'awaiting_approval') throw new Error(`expected awaiting_approval, got ${JSON.stringify(result)}`);
+    return result.requestId;
+  }
+  const setRow = (id: string, status: string, failureCode: string | null = null) =>
+    db.execute(sql`UPDATE vendor_call_requests SET status = ${status}, failure_code = ${failureCode} WHERE id = ${id}`);
+  const inFlightOf = (requestId: string, status: string) => ({
+    ok: false as const,
+    code: 'duplicate_request_in_flight' as const,
+    httpStatus: 409 as const,
+    message: `Do not retry: the same request is already running (or may have charged in the last 30 minutes) as request ${requestId}. Nothing new was sent or paid. Read GET /api/vendors/studios/requests/${requestId} for the result.`,
+    ledgerId: null,
+    requestId,
+    status: status as VendorCallStatus,
+  });
+
+  it('dedupe: two keys with the same input (two tabs, or a lost reply and key) get 409 with the first request; agent and human both; nothing inserted or called', async () => {
+    await setRules({ requireApproval: true });
+    const firstKey = key();
+    const id = await waiting(await boat('agent', 'a boat', firstKey));
+    // The human's web form, a new key, the same input: attaches to the agent's request.
+    expect(await boat('human')).toEqual(inFlightOf(id, 'awaiting_approval'));
+    // The same key keeps its replay (the same waiting request, not a 409).
+    expect(await boat('agent', 'a boat', firstKey)).toMatchObject({ ok: false, code: 'awaiting_approval', requestId: id });
+    for (const status of ['pending', 'running']) {
+      await setRow(id, status);
+      expect(await boat('agent')).toEqual(inFlightOf(id, status));
+    }
+    expect(await rows()).toBe(1);
+    // The reverse: the human first, then the agent with a new key.
+    await db.execute(sql`DELETE FROM vendor_call_requests WHERE avatar_id = ${avatarId}`);
+    const human = await waiting(await boat('human', 'a red boat'));
+    expect(await boat('agent', 'a red boat')).toEqual(inFlightOf(human, 'awaiting_approval'));
+    expect(await rows()).toBe(1);
+    expect(toolCalls).toEqual([]);
+  });
+
+  it('dedupe: prompt whitespace is normalized; a different prompt, operation or pay mode is not blocked', async () => {
+    await setRules({ requireApproval: true });
+    const id = await waiting(await boat('agent', 'a boat'));
+    expect(await boat('agent', '  a \n boat\t')).toEqual(inFlightOf(id, 'awaiting_approval'));
+    await waiting(await boat('agent', 'a ship'));
+    await waiting(await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'image', params: { prompt: 'a boat' }, idempotencyKey: key() }));
+    await saveVendorKey(avatarId, 'studios', userId, KEY);
+    await setRules({ requireApproval: true, payMode: 'key' });
+    await waiting(await boat('agent', 'a boat'));
+    expect(await rows()).toBe(4);
+  });
+
+  it('dedupe runs before the waiting-request limit: the hosted verb gets the 409, not approval_pending_limit', async () => {
+    await setRules({ requireApproval: true });
+    const id = await waiting(await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'video', params: { prompt: 'a boat' }, idempotencyKey: key(), surface: 'hosted' }));
+    expect(await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'video', params: { prompt: 'a boat' }, idempotencyKey: key(), surface: 'hosted' }))
+      .toEqual(inFlightOf(id, 'awaiting_approval'));
+    expect(await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'video', params: { prompt: 'a ship' }, idempotencyKey: key(), surface: 'hosted' }))
+      .toMatchObject({ ok: false, code: 'approval_pending_limit' });
+  });
+
+  it('dedupe: done, failed, declined and expired do not block a new request', async () => {
+    await setRules({ requireApproval: true });
+    for (const [status, code] of [['done', null], ['failed', 'vendor_refused'], ['failed', 'job_failed'], ['declined', null], ['expired', null]] as const) {
+      const id = await waiting(await boat('agent'));
+      await setRow(id, status, code);
+      const next = await waiting(await boat('agent'));
+      expect(next).not.toBe(id);
+      await setRow(next, 'declined');
+    }
+  });
+
+  it('dedupe: a real sign-in job that finished does not block; one that ended outcome_unknown blocks the same input for 30 minutes only', async () => {
+    handlers.create_video = () => finished([], 'job-dd-1');
+    const done = await started(await boat('agent'));
+    expect(await waitForJob(done)).toMatchObject({ status: 'done' });
+    handlers.create_video = () => ({ http: 500 });
+    const unknown = await started(await boat('agent'));
+    expect(await waitForJob(unknown)).toMatchObject({ status: 'failed', code: 'outcome_unknown' });
+    const callsBefore = toolCalls.length;
+    expect(await boat('human')).toEqual(inFlightOf(unknown, 'failed'));
+    // Another prompt is not blocked.
+    await waitForJob(await started(await boat('agent', 'a ship')));
+    // 31 minutes later the same input may go again.
+    await db.execute(sql`UPDATE vendor_call_requests SET created_at = now() - interval '31 minutes' WHERE id = ${unknown}`);
+    handlers.create_video = () => finished([], 'job-dd-2');
+    const again = await started(await boat('agent'));
+    expect(again).not.toBe(unknown);
+    expect(await waitForJob(again)).toMatchObject({ status: 'done' });
+    expect(toolCalls.length).toBeGreaterThan(callsBefore);
+  });
+
+  for (const code of STUDIOS_MAY_HAVE_CHARGED_CODES) {
+    it(`may have charged (${code}): a failed row blocks the same input for 30 minutes and still counts toward the class limit`, async () => {
+      await setRules({ requireApproval: true, videos: 2 });
+      const id = await waiting(await boat('agent'));
+      await setRow(id, 'failed', code);
+      expect(await boat('human')).toEqual(inFlightOf(id, 'failed'));
+      // It counts: one more video fits under the limit of 2, the next one does not.
+      await waiting(await boat('agent', 'a ship'));
+      expect(await boat('agent', 'a canoe')).toMatchObject({ ok: false, code: 'daily_limit' });
+      // 31 minutes later the same input is not blocked (it still counts for the day).
+      await db.execute(sql`UPDATE vendor_call_requests SET created_at = now() - interval '31 minutes' WHERE id = ${id}`);
+      expect(await boat('agent')).toMatchObject({ ok: false, code: 'daily_limit' });
+    });
+  }
+
+  it('dedupe: ambiguous blocks for 30 minutes too', async () => {
+    await setRules({ requireApproval: true });
+    const id = await waiting(await boat('agent'));
+    await setRow(id, 'ambiguous');
+    expect(await boat('agent')).toEqual(inFlightOf(id, 'ambiguous'));
+    await db.execute(sql`UPDATE vendor_call_requests SET created_at = now() - interval '31 minutes' WHERE id = ${id}`);
+    await waiting(await boat('agent'));
   });
 
   it('the key save and the sign-in unlink wait for the same lock', async () => {

@@ -283,6 +283,17 @@ describe('hosted verbs: grammar and result lines', () => {
     }
   });
 
+  it('a duplicate in flight (0097) tells the hosted agent not to send it again, for every operation and the image verb', () => {
+    const dup = { ok: false as const, code: 'duplicate_request_in_flight' as const, httpStatus: 409 as const, message: 'm', ledgerId: null, requestId: 'r', status: 'running' as const };
+    for (const op of ['video', 'character_shots', 'recast'] as const) {
+      const line = formatStudiosJobLine(op, dup);
+      expect(line).toContain('already running');
+      expect(line).toContain('Do not send it again');
+      expect(line.length).toBeLessThanOrEqual(200);
+    }
+    expect(formatGeneratedImageResult(dup)).toContain('generate_image request is already running');
+  });
+
   it('every line says when a long job runs or waits, uses our fields only, and fits 200 characters', () => {
     const lines = [
       formatStudiosJobLine('video', { ok: false, code: 'running', httpStatus: 202, message: 'vendor text', ledgerId: null, requestId: 'r' }),

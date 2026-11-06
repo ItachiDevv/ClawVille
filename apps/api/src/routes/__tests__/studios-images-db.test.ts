@@ -147,11 +147,11 @@ describeIfSchema('studios images: executed DB contract', () => {
 
   it('mode A: maps a refused key and no credits to our own codes', async () => {
     fakeStudios(401, { error: 'bad key' });
-    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-a2` })).toMatchObject({ ok: false, code: 'studios_key_invalid' });
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x a2', idempotencyKey: `${tag}-a2` })).toMatchObject({ ok: false, code: 'studios_key_invalid' });
     fakeStudios(402, { error: 'no credits' });
-    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-a3` })).toMatchObject({ ok: false, code: 'studios_account_refused' });
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x a3', idempotencyKey: `${tag}-a3` })).toMatchObject({ ok: false, code: 'studios_account_refused' });
     fakeStudios(200, { data: [{ b64_json: Buffer.from('<svg/>').toString('base64') }] });
-    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-a4` })).toMatchObject({ ok: false, code: 'image_missing' });
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x a4', idempotencyKey: `${tag}-a4` })).toMatchObject({ ok: false, code: 'image_missing' });
   });
 
   it('keeps only the newest images per avatar', async () => {

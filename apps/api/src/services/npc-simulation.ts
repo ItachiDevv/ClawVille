@@ -390,7 +390,9 @@ export function formatGeneratedImageResult(result: StudiosImageResult): string {
     return 'Studio: generate_image waits for your human to approve it in the wallet panel (it expires in 15 minutes); nothing was paid yet. Do not send another generate_image until your human answers.';
   }
   // Sign-in mode: the image is a Studios job (running first, then the operation shape).
-  if ((!result.ok && result.code === 'running') || (result.ok && 'operation' in result)) return formatStudiosJobLine('image', result);
+  if ((!result.ok && (result.code === 'running' || result.code === 'duplicate_request_in_flight')) || (result.ok && 'operation' in result)) {
+    return formatStudiosJobLine('image', result);
+  }
   if (!result.ok) return formatStudiosRefusalLine('generate_image', result.code, result.message);
   const path = /^\/api\/media\/[A-Za-z0-9-]{1,64}$/.test(result.mediaPath) ? result.mediaPath : 'your media list';
   const cents = typeof result.paidUsdCents === 'number' && Number.isFinite(result.paidUsdCents)
@@ -473,6 +475,9 @@ export function formatStudiosJobLine(
   }
   if (!result.ok && result.code === 'approval_declined') {
     return `Studio: your human declined your ${verb} request; nothing was made or paid. Do not send the same request again.`;
+  }
+  if (!result.ok && result.code === 'duplicate_request_in_flight') {
+    return `Studio: the same ${verb} request is already running; nothing new was sent or paid. Do not send it again; your next decision gets the result.`;
   }
   if (!result.ok) return formatStudiosRefusalLine(verb, result.code, result.message);
   if ('operation' in result && result.mediaPath === null) {

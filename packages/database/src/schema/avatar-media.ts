@@ -85,11 +85,18 @@ export const vendorCallRequests = pgTable('vendor_call_requests', {
   jobDeadlineAt: timestamp('job_deadline_at', { withTimezone: true }),
   /** The token of the runner that holds the row; every runner write matches it. */
   leaseOwner: varchar('lease_owner', { length: 64 }),
+  /**
+   * Migration 0097: SHA-256 of avatar + operation + row mode + canonical params
+   * (prompt whitespace normalized). A new key with the same input as a request
+   * that still runs (or may have charged) answers 409 duplicate_request_in_flight.
+   */
+  inputFingerprint: varchar('input_fingerprint', { length: 64 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   avatarVendorIdemUnique: uniqueIndex('vendor_call_requests_avatar_vendor_idem_unique').on(table.avatarId, table.vendor, table.idempotencyKey),
   avatarCreatedIdx: index('vendor_call_requests_avatar_created_idx').on(table.avatarId, table.createdAt),
+  avatarFingerprintIdx: index('vendor_call_requests_avatar_fingerprint_idx').on(table.avatarId, table.inputFingerprint),
 }));
 
 export type VendorCallRequestRow = typeof vendorCallRequests.$inferSelect;

@@ -61,6 +61,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { and, asc, avatarMedia, db, desc, eq, inArray, isNull, or, sql, userSpendPolicies, vendorCallRequests, vendorSpendLedger } from '@clawville/database';
 import {
+  STUDIOS_MAY_HAVE_CHARGED_CODES,
   SPEND_APPROVAL_MAX_AWAITING,
   SPEND_APPROVAL_TTL_MS,
   type StudiosOperationId,
@@ -169,6 +170,21 @@ export interface StudiosRunning {
   requestId: string;
 }
 
+/**
+ * The same input already waits or runs (or may have charged in the last 30
+ * minutes) under another Idempotency-Key (HTTP 409). Nothing was inserted,
+ * called or paid. Read that request instead of sending it again.
+ */
+export interface StudiosInFlight {
+  ok: false;
+  code: 'duplicate_request_in_flight';
+  httpStatus: 409;
+  message: string;
+  ledgerId: null;
+  requestId: string;
+  status: VendorCallStatus;
+}
+
 /** A finished image (phase 2b shape, unchanged). */
 export interface StudiosImageSuccess {
   ok: true;
@@ -211,8 +227,8 @@ export interface StudiosOperationSuccess {
  * An image request's answer. In sign-in mode the image is a job: 'running'
  * first, and a retry of the finished request returns the operation shape.
  */
-export type StudiosImageResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning;
-export type StudiosOperationResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning;
+export type StudiosImageResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning | StudiosInFlight;
+export type StudiosOperationResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning | StudiosInFlight;
 
 /** A refusal or failure with our own code and message. */
 export interface StudiosImageRefusal { ok: false; code: StudiosImageFailure; message: string; httpStatus: FailureStatus; ledgerId: string | null }
@@ -299,6 +315,59 @@ function running(requestId: string): StudiosRunning {
     ledgerId: null,
     requestId,
   };
+}
+
+function inFlight(requestId: string, status: VendorCallStatus): StudiosInFlight {
+  return {
+    ok: false,
+    code: 'duplicate_request_in_flight',
+    httpStatus: 409,
+    message: `Do not retry: the same request is already running (or may have charged in the last 30 minutes) as request ${requestId}. Nothing new was sent or paid. Read GET /api/vendors/studios/requests/${requestId} for the result.`,
+    ledgerId: null,
+    requestId,
+    status,
+  };
+}
+
+/** How long a request that may have charged (ambiguous, or failed with a STUDIOS_MAY_HAVE_CHARGED_CODES code) blocks the same input. */
+export const IN_FLIGHT_UNCLEAR_WINDOW_MS = 30 * 60_000;
+
+/**
+ * SHA-256 (hex) of one request's input: avatar, operation, row mode and the
+ * canonical params (sorted keys; the prompt with its whitespace collapsed).
+ * Actor and surface stay out, so a human form and the agent collide.
+ */
+export function studiosInputFingerprint(input: { avatarId: string; operation: StudiosOperationId; mode: StudiosMode; params: StudiosParams }): string {
+  const params: Record<string, unknown> = { ...(input.params as unknown as Record<string, unknown>) };
+  if (typeof params.prompt === 'string') params.prompt = params.prompt.replace(/\s+/g, ' ').trim();
+  return createHash('sha256')
+    .update(canonicalJson({ avatarId: input.avatarId, operation: input.operation, mode: input.mode, params }), 'utf8')
+    .digest('hex');
+}
+
+/** The oldest request of this avatar with the same input that still blocks a new key, or null. */
+async function inFlightTwin(executor: Executor, avatarId: string, fingerprint: string): Promise<{ id: string; status: string } | null> {
+  const since = new Date(Date.now() - IN_FLIGHT_UNCLEAR_WINDOW_MS);
+  const [row] = await executor.select({ id: vendorCallRequests.id, status: vendorCallRequests.status })
+    .from(vendorCallRequests)
+    .where(and(
+      eq(vendorCallRequests.avatarId, avatarId),
+      eq(vendorCallRequests.vendor, 'studios'),
+      eq(vendorCallRequests.inputFingerprint, fingerprint),
+      or(
+        inArray(vendorCallRequests.status, ['awaiting_approval', 'pending', 'running']),
+        and(
+          sql`${vendorCallRequests.createdAt} > ${since.toISOString()}::timestamptz`,
+          or(
+            eq(vendorCallRequests.status, 'ambiguous'),
+            and(eq(vendorCallRequests.status, 'failed'), inArray(vendorCallRequests.failureCode, [...STUDIOS_MAY_HAVE_CHARGED_CODES])),
+          ),
+        ),
+      ),
+    ))
+    .orderBy(asc(vendorCallRequests.createdAt))
+    .limit(1);
+  return row ?? null;
 }
 
 function storedModel(model: string | null): StudiosImageModel | undefined {
@@ -464,6 +533,12 @@ const NOT_CHARGED_FAILURES: StudiosImageFailure[] = [
   'studios_signin_missing', 'studios_signin_broken', 'studios_signin_changed', 'signin_option_unsupported',
   'operation_needs_studios_key', 'interrupted_not_paid', 'job_failed', 'media_quota_full', 'daily_limit', 'hosted_daily_cap',
 ];
+// A code cannot be both: a failed row that may have charged always counts.
+// Crash loud at load if the two lists ever overlap.
+{
+  const overlap = NOT_CHARGED_FAILURES.filter((c) => (STUDIOS_MAY_HAVE_CHARGED_CODES as readonly string[]).includes(c));
+  if (overlap.length > 0) throw new Error(`NOT_CHARGED_FAILURES overlaps STUDIOS_MAY_HAVE_CHARGED_CODES: ${overlap.join(', ')}`);
+}
 const UNFINISHED_STATUSES: VendorCallStatus[] = ['awaiting_approval', 'pending', 'running'];
 
 /**
@@ -689,6 +764,13 @@ async function reserveRequest(input: {
     if (!op.modes.includes(mode)) return { kind: 'done', result: failure('operation_needs_studios_key') };
     // A setting the sign-in tools do not take is refused before any row or call.
     if (mode === 'signin' && !buildSigninToolCall(op.id, input.params).ok) return { kind: 'done', result: failure('signin_option_unsupported') };
+    // A NEW key with the same input as a request that still waits or runs (or
+    // may have charged lately) inserts nothing: two tabs, or a client that lost
+    // the reply and its key, attach to that request instead of paying twice.
+    // Before the day limits, which count waiting rows.
+    const inputFingerprint = studiosInputFingerprint({ avatarId: input.avatarId, operation: op.id, mode, params: input.params });
+    const twin = await inFlightTwin(tx, input.avatarId, inputFingerprint);
+    if (twin) return { kind: 'done', result: inFlight(twin.id, twin.status as VendorCallStatus) };
     const policy = await readPolicyRow(tx, input.avatarId);
     const limited = await dayLimitRefusal(tx, {
       avatarId: input.avatarId, op, mode, surface: input.surface, policy, includeWaiting: true,
@@ -719,6 +801,7 @@ async function reserveRequest(input: {
       // Image keeps its phase 2b columns (prompt + model); the others keep their settings.
       params: op.id === 'image' ? null : input.params,
       credentialSha256: payer.credentialSha256,
+      inputFingerprint,
     };
     // "Ask me before each payment": EVERY request waits, the human's own web
     // form too (lead decision 2026-11-06, Codex review): a magic link passes

@@ -111,7 +111,8 @@ describeIfSchema('"ask me before each payment": executed DB contract', () => {
   }
 
   async function waitingRequest(opts: { surface?: 'api' | 'hosted'; prompt?: string } = {}) {
-    const r = await generateStudiosImage({ avatarId, actor: 'agent', prompt: opts.prompt ?? 'a crab', idempotencyKey: key(), surface: opts.surface });
+    // A new prompt each time: the same input under a new key is a duplicate in flight (0097).
+    const r = await generateStudiosImage({ avatarId, actor: 'agent', prompt: opts.prompt ?? `a crab ${key()}`, idempotencyKey: key(), surface: opts.surface });
     if (r.ok || r.code !== 'awaiting_approval') throw new Error(`expected awaiting_approval, got ${JSON.stringify(r)}`);
     return r;
   }

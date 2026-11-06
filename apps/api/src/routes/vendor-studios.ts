@@ -183,6 +183,10 @@ function answer(c: Context, result: StudiosOperationResult | StudiosImageResult)
   if (!result.ok && result.code === 'running') {
     return c.json({ status: 'running', requestId: result.requestId, message: result.message }, 202);
   }
+  if (!result.ok && result.code === 'duplicate_request_in_flight') {
+    // The same input already waits or runs under another key: attach to it.
+    return c.json({ error: result.code, code: result.code, message: result.message, requestId: result.requestId, status: result.status }, 409);
+  }
   if (!result.ok) {
     return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId }, result.httpStatus);
   }

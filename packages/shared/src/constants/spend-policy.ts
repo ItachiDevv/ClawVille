@@ -66,6 +66,23 @@ export const SPEND_APPROVAL_TTL_MS = 15 * 60_000;
 export const SPEND_APPROVAL_MAX_AWAITING = 5;
 
 /** Status of one paid-tool request (`vendor_call_requests.status`). */
+/**
+ * THE one list of Studios failure codes that may have charged (the wallet or
+ * the human's Studios credits): our message says "may have" or the money
+ * moved before the result was lost. Every rule that decides this reads it:
+ * the server dedupe (the same input is blocked for 30 minutes), the per-day
+ * class counts (such a failed row always counts) and the web forms (the same
+ * input is not sent again). Never copy it.
+ */
+export const STUDIOS_MAY_HAVE_CHARGED_CODES = [
+  'payment_ambiguous', 'image_missing', 'media_missing', 'outcome_unknown', 'result_lost', 'job_timeout',
+] as const;
+export type StudiosMayHaveChargedCode = (typeof STUDIOS_MAY_HAVE_CHARGED_CODES)[number];
+
+export function isStudiosMayHaveCharged(code: string | null | undefined): code is StudiosMayHaveChargedCode {
+  return typeof code === 'string' && (STUDIOS_MAY_HAVE_CHARGED_CODES as readonly string[]).includes(code);
+}
+
 export const VENDOR_CALL_STATUSES = ['awaiting_approval', 'pending', 'running', 'done', 'failed', 'ambiguous', 'declined', 'expired'] as const;
 export type VendorCallStatus = (typeof VENDOR_CALL_STATUSES)[number];
 
