@@ -86,11 +86,14 @@ export const vendorCallRequests = pgTable('vendor_call_requests', {
   /** The token of the runner that holds the row; every runner write matches it. */
   leaseOwner: varchar('lease_owner', { length: 64 }),
   /**
-   * Migration 0097: SHA-256 of avatar + operation + row mode + canonical params
-   * (prompt whitespace normalized). A new key with the same input as a request
-   * that still runs (or may have charged) answers 409 duplicate_request_in_flight.
+   * Migration 0097: SHA-256 of avatar + operation + the canonical vendor body
+   * after defaults (prompt whitespace collapsed; no pay mode). A new key with
+   * the same input as a request that still runs (or may have charged in the
+   * last 30 minutes) answers 409 duplicate_request_in_flight.
    */
   inputFingerprint: varchar('input_fingerprint', { length: 64 }),
+  /** Migration 0097: when the row became terminal; a DB trigger sets it for every writer. */
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({

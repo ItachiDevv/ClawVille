@@ -23,7 +23,7 @@ import {
 import { fetchStudiosArtifact, sniffMedia, studiosDownloadUrl } from '../studios-media';
 import { parseRange } from '../../routes/media';
 import { formatGeneratedImageResult, formatStudiosJobLine, parseRecastCharacterParams } from '../npc-simulation';
-import { studiosRefusalFor } from '../studios-images';
+import { studiosInputFingerprint, studiosRefusalFor } from '../studios-images';
 import { toSpendPolicyView } from '../spend-policy';
 
 const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom', 'latin1'), Buffer.alloc(16, 2)]);
@@ -281,6 +281,29 @@ describe('hosted verbs: grammar and result lines', () => {
     for (const bad of ['', `preset=a, preset=b`, `preset=a`, `preset=a, mediaId=not-a-uuid`, `preset=a, mediaId=${id}, x=1`, `preset="a", mediaId=${id}`, `preset=A_b, mediaId=${id}, `]) {
       expect(parseRecastCharacterParams(bad)).toBeNull();
     }
+  });
+
+  it('the input fingerprint (0097) is the vendor body after defaults: omitted and explicit defaults match, for every operation', () => {
+    const fp = (operation: 'image' | 'video' | 'character_shots' | 'recast', params: Record<string, unknown>, avatarId = 'av-1') =>
+      studiosInputFingerprint({ avatarId, operation, params: params as never });
+    // image: the default model
+    expect(fp('image', { prompt: 'a gull' })).toBe(fp('image', { prompt: 'a gull', model: 'z-image-turbo' }));
+    // video: the default model
+    expect(fp('video', { prompt: 'a gull' })).toBe(fp('video', { prompt: 'a gull', model: 'minimax-h3-max-turbo' }));
+    expect(fp('video', { prompt: 'a gull' })).not.toBe(fp('video', { prompt: 'a gull', durationSeconds: 6 }));
+    // character shots: the default shots and resolution; a pick as one id or a list of one
+    expect(fp('character_shots', { prompt: 'p', picks: { hair: 'h1' } }))
+      .toBe(fp('character_shots', { prompt: 'p', shots: ['sheet'], resolution: '1K', picks: { hair: ['h1'] } }));
+    expect(fp('character_shots', { prompt: 'p' })).not.toBe(fp('character_shots', { prompt: 'p', resolution: '2K' }));
+    // recast: no defaults; the direction whitespace is collapsed; the preset matters
+    const recast = { preset: 'recast-x-wan', imageUrls: ['https://mystudios.fun/a.png'] };
+    expect(fp('recast', { ...recast, direction: 'spin  slowly ' })).toBe(fp('recast', { ...recast, direction: 'spin slowly' }));
+    expect(fp('recast', recast)).not.toBe(fp('recast', { ...recast, preset: 'recast-y' }));
+    // prompt whitespace, key order; the avatar and the operation are part of it
+    expect(fp('image', { prompt: ' a \n gull ' })).toBe(fp('image', { prompt: 'a gull' }));
+    expect(fp('image', { prompt: 'a gull' })).not.toBe(fp('image', { prompt: 'a gull' }, 'av-2'));
+    expect(fp('image', { prompt: 'a gull' })).not.toBe(fp('video', { prompt: 'a gull' }));
+    expect(fp('image', { prompt: 'a gull' })).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('a duplicate in flight (0097) tells the hosted agent not to send it again, for every operation and the image verb', () => {

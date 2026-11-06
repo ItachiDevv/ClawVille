@@ -705,6 +705,9 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
   }
   const setRow = (id: string, status: string, failureCode: string | null = null) =>
     db.execute(sql`UPDATE vendor_call_requests SET status = ${status}, failure_code = ${failureCode} WHERE id = ${id}`);
+  /** Move the end of a terminal row into the past (the trigger stamped it at the status change). */
+  const endedAgo = (id: string, minutes: number) =>
+    db.execute(sql`UPDATE vendor_call_requests SET finished_at = now() - make_interval(mins => ${minutes}) WHERE id = ${id}`);
   const inFlightOf = (requestId: string, status: string) => ({
     ok: false as const,
     code: 'duplicate_request_in_flight' as const,
@@ -736,16 +739,84 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     expect(toolCalls).toEqual([]);
   });
 
-  it('dedupe: prompt whitespace is normalized; a different prompt, operation or pay mode is not blocked', async () => {
+  it('dedupe: prompt whitespace is normalized; a different prompt or operation is not blocked; another pay mode IS blocked', async () => {
     await setRules({ requireApproval: true });
     const id = await waiting(await boat('agent', 'a boat'));
     expect(await boat('agent', '  a \n boat\t')).toEqual(inFlightOf(id, 'awaiting_approval'));
     await waiting(await boat('agent', 'a ship'));
     await waiting(await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'image', params: { prompt: 'a boat' }, idempotencyKey: key() }));
+    // The pay mode is not part of the input: the same video on the human's own key attaches to the sign-in one.
     await saveVendorKey(avatarId, 'studios', userId, KEY);
     await setRules({ requireApproval: true, payMode: 'key' });
-    await waiting(await boat('agent', 'a boat'));
-    expect(await rows()).toBe(4);
+    expect(await boat('agent', 'a boat')).toEqual(inFlightOf(id, 'awaiting_approval'));
+    expect(await rows()).toBe(3);
+  });
+
+  it('dedupe: an unclear wallet request blocks the same input on the key and the sign-in for 30 minutes after it ended', async () => {
+    await setRules({ requireApproval: true, payMode: 'wallet', daily: 100, perCall: 50, vendors: ['studios'] });
+    const id = await waiting(await boat('agent'));
+    await setRow(id, 'ambiguous');
+    await setRules({ requireApproval: true, payMode: 'signin' });
+    expect(await boat('agent')).toEqual(inFlightOf(id, 'ambiguous'));
+    await saveVendorKey(avatarId, 'studios', userId, KEY);
+    await setRules({ requireApproval: true, payMode: 'key' });
+    expect(await boat('human')).toEqual(inFlightOf(id, 'ambiguous'));
+    await endedAgo(id, 31);
+    await waiting(await boat('agent'));
+  });
+
+  it('dedupe: an omitted default and the explicit default are the same input (image model, video model, character shots and resolution)', async () => {
+    await setRules({ requireApproval: true });
+    const ask = (operation: 'image' | 'video' | 'character_shots', params: Record<string, unknown>) =>
+      requestStudiosOperation({ avatarId, actor: 'agent', operation, params: params as never, idempotencyKey: key() });
+    const img = await waiting(await ask('image', { prompt: 'a gull' }));
+    expect(await ask('image', { prompt: 'a gull', model: 'z-image-turbo' })).toEqual(inFlightOf(img, 'awaiting_approval'));
+    const vid = await waiting(await ask('video', { prompt: 'a gull', model: 'minimax-h3-max-turbo' }));
+    expect(await ask('video', { prompt: 'a gull' })).toEqual(inFlightOf(vid, 'awaiting_approval'));
+    const chr = await waiting(await ask('character_shots', { prompt: 'a gull', picks: { hair: 'h1' } }));
+    expect(await ask('character_shots', { prompt: 'a gull', shots: ['sheet'], picks: { hair: ['h1'] } })).toEqual(inFlightOf(chr, 'awaiting_approval'));
+  });
+
+  it('dedupe: the window starts when the row ENDED: a job_timeout on a request made 2 hours ago still blocks; 31 minutes after the end it does not', async () => {
+    await setRules({ requireApproval: true });
+    const id = await waiting(await boat('agent'));
+    await db.execute(sql`UPDATE vendor_call_requests SET status = 'running', created_at = now() - interval '2 hours' WHERE id = ${id}`);
+    // Still running after 2 hours: blocks at any age.
+    expect(await boat('agent')).toEqual(inFlightOf(id, 'running'));
+    await setRow(id, 'failed', 'job_timeout');
+    const ended = first(await db.execute<{ finished_at: string | null }>(sql`SELECT finished_at FROM vendor_call_requests WHERE id = ${id}`)).finished_at;
+    expect(ended).not.toBeNull();
+    expect(await boat('agent')).toEqual(inFlightOf(id, 'failed'));
+    await endedAgo(id, 31);
+    await waiting(await boat('agent'));
+  });
+
+  it('replay: the same key names the request and its status; after an end it carries the stored code', async () => {
+    await setRules({ requireApproval: true });
+    const k = key();
+    const id = await waiting(await boat('agent', 'a boat', k));
+    for (const [status, code, expected] of [
+      ['failed', 'studios_key_invalid', 'studios_key_invalid'],
+      ['failed', 'outcome_unknown', 'outcome_unknown'],
+      ['failed', null, 'duplicate_request'],
+      ['declined', null, 'approval_declined'],
+      ['expired', null, 'approval_expired'],
+      ['ambiguous', null, 'payment_ambiguous'],
+      ['pending', null, 'duplicate_request'],
+    ] as const) {
+      await setRow(id, status, code);
+      const replay = await boat('agent', 'a boat', k);
+      expect(replay).toMatchObject({ ok: false, code: expected, requestId: id, status });
+      // An ended request carries failureCode (the same as code); one that still runs does not.
+      if (status === 'pending') expect(replay).not.toHaveProperty('failureCode');
+      else expect(replay).toMatchObject({ failureCode: expected });
+    }
+    await setRow(id, 'running');
+    expect(await boat('agent', 'a boat', k)).toMatchObject({ ok: false, code: 'running', requestId: id });
+    // The same key for another operation: duplicate_request, still naming the request.
+    expect(await requestStudiosOperation({ avatarId, actor: 'agent', operation: 'image', params: { prompt: 'a boat' }, idempotencyKey: k }))
+      .toMatchObject({ ok: false, code: 'duplicate_request', requestId: id, status: 'running' });
+    expect(await rows()).toBe(1);
   });
 
   it('dedupe runs before the waiting-request limit: the hosted verb gets the 409, not approval_pending_limit', async () => {
@@ -780,7 +851,7 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     // Another prompt is not blocked.
     await waitForJob(await started(await boat('agent', 'a ship')));
     // 31 minutes later the same input may go again.
-    await db.execute(sql`UPDATE vendor_call_requests SET created_at = now() - interval '31 minutes' WHERE id = ${unknown}`);
+    await endedAgo(unknown, 31);
     handlers.create_video = () => finished([], 'job-dd-2');
     const again = await started(await boat('agent'));
     expect(again).not.toBe(unknown);
@@ -798,7 +869,7 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
       await waiting(await boat('agent', 'a ship'));
       expect(await boat('agent', 'a canoe')).toMatchObject({ ok: false, code: 'daily_limit' });
       // 31 minutes later the same input is not blocked (it still counts for the day).
-      await db.execute(sql`UPDATE vendor_call_requests SET created_at = now() - interval '31 minutes' WHERE id = ${id}`);
+      await endedAgo(id, 31);
       expect(await boat('agent')).toMatchObject({ ok: false, code: 'daily_limit' });
     });
   }
@@ -808,7 +879,7 @@ describeIfSchema('Studios sign-in operations (phase 3c part 2): executed DB cont
     const id = await waiting(await boat('agent'));
     await setRow(id, 'ambiguous');
     expect(await boat('agent')).toEqual(inFlightOf(id, 'ambiguous'));
-    await db.execute(sql`UPDATE vendor_call_requests SET created_at = now() - interval '31 minutes' WHERE id = ${id}`);
+    await endedAgo(id, 31);
     await waiting(await boat('agent'));
   });
 

@@ -188,6 +188,9 @@ export interface StudiosInFlight {
 /** A finished image (phase 2b shape, unchanged). */
 export interface StudiosImageSuccess {
   ok: true;
+  /** Set on a same-key replay: the request and its status. */
+  requestId?: string;
+  status?: 'done';
   mode: 'wallet' | 'account' | 'signin';
   mediaId: string;
   /** Path on the ClawVille API (prefix the API base URL). */
@@ -209,6 +212,8 @@ export interface StudiosOperationSuccess {
   ok: true;
   operation: StudiosOperationId;
   requestId: string;
+  /** Set on a same-key replay. */
+  status?: 'done';
   mode: 'wallet' | 'account' | 'signin';
   /** The first stored item; null when nothing was copied (see `note`). */
   mediaId: string | null;
@@ -231,7 +236,18 @@ export type StudiosImageResult = StudiosImageSuccess | StudiosOperationSuccess |
 export type StudiosOperationResult = StudiosImageSuccess | StudiosOperationSuccess | StudiosImageRefusal | StudiosImageAwaiting | StudiosRunning | StudiosInFlight;
 
 /** A refusal or failure with our own code and message. */
-export interface StudiosImageRefusal { ok: false; code: StudiosImageFailure; message: string; httpStatus: FailureStatus; ledgerId: string | null }
+export interface StudiosImageRefusal {
+  ok: false;
+  code: StudiosImageFailure;
+  message: string;
+  httpStatus: FailureStatus;
+  ledgerId: string | null;
+  /** A same-key replay names the request it found and its status (poll it, or drop the key when it ended). */
+  requestId?: string;
+  status?: VendorCallStatus;
+  /** A replay of a request that ended: its failure code (the same as `code`). */
+  failureCode?: string;
+}
 
 type FailureStatus = 400 | 402 | 403 | 404 | 409 | 413 | 429 | 502;
 
@@ -329,25 +345,35 @@ function inFlight(requestId: string, status: VendorCallStatus): StudiosInFlight 
   };
 }
 
-/** How long a request that may have charged (ambiguous, or failed with a STUDIOS_MAY_HAVE_CHARGED_CODES code) blocks the same input. */
+/** How long a request that may have charged (ambiguous, or failed with a STUDIOS_MAY_HAVE_CHARGED_CODES code) blocks the same input, from the time it ended. */
 export const IN_FLIGHT_UNCLEAR_WINDOW_MS = 30 * 60_000;
 
 /**
- * SHA-256 (hex) of one request's input: avatar, operation, row mode and the
- * canonical params (sorted keys; the prompt with its whitespace collapsed).
- * Actor and surface stay out, so a human form and the agent collide.
+ * SHA-256 (hex) of one request's input: avatar, operation and the vendor body
+ * after defaults (the REST body `op.build` makes; the same in every pay mode,
+ * so an omitted default and the explicit default collide, and so do the
+ * wallet, the key and the sign-in). Canonical: sorted keys, prompt and
+ * direction whitespace collapsed, character picks as lists. No idempotency
+ * key (the recast header is not part of the body). Actor, surface and pay
+ * mode stay out: a human form and the agent collide, and an unclear wallet
+ * request blocks the same input on the human's Studios account too.
  */
-export function studiosInputFingerprint(input: { avatarId: string; operation: StudiosOperationId; mode: StudiosMode; params: StudiosParams }): string {
-  const params: Record<string, unknown> = { ...(input.params as unknown as Record<string, unknown>) };
-  if (typeof params.prompt === 'string') params.prompt = params.prompt.replace(/\s+/g, ' ').trim();
+export function studiosInputFingerprint(input: { avatarId: string; operation: StudiosOperationId; params: StudiosParams }): string {
+  const body: Record<string, unknown> = { ...STUDIOS_OPERATIONS[input.operation].build(input.params, { requestId: '' }).body };
+  for (const field of ['prompt', 'direction']) {
+    if (typeof body[field] === 'string') body[field] = (body[field] as string).replace(/\s+/g, ' ').trim();
+  }
+  if (body.picks && typeof body.picks === 'object' && !Array.isArray(body.picks)) {
+    body.picks = Object.fromEntries(Object.entries(body.picks as Record<string, unknown>).map(([k, v]) => [k, Array.isArray(v) ? v : [v]]));
+  }
   return createHash('sha256')
-    .update(canonicalJson({ avatarId: input.avatarId, operation: input.operation, mode: input.mode, params }), 'utf8')
+    .update(canonicalJson({ avatarId: input.avatarId, operation: input.operation, body }), 'utf8')
     .digest('hex');
 }
 
 /** The oldest request of this avatar with the same input that still blocks a new key, or null. */
 async function inFlightTwin(executor: Executor, avatarId: string, fingerprint: string): Promise<{ id: string; status: string } | null> {
-  const since = new Date(Date.now() - IN_FLIGHT_UNCLEAR_WINDOW_MS);
+  const windowSeconds = Math.round(IN_FLIGHT_UNCLEAR_WINDOW_MS / 1000);
   const [row] = await executor.select({ id: vendorCallRequests.id, status: vendorCallRequests.status })
     .from(vendorCallRequests)
     .where(and(
@@ -355,9 +381,11 @@ async function inFlightTwin(executor: Executor, avatarId: string, fingerprint: s
       eq(vendorCallRequests.vendor, 'studios'),
       eq(vendorCallRequests.inputFingerprint, fingerprint),
       or(
+        // Still waiting or running: blocks at any age.
         inArray(vendorCallRequests.status, ['awaiting_approval', 'pending', 'running']),
+        // May have charged: blocks for 30 minutes from the time it ENDED (DB clock).
         and(
-          sql`${vendorCallRequests.createdAt} > ${since.toISOString()}::timestamptz`,
+          sql`${vendorCallRequests.finishedAt} > now() - make_interval(secs => ${windowSeconds})`,
           or(
             eq(vendorCallRequests.status, 'ambiguous'),
             and(eq(vendorCallRequests.status, 'failed'), inArray(vendorCallRequests.failureCode, [...STUDIOS_MAY_HAVE_CHARGED_CODES])),
@@ -720,6 +748,39 @@ type Reservation =
   | { kind: 'new'; requestId: string; owner: string; payer: Extract<StudiosPayer, { ok: true }> }
   | { kind: 'done'; result: StudiosOperationResult };
 
+/**
+ * The answer to a same-key replay: never a new row. Every answer names the
+ * request and its status (and the stored failure code when it ended), so a
+ * client can poll it, or drop its key when it ended.
+ */
+async function replayOf(executor: Executor, prior: RequestRow, op: StudiosOperationDef): Promise<StudiosOperationResult> {
+  const status = prior.status as VendorCallStatus;
+  const ended = status === 'done' || status === 'failed' || status === 'ambiguous' || status === 'declined' || status === 'expired';
+  const named = (refusal: StudiosImageRefusal): StudiosImageRefusal => ({
+    ...refusal,
+    requestId: prior.id,
+    status,
+    ...(ended ? { failureCode: refusal.code } : {}),
+  });
+  // One key, one request: a key reused for another operation never runs.
+  if (prior.operation !== op.id) return named(failure('duplicate_request', prior.ledgerId));
+  if (status === 'done') {
+    const done = await successFromRow(executor, prior);
+    return done.ok ? { ...done, requestId: prior.id, status: 'done' } : done.code === 'duplicate_request' ? named(done as StudiosImageRefusal) : done;
+  }
+  if (status === 'awaiting_approval' && prior.expiresAt) return awaiting(prior.id, prior.expiresAt);
+  if (status === 'running') return running(prior.id);
+  if (status === 'declined') return named(failure('approval_declined'));
+  if (status === 'expired') return named(failure('approval_expired'));
+  if (status === 'ambiguous') return named(failure('payment_ambiguous', prior.ledgerId));
+  if (status === 'failed') {
+    const stored = prior.failureCode ? studiosRefusalFor(prior.failureCode, operationOf(prior).id) : null;
+    return named(stored ? { ...stored, ledgerId: prior.ledgerId } : failure('duplicate_request', prior.ledgerId));
+  }
+  // 'pending': a wallet call that is being made right now.
+  return named(failure('duplicate_request', prior.ledgerId));
+}
+
 /** Reserve the request, or find the earlier one, under the avatar's lock. */
 async function reserveRequest(input: {
   avatarId: string;
@@ -742,18 +803,7 @@ async function reserveRequest(input: {
         eq(vendorCallRequests.idempotencyKey, input.idempotencyKey),
       ))
       .limit(1);
-    if (prior) {
-      // One key, one request: a key reused for another operation never runs.
-      if (prior.operation !== op.id) return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
-      if (prior.status === 'done') return { kind: 'done', result: await successFromRow(tx, prior) };
-      // The same key again returns the same waiting or running request, never a new row.
-      if (prior.status === 'awaiting_approval' && prior.expiresAt) return { kind: 'done', result: awaiting(prior.id, prior.expiresAt) };
-      if (prior.status === 'running') return { kind: 'done', result: running(prior.id) };
-      if (prior.status === 'declined') return { kind: 'done', result: failure('approval_declined') };
-      if (prior.status === 'expired') return { kind: 'done', result: failure('approval_expired') };
-      if (prior.status === 'ambiguous') return { kind: 'done', result: failure('payment_ambiguous', prior.ledgerId) };
-      return { kind: 'done', result: failure('duplicate_request', prior.ledgerId) };
-    }
+    if (prior) return { kind: 'done', result: await replayOf(tx, prior, op) };
     // Who pays, read under the spend-rules lock that every payer change takes.
     // The row binds the mode and the credential digest (key SHA-256 or sign-in
     // link digest; never a secret).
@@ -768,7 +818,7 @@ async function reserveRequest(input: {
     // may have charged lately) inserts nothing: two tabs, or a client that lost
     // the reply and its key, attach to that request instead of paying twice.
     // Before the day limits, which count waiting rows.
-    const inputFingerprint = studiosInputFingerprint({ avatarId: input.avatarId, operation: op.id, mode, params: input.params });
+    const inputFingerprint = studiosInputFingerprint({ avatarId: input.avatarId, operation: op.id, params: input.params });
     const twin = await inFlightTwin(tx, input.avatarId, inputFingerprint);
     if (twin) return { kind: 'done', result: inFlight(twin.id, twin.status as VendorCallStatus) };
     const policy = await readPolicyRow(tx, input.avatarId);

@@ -18,7 +18,6 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { isStudiosMayHaveCharged } from '@clawville/shared';
 import { api, ApiError, type StudiosAccepted, type StudiosOperationDone, type StudiosRequestView } from '@/lib/api';
 import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { useAvatar } from '@/hooks/use-avatar';
@@ -34,6 +33,9 @@ export const IMAGES_QUERY = ['studios-images'] as const;
 export type StudiosOperation = 'image' | 'video' | 'character_shots' | 'recast';
 export type StudiosPayMode = 'wallet' | 'key' | 'signin';
 
+/** The end of every "may have charged" text (`STUDIOS_MAY_HAVE_CHARGED_CODES`). For 30 minutes the server answers the same input with the first request. */
+const MAY_HAVE_CHARGED_TAIL = ' Studios may have charged for it. Do not try it again for now. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+
 /** Plain text for a failed call. Branches on the API code, never on raw text. */
 export function studiosErrorText(error: unknown): string {
   if (error instanceof WalletSignError) return error.message;
@@ -47,7 +49,7 @@ export function studiosErrorText(error: unknown): string {
       case 'over_daily_cap':
         return 'This request would pass your spend caps. Nothing was paid.';
       case 'payment_ambiguous':
-        return 'Studios did not confirm the result. The payment may have gone through; it counts toward your daily cap until it is checked. Do not send the same request again.';
+        return `Studios did not confirm the result. The payment may have gone through; it counts toward your daily cap until it is checked.${MAY_HAVE_CHARGED_TAIL}`;
       case 'studios_key_invalid':
         return 'Your saved Studios API key does not work. Save it again under "How Studios is paid".';
       case 'studios_key_changed':
@@ -135,17 +137,19 @@ export function studiosErrorText(error: unknown): string {
       case 'vendor_reply_unreadable':
         return 'Studios sent a reply that ClawVille could not read. Try again later.';
       case 'duplicate_request':
-        return 'This request is still running, or it did not finish. Wait a minute and check Your media; press again to check. Change the input to make a new request.';
+        return 'This request ended earlier, or it did not finish. Check Your media before you send it again.';
+      case 'already_done':
+        return 'This request finished already. Its result is in Your media.';
       case 'image_missing':
-        return 'Studios sent no readable image.';
+        return `Studios sent no readable image.${MAY_HAVE_CHARGED_TAIL}`;
       case 'outcome_unknown':
-        return 'Studios did not tell us the result. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+        return `Studios did not tell us the result.${MAY_HAVE_CHARGED_TAIL}`;
       case 'job_timeout':
-        return 'Studios took too long, and we stopped waiting. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+        return `Studios took too long, and we stopped waiting.${MAY_HAVE_CHARGED_TAIL}`;
       case 'result_lost':
-        return 'The result was lost after the call. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+        return `The result was lost after the call.${MAY_HAVE_CHARGED_TAIL}`;
       case 'media_missing':
-        return 'Studios finished, but we could not get the media. Studios may have charged for it. Do not try it again. Check your Studios My Media and credits (when your agent wallet pays: check the wallet history).';
+        return `Studios finished, but we could not get the media.${MAY_HAVE_CHARGED_TAIL}`;
       case 'payload_too_large':
         return 'The text is too long.';
       case 'invalid_request':
@@ -208,8 +212,8 @@ function newIdempotencyKey(): string {
 /**
  * Refusals where the server recorded the request as finished and nothing was
  * charged (the server's NOT_CHARGED_FAILURES): the next click may use a new
- * request key. After any other outcome (a lost reply, duplicate_request,
- * rate_limited, payment_ambiguous, image_missing) the form keeps the key, so a
+ * request key. After any other outcome (a lost reply, rate_limited,
+ * payment_ambiguous, image_missing) the form keeps the key, so a
  * retry of the same input returns the first result instead of paying again.
  */
 const FINAL_NOTHING_CHARGED = new Set([
@@ -232,6 +236,39 @@ const STATUS_CODES = new Set(['running', 'awaiting_approval', 'already_running']
  */
 export function attachedStatusCode(status: string | undefined): 'awaiting_approval' | 'already_running' {
   return status === 'awaiting_approval' ? 'awaiting_approval' : 'already_running';
+}
+
+const OPEN_STATUSES = new Set(['awaiting_approval', 'pending', 'running']);
+
+/**
+ * What a refused POST says about a request the same input or key already made.
+ * - `409 duplicate_request_in_flight` with an id: attach and read it (the
+ *   server also answers this for 30 minutes after a "may have charged" end;
+ *   the read then shows that end).
+ * - `duplicate_request` (a same-key replay) with an id and a status: attach
+ *   when it has not ended; when it ended, drop the key and show its end.
+ * - `duplicate_request` with no id (an older server): drop the key, show the code.
+ * null: any other refusal.
+ */
+export function studiosReplayAnswer(error: unknown):
+  | null
+  | { kind: 'attach'; requestId: string; code: 'awaiting_approval' | 'already_running' }
+  | { kind: 'ended'; code: string } {
+  if (!(error instanceof ApiError)) return null;
+  if (error.code === 'duplicate_request_in_flight' && error.requestId) {
+    return { kind: 'attach', requestId: error.requestId, code: attachedStatusCode(error.requestStatus) };
+  }
+  if (error.code !== 'duplicate_request') return null;
+  const status = error.requestStatus;
+  if (error.requestId && status && OPEN_STATUSES.has(status)) {
+    return { kind: 'attach', requestId: error.requestId, code: attachedStatusCode(status) };
+  }
+  if (!error.requestId || !status) return { kind: 'ended', code: 'duplicate_request' };
+  if (status === 'done') return { kind: 'ended', code: 'already_done' };
+  if (status === 'declined') return { kind: 'ended', code: 'approval_declined' };
+  if (status === 'expired') return { kind: 'ended', code: 'approval_expired' };
+  if (status === 'ambiguous') return { kind: 'ended', code: 'payment_ambiguous' };
+  return { kind: 'ended', code: error.requestFailureCode ?? 'duplicate_request' };
 }
 
 
@@ -299,13 +336,13 @@ const TERMINAL_STATUSES = new Set<StudiosRequestView['status']>(['done', 'failed
 
 /**
  * What the polled request says. null: it has not ended yet (keep the key, keep
- * the button off). Else the end: the media, or the code to show and whether
- * the same input must not be sent again (it may have been charged).
+ * the button off). Else the end: the media, or the code to show. The server
+ * guards a "may have charged" input (409 with the first request id).
  */
 export function studiosRequestOutcome(view: StudiosRequestView | undefined):
   | null
   | { kind: 'done'; media: StudiosResultItem[]; note: string }
-  | { kind: 'failed'; code: string; blockInput: boolean } {
+  | { kind: 'failed'; code: string } {
   if (!view || !TERMINAL_STATUSES.has(view.status)) return null;
   if (view.status === 'done') {
     const media = resultItems(view.operation, view.media, view.mediaPath);
@@ -315,11 +352,10 @@ export function studiosRequestOutcome(view: StudiosRequestView | undefined):
       note: media.length === 0 ? NOT_COPIED_NOTE : view.mode === 'wallet' ? 'Paid from your agent wallet.' : 'Made with your Studios account.',
     };
   }
-  if (view.status === 'declined') return { kind: 'failed', code: 'approval_declined', blockInput: false };
-  if (view.status === 'expired') return { kind: 'failed', code: 'approval_expired', blockInput: false };
-  if (view.status === 'ambiguous') return { kind: 'failed', code: 'payment_ambiguous', blockInput: true };
-  const code = view.code ?? 'failed';
-  return { kind: 'failed', code, blockInput: !FINAL_NOTHING_CHARGED.has(code) };
+  if (view.status === 'declined') return { kind: 'failed', code: 'approval_declined' };
+  if (view.status === 'expired') return { kind: 'failed', code: 'approval_expired' };
+  if (view.status === 'ambiguous') return { kind: 'failed', code: 'payment_ambiguous' };
+  return { kind: 'failed', code: view.code ?? 'failed' };
 }
 
 /** How often an open request is read: every 4 s until it ends, then never. */
@@ -346,12 +382,14 @@ type StudiosSend = (body: Record<string, unknown>, key: string) => Promise<Studi
  * The shared request flow of one form. `submit(body)` sends the body with the
  * key of that exact input; the state says what the form shows.
  *
- * The open request (key, request id) and the blocked input live in
+ * The open request (key, request id) lives in
  * `studios-request-store.ts` per avatar and operation, outside the modal's
  * life and across a reload of the tab: closing the wallet panel after a 202
  * and sending the same input again reuses the same key, so the server returns
  * the same request and never charges twice. On mount a restored open request
- * is read again until it ends.
+ * is read again until it ends. The server is the authority on repeats: the
+ * same input that waits, runs or may have charged answers 409 with the first
+ * request id, and the form attaches to it.
  */
 export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend) {
   const queryClient = useQueryClient();
@@ -367,8 +405,6 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
   // click while the request waits or runs, reuses it, so the server returns
   // the same request instead of paying again.
   const pending = slot.pending;
-  // After an outcome that may have charged, the same input cannot be sent again.
-  const blockedInput = slot.blockedInput;
   const [last, setLast] = useState<{ media: StudiosResultItem[]; note: string } | null>(null);
   const [error, setError] = useState<unknown>(null);
 
@@ -394,7 +430,7 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
       update(slotId, { pending: null });
     } else {
       setError(new ApiError(outcome.code, 200, outcome.code));
-      update(slotId, outcome.blockInput ? { pending: null, blockedInput: pending.input } : { pending: null });
+      update(slotId, { pending: null });
     }
     queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
   }, [outcome, pending, slotId, update, queryClient]);
@@ -422,19 +458,22 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
       queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
     },
     onError: (err, vars) => {
-      // The same input already made a request (this tab, another tab, or a
-      // lost reply): attach to it and read it until it ends. Not an error.
-      if (err instanceof ApiError && err.code === 'duplicate_request_in_flight' && err.requestId) {
-        update(vars.slotId, { pending: { ...vars.request, requestId: err.requestId } });
-        const code = attachedStatusCode(err.requestStatus);
-        setError(new ApiError(code, 202, code));
+      const replay = studiosReplayAnswer(err);
+      if (replay?.kind === 'attach') {
+        // The same input already made a request that has not ended (this tab,
+        // another tab, or a lost reply): attach to it and read it. Not an error.
+        update(vars.slotId, { pending: { ...vars.request, requestId: replay.requestId } });
+        setError(new ApiError(replay.code, 202, replay.code));
+        return;
+      }
+      if (replay?.kind === 'ended') {
+        // A replay of a request that already ended: never keep a dead key.
+        update(vars.slotId, { pending: null });
+        setError(new ApiError(replay.code, 200, replay.code));
+        queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
         return;
       }
       setError(err);
-      // Outcomes that may have charged (the one shared list): the same input must not be sent again.
-      if (err instanceof ApiError && isStudiosMayHaveCharged(err.code)) {
-        update(vars.slotId, { blockedInput: vars.request.input });
-      }
       if (!keepsRequestKey(err)) update(vars.slotId, { pending: null });
       queryClient.invalidateQueries({ queryKey: IMAGES_QUERY });
     },
@@ -452,7 +491,6 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
   const submit = (body: Record<string, unknown>) => {
     if (open || make.isPending || !slotId) return;
     const input = studiosInputFingerprint(body);
-    if (blockedInput !== null && blockedInput === input) return;
     const request = studiosRequestFor(pending, operation, input, newIdempotencyKey);
     update(slotId, { pending: request });
     make.mutate({ slotId, request, body });
@@ -460,8 +498,6 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
 
   return {
     submit,
-    /** True when this exact body may have charged already: do not send it again. */
-    isBlocked: (body: Record<string, unknown>) => blockedInput !== null && blockedInput === studiosInputFingerprint(body),
     sending: make.isPending,
     open,
     waitingApproval,
@@ -477,10 +513,9 @@ export function useStudiosRequest(operation: StudiosOperation, send: StudiosSend
 export type StudiosRequestState = ReturnType<typeof useStudiosRequest>;
 
 /** The submit button text for one form. */
-export function submitLabel(state: Pick<StudiosRequestState, 'sending' | 'open' | 'waitingApproval'>, blocked: boolean, idle: string): string {
+export function submitLabel(state: Pick<StudiosRequestState, 'sending' | 'open' | 'waitingApproval'>, idle: string): string {
   if (state.sending) return 'Sending...';
   if (state.open) return state.waitingApproval ? 'Waiting for your approval...' : 'Running...';
-  if (blocked) return 'Change the input to make a new request';
   return idle;
 }
 
@@ -632,7 +667,6 @@ function ImageForm({ state }: { state: StudiosRequestState }) {
   const [prompt, setPrompt] = useState('');
   const text = prompt.trim();
   const body = { prompt: text };
-  const blocked = text.length > 0 && state.isBlocked(body);
   return (
     <>
       <label className="block space-y-1">
@@ -648,10 +682,10 @@ function ImageForm({ state }: { state: StudiosRequestState }) {
       <button
         type="button"
         onClick={() => state.submit(body)}
-        disabled={state.busy || text.length === 0 || blocked}
+        disabled={state.busy || text.length === 0}
         className="w-full min-h-[44px] rounded-md bg-violet-500 hover:bg-violet-400 disabled:opacity-50 text-sm font-bold text-white"
       >
-        {submitLabel(state, blocked, 'Make image')}
+        {submitLabel(state, 'Make image')}
       </button>
       <StudiosRequestResult state={state} />
     </>

@@ -141,7 +141,9 @@ describeIfSchema('studios images: executed DB contract', () => {
     fakeStudios(200, { data: [{ url: 'https://evil.example/x.png' }] });
     expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-u1` })).toMatchObject({ ok: false, code: 'image_missing' });
     seen = [];
-    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-u1` })).toMatchObject({ ok: false, code: 'duplicate_request' });
+    // The same key replays the stored outcome and names the request (status failed); nothing is sent again.
+    expect(await generateStudiosImage({ avatarId, actor: 'human', prompt: 'x', idempotencyKey: `${tag}-u1` }))
+      .toMatchObject({ ok: false, code: 'image_missing', status: 'failed', requestId: expect.any(String) });
     expect(seen).toHaveLength(0);
   });
 

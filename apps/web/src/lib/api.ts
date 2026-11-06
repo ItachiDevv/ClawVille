@@ -143,6 +143,8 @@ export class ApiError extends Error {
    */
   requestId?: string;
   requestStatus?: string;
+  /** A same-key replay of a failed request: its own failure code. */
+  requestFailureCode?: string;
   constructor(
     message: string,
     status: number,
@@ -156,6 +158,7 @@ export class ApiError extends Error {
       nextClaimAt?: string | null;
       requestId?: string;
       requestStatus?: string;
+      requestFailureCode?: string;
     },
   ) {
     super(message);
@@ -170,6 +173,7 @@ export class ApiError extends Error {
     this.nextClaimAt = extras?.nextClaimAt;
     this.requestId = extras?.requestId;
     this.requestStatus = extras?.requestStatus;
+    this.requestFailureCode = extras?.requestFailureCode;
   }
 }
 
@@ -219,6 +223,16 @@ function parseHoldAtRisk(raw: unknown): WithdrawHoldAtRisk | undefined {
 }
 
 /** Pull the optional typed-error extras out of a parsed error body. */
+/**
+ * The failure code of the request a same-key Studios replay points at. The
+ * body's `code` is the replay code itself, so the server names the request's
+ * own code in a separate field; `failureCode` and `requestCode` are read.
+ */
+function replayFailureCode(err: Record<string, unknown>): string | undefined {
+  const value = typeof err.failureCode === 'string' ? err.failureCode : err.requestCode;
+  return typeof value === 'string' && /^[a-z_]{1,64}$/.test(value) ? value : undefined;
+}
+
 function apiErrorExtras(err: Record<string, unknown>): {
   detail?: string;
   txSignature?: string;
@@ -228,6 +242,7 @@ function apiErrorExtras(err: Record<string, unknown>): {
   nextClaimAt?: string | null;
   requestId?: string;
   requestStatus?: string;
+  requestFailureCode?: string;
 } {
   return {
     detail: typeof err.detail === 'string' ? err.detail : undefined,
@@ -242,6 +257,7 @@ function apiErrorExtras(err: Record<string, unknown>): {
       : undefined,
     requestId: typeof err.requestId === 'string' && /^[0-9a-f-]{36}$/i.test(err.requestId) ? err.requestId : undefined,
     requestStatus: typeof err.status === 'string' && /^[a-z_]{1,32}$/.test(err.status) ? err.status : undefined,
+    requestFailureCode: replayFailureCode(err),
   };
 }
 

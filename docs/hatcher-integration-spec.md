@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-06 17:15Z (Studios server-side dedupe, PROTOCOL_VERSION 115 -> 116, migration 0097).** Drift note: a hosted Studios verb whose input matches a request that still runs (or may have charged in the last 30 minutes) gets the decide line "the same ... request is already running; do not send it again" (`duplicate_request_in_flight`) and nothing is sent or paid. No verb, param, Hatcher route or partner contract changed.
+**Last Audited: 2026-11-06 17:41Z (Studios dedupe review fixes, still PROTOCOL_VERSION 116).** Drift note: a hosted Studios verb is now blocked by the same input in any pay mode, and for 30 minutes after an unclear request ended (not after it was made). No verb, param, Hatcher route or partner contract changed.
+
+**Prior Last Audited: 2026-11-06 17:15Z (Studios server-side dedupe, PROTOCOL_VERSION 115 -> 116, migration 0097).** Drift note: a hosted Studios verb whose input matches a request that still runs (or may have charged in the last 30 minutes) gets the decide line "the same ... request is already running; do not send it again" (`duplicate_request_in_flight`) and nothing is sent or paid. No verb, param, Hatcher route or partner contract changed.
 
 **Prior Last Audited: 2026-11-06 16:04Z (Studios pay mode and sign-in, PROTOCOL_VERSION 114 -> 115, MCP hub phase 3c part 2).** Drift note: the decide-menu lines of `generate_image`, `generate_video`, `make_character` and `recast_character` now say the human chooses the payer (the avatar wallet, their Studios key or their Studios sign-in); the verbs, their grammars and caps are unchanged; the MCP tool `clawville_studios_account` (free sign-in reads) is new; the `ecosystem` and `actions` pages say so. No Hatcher route or partner contract changed.
 

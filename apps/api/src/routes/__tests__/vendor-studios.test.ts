@@ -527,6 +527,24 @@ describe('GET /api/vendors/studios/signin/account and /signin/media (free sign-i
     expect(await human.json()).toEqual(expected);
   });
 
+  it('same-key replay bodies name the request: requestId and status, plus failureCode when it ended', async () => {
+    identity = { kind: 'user', userId: 'u1', avatarId: 'a1', agentId: null };
+    const send = () => app.request('/api/vendors/studios/videos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'web-replay-key' }, body: JSON.stringify({ prompt: 'a boat' }),
+    });
+    const msg = realImages.studiosRefusalFor('studios_key_invalid', 'video')!.message;
+    nextOpResult = { ok: false, code: 'studios_key_invalid', httpStatus: 403, message: msg, ledgerId: null, requestId: REQ, status: 'failed', failureCode: 'studios_key_invalid' };
+    const ended = await send();
+    expect(ended.status).toBe(403);
+    expect(await ended.json()).toEqual({ error: 'studios_key_invalid', code: 'studios_key_invalid', message: msg, ledgerId: null, requestId: REQ, status: 'failed', failureCode: 'studios_key_invalid' });
+    const dup = realImages.studiosRefusalFor('duplicate_request', 'video')!.message;
+    nextOpResult = { ok: false, code: 'duplicate_request', httpStatus: 409, message: dup, ledgerId: null, requestId: REQ, status: 'pending' };
+    const pending = await send();
+    expect(pending.status).toBe(409);
+    expect(await pending.json()).toEqual({ error: 'duplicate_request', code: 'duplicate_request', message: dup, ledgerId: null, requestId: REQ, status: 'pending' });
+    nextOpResult = { ok: false, code: 'running', httpStatus: 202, message: 'running', ledgerId: null, requestId: REQ };
+  });
+
   it('409 duplicate_request_in_flight: the HTTP body carries the first request id and status, and the MCP tool passes it to the agent', async () => {
     const inFlight = {
       ok: false, code: 'duplicate_request_in_flight', httpStatus: 409, ledgerId: null, requestId: REQ, status: 'running',

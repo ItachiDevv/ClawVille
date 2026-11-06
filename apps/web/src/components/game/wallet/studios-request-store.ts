@@ -7,8 +7,9 @@
  * again got a new key and the server could charge twice).
  *
  * One slot per avatar and operation: the open request (input fingerprint,
- * request key, request id after a 202) and the input that must not be sent
- * again (an outcome that may have charged). Backed by `sessionStorage`, so a
+ * request key, request id after a 202). The server is the authority on
+ * repeats (409 with the first request id), so nothing here blocks an input.
+ * Backed by `sessionStorage`, so a
  * reload in the same tab restores it; every storage read and write is wrapped
  * in try/catch, and the store still works in memory when storage throws.
  * A slot's open request is cleared only when the request ends.
@@ -21,7 +22,6 @@ export const STUDIOS_REQUESTS_STORAGE_KEY = 'clawville.studios.requests.v1';
 
 export interface StudiosRequestSlot {
   pending: StudiosPendingRequest | null;
-  blockedInput: string | null;
 }
 
 type Slots = Record<string, StudiosRequestSlot>;
@@ -29,17 +29,16 @@ type Slots = Record<string, StudiosRequestSlot>;
 const OPERATIONS = new Set(['image', 'video', 'character_shots', 'recast']);
 const KEY_RE = /^[A-Za-z0-9._:-]{8,64}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const EMPTY: StudiosRequestSlot = { pending: null, blockedInput: null };
+const EMPTY: StudiosRequestSlot = { pending: null };
 
 export function studiosSlotId(avatarId: string, operation: StudiosOperation): string {
   return `${avatarId}:${operation}`;
 }
 
-/** Only well-formed slots come back from storage; anything else is dropped. */
+/** Only well-formed open requests come back from storage; anything else (an old blocked input too) is dropped. */
 function readSlot(raw: unknown): StudiosRequestSlot | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  const blockedInput = typeof r.blockedInput === 'string' && r.blockedInput.length <= 20_000 ? r.blockedInput : null;
   let pending: StudiosPendingRequest | null = null;
   const p = r.pending as Record<string, unknown> | null | undefined;
   if (
@@ -51,7 +50,7 @@ function readSlot(raw: unknown): StudiosRequestSlot | null {
   ) {
     pending = { operation: p.operation as StudiosOperation, input: p.input, key: p.key, requestId: p.requestId as string | null };
   }
-  return pending || blockedInput ? { pending, blockedInput } : null;
+  return pending ? { pending } : null;
 }
 
 function load(): Slots {
@@ -75,7 +74,7 @@ function load(): Slots {
 function save(slots: Slots): void {
   try {
     if (typeof window === 'undefined') return;
-    const kept = Object.fromEntries(Object.entries(slots).filter(([, s]) => s.pending || s.blockedInput));
+    const kept = Object.fromEntries(Object.entries(slots).filter(([, s]) => s.pending));
     if (Object.keys(kept).length === 0) window.sessionStorage.removeItem(STUDIOS_REQUESTS_STORAGE_KEY);
     else window.sessionStorage.setItem(STUDIOS_REQUESTS_STORAGE_KEY, JSON.stringify(kept));
   } catch {

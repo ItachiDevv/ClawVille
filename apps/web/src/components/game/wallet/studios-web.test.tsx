@@ -538,7 +538,7 @@ describe('forms', () => {
     expect([...field('Photo of performer 1').querySelectorAll('option')].length).toBe(2);
   });
 
-  test('an outcome that may have charged blocks the same input', async () => {
+  test('an outcome that may have charged shows its text on the result and blocks nothing on the client', async () => {
     payModeSaved = 'key';
     keyLinked = true;
     await mount(createElement(card.StudiosCard));
@@ -548,11 +548,14 @@ describe('forms', () => {
     await click(button('Make video'));
     await settle();
     expect(container?.textContent).toContain('may have charged');
-    expect(button('Change the input to make a new request').disabled).toBe(true);
+    // The server, not this tab, answers the same input for 30 minutes (409 with the first id).
+    expect(button('Make video').disabled).toBe(false);
   });
 });
 
 describe('open requests outlive the wallet modal', () => {
+  const OTHER = '44444444-2222-4333-8444-555555555555';
+  const slotOf = (op: string) => store.readStudiosSlot(store.useStudiosRequestStore.getState().slots, `avatar-1:${op}`).pending;
   async function remount(): Promise<void> {
     await act(async () => root?.unmount());
     container?.remove();
@@ -616,23 +619,82 @@ describe('open requests outlive the wallet modal', () => {
     expect(keys[1]).toBe(keys[0]);
   });
 
-  test('an outcome that may have charged stays blocked after reopening', async () => {
+  test('no blocked-input state survives a reload, also an old stored one', async () => {
     payModeSaved = 'key';
     keyLinked = true;
-    requestView = { requestId: REQ, operation: 'video', status: 'failed', mode: 'account', mediaPath: null, media: [], code: 'outcome_unknown' };
+    testWindow.sessionStorage.setItem(store.STUDIOS_REQUESTS_STORAGE_KEY, JSON.stringify({
+      'avatar-1:video': { pending: null, blockedInput: '{"prompt":"a crab"}' },
+    }));
+    store.resetStudiosRequestStoreForTests();
     await mount(createElement(card.StudiosCard));
     await openSection('Video');
     await type(field('Describe the video'), 'a crab');
+    expect(button('Make video').disabled).toBe(false);
+    expect(store.useStudiosRequestStore.getState().slots['avatar-1:video']).toBeUndefined();
+    // A may-have-charged end, then a reload: the slot is empty, and nothing is stored.
+    requestView = { requestId: REQ, operation: 'video', status: 'failed', mode: 'account', mediaPath: null, media: [], code: 'outcome_unknown' };
     await click(button('Make video'));
     await settle();
+    store.resetStudiosRequestStoreForTests();
     await remount();
     await openSection('Video');
     await type(field('Describe the video'), 'a crab');
-    expect(button('Change the input to make a new request').disabled).toBe(true);
+    expect(button('Make video').disabled).toBe(false);
+    expect(testWindow.sessionStorage.getItem(store.STUDIOS_REQUESTS_STORAGE_KEY)).toBeNull();
   });
 
-  const OTHER = '44444444-2222-4333-8444-555555555555';
-  const slotOf = (op: string) => store.readStudiosSlot(store.useStudiosRequestStore.getState().slots, `avatar-1:${op}`).pending;
+  test('a same-key replay of a request that ended clears the key; one that runs attaches', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    postAnswer = async () => {
+      throw new Error('network');
+    };
+    await mount(createElement(card.StudiosCard));
+    await openSection('Image');
+    await type(field('Describe the image'), 'a crab');
+    await click(button('Make image'));
+    const kept = slotOf('image')!.key;
+    postAnswer = async () => {
+      throw new ApiError('duplicate_request', 409, 'duplicate_request', { requestId: OTHER, requestStatus: 'failed', requestFailureCode: 'image_missing' });
+    };
+    await click(button('Make image'));
+    expect((calls('image')[1]!.arg as { key: string }).key).toBe(kept);
+    expect(slotOf('image')).toBeNull();
+    expect(container?.textContent).toContain('Studios sent no readable image. Studios may have charged for it.');
+    // Not ended yet: attach and read it.
+    postAnswer = async () => {
+      throw new ApiError('duplicate_request', 409, 'duplicate_request', { requestId: OTHER, requestStatus: 'running' });
+    };
+    log.length = 0;
+    await click(button('Make image'));
+    expect(slotOf('image')?.requestId).toBe(OTHER);
+    expect(calls('poll').map((l) => l.arg)).toEqual([OTHER]);
+  });
+
+  test('a generic duplicate_request with no id clears the key and shows its text', async () => {
+    payModeSaved = 'key';
+    keyLinked = true;
+    postAnswer = async () => {
+      throw new Error('network');
+    };
+    await mount(createElement(card.StudiosCard));
+    await openSection('Image');
+    await type(field('Describe the image'), 'a crab');
+    await click(button('Make image'));
+    const kept = slotOf('image')!.key;
+    postAnswer = async () => {
+      throw new ApiError('duplicate_request', 409, 'duplicate_request');
+    };
+    await click(button('Make image'));
+    expect(slotOf('image')).toBeNull();
+    expect(container?.textContent).toContain('This request ended earlier, or it did not finish.');
+    postAnswer = async () => {
+      throw new Error('network');
+    };
+    await click(button('Make image'));
+    expect((calls('image')[2]!.arg as { key: string }).key).not.toBe(kept);
+  });
+
   const dup = (requestId: string, status: string) => new ApiError('duplicate_request_in_flight', 409, 'duplicate_request_in_flight', { requestId, requestStatus: status });
 
   test('every form: a 409 duplicate_request_in_flight attaches to the first request and reads it, as a status, not an error', async () => {

@@ -188,7 +188,11 @@ function answer(c: Context, result: StudiosOperationResult | StudiosImageResult)
     return c.json({ error: result.code, code: result.code, message: result.message, requestId: result.requestId, status: result.status }, 409);
   }
   if (!result.ok) {
-    return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId }, result.httpStatus);
+    // A same-key replay names the request it found (poll it, or drop the key when it ended).
+    const request = result.requestId
+      ? { requestId: result.requestId, status: result.status, ...(result.failureCode ? { failureCode: result.failureCode } : {}) }
+      : {};
+    return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId, ...request }, result.httpStatus);
   }
   return c.json(result);
 }

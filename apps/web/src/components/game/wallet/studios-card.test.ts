@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { STUDIOS_MAY_HAVE_CHARGED_CODES } from '@clawville/shared';
 import { ApiError } from '@/lib/api';
 import type { StudiosRequestView } from '@/lib/api';
 import {
@@ -9,6 +10,7 @@ import {
   studiosInputFingerprint,
   studiosPayerNotice,
   studiosRequestFor,
+  studiosReplayAnswer,
   studiosRequestOutcome,
 } from './studios-card';
 
@@ -49,13 +51,13 @@ describe('a request that waits or runs keeps its key (no second charge from a se
     const notCopied = studiosRequestOutcome(view('done', { operation: 'recast', mode: 'account', vendorMediaId: 'v1' }));
     expect(notCopied).toMatchObject({ kind: 'done', media: [] });
     expect((notCopied as { note: string }).note).toContain('Studios My Media');
-    expect(studiosRequestOutcome(view('declined'))).toEqual({ kind: 'failed', code: 'approval_declined', blockInput: false });
-    expect(studiosRequestOutcome(view('expired'))).toEqual({ kind: 'failed', code: 'approval_expired', blockInput: false });
-    expect(studiosRequestOutcome(view('ambiguous'))).toEqual({ kind: 'failed', code: 'payment_ambiguous', blockInput: true });
+    expect(studiosRequestOutcome(view('declined'))).toEqual({ kind: 'failed', code: 'approval_declined' });
+    expect(studiosRequestOutcome(view('expired'))).toEqual({ kind: 'failed', code: 'approval_expired' });
+    expect(studiosRequestOutcome(view('ambiguous'))).toEqual({ kind: 'failed', code: 'payment_ambiguous' });
     // Charged nothing: the same prompt may go again with a new key.
-    expect(studiosRequestOutcome(view('failed', { code: 'studios_signin_broken' }))).toEqual({ kind: 'failed', code: 'studios_signin_broken', blockInput: false });
-    // May have charged (the outcome is not known): the same prompt is blocked.
-    expect(studiosRequestOutcome(view('failed', { code: 'outcome_unknown' }))).toEqual({ kind: 'failed', code: 'outcome_unknown', blockInput: true });
+    expect(studiosRequestOutcome(view('failed', { code: 'studios_signin_broken' }))).toEqual({ kind: 'failed', code: 'studios_signin_broken' });
+    // May have charged (the outcome is not known): the server answers the same input with this request for 30 minutes.
+    expect(studiosRequestOutcome(view('failed', { code: 'outcome_unknown' }))).toEqual({ kind: 'failed', code: 'outcome_unknown' });
   });
 });
 
@@ -100,22 +102,24 @@ describe('keepsRequestKey', () => {
 
 describe('outcomes that may have charged', () => {
   test('each has its own text: may have charged, do not try again, check My Media, credits and the wallet history', () => {
-    const texts = ['outcome_unknown', 'job_timeout', 'result_lost', 'media_missing'].map((code) => {
+    // The one shared list (image_missing and payment_ambiguous included).
+    const texts = STUDIOS_MAY_HAVE_CHARGED_CODES.map((code) => {
       const text = studiosErrorText(new ApiError(code, 200, code));
       expect(text).toContain('may have charged');
-      expect(text).toContain('Do not try it again');
+      expect(text).toContain('Do not try it again for now');
       expect(text).toContain('My Media and credits');
       expect(text).toContain('wallet history');
       expect(text).not.toBe('That did not work. Try again later.');
       return text;
     });
-    expect(new Set(texts).size).toBe(4);
+    expect(new Set(texts).size).toBe(STUDIOS_MAY_HAVE_CHARGED_CODES.length);
+    expect(STUDIOS_MAY_HAVE_CHARGED_CODES).toContain('image_missing');
   });
 
-  test('the same prompt stays blocked after each of them', () => {
+  test('each of them ends the request with its own code', () => {
     for (const code of ['outcome_unknown', 'job_timeout', 'result_lost', 'media_missing']) {
       expect(studiosRequestOutcome({ requestId: 'r1', operation: 'image', status: 'failed', mode: 'signin', mediaPath: null, media: [], code }))
-        .toEqual({ kind: 'failed', code, blockInput: true });
+        .toEqual({ kind: 'failed', code });
     }
   });
 });
@@ -188,5 +192,39 @@ describe('pay mode gating', () => {
     expect(effectiveStudiosPayMode(null, { linked: true })).toBe('key');
     expect(effectiveStudiosPayMode(null, { linked: false })).toBe('wallet');
     expect(effectiveStudiosPayMode('signin', { linked: true })).toBe('signin');
+  });
+});
+
+describe('studiosReplayAnswer (a refused POST about an earlier request)', () => {
+  const R = '11111111-2222-4333-8444-555555555555';
+  const err = (code: string, extras: { requestId?: string; requestStatus?: string; requestFailureCode?: string } = {}) => new ApiError(code, 409, code, extras);
+
+  test('in flight with an id: attach; the status picks the text', () => {
+    expect(studiosReplayAnswer(err('duplicate_request_in_flight', { requestId: R, requestStatus: 'running' }))).toEqual({ kind: 'attach', requestId: R, code: 'already_running' });
+    expect(studiosReplayAnswer(err('duplicate_request_in_flight', { requestId: R, requestStatus: 'awaiting_approval' }))).toEqual({ kind: 'attach', requestId: R, code: 'awaiting_approval' });
+  });
+
+  test('a same-key replay that has not ended: attach and read it', () => {
+    for (const status of ['awaiting_approval', 'pending', 'running']) {
+      expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: status }))).toMatchObject({ kind: 'attach', requestId: R });
+    }
+  });
+
+  test('a same-key replay that ended: drop the key and show its end', () => {
+    expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: 'done' }))).toEqual({ kind: 'ended', code: 'already_done' });
+    expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: 'declined' }))).toEqual({ kind: 'ended', code: 'approval_declined' });
+    expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: 'expired' }))).toEqual({ kind: 'ended', code: 'approval_expired' });
+    expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: 'ambiguous' }))).toEqual({ kind: 'ended', code: 'payment_ambiguous' });
+    expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: 'failed', requestFailureCode: 'image_missing' }))).toEqual({ kind: 'ended', code: 'image_missing' });
+    expect(studiosReplayAnswer(err('duplicate_request', { requestId: R, requestStatus: 'failed' }))).toEqual({ kind: 'ended', code: 'duplicate_request' });
+  });
+
+  test('an older generic duplicate_request with no id: drop the key, show the code text', () => {
+    expect(studiosReplayAnswer(err('duplicate_request'))).toEqual({ kind: 'ended', code: 'duplicate_request' });
+  });
+
+  test('any other refusal is not a replay', () => {
+    expect(studiosReplayAnswer(err('over_daily_cap'))).toBeNull();
+    expect(studiosReplayAnswer(new Error('network'))).toBeNull();
   });
 });
