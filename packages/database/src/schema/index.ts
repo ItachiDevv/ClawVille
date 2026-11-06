@@ -30,6 +30,7 @@ export * from './daily-reward-caps';
 export * from './user-spend-policies';
 export * from './vendor-spend-ledger';
 export * from './avatar-media';
+export * from './vendor-oauth';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
 export * from './partner-api-keys';

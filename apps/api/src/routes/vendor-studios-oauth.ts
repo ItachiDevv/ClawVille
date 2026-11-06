@@ -2,20 +2,25 @@
  * Studios sign-in (OAuth) for the human's own Studios account, MCP hub phase
  * 3c (migration 0094, services/vendors/studios-oauth.ts).
  *
- *   POST   /api/vendors/studios/oauth/start     human only -> `{ authorizeUrl }`
+ *   POST   /api/vendors/studios/oauth/challenge human only, body `{ action: 'link' | 'unlink' }`
+ *          -> `{ nonce, expiresAt, messageToSign, walletPubkey }` for the linked wallet
+ *   POST   /api/vendors/studios/oauth/start     human only + `{ proof }` -> `{ authorizeUrl }`
  *   GET    /api/vendors/studios/oauth/callback  browser return from Studios;
  *          always a 302 to `<web>/game?studios=linked` or
  *          `<web>/game?studios=error&reason=<code>`
  *   GET    /api/vendors/studios/oauth           `{ linked, status, scope, linkedAt }`
  *          (human session, or an agent session for the same avatar; never tokens)
- *   DELETE /api/vendors/studios/oauth           human only: revoke + remove
+ *   DELETE /api/vendors/studios/oauth           human only + `{ proof }`: cancel open
+ *          sign-ins, remove the link, revoke at Studios
  *
  * The Client ID Metadata Document is served by `index.ts` at
  * `/.well-known/oauth-client/studios.json` (public, cached 5 minutes).
  *
  * Human only = no agent session header, a Lucia session made by a human sign-in
- * (sessions.created_via), not a guest. The Studios consent page is a second
- * human step: only the person signed in to Studios can approve the link.
+ * (sessions.created_via), not a guest, AND a fresh signature from the user's
+ * linked wallet (services/vendors/studios-oauth-proof.ts). An agent can mint
+ * its owner's magic-link session, so the session alone does not prove a human;
+ * the agent does not hold the linked wallet key.
  *
  * PARITY (Rule E5): the link itself is human-only by design (the human chooses
  * whose Studios account pays). Agents read the link status here; the agent
@@ -26,7 +31,8 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
-import { and, avatars, db, eq } from '@clawville/database';
+import { z } from 'zod';
+import { and, avatars, db, eq, users } from '@clawville/database';
 import type { SessionCreatedVia } from '../lib/auth';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { noStorePrivate } from '../middleware/no-store';
@@ -51,6 +57,11 @@ import {
   unlinkStudiosOAuth,
   type StudiosCallbackReason,
 } from '../services/vendors/studios-oauth';
+import {
+  issueStudiosSignInChallenge,
+  verifyStudiosSignInProof,
+  type StudiosSignInAction,
+} from '../services/vendors/studios-oauth-proof';
 
 export const vendorStudiosOAuthRoutes = new Hono<ActivityAuthContext>();
 
@@ -58,11 +69,13 @@ export const vendorStudiosOAuthRoutes = new Hono<ActivityAuthContext>();
 // limited per human.
 const startRateLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 10 * 60_000 });
 const callbackRateLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 10 * 60_000 });
+const challengeRateLimiter = createRateLimiter({ maxPerWindow: 20, windowMs: 10 * 60_000 });
 
 /** Test-only: reset the limiters between cases. */
 export function resetStudiosOAuthRateLimit(): void {
   startRateLimiter.reset();
   callbackRateLimiter.reset();
+  challengeRateLimiter.reset();
 }
 
 const SIGNIN_GATE: HumanGateCopy = {
@@ -77,6 +90,53 @@ const emptyBody = bodyLimit({
   onError: (c) => c.json({ error: 'payload_too_large', code: 'payload_too_large' }, 413),
 });
 
+const proofSchema = z.object({ nonce: z.string().min(1).max(128), signature: z.string().min(1).max(128) }).strict();
+const proofBodySchema = z.object({ proof: proofSchema.optional() }).strict();
+const challengeBodySchema = z.object({ action: z.enum(['link', 'unlink']) }).strict();
+
+const NEEDS_WALLET_LINK = {
+  error: 'studios_signin_needs_wallet_link',
+  code: 'studios_signin_needs_wallet_link',
+  message: 'Link your own wallet in the wallet panel first. It signs to approve a Studios sign-in change.',
+} as const;
+const NEEDS_WALLET_PROOF = {
+  error: 'studios_signin_needs_wallet_proof',
+  code: 'studios_signin_needs_wallet_proof',
+  message: 'Signing in with Studios or signing out needs a signature from your linked wallet. Ask POST /api/vendors/studios/oauth/challenge first.',
+} as const;
+const INVALID_WALLET_PROOF = {
+  error: 'studios_signin_invalid_wallet_proof',
+  code: 'studios_signin_invalid_wallet_proof',
+  message: 'The wallet signature did not match. Ask for a new challenge and sign again.',
+} as const;
+
+async function linkedWallet(userId: string): Promise<string | null> {
+  const owner = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { linkedWalletPubkey: true } });
+  return owner?.linkedWalletPubkey ?? null;
+}
+
+/**
+ * Check the linked-wallet proof for this action. Returns a refusal response,
+ * or null when the proof is valid (the nonce is consumed either way).
+ */
+async function refuseWithoutProof(c: Context, userId: string, avatarId: string, action: StudiosSignInAction) {
+  const body = proofBodySchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!body.success) return c.json({ error: 'invalid_request', code: 'invalid_request' }, 400);
+  const wallet = await linkedWallet(userId);
+  if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
+  if (!body.data.proof) return c.json(NEEDS_WALLET_PROOF, 403);
+  const verdict = verifyStudiosSignInProof({
+    userId,
+    avatarId,
+    vendor: 'studios',
+    action,
+    nonce: body.data.proof.nonce,
+    signature: body.data.proof.signature,
+    walletPubkey: wallet,
+  });
+  return verdict === 'ok' ? null : c.json(INVALID_WALLET_PROOF, 401);
+}
+
 async function activeAvatarId(userId: string): Promise<string> {
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
@@ -85,6 +145,31 @@ async function activeAvatarId(userId: string): Promise<string> {
   if (!avatar) throw new HTTPException(403, { message: 'avatar_required' });
   return avatar.id;
 }
+
+vendorStudiosOAuthRoutes.post(
+  '/challenge',
+  noStorePrivate,
+  emptyBody,
+  refuseAgentHeader(SIGNIN_GATE),
+  requireAuth,
+  requireHumanSessionOrigin(SIGNIN_GATE),
+  requireNonGuestUser,
+  async (c) => {
+    const user = c.get('user') as { id: string };
+    const body = challengeBodySchema.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: 'invalid_request', code: 'invalid_request' }, 400);
+    if (!challengeRateLimiter.check(user.id)) {
+      return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many requests. Wait ten minutes.' }, 429);
+    }
+    const avatarId = await activeAvatarId(user.id);
+    const wallet = await linkedWallet(user.id);
+    if (!wallet) return c.json(NEEDS_WALLET_LINK, 403);
+    return c.json({
+      ...issueStudiosSignInChallenge({ userId: user.id, avatarId, vendor: 'studios', action: body.data.action }),
+      walletPubkey: wallet,
+    });
+  },
+);
 
 vendorStudiosOAuthRoutes.post(
   '/start',
@@ -100,6 +185,8 @@ vendorStudiosOAuthRoutes.post(
       return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios sign-ins. Wait ten minutes.' }, 429);
     }
     const avatarId = await activeAvatarId(user.id);
+    const refusal = await refuseWithoutProof(c, user.id, avatarId, 'link');
+    if (refusal) return refusal;
     return c.json(await startStudiosSignIn({ userId: user.id, avatarId }));
   },
 );
@@ -170,7 +257,9 @@ vendorStudiosOAuthRoutes.delete(
   async (c) => {
     const user = c.get('user') as { id: string };
     const avatarId = await activeAvatarId(user.id);
-    await unlinkStudiosOAuth(avatarId);
+    const refusal = await refuseWithoutProof(c, user.id, avatarId, 'unlink');
+    if (refusal) return refusal;
+    await unlinkStudiosOAuth({ userId: user.id, avatarId });
     return c.json(await readStudiosOAuthStatus(avatarId));
   },
 );

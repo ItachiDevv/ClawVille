@@ -6,24 +6,26 @@
  * environment at `<api base>/.well-known/oauth-client/studios.json`; its URL
  * is the `client_id`. No client secret exists (token auth method `none`).
  *
- * Flow:
+ * Flow (the routes add the human gates and the linked-wallet proof):
  *   1. `startStudiosSignIn` makes a random `state` and PKCE verifier, stores
  *      the state as a SHA-256 hash and the verifier encrypted (encryptToken),
  *      bound to the human's user id and avatar, for 10 minutes, single use.
- *   2. `completeStudiosSignIn` marks the row used FIRST (conditional update),
- *      then checks expiry, user, `iss` (required, RFC 9207), exchanges code + verifier at the token
- *      endpoint and stores the access and refresh tokens encrypted
- *      (user_vendor_credentials kind 'oauth').
- *   3. `getAccessToken` returns a valid access token. Within 60 s of expiry it
- *      refreshes under a row lock and stores the rotated pair in the same
- *      transaction. `invalid_grant` marks the link 'broken'
- *      (`studios_oauth_relink_required`); there is no retry loop.
- *   4. `unlinkStudiosOAuth` revokes the refresh token (best effort) and
- *      deletes the row.
+ *   2. `completeStudiosSignIn` marks the state used FIRST (conditional
+ *      update), checks expiry, user and `iss` (required, RFC 9207), exchanges
+ *      code + verifier, then installs the tokens in `user_vendor_oauth_links`
+ *      only if the state row, locked, was not cancelled by an unlink meanwhile.
+ *   3. `getAccessToken` returns a valid access token. Near expiry it claims
+ *      the refresh (status 'refreshing', committed BEFORE the request), sends
+ *      it outside any lock and writes the result only for the generation it
+ *      claimed. An unknown outcome (timeout, network error, 5xx, unreadable
+ *      reply) or `invalid_grant` marks the link 'broken' and throws
+ *      `studios_oauth_relink_required`: a refresh token is never sent twice.
+ *   4. `unlinkStudiosOAuth` cancels every open sign-in of the avatar and
+ *      deletes the link in one transaction, then revokes (best effort).
  *
  * Tokens, codes, verifiers and `state` never go to logs, errors, redirects or
  * responses. Tokens go only to mystudios.fun. All vendor JSON is parsed with
- * zod; vendor error text is never relayed.
+ * zod and read with a byte limit; vendor error text is never relayed.
  */
 
 import { createHash, randomBytes } from 'crypto';
@@ -33,11 +35,10 @@ import {
   avatars,
   db,
   eq,
-  isNotNull,
   isNull,
   lt,
-  or,
-  userVendorCredentials,
+  sql,
+  userVendorOAuthLinks,
   vendorOAuthStates,
 } from '@clawville/database';
 import { decryptToken, encryptToken } from '../keypair-vault';
@@ -61,9 +62,12 @@ export const STUDIOS_ACCESS_REFRESH_WINDOW_MS = 60_000;
 export const STUDIOS_ACCESS_DEFAULT_TTL_S = 3600;
 const TOKEN_TIMEOUT_MS = 10_000;
 const REVOKE_TIMEOUT_MS = 5_000;
-const MAX_VENDOR_BODY_BYTES = 64 * 1024;
-
-const OAUTH_KIND = 'oauth';
+/** A 'refreshing' mark older than this belongs to a request whose outcome is lost. */
+export const STUDIOS_REFRESH_STALE_MS = TOKEN_TIMEOUT_MS + 5_000;
+/** How long a caller waits for another caller's refresh to finish. */
+const REFRESH_WAIT_MS = STUDIOS_REFRESH_STALE_MS + 2_000;
+const REFRESH_POLL_MS = 100;
+export const MAX_VENDOR_BODY_BYTES = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Public URLs (env: CORS_ORIGIN via resolveApiBase; WEB_ORIGIN / CORS_ORIGIN)
@@ -110,15 +114,13 @@ export type StudiosOAuthErrorCode =
   | 'studios_oauth_not_linked'
   | 'studios_oauth_relink_required'
   | 'studios_oauth_exchange_failed'
-  | 'studios_oauth_unavailable'
-  | 'studios_oauth_bad_response';
+  | 'studios_oauth_unavailable';
 
 const ERROR_MESSAGES: Record<StudiosOAuthErrorCode, string> = {
   studios_oauth_not_linked: 'No Studios sign-in is linked to this avatar.',
   studios_oauth_relink_required: 'The Studios sign-in stopped working. The human must sign in with Studios again.',
   studios_oauth_exchange_failed: 'Studios refused the sign-in.',
   studios_oauth_unavailable: 'Studios did not answer. Try again later.',
-  studios_oauth_bad_response: 'Studios sent a reply that ClawVille could not read.',
 };
 
 /** A typed failure. The message is our own text; vendor text is never included. */
@@ -170,20 +172,48 @@ export interface StudiosTokenSet {
   scope: string;
 }
 
-async function readCappedText(res: Response): Promise<string | null> {
-  const declared = Number(res.headers.get('content-length') ?? '0');
-  if (declared > MAX_VENDOR_BODY_BYTES) return null;
-  const buf = await res.arrayBuffer();
-  if (buf.byteLength > MAX_VENDOR_BODY_BYTES) return null;
-  return new TextDecoder().decode(buf);
-}
+/**
+ * What the token endpoint said. `unknown` = the request may have been
+ * processed but we cannot tell (network error, timeout, 5xx, a body over the
+ * limit or unreadable); `bad_response` = a 2xx we cannot accept.
+ */
+export type TokenResult =
+  | { kind: 'ok'; tokens: StudiosTokenSet }
+  | { kind: 'invalid_grant' }
+  | { kind: 'refused' }
+  | { kind: 'rate_limited' }
+  | { kind: 'bad_response' }
+  | { kind: 'unknown' };
 
 /**
- * POST a form to the Studios token endpoint and parse the answer.
- * `invalid_grant` -> relink_required; another 4xx -> exchange_failed;
- * 5xx / 429 / network / timeout -> unavailable; unreadable -> bad_response.
+ * Read a body as a stream, at most `maxBytes`; the read is cancelled as soon
+ * as it goes over. Returns null when over the limit.
  */
-async function requestToken(form: Record<string, string>): Promise<StudiosTokenSet> {
+export async function readBodyWithLimit(res: Response, maxBytes: number): Promise<string | null> {
+  const declared = Number(res.headers.get('content-length') ?? '0');
+  if (declared > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+async function requestToken(form: Record<string, string>): Promise<TokenResult> {
   let res: Response;
   try {
     res = await fetch(STUDIOS_OAUTH_TOKEN_URL, {
@@ -194,13 +224,13 @@ async function requestToken(form: Record<string, string>): Promise<StudiosTokenS
       signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
     });
   } catch {
-    throw new StudiosOAuthError('studios_oauth_unavailable');
+    return { kind: 'unknown' };
   }
   let text: string | null;
   try {
-    text = await readCappedText(res);
+    text = await readBodyWithLimit(res, MAX_VENDOR_BODY_BYTES);
   } catch {
-    throw new StudiosOAuthError('studios_oauth_unavailable');
+    return { kind: 'unknown' };
   }
   let json: unknown = null;
   try {
@@ -209,21 +239,28 @@ async function requestToken(form: Record<string, string>): Promise<StudiosTokenS
     json = null;
   }
   if (!res.ok) {
-    if (res.status >= 500 || res.status === 429) throw new StudiosOAuthError('studios_oauth_unavailable');
-    const err = tokenErrorSchema.safeParse(json);
-    if (err.success && err.data.error === 'invalid_grant') throw new StudiosOAuthError('studios_oauth_relink_required');
-    throw new StudiosOAuthError('studios_oauth_exchange_failed');
+    if (res.status === 429) return { kind: 'rate_limited' };
+    if (res.status >= 400 && res.status < 500) {
+      const err = tokenErrorSchema.safeParse(json);
+      if (err.success && err.data.error === 'invalid_grant') return { kind: 'invalid_grant' };
+      if (err.success) return { kind: 'refused' };
+    }
+    return { kind: 'unknown' };
   }
+  if (text === null) return { kind: 'unknown' };
   const parsed = tokenResponseSchema.safeParse(json);
-  if (!parsed.success) throw new StudiosOAuthError('studios_oauth_bad_response');
+  if (!parsed.success) return { kind: 'bad_response' };
   const scope = parsed.data.scope ?? STUDIOS_OAUTH_SCOPE;
-  if (!scope.split(/\s+/).includes('studio')) throw new StudiosOAuthError('studios_oauth_bad_response');
+  if (!scope.split(/\s+/).includes('studio')) return { kind: 'bad_response' };
   const ttlS = parsed.data.expires_in ?? STUDIOS_ACCESS_DEFAULT_TTL_S;
   return {
-    accessToken: parsed.data.access_token,
-    refreshToken: parsed.data.refresh_token ?? null,
-    accessExpiresAt: new Date(Date.now() + ttlS * 1000),
-    scope,
+    kind: 'ok',
+    tokens: {
+      accessToken: parsed.data.access_token,
+      refreshToken: parsed.data.refresh_token ?? null,
+      accessExpiresAt: new Date(Date.now() + ttlS * 1000),
+      scope,
+    },
   };
 }
 
@@ -242,12 +279,24 @@ function sealTokens(tokens: StudiosTokenSet) {
   };
 }
 
-function oauthRow(avatarId: string) {
-  return and(
-    eq(userVendorCredentials.avatarId, avatarId),
-    eq(userVendorCredentials.vendor, STUDIOS_OAUTH_VENDOR),
-    eq(userVendorCredentials.kind, OAUTH_KIND),
-  );
+function linkRow(avatarId: string) {
+  return and(eq(userVendorOAuthLinks.avatarId, avatarId), eq(userVendorOAuthLinks.vendor, STUDIOS_OAUTH_VENDOR));
+}
+
+/** Best effort, short timeout; the reply is not read. */
+async function revokeToken(token: string, hint: 'refresh_token' | 'access_token'): Promise<void> {
+  try {
+    const res = await fetch(STUDIOS_OAUTH_REVOKE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({ token, token_type_hint: hint, client_id: studiosClientId() }).toString(),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(REVOKE_TIMEOUT_MS),
+    });
+    await res.body?.cancel().catch(() => {});
+  } catch {
+    // Best effort only.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,10 +305,11 @@ function oauthRow(avatarId: string) {
 
 export async function startStudiosSignIn(input: { userId: string; avatarId: string }): Promise<{ authorizeUrl: string }> {
   const now = new Date();
-  // Clear this human's used or expired sign-ins, so a looping client cannot fill the table.
+  // Clear this human's rows that expired 10+ minutes ago (an exchange in
+  // flight is never older than its timeout), so a looping client cannot fill the table.
   await db.delete(vendorOAuthStates).where(and(
     eq(vendorOAuthStates.userId, input.userId),
-    or(isNotNull(vendorOAuthStates.usedAt), lt(vendorOAuthStates.expiresAt, now)),
+    lt(vendorOAuthStates.expiresAt, new Date(now.getTime() - STUDIOS_OAUTH_STATE_TTL_MS)),
   ));
 
   const state = randomToken();
@@ -301,6 +351,7 @@ export type StudiosCallbackReason =
   | 'wrong_issuer'
   | 'denied'
   | 'avatar_changed'
+  | 'cancelled'
   | 'exchange_failed'
   | 'unavailable'
   | 'needs_login'
@@ -335,6 +386,7 @@ export async function completeStudiosSignIn(input: {
     return { ok: false, reason: seen ? 'state_used' : 'invalid_state' };
   }
   if (row.vendor !== STUDIOS_OAUTH_VENDOR) return { ok: false, reason: 'invalid_state' };
+  if (row.cancelledAt) return { ok: false, reason: 'cancelled' };
   if (row.expiresAt.getTime() <= now.getTime()) return { ok: false, reason: 'state_expired' };
   if (row.userId !== input.userId) return { ok: false, reason: 'wrong_user' };
   // RFC 9207: Studios advertises authorization_response_iss_parameter_supported,
@@ -349,32 +401,56 @@ export async function completeStudiosSignIn(input: {
   });
   if (!avatar) return { ok: false, reason: 'avatar_changed' };
 
-  let tokens: StudiosTokenSet;
-  try {
-    tokens = await requestToken({
-      grant_type: 'authorization_code',
-      code: input.code,
-      redirect_uri: row.redirectUri,
-      client_id: studiosClientId(),
-      code_verifier: decryptToken(row.verifierEnc, row.verifierIv, row.verifierTag),
-      resource: STUDIOS_MCP_RESOURCE,
-    });
-  } catch (err) {
-    if (err instanceof StudiosOAuthError && err.code === 'studios_oauth_unavailable') {
-      return { ok: false, reason: 'unavailable' };
-    }
-    if (err instanceof StudiosOAuthError) return { ok: false, reason: 'exchange_failed' };
-    throw err;
-  }
+  const result = await requestToken({
+    grant_type: 'authorization_code',
+    code: input.code,
+    redirect_uri: row.redirectUri,
+    client_id: studiosClientId(),
+    code_verifier: decryptToken(row.verifierEnc, row.verifierIv, row.verifierTag),
+    resource: STUDIOS_MCP_RESOURCE,
+  });
+  if (result.kind === 'rate_limited' || result.kind === 'unknown') return { ok: false, reason: 'unavailable' };
+  if (result.kind !== 'ok') return { ok: false, reason: 'exchange_failed' };
 
-  const values = { ...sealTokens(tokens), status: 'active', updatedByUserId: input.userId, updatedAt: now, createdAt: now };
-  await db
-    .insert(userVendorCredentials)
-    .values({ avatarId: row.avatarId, vendor: STUDIOS_OAUTH_VENDOR, kind: OAUTH_KIND, ...values })
-    .onConflictDoUpdate({
-      target: [userVendorCredentials.avatarId, userVendorCredentials.vendor, userVendorCredentials.kind],
-      set: values,
-    });
+  // Install only if an unlink did not cancel this sign-in while the exchange
+  // ran. The state row lock orders this against unlinkStudiosOAuth.
+  const installed = await db.transaction(async (tx) => {
+    const [locked] = await tx.select({ cancelledAt: vendorOAuthStates.cancelledAt })
+      .from(vendorOAuthStates).where(eq(vendorOAuthStates.id, row.id)).for('update');
+    if (!locked || locked.cancelledAt) return false;
+    const sealed = sealTokens(result.tokens);
+    const at = new Date();
+    await tx.insert(userVendorOAuthLinks)
+      .values({
+        avatarId: row.avatarId,
+        vendor: STUDIOS_OAUTH_VENDOR,
+        ...sealed,
+        status: 'active',
+        refreshStartedAt: null,
+        generation: 1,
+        linkedByUserId: input.userId,
+        createdAt: at,
+        updatedAt: at,
+      })
+      .onConflictDoUpdate({
+        target: [userVendorOAuthLinks.avatarId, userVendorOAuthLinks.vendor],
+        set: {
+          ...sealed,
+          status: 'active',
+          refreshStartedAt: null,
+          generation: sql`${userVendorOAuthLinks.generation} + 1`,
+          linkedByUserId: input.userId,
+          createdAt: at,
+          updatedAt: at,
+        },
+      });
+    return true;
+  });
+  if (!installed) {
+    const t = result.tokens;
+    await revokeToken(t.refreshToken ?? t.accessToken, t.refreshToken ? 'refresh_token' : 'access_token');
+    return { ok: false, reason: 'cancelled' };
+  }
   return { ok: true };
 }
 
@@ -390,20 +466,41 @@ export interface StudiosOAuthStatus {
 }
 
 export async function readStudiosOAuthStatus(avatarId: string): Promise<StudiosOAuthStatus> {
-  const row = await db.query.userVendorCredentials.findFirst({
-    where: oauthRow(avatarId),
+  const row = await db.query.userVendorOAuthLinks.findFirst({
+    where: linkRow(avatarId),
     columns: { status: true, scope: true, createdAt: true },
   });
   if (!row) return { linked: false, status: null, scope: null, linkedAt: null };
   return {
     linked: true,
+    // 'refreshing' is an internal step; the human sees an active link.
     status: row.status === 'broken' ? 'broken' : 'active',
-    scope: row.scope ?? null,
+    scope: row.scope,
     linkedAt: new Date(row.createdAt).toISOString(),
   };
 }
 
-type LockedOutcome = { kind: 'token'; token: string } | { kind: 'broken' } | { kind: 'not_linked' };
+type LinkRow = typeof userVendorOAuthLinks.$inferSelect;
+
+function freshAccess(row: LinkRow, rejectedToken: string | undefined): string | null {
+  if (row.accessExpiresAt.getTime() - Date.now() <= STUDIOS_ACCESS_REFRESH_WINDOW_MS) return null;
+  const token = decryptToken(row.accessEnc, row.accessIv, row.accessTag);
+  return rejectedToken !== undefined && token === rejectedToken ? null : token;
+}
+
+/** Mark broken, only if the row is still in the refresh this caller claimed. */
+async function markBroken(avatarId: string, generation: number): Promise<void> {
+  await db.update(userVendorOAuthLinks)
+    .set({ status: 'broken', refreshStartedAt: null, updatedAt: new Date() })
+    .where(and(linkRow(avatarId), eq(userVendorOAuthLinks.generation, generation)));
+}
+
+type Claim =
+  | { kind: 'token'; token: string }
+  | { kind: 'claimed'; generation: number; refreshToken: string }
+  | { kind: 'wait' }
+  | { kind: 'broken' }
+  | { kind: 'not_linked' };
 
 /**
  * A valid Studios access token for this avatar. Never log the result.
@@ -413,87 +510,121 @@ type LockedOutcome = { kind: 'token'; token: string } | { kind: 'broken' } | { k
  * caller already replaced it, the new one is returned without a network call.
  */
 export async function getAccessToken(avatarId: string, options: { rejectedToken?: string } = {}): Promise<string> {
-  const row = await db.query.userVendorCredentials.findFirst({ where: oauthRow(avatarId) });
-  if (!row) throw new StudiosOAuthError('studios_oauth_not_linked');
-  if (row.status === 'broken') throw new StudiosOAuthError('studios_oauth_relink_required');
-  if (!options.rejectedToken && row.accessEnc && row.accessIv && row.accessTag && row.accessExpiresAt
-    && row.accessExpiresAt.getTime() - Date.now() > STUDIOS_ACCESS_REFRESH_WINDOW_MS) {
-    return decryptToken(row.accessEnc, row.accessIv, row.accessTag);
-  }
+  const deadline = Date.now() + REFRESH_WAIT_MS;
+  for (;;) {
+    const row = await db.query.userVendorOAuthLinks.findFirst({ where: linkRow(avatarId) });
+    if (!row) throw new StudiosOAuthError('studios_oauth_not_linked');
+    if (row.status === 'broken') throw new StudiosOAuthError('studios_oauth_relink_required');
+    if (row.status === 'active') {
+      const token = freshAccess(row, options.rejectedToken);
+      if (token) return token;
+    }
 
-  const outcome = await db.transaction(async (tx): Promise<LockedOutcome> => {
-    const [locked] = await tx.select().from(userVendorCredentials).where(oauthRow(avatarId)).for('update');
-    if (!locked) return { kind: 'not_linked' };
-    if (locked.status === 'broken') return { kind: 'broken' };
-    // Re-check under the lock: a concurrent caller may have refreshed already.
-    if (locked.accessEnc && locked.accessIv && locked.accessTag && locked.accessExpiresAt
-      && locked.accessExpiresAt.getTime() - Date.now() > STUDIOS_ACCESS_REFRESH_WINDOW_MS) {
-      const current = decryptToken(locked.accessEnc, locked.accessIv, locked.accessTag);
-      if (!options.rejectedToken || current !== options.rejectedToken) return { kind: 'token', token: current };
-    }
-    const markBroken = async () => {
-      await tx.update(userVendorCredentials).set({ status: 'broken', updatedAt: new Date() }).where(oauthRow(avatarId));
-    };
-    if (!locked.refreshEnc || !locked.refreshIv || !locked.refreshTag) {
-      await markBroken();
-      return { kind: 'broken' };
-    }
-    const refreshToken = decryptToken(locked.refreshEnc, locked.refreshIv, locked.refreshTag);
-    let tokens: StudiosTokenSet;
-    try {
-      tokens = await requestToken({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        client_id: studiosClientId(),
-        resource: STUDIOS_MCP_RESOURCE,
-      });
-    } catch (err) {
-      if (err instanceof StudiosOAuthError && err.code === 'studios_oauth_relink_required') {
-        await markBroken();
+    // Claim the refresh under the row lock; the 'refreshing' mark is committed
+    // before the request, so a crash or lost reply can never lead to a second
+    // use of the same refresh token.
+    const claim = await db.transaction(async (tx): Promise<Claim> => {
+      const [locked] = await tx.select().from(userVendorOAuthLinks).where(linkRow(avatarId)).for('update');
+      if (!locked) return { kind: 'not_linked' };
+      if (locked.status === 'broken') return { kind: 'broken' };
+      if (locked.status === 'refreshing') {
+        const started = locked.refreshStartedAt?.getTime() ?? 0;
+        if (Date.now() - started > STUDIOS_REFRESH_STALE_MS) {
+          // The request that set this mark never reported back: its outcome is unknown.
+          await tx.update(userVendorOAuthLinks)
+            .set({ status: 'broken', refreshStartedAt: null, updatedAt: new Date() })
+            .where(linkRow(avatarId));
+          return { kind: 'broken' };
+        }
+        return { kind: 'wait' };
+      }
+      const token = freshAccess(locked, options.rejectedToken);
+      if (token) return { kind: 'token', token };
+      if (!locked.refreshEnc || !locked.refreshIv || !locked.refreshTag) {
+        await tx.update(userVendorOAuthLinks).set({ status: 'broken', updatedAt: new Date() }).where(linkRow(avatarId));
         return { kind: 'broken' };
       }
-      throw err;
-    }
-    // A server that does not rotate keeps the old refresh token valid.
-    const sealed = sealTokens({ ...tokens, refreshToken: tokens.refreshToken ?? refreshToken });
-    await tx.update(userVendorCredentials).set({ ...sealed, updatedAt: new Date() }).where(oauthRow(avatarId));
-    return { kind: 'token', token: tokens.accessToken };
-  });
+      const generation = locked.generation + 1;
+      await tx.update(userVendorOAuthLinks)
+        .set({ status: 'refreshing', refreshStartedAt: new Date(), generation, updatedAt: new Date() })
+        .where(linkRow(avatarId));
+      return { kind: 'claimed', generation, refreshToken: decryptToken(locked.refreshEnc, locked.refreshIv, locked.refreshTag) };
+    });
 
-  if (outcome.kind === 'not_linked') throw new StudiosOAuthError('studios_oauth_not_linked');
-  if (outcome.kind === 'broken') throw new StudiosOAuthError('studios_oauth_relink_required');
-  return outcome.token;
+    if (claim.kind === 'not_linked') throw new StudiosOAuthError('studios_oauth_not_linked');
+    if (claim.kind === 'broken') throw new StudiosOAuthError('studios_oauth_relink_required');
+    if (claim.kind === 'token') return claim.token;
+    if (claim.kind === 'wait') {
+      if (Date.now() > deadline) throw new StudiosOAuthError('studios_oauth_unavailable');
+      await new Promise((resolve) => setTimeout(resolve, REFRESH_POLL_MS));
+      continue;
+    }
+
+    const result = await requestToken({
+      grant_type: 'refresh_token',
+      refresh_token: claim.refreshToken,
+      client_id: studiosClientId(),
+      resource: STUDIOS_MCP_RESOURCE,
+    });
+    if (result.kind === 'ok') {
+      // A server that does not rotate keeps the old refresh token valid.
+      const sealed = sealTokens({ ...result.tokens, refreshToken: result.tokens.refreshToken ?? claim.refreshToken });
+      const written = await db.update(userVendorOAuthLinks)
+        .set({ ...sealed, status: 'active', refreshStartedAt: null, updatedAt: new Date() })
+        .where(and(linkRow(avatarId), eq(userVendorOAuthLinks.generation, claim.generation)))
+        .returning({ generation: userVendorOAuthLinks.generation });
+      if (written.length === 0) {
+        // Unlinked or linked again meanwhile: these tokens belong to no link.
+        const t = result.tokens;
+        await revokeToken(t.refreshToken ?? t.accessToken, t.refreshToken ? 'refresh_token' : 'access_token');
+        continue;
+      }
+      return result.tokens.accessToken;
+    }
+    if (result.kind === 'rate_limited' || result.kind === 'refused') {
+      // Studios answered and did not use the refresh token: release the claim.
+      await db.update(userVendorOAuthLinks)
+        .set({ status: 'active', refreshStartedAt: null, updatedAt: new Date() })
+        .where(and(linkRow(avatarId), eq(userVendorOAuthLinks.generation, claim.generation)));
+      throw new StudiosOAuthError(result.kind === 'rate_limited' ? 'studios_oauth_unavailable' : 'studios_oauth_exchange_failed');
+    }
+    // invalid_grant, or an unknown outcome after the request was sent.
+    await markBroken(avatarId, claim.generation);
+    throw new StudiosOAuthError('studios_oauth_relink_required');
+  }
 }
 
-/** Revoke at Studios (best effort, short timeout), then delete the link. */
-export async function unlinkStudiosOAuth(avatarId: string): Promise<void> {
-  const row = await db.query.userVendorCredentials.findFirst({ where: oauthRow(avatarId) });
-  if (!row) return;
+/**
+ * Cancel every open sign-in of this avatar and delete the link in ONE
+ * transaction (an exchange in flight then cannot install its tokens), then
+ * revoke at Studios (best effort, short timeout).
+ */
+export async function unlinkStudiosOAuth(input: { userId: string; avatarId: string }): Promise<void> {
+  const removed = await db.transaction(async (tx) => {
+    const now = new Date();
+    await tx.update(vendorOAuthStates)
+      .set({ cancelledAt: now, usedAt: sql`COALESCE(${vendorOAuthStates.usedAt}, ${now.toISOString()}::timestamptz)` })
+      .where(and(
+        eq(vendorOAuthStates.userId, input.userId),
+        eq(vendorOAuthStates.avatarId, input.avatarId),
+        eq(vendorOAuthStates.vendor, STUDIOS_OAUTH_VENDOR),
+        isNull(vendorOAuthStates.cancelledAt),
+      ));
+    const [row] = await tx.delete(userVendorOAuthLinks).where(linkRow(input.avatarId)).returning();
+    return row ?? null;
+  });
+  if (!removed) return;
   let token: string | null = null;
   let hint: 'refresh_token' | 'access_token' = 'refresh_token';
   try {
-    if (row.refreshEnc && row.refreshIv && row.refreshTag) {
-      token = decryptToken(row.refreshEnc, row.refreshIv, row.refreshTag);
-    } else if (row.accessEnc && row.accessIv && row.accessTag) {
-      token = decryptToken(row.accessEnc, row.accessIv, row.accessTag);
+    if (removed.refreshEnc && removed.refreshIv && removed.refreshTag) {
+      token = decryptToken(removed.refreshEnc, removed.refreshIv, removed.refreshTag);
+    } else {
+      token = decryptToken(removed.accessEnc, removed.accessIv, removed.accessTag);
       hint = 'access_token';
     }
   } catch {
     token = null;
   }
-  if (token) {
-    try {
-      const res = await fetch(STUDIOS_OAUTH_REVOKE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-        body: new URLSearchParams({ token, token_type_hint: hint, client_id: studiosClientId() }).toString(),
-        redirect: 'manual',
-        signal: AbortSignal.timeout(REVOKE_TIMEOUT_MS),
-      });
-      await res.body?.cancel().catch(() => {});
-    } catch {
-      // Best effort: the link is removed on our side even when Studios does not answer.
-    }
-  }
-  await db.delete(userVendorCredentials).where(oauthRow(avatarId));
+  if (token) await revokeToken(token, hint);
 }
