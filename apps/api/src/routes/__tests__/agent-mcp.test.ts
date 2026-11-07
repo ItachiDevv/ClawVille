@@ -160,6 +160,13 @@ describe('transport', () => {
     const res = await rpc('ping', undefined, { 'MCP-Protocol-Version': '1999-01-01' });
     expect(res.status).toBe(400);
   });
+  test('initialize with a newer MCP-Protocol-Version header negotiates a supported version', async () => {
+    const res = await rpc('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'hermes', version: '0.22.2' } }, { 'MCP-Protocol-Version': '2025-11-25' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result?: { protocolVersion?: string } };
+    expect(body.result?.protocolVersion).toBe('2025-06-18');
+  });
+
 });
 
 describe('auth', () => {

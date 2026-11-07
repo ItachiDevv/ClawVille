@@ -597,14 +597,6 @@ agentMcpRoutes.post(
   }),
   async (c) => {
     try {
-      const version = c.req.header('mcp-protocol-version');
-      if (version && !(MCP_SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(version)) {
-        return c.json(
-          { jsonrpc: '2.0', id: null, error: { code: -32600, message: `Unsupported MCP-Protocol-Version: ${version.slice(0, 32)}` } },
-          400,
-          noStore,
-        );
-      }
       const raw = await c.req.text();
       let parsed: unknown;
       try {
@@ -622,6 +614,18 @@ agentMcpRoutes.post(
       const isInitialize = messages.some(
         (m) => !!m && typeof m === 'object' && (m as { method?: unknown }).method === 'initialize',
       );
+      // The header carries the version that `initialize` agreed. On `initialize`
+      // itself the client may send a newer one (Hermes 0.22 sends 2025-11-25):
+      // the body negotiation answers with a version we support, and the client
+      // uses that one from then on. Every other request must carry a supported one.
+      const version = c.req.header('mcp-protocol-version');
+      if (!(isInitialize && !batch) && version && !(MCP_SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(version)) {
+        return c.json(
+          { jsonrpc: '2.0', id: null, error: { code: -32600, message: `Unsupported MCP-Protocol-Version: ${version.slice(0, 32)}` } },
+          400,
+          noStore,
+        );
+      }
       const headerSessionId = c.req.header('mcp-session-id')?.trim() || null;
       if (headerSessionId && isInitialize) {
         // Fixation guard (a): never accept or reuse a client-chosen id.
