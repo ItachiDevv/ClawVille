@@ -19,7 +19,7 @@
  * PARITY (Rule E5): human path = these routes with a Lucia session (wallet
  * panel, "Token and wallet check" card); agent path = the same routes with the
  * agent session header (ledger-capable for the paid screen), and the MCP tools
- * `clawville_market` and `clawville_trust`. The budget and the paid screen bind
+ * `clawville_market`, `clawville_trust` and `clawville_trust_screen`. The budget and the paid screen bind
  * to the resolved avatar. A guest (or an agent of a guest) gets 403; a logged-out
  * caller gets 401. No hosted [ACTION:] verb: vendor text must not enter a decide
  * prompt.

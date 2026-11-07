@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-07 17:59Z (paid SAID screen, still PROTOCOL_VERSION 117).** Drift note: `SPEND_VENDOR_IDS` gains `said` and `clawville_trust` gains `screen`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed.
+**Last Audited: 2026-11-07 17:59Z (paid SAID screen, still PROTOCOL_VERSION 117).** Drift note: `SPEND_VENDOR_IDS` gains `said` and the paid MCP tool `clawville_trust_screen` is new. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed.
 
 **Prior Last Audited: 2026-11-07 17:44Z (market and trust reads, PROTOCOL_VERSION 116 -> 117, migration 0098).** Drift note: new MCP tools `clawville_market` and `clawville_trust` and new routes under `/api/ecosystem`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed. Vendor text never enters a decide prompt.
 

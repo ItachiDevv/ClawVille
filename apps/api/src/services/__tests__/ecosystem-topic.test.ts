@@ -243,7 +243,7 @@ Any client that reads an mcpServers JSON block:
       '"Token and wallet check"',
       '`403 guest_not_allowed`',
       `\`POST ${API_BASE}/api/ecosystem/trust/<wallet>/screen\``,
-      '`clawville_trust { wallet, screen: true, idempotencyKey }`',
+      '`clawville_trust_screen { wallet, idempotencyKey }`',
       '`403 approval_not_supported_for_said`',
       '`502 payment_ambiguous`',
       'do NOT retry it',

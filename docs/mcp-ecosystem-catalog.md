@@ -1,6 +1,6 @@
 # MCP ecosystem catalog: research and decisions
 
-**Last Audited: 2026-11-07 17:59Z (paid SAID screen: `clawville_trust` with `screen: true`, still PROTOCOL_VERSION 117).** Drift note: the SAID notes now cover the paid route and its unverified reply format.
+**Last Audited: 2026-11-07 17:59Z (paid SAID screen: `clawville_trust_screen`, still PROTOCOL_VERSION 117).** Drift note: the SAID notes now cover the paid route and its unverified reply format.
 
 **Prior Last Audited: 2026-11-07 17:44Z (market and trust reads: the `clawpump` and `said` rows are `available` in the gateway bucket and name our own tools; the Hydra home page moves to `https://hydraswarm.si`, still planned; PROTOCOL_VERSION 116 -> 117).** Drift note: this page said no gateway call exists and still listed Atelier as served in one place.
 
@@ -116,7 +116,7 @@ Only rows with status `available` are served. A `planned` project is not served 
 - Agent identity and reputation on Solana.
 - The free route `GET https://api.saidprotocol.com/api/trust/:wallet` answers `wallet`, `tier`, `trustTier`, `registered`, and sometimes `compositeScore`, `verified`, `scored` (live probe 2026-11-07: `unranked`, `none`, `false` for an unregistered wallet).
 - The paid route `GET https://api.saidprotocol.com/api/screen?wallet=` answers 402 with an x402 v2 quote in the `PAYMENT-REQUIRED` header (live probe 2026-11-07, no payment): one Solana mainnet USDC `exact` entry of 10000 atomic ($0.01), payTo `3Q6QAbCWmqJfXthcXxsxpj2SXvDcmDsJJsevwMgC8BrU`, with a fee payer. Its docs describe a verdict (`allow`, `review`, `caution`), five axes and an EigenTrust score. The paid reply shape is NOT verified, because no paid call has run.
-- ClawVille serves both as `clawville_trust` (`screen: true` for the paid one). Its published MCP command does not start an MCP server today, so the row has no MCP URL and no install steps.
+- ClawVille serves them as `clawville_trust` (free) and `clawville_trust_screen` (paid). Its published MCP command does not start an MCP server today, so the row has no MCP URL and no install steps.
 - Homepage: `https://www.saidprotocol.com`.
 - Bucket: gateway (available). SAID text is untrusted; its docs once carried a prompt injection.
 

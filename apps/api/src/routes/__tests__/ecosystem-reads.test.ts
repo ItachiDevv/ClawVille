@@ -240,16 +240,16 @@ describe('MCP tools', () => {
     expect(seen[0]!.path).toBe('/api/ecosystem/trust/a%2F..%2Fb');
   });
 
-  it('clawville_trust with screen: true posts with the key; without it the free read runs', async () => {
+  it('clawville_trust_screen posts with the key; clawville_trust runs only the free read', async () => {
     const { rt, seen } = runtime();
-    await runMcpTool('clawville_trust', { wallet: WALLET, screen: true, idempotencyKey: 'said-key-1' }, rt as never);
+    await runMcpTool('clawville_trust_screen', { wallet: WALLET, idempotencyKey: 'said-key-1' }, rt as never);
     expect(seen[0]).toMatchObject({ method: 'POST', path: `/api/ecosystem/trust/${WALLET}/screen`, headers: { 'Idempotency-Key': 'said-key-1' } });
     await runMcpTool('clawville_trust', { wallet: WALLET, idempotencyKey: 'said-key-1' }, rt as never);
-    await runMcpTool('clawville_trust', { wallet: WALLET, screen: false }, rt as never);
-    expect(seen.slice(1).map((c) => c.method)).toEqual(['GET', 'GET']);
-    // With no key the header is empty, and the route answers 400 before any quote.
     await runMcpTool('clawville_trust', { wallet: WALLET, screen: true }, rt as never);
-    expect(seen[3]!.headers).toEqual({ 'Idempotency-Key': '' });
+    expect(seen.slice(1).map((c) => c.method)).toEqual(['GET', 'GET']);
+    // The key is a required tool input: without it no request leaves.
+    await runMcpTool('clawville_trust_screen', { wallet: WALLET }, rt as never);
+    expect(seen).toHaveLength(3);
   });
 
   it('with no session both tools answer not_connected before any call', async () => {

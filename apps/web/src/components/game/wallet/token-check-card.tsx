@@ -12,7 +12,7 @@
  * request key stays after an unclear outcome, so a second press cannot pay twice.
  */
 
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import {
   ECOSYSTEM_READS_PER_AVATAR_PER_DAY,
@@ -65,6 +65,32 @@ const SCREEN_NOT_PAID = new Set([
   'wallet_missing', 'vendor_unreachable', 'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed',
   'payment_prepare_failed', 'rate_limited', 'duplicate_request',
 ]);
+
+const PENDING_SCREEN_KEY_PREFIX = 'clawville.saidScreenKey.';
+/** The same keys in memory, for a browser that blocks storage: they then survive the modal but not a reload. */
+const pendingScreenKeys = new Map<string, string>();
+
+/** The request key of an unfinished screen. It survives the wallet modal and a reload. */
+function readPendingScreenKey(wallet: string): string | null {
+  try {
+    const stored = sessionStorage.getItem(PENDING_SCREEN_KEY_PREFIX + wallet);
+    if (stored) return stored;
+  } catch {
+    // Storage is blocked: the memory copy below answers.
+  }
+  return pendingScreenKeys.get(wallet) ?? null;
+}
+
+function writePendingScreenKey(wallet: string, key: string | null): void {
+  if (key) pendingScreenKeys.set(wallet, key);
+  else pendingScreenKeys.delete(wallet);
+  try {
+    if (key) sessionStorage.setItem(PENDING_SCREEN_KEY_PREFIX + wallet, key);
+    else sessionStorage.removeItem(PENDING_SCREEN_KEY_PREFIX + wallet);
+  } catch {
+    // Storage is blocked: the memory copy keeps the key.
+  }
+}
 
 /** Plain text for a refused paid screen. Branches on the API `code`, never on raw text. */
 export function screenErrorText(error: unknown): string {
@@ -251,18 +277,17 @@ function ScreenView({ reply }: { reply: SaidScreenReply }) {
 function PaidScreen({ wallet }: { wallet: string }) {
   const { query } = useHumanSpendPolicy();
   const policy = query.data;
-  const pendingKeys = useRef(new Map<string, string>());
   const screen = useMutation<SaidScreenReply, unknown, string>({
     mutationFn: (address) => {
-      const key = pendingKeys.current.get(address) ?? newIdempotencyKey();
-      pendingKeys.current.set(address, key);
+      const key = readPendingScreenKey(address) ?? newIdempotencyKey();
+      writePendingScreenKey(address, key);
       return api.saidScreen(address, key);
     },
     onSuccess: (_reply, address) => {
-      pendingKeys.current.delete(address);
+      writePendingScreenKey(address, null);
     },
     onError: (error, address) => {
-      if (error instanceof ApiError && error.code && SCREEN_NOT_PAID.has(error.code)) pendingKeys.current.delete(address);
+      if (error instanceof ApiError && error.code && SCREEN_NOT_PAID.has(error.code)) writePendingScreenKey(address, null);
     },
   });
   if (!policy) return null;

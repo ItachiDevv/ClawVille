@@ -250,7 +250,7 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     homepage: 'https://www.saidprotocol.com',
     notes: [
       'Each avatar has a daily read budget. A reply from the short shared cache costs none of it.',
-      'A paid screen with a verdict (clawville_trust with screen: true) costs about 1 cent from your avatar wallet, only inside your human\'s spend rules and only when they allow SAID.',
+      'A paid screen with a verdict (clawville_trust_screen) costs about 1 cent from your avatar wallet, only inside your human\'s spend rules and only when they allow SAID.',
     ],
   },
 ];

@@ -201,43 +201,13 @@ export function parseSignalReply(body: unknown, key: 'signals' | 'gems'): Ecosys
   return out;
 }
 
-const MACRO_CONTAINER_KEYS = ['assets', 'prices', 'tokens', 'markets', 'data', 'macro', 'spot'];
-const MACRO_PRICE_KEYS = ['price', 'priceUsd', 'price_usd', 'spot', 'usd'];
-const MACRO_CHANGE_KEYS = ['change24h', 'change_24h', 'change24hPct', 'change_24h_pct', 'usd_24h_change'];
-
-function firstFinite(row: Record<string, unknown>, keys: readonly string[]): number | null {
-  for (const key of keys) {
-    const value = finiteOrNull(row[key]);
-    if (value !== null) return value;
-  }
-  return null;
-}
-
-/**
- * The macro reply. ClawVille read only the plan's summary of it (BTC, ETH, SOL,
- * USDC, USDT spot and 24 h), not its exact keys, so this accepts a map or a list
- * of rows. It reads only the fixed assets and only numbers. A reply with no
- * readable asset is `vendor_reply_unreadable`, not an empty success.
- */
+/** The macro reply (live shape, 2026-11-07): `assets: [{ symbol, price_usd, change_24h }]`. Only the fixed assets and only numbers. */
 export function parseMacroReply(body: unknown): EcosystemMacroRow[] {
-  const root = asRecord(body);
-  if (!root && !Array.isArray(body)) throw new ReadFailure('vendor_reply_unreadable');
-  const candidates: unknown[] = [body, ...(root ? MACRO_CONTAINER_KEYS.map((key) => root[key]) : [])];
   const found = new Map<EcosystemMacroAsset, EcosystemMacroRow>();
-  const add = (symbol: unknown, row: Record<string, unknown> | null) => {
-    if (typeof symbol !== 'string' || !row) return;
-    const asset = ECOSYSTEM_MACRO_ASSETS.find((name) => name === symbol.toUpperCase());
-    if (!asset || found.has(asset)) return;
-    const priceUsd = firstFinite(row, MACRO_PRICE_KEYS);
-    if (priceUsd !== null) found.set(asset, { symbol: asset, priceUsd, change24h: firstFinite(row, MACRO_CHANGE_KEYS) });
-  };
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      for (const row of candidate.slice(0, VENDOR_ROWS_MAX)) add(asRecord(row)?.symbol, asRecord(row));
-    } else {
-      const map = asRecord(candidate);
-      if (map) for (const key of Object.keys(map).slice(0, VENDOR_ROWS_MAX)) add(key, asRecord(map[key]));
-    }
+  for (const row of vendorRows(asRecord(body)?.assets)) {
+    const asset = ECOSYSTEM_MACRO_ASSETS.find((name) => name === row.symbol);
+    const priceUsd = finiteOrNull(row.price_usd);
+    if (asset && priceUsd !== null && !found.has(asset)) found.set(asset, { symbol: asset, priceUsd, change24h: finiteOrNull(row.change_24h) });
   }
   if (found.size === 0) throw new ReadFailure('vendor_reply_unreadable');
   return ECOSYSTEM_MACRO_ASSETS.flatMap((asset) => {
@@ -434,8 +404,8 @@ export async function readEcosystemMarket(
       return result.ok ? { ok: true, reply: { ...base, ...result.meta, op: 'price', token: result.value } } : result;
     }
     case 'search': {
-      const params = new URLSearchParams({ query, limit: String(ECOSYSTEM_READ_LIMIT_MAX) });
-      const result = await read(`search:${query}`, ECOSYSTEM_READ_CACHE_TTL_MS.search, async () =>
+      const params = new URLSearchParams({ query: query.toLowerCase(), limit: String(ECOSYSTEM_READ_LIMIT_MAX) });
+      const result = await read(`search:${query.toLowerCase()}`, ECOSYSTEM_READ_CACHE_TTL_MS.search, async () =>
         parseSearchReply(await getClawPumpJson(`/tokens/search?${params}`, options)));
       return result.ok ? { ok: true, reply: { ...base, ...result.meta, op: 'search', tokens: result.value.slice(0, limit) } } : result;
     }
