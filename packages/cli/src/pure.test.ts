@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { DEFAULT_API_BASE, parseArgs, UsageError, validateApiBase } from './args';
 import { catalogRows, gatewayTools } from './catalog';
 import { parseCodexListJson, parseHermesList } from './clients';
-import { buildSpawnRequest, makeWhich, UnsafeCommandError } from './exec';
-import { planClient, planRow, rowUsesOAuth, serverNameOf } from './plan';
+import { buildSpawnRequest, makeWhich, UnsafeCommandError, windowsCmdExe } from './exec';
+import { KNOWN_CLAWVILLE_HOSTS, manualReason, planClient, planRow, rowUsesOAuth, serverNameOf } from './plan';
 import { outputTail, stripControl } from './text';
 import { isSafeToken, tokenizeSnippet, tokenizeSnippetLine, UnsafeTokenError } from './tokenize';
 import { CLI_VERSION } from './version';
@@ -88,6 +88,31 @@ describe('arguments', () => {
     for (const value of bad) expect(() => validateApiBase(value)).toThrow(UsageError);
   });
 
+  test('finding 5: --api errors name the problem and never repeat the value', () => {
+    const cases: [string, string][] = [
+      ['https://user:secret@%', 'user name or password'],
+      ['https://user:secret@api.clawville.world', 'user name or password'],
+      ['https://:secret@api.clawville.world', 'user name or password'],
+      ['https://secret@api.clawville.world', 'user name or password'],
+      ['https://api.clawville.world/secret', 'a path'],
+      ['https://api.clawville.world/?secret=1', 'a query'],
+      ['https://api.clawville.world?secret', 'a query'],
+      ['https://api.clawville.world/#secret', 'a hash'],
+      ['secret-not-a-url', 'not a valid URL'],
+      ['http://secret.example', 'use an https URL'],
+    ];
+    for (const [value, reason] of cases) {
+      let message = '';
+      try {
+        validateApiBase(value);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain(reason);
+      expect(message).not.toContain('secret');
+    }
+  });
+
   test('the version constant equals package.json', () => {
     const pkg = JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.json'), 'utf8')) as { version: string; name: string; bin: Record<string, string> };
     expect(CLI_VERSION).toBe(pkg.version);
@@ -166,6 +191,41 @@ describe('plans', () => {
     expect(codex.kind === 'run' && codex.add.includes('cmd')).toBe(false);
   });
 
+  test('finding 3: every stdio row is manual on Hermes and runs on Claude Code and Codex CLI', () => {
+    const stdio = rows.filter((r) => r.transport === 'stdio');
+    expect(stdio.map((r) => r.id)).toEqual(['shinjuku', 'paysh']);
+    for (const entry of stdio) {
+      const hermes = planClient(entry, 'hermes', 'linux');
+      expect(hermes.kind).toBe('manual');
+      if (hermes.kind === 'manual') expect(hermes.reason).toContain('Hermes starts the server command');
+      expect(planClient(entry, 'claude-code', 'linux').kind).toBe('run');
+      expect(planClient(entry, 'codex-cli', 'linux').kind).toBe('run');
+    }
+    // HTTP rows on Hermes are not caught by the stdio rule.
+    expect(manualReason(row('clawville'), 'hermes', ['hermes', 'mcp', 'add', 'clawville', '--url', 'https://api-staging.clawville.world/api/agent/mcp'])).toBeNull();
+  });
+
+  test('finding 4: the ClawVille add runs only for a known API host', () => {
+    expect([...KNOWN_CLAWVILLE_HOSTS].sort()).toEqual(['127.0.0.1', 'api-staging.clawville.world', 'api.clawville.world', 'localhost']);
+    const known = ['https://api.clawville.world', 'https://api-staging.clawville.world', 'http://localhost:4000', 'http://127.0.0.1:4000', 'https://api.clawville.world:443'];
+    for (const apiBase of known) {
+      const clawville = catalogRows(apiBase).find((r) => r.id === 'clawville')!;
+      for (const client of ['claude-code', 'codex-cli', 'hermes'] as const) expect(planClient(clawville, client, 'linux').kind).toBe('run');
+    }
+    const unknown = ['https://evil.example', 'https://api.clawville.world.evil.example', 'https://clawville.world', 'https://API-STAGING.clawville.world.example:8443'];
+    for (const apiBase of unknown) {
+      const clawville = catalogRows(apiBase).find((r) => r.id === 'clawville')!;
+      for (const client of ['claude-code', 'codex-cli', 'hermes'] as const) {
+        const plan = planClient(clawville, client, 'linux');
+        expect(plan.kind).toBe('manual');
+        if (plan.kind === 'manual') expect(plan.reason).toContain('is not a ClawVille host that clawville knows');
+      }
+    }
+    // Third-party rows keep their own URL, so a custom --api does not change them.
+    const studios = catalogRows('https://evil.example').find((r) => r.id === 'studios')!;
+    expect(planClient(studios, 'claude-code', 'linux').kind).toBe('run');
+  });
+
   test('gateway rows plan no command and name the ClawVille tools', () => {
     const plans = rows.filter((r) => r.bucket === 'gateway').map((r) => planRow(r, ['claude-code', 'codex-cli', 'hermes'], 'linux'));
     expect(plans.map((p) => p.kind)).toEqual(['gateway', 'gateway']);
@@ -181,7 +241,9 @@ describe('plans', () => {
 });
 
 describe('process start', () => {
-  const env = { ComSpec: 'C:\\Windows\\system32\\cmd.exe' };
+  const env = { ComSpec: 'C:\\other.exe', SystemRoot: 'C:\\Windows' };
+  const CMD = 'C:\\Windows\\System32\\cmd.exe';
+  const exists = (path: string) => path === CMD;
 
   test('POSIX and a Windows .exe start the program directly', () => {
     const posix = buildSpawnRequest('/usr/bin/claude', ['claude', 'mcp', 'list'], { platform: 'linux', env: {}, cwd: '/tmp', timeoutMs: 1 });
@@ -193,17 +255,38 @@ describe('process start', () => {
     expect(exe.args).toEqual(['mcp', 'list']);
   });
 
-  test('a Windows .cmd shim goes through cmd.exe with a quoted path and checked arguments', () => {
-    const request = buildSpawnRequest('C:\\Program Files\\x\\codex.cmd', ['codex', 'mcp', 'get', 'clawville', '--json'], { platform: 'win32', env, cwd: 'C:\\', timeoutMs: 1 });
-    expect(request.file).toBe('C:\\Windows\\system32\\cmd.exe');
+  test('a Windows .cmd shim goes through System32 cmd.exe with a quoted path and checked arguments', () => {
+    const request = buildSpawnRequest('C:\\Program Files\\x\\codex.cmd', ['codex', 'mcp', 'get', 'clawville', '--json'], { platform: 'win32', env, cwd: 'C:\\', timeoutMs: 1, fileExists: exists });
+    expect(request.file).toBe(CMD);
     expect(request.args).toEqual(['/d', '/s', '/c', '""C:\\Program Files\\x\\codex.cmd" mcp get clawville --json"']);
     expect(request.windowsVerbatimArguments).toBe(true);
   });
 
+  test('finding 2: cmd.exe comes from SystemRoot or WINDIR, never ComSpec, and must be an existing System32\\cmd.exe', () => {
+    expect(windowsCmdExe({ ComSpec: 'C:\\other.exe', SystemRoot: 'C:\\Windows' }, exists)).toBe(CMD);
+    expect(windowsCmdExe({ ComSpec: 'C:\\other.exe', windir: 'C:\\Windows' }, exists)).toBe(CMD);
+    expect(windowsCmdExe({ SYSTEMROOT: 'C:\\Windows\\' }, exists)).toBe(CMD);
+    const refused: Record<string, string>[] = [
+      { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }, // ComSpec alone is never used
+      { SystemRoot: '' },
+      { SystemRoot: 'Windows' }, // not absolute
+      { SystemRoot: '\\\\server\\share' }, // not a drive path
+      { SystemRoot: 'C:\\Evil' }, // C:\Evil\System32\cmd.exe does not exist
+      { SystemRoot: 'C:\\Win%x%' },
+    ];
+    for (const bad of refused) expect(() => windowsCmdExe(bad, exists)).toThrow(UnsafeCommandError);
+    // The real file system check: a missing file is refused.
+    expect(() => windowsCmdExe({ SystemRoot: 'C:\\NoSuchWindowsDir' })).toThrow(UnsafeCommandError);
+    // A .cmd shim with only ComSpec set is refused, not run through ComSpec.
+    expect(() =>
+      buildSpawnRequest('C:\\x\\codex.cmd', ['codex', 'mcp', 'list'], { platform: 'win32', env: { ComSpec: 'C:\\other.exe' }, cwd: 'C:\\', timeoutMs: 1, fileExists: () => true }),
+    ).toThrow(UnsafeCommandError);
+  });
+
   test('unsafe arguments and shim paths are refused', () => {
     expect(() => buildSpawnRequest('/usr/bin/x', ['x', 'a&b'], { platform: 'linux', env: {}, cwd: '/', timeoutMs: 1 })).toThrow(UnsafeCommandError);
-    expect(() => buildSpawnRequest('C:\\a%PATH%\\x.cmd', ['x', 'ok'], { platform: 'win32', env, cwd: 'C:\\', timeoutMs: 1 })).toThrow(UnsafeCommandError);
-    expect(() => buildSpawnRequest('C:\\a"b\\x.cmd', ['x', 'ok'], { platform: 'win32', env, cwd: 'C:\\', timeoutMs: 1 })).toThrow(UnsafeCommandError);
+    expect(() => buildSpawnRequest('C:\\a%PATH%\\x.cmd', ['x', 'ok'], { platform: 'win32', env, cwd: 'C:\\', timeoutMs: 1, fileExists: exists })).toThrow(UnsafeCommandError);
+    expect(() => buildSpawnRequest('C:\\a"b\\x.cmd', ['x', 'ok'], { platform: 'win32', env, cwd: 'C:\\', timeoutMs: 1, fileExists: exists })).toThrow(UnsafeCommandError);
   });
 
   test('PATH lookup: PATHEXT order on Windows, the execute bit on POSIX', () => {

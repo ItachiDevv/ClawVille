@@ -2,7 +2,7 @@
  * `clawville` commands. Every side effect goes through `CliDeps`, so the tests
  * inject spawn, PATH lookup, prompt, fetch and output.
  */
-import { CLIENT_IDS, parseArgs, UsageError, type ClientId, type ParsedArgs } from './args';
+import { CLIENT_IDS, parseArgs, shownInput, UsageError, type ClientId, type ParsedArgs } from './args';
 import { catalogRows, ECOSYSTEM_GENERAL_NOTES, gatewayTools, isPlannedRow, type EcosystemCatalogEntry } from './catalog';
 import { clientInfo, parseCodexListJson, parseHermesList } from './clients';
 import { buildSpawnRequest, type SpawnFn, type SpawnResult, type WhichFn } from './exec';
@@ -23,6 +23,8 @@ export interface CliDeps {
   readonly prompt: (question: string) => Promise<string>;
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
+  /** Test hook: does a file exist (the Windows cmd.exe check). Default: the real file system. */
+  readonly fileExists?: (path: string) => boolean;
 }
 
 const CLAWVILLE_ID = 'clawville';
@@ -137,6 +139,7 @@ async function runArgv(
     env: deps.env,
     cwd: deps.cwd,
     timeoutMs: options.timeoutMs,
+    ...(deps.fileExists ? { fileExists: deps.fileExists } : {}),
     ...(options.input !== undefined ? { input: options.input } : {}),
   });
   return deps.spawn(request);
@@ -320,7 +323,7 @@ async function commandAdd(args: ParsedArgs, deps: CliDeps): Promise<number> {
   const id = args.rowId!;
   const row = catalogRows(args.apiBase).find((entry) => entry.id === id);
   if (!row) {
-    deps.err(isPlannedRow(id) ? `"${id}" is not available yet.` : `Unknown id "${id.slice(0, 40)}". Run "clawville list".`);
+    deps.err(isPlannedRow(id) ? `"${id}" is not available yet.` : `Unknown id ${shownInput(id)}. Run "clawville list".`);
     return 1;
   }
   if (row.bucket === 'gateway') return installRow(args, deps, row, [], []);
@@ -338,17 +341,17 @@ async function commandAdd(args: ParsedArgs, deps: CliDeps): Promise<number> {
 async function clawvilleListed(deps: CliDeps, client: ClientId): Promise<{ listed: boolean | null; result?: SpawnResult }> {
   if (client === 'claude-code') {
     // `claude mcp list` health-checks (starts) every configured stdio server; `get` checks only this one.
-    const result = await runArgv(deps, ['claude', 'mcp', 'get', CLAWVILLE_ID], { timeoutMs: CHECK_TIMEOUT_MS });
+    const result = await runArgv(deps, DOCTOR_LIST_ARGV['claude-code'], { timeoutMs: CHECK_TIMEOUT_MS });
     if (result.code === 0) return { listed: true };
     if (result.code !== null && /not found|No MCP server/i.test(stripControl(result.stdout + result.stderr))) return { listed: false };
     return { listed: null, result };
   }
   if (client === 'codex-cli') {
-    const result = await runArgv(deps, ['codex', 'mcp', 'list', '--json'], { timeoutMs: CHECK_TIMEOUT_MS });
+    const result = await runArgv(deps, DOCTOR_LIST_ARGV['codex-cli'], { timeoutMs: CHECK_TIMEOUT_MS });
     const names = result.code === 0 ? parseCodexListJson(result.stdout) : null;
     return names === null ? { listed: null, result } : { listed: names.includes(CLAWVILLE_ID) };
   }
-  const result = await runArgv(deps, ['hermes', 'mcp', 'list'], { timeoutMs: CHECK_TIMEOUT_MS });
+  const result = await runArgv(deps, DOCTOR_LIST_ARGV.hermes, { timeoutMs: CHECK_TIMEOUT_MS });
   return result.code === 0 ? { listed: parseHermesList(result.stdout).includes(CLAWVILLE_ID) } : { listed: null, result };
 }
 
@@ -366,7 +369,26 @@ export function parseMcpBody(body: string): unknown {
   throw new Error('no JSON in the answer');
 }
 
+/** The argv `doctor` runs to see whether a client lists clawville. */
+const DOCTOR_LIST_ARGV: Readonly<Record<ClientId, readonly string[]>> = {
+  'claude-code': ['claude', 'mcp', 'get', CLAWVILLE_ID],
+  'codex-cli': ['codex', 'mcp', 'list', '--json'],
+  hermes: ['hermes', 'mcp', 'list'],
+};
+
 async function commandDoctor(args: ParsedArgs, deps: CliDeps): Promise<number> {
+  const url = `${args.apiBase}/api/agent/mcp`;
+  if (args.dryRun) {
+    // Print the checks only: no process, no PATH lookup, no network.
+    deps.out('Dry run: doctor would check:');
+    for (const client of chosenClients(args)) {
+      const { label, bin } = clientInfo(client);
+      deps.out(`  ${label}: is ${bin} on PATH; then run: ${DOCTOR_LIST_ARGV[client].join(' ')}`);
+    }
+    deps.out(`  MCP initialize: POST ${url}`);
+    deps.out('Nothing ran.');
+    return 0;
+  }
   let ok = true;
   for (const client of chosenClients(args)) {
     const { label, bin } = clientInfo(client);
@@ -386,7 +408,6 @@ async function commandDoctor(args: ParsedArgs, deps: CliDeps): Promise<number> {
     }
   }
 
-  const url = `${args.apiBase}/api/agent/mcp`;
   deps.out('');
   deps.out(`MCP initialize: POST ${url}`);
   try {

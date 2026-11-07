@@ -34,6 +34,10 @@ It runs each client's own `mcp add` command.
 - It does not overwrite an entry that already exists. It reports it and continues.
 - It reads no secret, makes no key and pays nothing.
 - It does not sign in for you. A command that starts a sign-in is printed for you to run. Today this applies to Studios on Codex CLI and Hermes.
+- It does not start a local server. Hermes starts the server command when you add it, so the local (stdio) servers are printed for Hermes, not run.
+- With an `--api` host other than `api.clawville.world`, `api-staging.clawville.world`, `localhost` or `127.0.0.1`, the ClawVille commands are printed, not run. A client can start a sign-in at once when an unknown server offers one.
+- `doctor --dry-run` prints the checks. It starts no program and makes no network call.
+- An error about `--api` never repeats the value, because it can hold a password or a token.
 - It does not run a setup step (for example `pay setup` or the Shinjuku setup). It prints the reviewed notes for that server.
 - When stdin is not a terminal and `--yes` is not given, it prints the commands and changes nothing.
 
@@ -44,7 +48,8 @@ Exit code 0 means success. Exit code 1 means a failure. The last lines give one 
 - Claude Code: the ClawVille line has no `--scope`, so Claude Code adds it to the local scope of the current folder. Claude Code refuses a name that already exists in the same scope.
 - Codex CLI: `codex mcp add` replaces an entry with the same name. So the CLI runs `codex mcp get <name>` first and stops when the entry exists.
 - Hermes: `hermes mcp add` asks questions. The CLI answers "no authentication" and "enable all tools". Hermes connects to the server before it saves the entry.
-- On native Windows, a `.cmd` program starts through `cmd.exe /d /s /c`. Every argument is checked against a strict set of characters first.
+- On native Windows, a `.cmd` program starts through `cmd.exe /d /s /c`. The CLI uses `System32\cmd.exe` under `SystemRoot` (or `WINDIR`), never `ComSpec`, and refuses when that file is missing. Every argument is checked against a strict set of characters first.
+- Claude Code and Codex CLI do not start a local server when they add it. A test with a marker command showed this for both.
 
 ## Develop
 

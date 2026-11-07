@@ -88,22 +88,42 @@ export function planClient(row: EcosystemCatalogEntry, client: ClientId, platfor
   const serverName = serverNameOf(client, add);
   const followUps = argvs.filter((argv) => argv !== adds[0]).map((argv) => argv.join(' '));
 
-  const signIn =
-    (client === 'hermes' && add.includes('--auth')) ||
-    // `codex mcp add --url` starts an OAuth flow at once when the server offers OAuth.
-    (client === 'codex-cli' && add.includes('--url') && rowUsesOAuth(row));
-  if (signIn) {
-    return {
-      kind: 'manual',
-      client,
-      serverName,
-      lines: argvs.map((argv) => argv.join(' ')),
-      reason: 'This command starts a sign-in, so clawville does not run it. Run it yourself.',
-    };
-  }
+  const reason = manualReason(row, client, add);
+  if (reason !== null) return { kind: 'manual', client, serverName, lines: argvs.map((argv) => argv.join(' ')), reason };
   if (platform === 'win32' && client === 'claude-code') add = windowsClaudeArgv(add);
   return { kind: 'run', client, serverName, add, followUps };
 }
+
+/** API hosts where clawville runs the ClawVille add itself. Any other `--api` host is print-only. */
+export const KNOWN_CLAWVILLE_HOSTS: ReadonlySet<string> = new Set(['api.clawville.world', 'api-staging.clawville.world', 'localhost', '127.0.0.1']);
+
+/** Why an add must be printed, not run; null when clawville may run it. */
+export function manualReason(row: EcosystemCatalogEntry, client: ClientId, add: readonly string[]): string | null {
+  // `codex mcp add --url` starts an OAuth flow at once when the server offers OAuth; Hermes `--auth` too.
+  if ((client === 'hermes' && add.includes('--auth')) || (client === 'codex-cli' && add.includes('--url') && rowUsesOAuth(row))) {
+    return 'This command starts a sign-in, so clawville does not run it. Run it yourself.';
+  }
+  // `hermes mcp add` connects to the server to list its tools, so for a stdio row it starts the
+  // server's command (npx, pay). `claude mcp add` and `codex mcp add` only write config: a marker
+  // stdio command was not started by either (checked with claude 2.1.319 and codex-cli 0.162.1).
+  if (client === 'hermes' && (row.transport === 'stdio' || add.includes('--command'))) {
+    return 'Hermes starts the server command when you add it (it lists the tools first), so clawville does not run it. Do the setup in the notes, then run it yourself.';
+  }
+  if (row.id === CLAWVILLE_ROW_ID && row.mcpUrl !== undefined) {
+    let host = '';
+    try {
+      host = new URL(row.mcpUrl).hostname;
+    } catch {
+      // An unparsable URL is never a known host.
+    }
+    if (!KNOWN_CLAWVILLE_HOSTS.has(host)) {
+      return `The API host ${host || '(unknown)'} is not a ClawVille host that clawville knows. A client can start a sign-in at once when a server offers one, so clawville does not run it. Run it yourself only if you trust that host.`;
+    }
+  }
+  return null;
+}
+
+const CLAWVILLE_ROW_ID = 'clawville';
 
 export function planRow(row: EcosystemCatalogEntry, clients: readonly ClientId[], platform: NodeJS.Platform): RowPlan {
   if (row.bucket === 'gateway') return { kind: 'gateway', row, tools: gatewayTools(row) };

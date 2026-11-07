@@ -11,7 +11,7 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { accessSync, constants as fsConstants, statSync } from 'node:fs';
-import { posix } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { isSafeToken } from './tokenize';
 
 export interface SpawnRequest {
@@ -53,10 +53,44 @@ export class UnsafeCommandError extends Error {
  * Build the spawn request for `argv`, where `resolved` is the full path of
  * argv[0]. Pure, so the Windows shim rule is unit-tested on every platform.
  */
+function envValue(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
+  const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name);
+  const value = key === undefined ? undefined : env[key]?.trim();
+  return value ? value : undefined;
+}
+
+/**
+ * The cmd.exe that starts a `.cmd` shim: `<SystemRoot or WINDIR>\System32\cmd.exe`,
+ * never `ComSpec` (any program can sit there). Refuses unless the path is
+ * absolute, its file name is cmd.exe, its folder is System32 and the file exists.
+ */
+export function windowsCmdExe(env: Readonly<Record<string, string | undefined>>, fileExists: (path: string) => boolean = isFile): string {
+  const root = envValue(env, 'SYSTEMROOT') ?? envValue(env, 'WINDIR');
+  if (root === undefined) throw new UnsafeCommandError('Cannot find cmd.exe: SystemRoot and WINDIR are not set.');
+  const path = win32.normalize(win32.join(root, 'System32', 'cmd.exe'));
+  const ok =
+    win32.isAbsolute(path) &&
+    /^[A-Za-z]:\\/.test(path) &&
+    win32.basename(path).toLowerCase() === 'cmd.exe' &&
+    win32.basename(win32.dirname(path)).toLowerCase() === 'system32' &&
+    SAFE_WINDOWS_PATH.test(path) &&
+    fileExists(path);
+  if (!ok) throw new UnsafeCommandError('Refused cmd.exe: it is not an existing System32\\cmd.exe under SystemRoot.');
+  return path;
+}
+
 export function buildSpawnRequest(
   resolved: string,
   argv: readonly string[],
-  options: { platform: NodeJS.Platform; env: Readonly<Record<string, string | undefined>>; cwd: string; input?: string; timeoutMs: number },
+  options: {
+    platform: NodeJS.Platform;
+    env: Readonly<Record<string, string | undefined>>;
+    cwd: string;
+    input?: string;
+    timeoutMs: number;
+    /** Test hook for the cmd.exe check. */
+    fileExists?: (path: string) => boolean;
+  },
 ): SpawnRequest {
   const args = argv.slice(1);
   for (const arg of args) {
@@ -65,9 +99,9 @@ export function buildSpawnRequest(
   const base = { cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs, ...(options.input !== undefined ? { input: options.input } : {}) };
   if (options.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved)) {
     if (!SAFE_WINDOWS_PATH.test(resolved)) throw new UnsafeCommandError(`Refused program path "${resolved}".`);
-    const comspec = options.env.ComSpec ?? options.env.COMSPEC ?? 'cmd.exe';
+    const cmdExe = windowsCmdExe(options.env, options.fileExists);
     const line = [`"${resolved}"`, ...args].join(' ');
-    return { ...base, file: comspec, args: ['/d', '/s', '/c', `"${line}"`], windowsVerbatimArguments: true };
+    return { ...base, file: cmdExe, args: ['/d', '/s', '/c', `"${line}"`], windowsVerbatimArguments: true };
   }
   return { ...base, file: resolved, args };
 }

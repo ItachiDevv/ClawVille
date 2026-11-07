@@ -26,24 +26,31 @@ export class UsageError extends Error {
 
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost']);
 
+/** User input in an error message: shown only when it is a plain word, so a pasted URL or token never prints. */
+export function shownInput(value: string): string {
+  return /^-{0,2}[A-Za-z0-9._-]{1,40}$/.test(value) ? `"${value}"` : '(value not shown)';
+}
+
 /**
  * Validate `--api`. https only, except http on 127.0.0.1 and localhost. The value
  * must be an origin (no path, query, hash or user info). Returns the origin.
+ * No error message ever repeats the value: it can hold a password or a token.
  */
 export function validateApiBase(raw: string): string {
+  if (/^[^/?#]*\/\/[^/?#]*@/.test(raw)) throw new UsageError('--api: a user name or password in the URL is not allowed.');
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new UsageError(`--api: "${raw.slice(0, 80)}" is not a URL.`);
+    throw new UsageError('--api: the value is not a valid URL.');
   }
+  if (url.username !== '' || url.password !== '') throw new UsageError('--api: a user name or password in the URL is not allowed.');
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOCAL_HOSTS.has(url.hostname))) {
     throw new UsageError('--api: use an https URL (http is allowed only for 127.0.0.1 and localhost).');
   }
-  if (url.username !== '' || url.password !== '') throw new UsageError('--api: a user name or password in the URL is not allowed.');
-  if (url.pathname !== '/' || url.search !== '' || url.hash !== '' || raw.includes('?') || raw.includes('#')) {
-    throw new UsageError('--api: give the API origin only, for example https://api.clawville.world');
-  }
+  if (url.pathname !== '/') throw new UsageError('--api: a path in the URL is not allowed. Give the origin only, for example https://api.clawville.world');
+  if (url.search !== '' || raw.includes('?')) throw new UsageError('--api: a query in the URL is not allowed.');
+  if (url.hash !== '' || raw.includes('#')) throw new UsageError('--api: a hash in the URL is not allowed.');
   const origin = url.origin;
   if (!isSafeToken(`${origin}/api/agent/mcp`)) throw new UsageError('--api: the URL holds a character that is not allowed.');
   return origin;
@@ -111,7 +118,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       }
       default:
-        if (arg.startsWith('-')) throw new UsageError(`Unknown option: ${arg.slice(0, 40)}`);
+        if (arg.startsWith('-')) throw new UsageError(`Unknown option: ${shownInput(name)}`);
         positional.push(arg);
     }
   }
@@ -122,7 +129,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   const [first, ...rest] = positional;
   if (first === undefined) return { command: 'install', client, apiBase, dryRun, yes };
   const command = COMMANDS[first];
-  if (command === undefined) throw new UsageError(`Unknown command: ${first.slice(0, 40)}`);
+  if (command === undefined) throw new UsageError(`Unknown command: ${shownInput(first)}`);
   if (command === 'add') {
     if (rest.length !== 1) throw new UsageError('Usage: clawville add <id> [--client claude-code|codex-cli|hermes]');
     return { command, rowId: rest[0], client, apiBase, dryRun, yes };

@@ -234,11 +234,36 @@ describe('add <id>', () => {
     expect(h.out.join('\n')).toContain('shinjuku-shield@0.3.95 setup');
   });
 
-  test('paysh on hermes: the stdio form, with the piped answers', async () => {
+  test('finding 3: stdio rows on Hermes are printed only (hermes add starts the server); Claude and Codex still run', async () => {
+    for (const id of ['paysh', 'shinjuku']) {
+      const h = harness({ handler: fakeClients() });
+      expect(await runCli(['add', id, '--yes'], h.deps)).toBe(0);
+      expect(h.calls.some((c) => c.argv[0] === 'hermes')).toBe(false);
+      expect(h.calls.filter((c) => c.argv[2] === 'add').map((c) => c.argv[0])).toEqual(['claude', 'codex']);
+      const text = h.out.join('\n');
+      expect(text).toContain('Hermes starts the server command when you add it');
+      expect(text).toContain('Hermes: manual');
+    }
+    const pay = harness({ handler: fakeClients() });
+    await runCli(['add', 'paysh', '--yes', '--client', 'hermes'], pay.deps);
+    expect(pay.calls).toEqual([]);
+    expect(pay.out.join('\n')).toContain('hermes mcp add pay --command pay --args mcp');
+    expect(pay.out.join('\n')).toContain('pay setup');
+  });
+
+  test('finding 4: a custom --api host prints every ClawVille add as manual and runs nothing', async () => {
     const h = harness({ handler: fakeClients() });
-    expect(await runCli(['add', 'paysh', '--yes', '--client', 'hermes'], h.deps)).toBe(0);
-    expect(h.calls.map((c) => c.argv.join(' '))).toContain('hermes mcp add pay --command pay --args mcp');
-    expect(h.out.join('\n')).toContain('pay setup');
+    expect(await runCli(['--yes', '--api', 'https://mcp.other-host.example'], h.deps)).toBe(0);
+    expect(h.calls).toEqual([]);
+    const text = h.out.join('\n');
+    expect(text).toContain('The API host mcp.other-host.example is not a ClawVille host that clawville knows.');
+    expect(text).toContain('codex mcp add clawville --url https://mcp.other-host.example/api/agent/mcp');
+    expect(h.out.slice(-3).every((line) => line.includes(': manual ('))).toBe(true);
+    for (const api of ['https://api.clawville.world', 'https://api-staging.clawville.world', 'http://localhost:4000', 'http://127.0.0.1:4000']) {
+      const known = harness({ handler: fakeClients() });
+      expect(await runCli(['--yes', '--api', api], known.deps)).toBe(0);
+      expect(known.calls.filter((c) => c.argv[2] === 'add').length).toBe(3);
+    }
   });
 
   test('a gateway row needs no install and names the ClawVille tool', async () => {
@@ -257,16 +282,17 @@ describe('add <id>', () => {
     expect(planned.err.join('\n')).toContain('not available yet');
   });
 
-  test('Windows .cmd shim: codex goes through cmd.exe with checked arguments', async () => {
+  test('Windows .cmd shim: codex goes through System32 cmd.exe (never ComSpec) with checked arguments', async () => {
     const h = harness({ handler: () => ({ code: 0, stdout: '{}' }) });
     const deps: CliDeps = {
       ...h.deps,
       platform: 'win32',
-      env: { ComSpec: 'C:\\Windows\\system32\\cmd.exe' },
+      env: { ComSpec: 'C:\\other.exe', SystemRoot: 'C:\\Windows' },
       which: (bin) => (bin === 'codex' ? 'C:\\Users\\u\\.local\\bin\\codex.cmd' : null),
+      fileExists: (path) => path === 'C:\\Windows\\System32\\cmd.exe',
     };
     expect(await runCli(['add', 'clawville', '--yes', '--client', 'codex-cli', ...STAGING], deps)).toBe(0);
-    expect(h.calls[0]!.request.file).toBe('C:\\Windows\\system32\\cmd.exe');
+    expect(h.calls[0]!.request.file).toBe('C:\\Windows\\System32\\cmd.exe');
     expect(h.calls[0]!.request.args).toEqual(['/d', '/s', '/c', '""C:\\Users\\u\\.local\\bin\\codex.cmd" mcp get clawville --json"']);
     expect(h.calls[0]!.request.windowsVerbatimArguments).toBe(true);
   });
@@ -284,6 +310,30 @@ describe('list, help, version, usage', () => {
     expect(text).not.toContain('atelier');
     expect(h.calls).toEqual([]);
     expect(h.fetches).toEqual([]);
+  });
+
+  test('finding 5: a bad --api, command, option or id never echoes its value', async () => {
+    const secrets = [
+      ['--api', 'https://user:secret@%'],
+      ['--api', 'https://user:secret@api.clawville.world'],
+      ['--api', 'https://api.clawville.world/secret'],
+      ['--api', 'https://api.clawville.world/?token=secret'],
+      ['--api', 'https://api.clawville.world/#secret'],
+      ['--api=http://secret.example'],
+      ['https://user:secret@x.example'],
+      ['--opt=secret'],
+      ['add', 'https://user:secret@x'],
+    ];
+    for (const argv of secrets) {
+      const h = harness();
+      expect(await runCli(argv, h.deps)).toBe(1);
+      const text = [...h.out, ...h.err].join('\n');
+      expect(text).not.toContain('secret');
+      expect(h.calls).toEqual([]);
+    }
+    const plain = harness();
+    await runCli(['frobnicate'], plain.deps);
+    expect(plain.err[0]).toBe('clawville: Unknown command: "frobnicate"');
   });
 
   test('help, version and a usage error', async () => {
@@ -328,6 +378,24 @@ describe('doctor', () => {
     });
     expect(await runCli(['doctor'], rpc.deps)).toBe(1);
     expect(rpc.out.at(-1)).toBe('  failed: nope');
+  });
+
+  test('finding 1: doctor --dry-run prints the checks and runs nothing: no process, no PATH lookup, no network', async () => {
+    const h = harness({ handler: fakeClients(), fetchImpl: async () => new Response('{}') });
+    let lookups = 0;
+    const deps: CliDeps = { ...h.deps, which: (bin) => { lookups++; return h.deps.which(bin); } };
+    expect(await runCli(['doctor', '--dry-run', ...STAGING], deps)).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.fetches).toEqual([]);
+    expect(lookups).toBe(0);
+    expect(h.out).toEqual([
+      'Dry run: doctor would check:',
+      '  Claude Code: is claude on PATH; then run: claude mcp get clawville',
+      '  Codex CLI: is codex on PATH; then run: codex mcp list --json',
+      '  Hermes: is hermes on PATH; then run: hermes mcp list',
+      '  MCP initialize: POST https://api-staging.clawville.world/api/agent/mcp',
+      'Nothing ran.',
+    ]);
   });
 
   test('an event-stream answer parses', () => {
