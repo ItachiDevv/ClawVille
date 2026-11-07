@@ -3,7 +3,6 @@
  * vendors and the budget are fakes: no live vendor call.
  */
 if (!process.env.FINGERPRINT_SECRET) process.env.FINGERPRINT_SECRET = '0'.repeat(64);
-if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
 
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import { ECOSYSTEM_READS_PER_AVATAR_PER_DAY } from '@clawville/shared';

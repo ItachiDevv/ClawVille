@@ -3,7 +3,6 @@
  * read binds to, and the MCP tools. The service is a fake: no live vendor call.
  */
 if (!process.env.FINGERPRINT_SECRET) process.env.FINGERPRINT_SECRET = '0'.repeat(64);
-if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Hono } from 'hono';

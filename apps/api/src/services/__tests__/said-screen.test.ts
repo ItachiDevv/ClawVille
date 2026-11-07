@@ -3,7 +3,6 @@
  * strict reply parser. All vendor and payment calls are fakes: nothing is paid.
  */
 if (!process.env.FINGERPRINT_SECRET) process.env.FINGERPRINT_SECRET = '0'.repeat(64);
-if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/db';
 
 import { describe, expect, mock, test } from 'bun:test';
 import type { SpendPolicyView } from '@clawville/shared';
