@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./ecosystem-catalog": {
+      "types": "./dist/constants/ecosystem-catalog.d.ts",
+      "import": "./dist/constants/ecosystem-catalog.js"
+    },
     "./reef-race/spline": {
       "types": "./dist/reef-race/spline.d.ts",
       "import": "./dist/reef-race/spline.js"

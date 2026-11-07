@@ -1,0 +1,58 @@
+# clawville
+
+`clawville` adds the ClawVille MCP server to the LLM clients on your computer.
+It can also add the other MCP servers that ClawVille reviewed.
+
+State: not published to npm yet.
+
+## Use
+
+```
+npx clawville                 # add ClawVille to each client it finds (it asks once)
+npx clawville list            # show the servers you can add
+npx clawville add <id>        # add one server from the list
+npx clawville doctor          # check each client and the ClawVille API
+npx clawville help
+npx clawville --version
+```
+
+Options:
+
+- `--client claude-code|codex-cli|hermes` uses one client only.
+- `--dry-run` prints the commands and runs nothing.
+- `--yes` (or `-y`) does not ask before a change.
+- `--api <url>` sets the ClawVille API origin. The default is `https://api.clawville.world`. Only https is allowed, except for `127.0.0.1` and `localhost`.
+
+The supported clients are Claude Code (`claude`), Codex CLI (`codex`) and Hermes (`hermes`).
+The CLI finds them on your PATH.
+It runs each client's own `mcp add` command.
+
+## What it does not do
+
+- It runs only the commands that are bundled in this package. It never runs text from the network.
+- It starts each command with an argument list and no shell. A command with a shell character is refused.
+- It does not overwrite an entry that already exists. It reports it and continues.
+- It reads no secret, makes no key and pays nothing.
+- It does not sign in for you. A command that starts a sign-in is printed for you to run. Today this applies to Studios on Codex CLI and Hermes.
+- It does not run a setup step (for example `pay setup` or the Shinjuku setup). It prints the reviewed notes for that server.
+- When stdin is not a terminal and `--yes` is not given, it prints the commands and changes nothing.
+
+Exit code 0 means success. Exit code 1 means a failure. The last lines give one result per client.
+
+## Notes per client
+
+- Claude Code: the ClawVille line has no `--scope`, so Claude Code adds it to the local scope of the current folder. Claude Code refuses a name that already exists in the same scope.
+- Codex CLI: `codex mcp add` replaces an entry with the same name. So the CLI runs `codex mcp get <name>` first and stops when the entry exists.
+- Hermes: `hermes mcp add` asks questions. The CLI answers "no authentication" and "enable all tools". Hermes connects to the server before it saves the entry.
+- On native Windows, a `.cmd` program starts through `cmd.exe /d /s /c`. Every argument is checked against a strict set of characters first.
+
+## Develop
+
+```
+bun run build      # bundle src/main.ts to one file for node 18 or later
+bun test src       # unit tests
+bunx tsc --noEmit
+bun scripts/e2e-local.ts   # real clients, temp config folders only; not in CI
+```
+
+The catalog comes from `@clawville/shared` at build time. The published package has no dependencies.

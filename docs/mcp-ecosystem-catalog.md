@@ -23,6 +23,8 @@ The source of truth for the served list is the constant `ECOSYSTEM_CATALOG` in `
 
 Each change to the catalog is a change to the agent manual, so it bumps `PROTOCOL_VERSION` in the same diff (rule E6).
 
+The installer CLI in `packages/cli` (npm name `clawville`, not published yet, see `packages/cli/README.md`) bundles these rows at build time and runs their Claude Code, Codex CLI and Hermes install lines on the user's computer; it never fetches a row or a command from the network.
+
 ## The two buckets
 
 **Installer.** The user adds the third-party MCP server to their own client and signs in to the third party there. ClawVille gives the install steps only. ClawVille never holds the user's login, token or spend limit for that service.

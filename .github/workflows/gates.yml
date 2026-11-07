@@ -208,6 +208,12 @@ jobs:
       - name: Run the shared constants suite
         run: cd packages/shared && bun test
 
+      # The `npx clawville` installer (packages/cli): typecheck, unit tests over
+      # every served install line, and a bundle build. No DB, no network, no
+      # client CLI (spawn is injected). Needs the shared dist built above.
+      - name: Run the installer CLI suite
+        run: cd packages/cli && bunx tsc --noEmit && bun test src && bun run build
+
   api-invariant-tests:
     name: api money/cove/poker invariant tests
     runs-on: ubuntu-latest

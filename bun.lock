@@ -201,6 +201,18 @@
         "typescript": "^5.3.3",
       },
     },
+    "packages/cli": {
+      "name": "clawville",
+      "version": "0.1.0",
+      "bin": {
+        "clawville": "dist/clawville.js",
+      },
+      "devDependencies": {
+        "@clawville/shared": "workspace:*",
+        "@types/bun": "^1.3.6",
+        "typescript": "^5.3.3",
+      },
+    },
     "packages/database": {
       "name": "@clawville/database",
       "version": "0.1.0",
@@ -1261,6 +1273,8 @@
     "cipher-base": ["cipher-base@1.0.7", "", { "dependencies": { "inherits": "^2.0.4", "safe-buffer": "^5.2.1", "to-buffer": "^1.2.2" } }, "sha512-Mz9QMT5fJe7bKI7MH31UilT5cEK5EHHRCccw/YRFsRY47AuNgaV6HY3rscp0/I4Q+tTW/5zoqpSeRRI54TkDWA=="],
 
     "class-variance-authority": ["class-variance-authority@0.7.1", "", { "dependencies": { "clsx": "^2.1.1" } }, "sha512-Ka+9Trutv7G8M6WT6SeiRWz792K5qEqIGEGzXKhAE6xOWAY6pPH8U+9IY3oCMv6kqTmLsv7Xh/2w2RigkePMsg=="],
+
+    "clawville": ["clawville@workspace:packages/cli"],
 
     "client-only": ["client-only@0.0.1", "", {}, "sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA=="],
 
