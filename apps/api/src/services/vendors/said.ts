@@ -36,7 +36,7 @@ import {
   type VendorCallFailure,
   type VendorPin,
 } from '../outbound-x402';
-import { readSpendPolicy } from '../spend-policy';
+import { lockSpendRules, readSpendPolicy } from '../spend-policy';
 
 /** The Solana wallet SAID's live quote named on 2026-11-07. */
 export const SAID_PAY_TO: readonly string[] = ['3Q6QAbCWmqJfXthcXxsxpj2SXvDcmDsJJsevwMgC8BrU'];
@@ -117,8 +117,15 @@ export interface SaidScreenDeps {
   outbound?: Partial<OutboundDeps>;
 }
 
-/** Reads "Ask me before each payment" inside the caller's transaction. True = the call may go on. */
-async function approvalStillOff(avatarId: string, tx: LedgerTx): Promise<boolean> {
+/**
+ * Reads "Ask me before each payment" under the spend-rules lock, inside the
+ * caller's transaction, so a change of the setting cannot pass this read while
+ * it runs. True = the call may go on. The admission path already holds the lock;
+ * it is re-entrant inside one transaction, and the final check before the send
+ * needs it.
+ */
+export async function approvalStillOff(avatarId: string, tx: LedgerTx): Promise<boolean> {
+  await lockSpendRules(tx, avatarId);
   const [row] = await tx
     .select({ requireApproval: userSpendPolicies.requireApproval })
     .from(userSpendPolicies)

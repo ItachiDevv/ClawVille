@@ -8,7 +8,7 @@ if (!process.env.DATABASE_URL) process.env.DATABASE_URL = 'postgresql://u:p@loca
 import { describe, expect, mock, test } from 'bun:test';
 import type { SpendPolicyView } from '@clawville/shared';
 import type { VendorCallInput, VendorCallResult } from '../outbound-x402';
-import { SAID_PAY_TO, SAID_SCREEN_MAX_CALL_ATOMIC, parseSaidScreen, screenSaidWallet } from '../vendors/said';
+import { SAID_PAY_TO, SAID_SCREEN_MAX_CALL_ATOMIC, approvalStillOff, parseSaidScreen, screenSaidWallet } from '../vendors/said';
 
 const WALLET = '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin';
 const OTHER = '3Q6QAbCWmqJfXthcXxsxpj2SXvDcmDsJJsevwMgC8BrU';
@@ -137,5 +137,21 @@ describe('parseSaidScreen', () => {
       axes: { delivery: 1, payments: null, validation: null, identity: null, community: null },
       eigentrust: 2,
     });
+  });
+});
+
+describe('approvalStillOff', () => {
+  test('takes the spend-rules lock before it reads the setting', async () => {
+    const order: string[] = [];
+    const chain = (requireApproval: boolean) => ({
+      from: () => ({ where: () => ({ limit: async () => { order.push('read'); return [{ requireApproval }]; } }) }),
+    });
+    const tx = (requireApproval: boolean) => ({
+      execute: async () => { order.push('lock'); return []; },
+      select: () => chain(requireApproval),
+    }) as never;
+    expect(await approvalStillOff('00000000-0000-4000-8000-000000000001', tx(false))).toBe(true);
+    expect(order).toEqual(['lock', 'read']);
+    expect(await approvalStillOff('00000000-0000-4000-8000-000000000001', tx(true))).toBe(false);
   });
 });
