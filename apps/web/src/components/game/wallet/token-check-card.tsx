@@ -56,9 +56,10 @@ export function readErrorText(error: unknown): string {
 }
 
 /**
- * Refusals where the server says nothing was paid: the next press may use a new
- * request key. After any other outcome (a lost reply, an unclear payment) the
- * same key goes again, and the server answers `duplicate_request`.
+ * Refusals of a FIRST press where the server says nothing was paid: the next
+ * press may use a new request key. After any other outcome (a lost reply, an
+ * unclear payment) the same key goes again until the server answers
+ * `duplicate_request`.
  */
 const SCREEN_NOT_PAID = new Set([
   'approval_not_supported_for_said', 'spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap',
@@ -277,7 +278,8 @@ function ScreenView({ reply }: { reply: SaidScreenReply }) {
 function PaidScreen({ wallet }: { wallet: string }) {
   const { query } = useHumanSpendPolicy();
   const policy = query.data;
-  const screen = useMutation<SaidScreenReply, unknown, string>({
+  const screen = useMutation<SaidScreenReply, unknown, string, { retry: boolean }>({
+    onMutate: (address) => ({ retry: readPendingScreenKey(address) !== null }),
     mutationFn: (address) => {
       const key = readPendingScreenKey(address) ?? newIdempotencyKey();
       writePendingScreenKey(address, key);
@@ -286,8 +288,12 @@ function PaidScreen({ wallet }: { wallet: string }) {
     onSuccess: (_reply, address) => {
       writePendingScreenKey(address, null);
     },
-    onError: (error, address) => {
-      if (error instanceof ApiError && error.code && SCREEN_NOT_PAID.has(error.code)) writePendingScreenKey(address, null);
+    onError: (error, address, context) => {
+      if (!(error instanceof ApiError) || !error.code) return;
+      // A refusal of a retry says nothing about the earlier press, which may have paid.
+      // Only `duplicate_request` settles that key; any other refusal keeps it.
+      const settled = context?.retry ? error.code === 'duplicate_request' : SCREEN_NOT_PAID.has(error.code);
+      if (settled) writePendingScreenKey(address, null);
     },
   });
   if (!policy) return null;

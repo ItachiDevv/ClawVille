@@ -224,6 +224,32 @@ describe('TokenCheckCard', () => {
     const keys = log.filter((e) => e.fn === 'screen').map((e) => (e.arg as { key: string }).key);
     expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
+    // Only the server's duplicate answer settles the key.
+    screenFails = new ApiErrorClass('x', 409, 'duplicate_request');
+    await press(button(host, 'Paid screen'));
+    screenFails = new ApiErrorClass('x', 402, 'over_daily_cap');
+    await press(button(host, 'Paid screen'));
+    const after = log.filter((e) => e.fn === 'screen').map((e) => (e.arg as { key: string }).key);
+    expect(after[2]).toBe(keys[0]);
+    expect(after[3]).not.toBe(keys[0]);
+    // A first press refused with nothing paid clears its own key.
+    screenFails = new ApiErrorClass('x', 402, 'over_daily_cap');
+  });
+
+  test('a refused retry of an unclear payment keeps the key', async () => {
+    spend = { configured: true, allowedVendors: ['said'] };
+    const host = await openTrust();
+    screenFails = new ApiErrorClass('x', 502, 'payment_ambiguous');
+    await press(button(host, 'Paid screen'));
+    screenFails = new ApiErrorClass('x', 429, 'rate_limited');
+    await press(button(host, 'Paid screen'));
+    screenFails = new ApiErrorClass('x', 402, 'over_daily_cap');
+    await press(button(host, 'Paid screen'));
+    const keys = log.filter((e) => e.fn === 'screen').map((e) => (e.arg as { key: string }).key);
+    expect(new Set(keys).size).toBe(1);
+    // Settle the key so that the next test starts clean.
+    screenFails = new ApiErrorClass('x', 409, 'duplicate_request');
+    await press(button(host, 'Paid screen'));
   });
 
   test('a refusal with nothing paid gets a new key on the next press', async () => {
