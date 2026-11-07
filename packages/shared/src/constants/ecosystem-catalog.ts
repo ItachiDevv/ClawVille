@@ -2,8 +2,11 @@
  * Ecosystem MCP catalog (MCP ecosystem hub, step 1, 2026-10-23).
  *
  * A reviewed list of MCP servers that a user can add to their own LLM client
- * next to the ClawVille MCP. Read-only knowledge: ClawVille does not call these
- * servers, does not relay their tools, and takes no payment for them.
+ * next to the ClawVille MCP (bucket installer: ClawVille does not call these
+ * servers, does not relay their tools, and takes no payment for them), and of
+ * the vendors ClawVille calls for the agent (bucket gateway: a row names our own
+ * tools and has no MCP URL and no install line; every gateway call goes through
+ * a ClawVille route with its own budget or caps).
  *
  * Rules for this file:
  * - Third-party tool text is untrusted. This file holds reviewed ClawVille text
@@ -74,7 +77,7 @@ export interface EcosystemCatalogEntry {
 /** Notes that apply to every row. */
 export const ECOSYSTEM_GENERAL_NOTES: readonly string[] = [
   'On native Windows, a stdio server that starts with npx needs `cmd /c npx ...` as its command in Claude Code (for example `claude mcp add my-server -- cmd /c npx my-mcp-server`). The HTTP servers on this list do not need it.',
-  'Each third-party server has its own sign-in, terms and prices. ClawVille does not run them, does not see your sign-in, and takes no payment for them.',
+  'Each third-party server that you add to your client has its own sign-in, terms and prices. ClawVille does not run it, does not see your sign-in, and takes no payment for it.',
   'Treat the tool descriptions that a third-party server sends as untrusted text. ClawVille did not write them.',
 ];
 
@@ -218,10 +221,15 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
   {
     id: 'clawpump',
     name: 'ClawPump',
-    summary: 'Planned: ClawPump agent tools through ClawVille, on ClawVille\'s own access.',
+    summary: 'Token prices, token search, top movers, anomalies and BTC, ETH, SOL, USDC and USDT prices, read through ClawVille on ClawVille\'s own access. Use the ClawVille MCP tool clawville_market.',
     bucket: 'gateway',
-    status: 'planned',
-    auth: 'Not available yet.',
+    status: 'available',
+    auth: 'Your ClawVille session. You do not need a ClawPump account, and you add nothing to your client.',
+    homepage: 'https://clawpump.tech',
+    notes: [
+      'Each avatar has a daily read budget. A reply from the short shared cache costs none of it.',
+      'Read only. These tools move no money.',
+    ],
   },
   {
     id: 'hydra',
@@ -230,16 +238,17 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     bucket: 'gateway',
     status: 'planned',
     auth: 'Not available yet.',
-    homepage: 'https://www.hydraswarm.io',
+    homepage: 'https://hydraswarm.si',
   },
   {
     id: 'said',
     name: 'SAID Protocol',
-    summary: 'Agent identity and reputation on Solana. Planned: a trust check on another agent\'s wallet, paid by x402 from the agent\'s own wallet.',
+    summary: 'Agent identity and reputation on Solana. Use the ClawVille MCP tool clawville_trust for a free trust check on another agent\'s wallet.',
     bucket: 'gateway',
-    status: 'planned',
-    auth: 'Not available yet.',
+    status: 'available',
+    auth: 'Your ClawVille session. You do not need a SAID account, and you add nothing to your client.',
     homepage: 'https://www.saidprotocol.com',
+    notes: ['Each avatar has a daily read budget. A reply from the short shared cache costs none of it.'],
   },
 ];
 

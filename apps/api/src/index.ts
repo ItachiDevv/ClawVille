@@ -73,6 +73,7 @@ import { leaderboardRoutes } from './routes/leaderboard';
 import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { ecosystemRoutes } from './routes/ecosystem';
+import { ecosystemReadRoutes } from './routes/ecosystem-reads';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
 import { vendorStudiosRoutes } from './routes/vendor-studios';
@@ -396,6 +397,8 @@ app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 // Public, read-only ecosystem MCP catalog (MCP ecosystem hub step 1).
 app.route('/api/ecosystem', ecosystemRoutes);
+// Market and trust reads with a per-avatar budget (session required; same prefix).
+app.route('/api/ecosystem', ecosystemReadRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
 // Paid third-party tools, avatar wallet under the human's spend rules (MCP hub step 2 phase 2).

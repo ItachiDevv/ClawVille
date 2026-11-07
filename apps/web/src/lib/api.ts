@@ -2,6 +2,9 @@ import type {
   AgentCategory,
   AgentHarness,
   AutonomyStatusResponse,
+  EcosystemMarketOp,
+  EcosystemMarketReply,
+  EcosystemTrustReply,
   HatcherLaunchExchangeResponse,
   LandTier,
   SpendPolicyView,
@@ -826,6 +829,16 @@ export const api = {
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(body),
     }),
+  /** Market and trust reads (routes/ecosystem-reads.ts). Free; a daily budget per avatar. */
+  ecosystemMarket: (op: EcosystemMarketOp, params: { mint?: string; query?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.mint !== undefined) query.set('mint', params.mint);
+    if (params.query !== undefined) query.set('query', params.query);
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    const qs = query.toString();
+    return request<EcosystemMarketReply>(`/api/ecosystem/market/${op}${qs ? `?${qs}` : ''}`);
+  },
+  ecosystemTrust: (wallet: string) => request<EcosystemTrustReply>(`/api/ecosystem/trust/${encodeURIComponent(wallet)}`),
   /** A free Studios menu (ids, prices and option values; cached 10 minutes on the server). */
   studiosOptions: <M extends StudiosMenuId>(menu: M) =>
     request<StudiosMenus[M]>(`/api/vendors/studios/options/${menu}`),

@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-06 17:41Z (Studios dedupe review fixes, still PROTOCOL_VERSION 116).** Drift note: a hosted Studios verb is now blocked by the same input in any pay mode, and for 30 minutes after an unclear request ended (not after it was made). No verb, param, Hatcher route or partner contract changed.
+**Last Audited: 2026-11-07 17:44Z (market and trust reads, PROTOCOL_VERSION 116 -> 117, migration 0098).** Drift note: new MCP tools `clawville_market` and `clawville_trust` and new routes under `/api/ecosystem`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed. Vendor text never enters a decide prompt.
+
+**Prior Last Audited: 2026-11-06 17:41Z (Studios dedupe review fixes, still PROTOCOL_VERSION 116).** Drift note: a hosted Studios verb is now blocked by the same input in any pay mode, and for 30 minutes after an unclear request ended (not after it was made). No verb, param, Hatcher route or partner contract changed.
 
 **Prior Last Audited: 2026-11-06 17:15Z (Studios server-side dedupe, PROTOCOL_VERSION 115 -> 116, migration 0097).** Drift note: a hosted Studios verb whose input matches a request that still runs (or may have charged in the last 30 minutes) gets the decide line "the same ... request is already running; do not send it again" (`duplicate_request_in_flight`) and nothing is sent or paid. No verb, param, Hatcher route or partner contract changed.
 

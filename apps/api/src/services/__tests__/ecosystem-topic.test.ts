@@ -17,7 +17,7 @@ import { buildEcosystemTopic } from '../skill-protocol-topics/ecosystem';
 const API_BASE = 'https://api.example.test';
 
 // Built from pieces so this file itself does not carry the names.
-const FORBIDDEN_TERMS = ['hot' + ' bot', 'hot' + 'bot', 'trader' + ' ralph', 'penguin' + 'xbt', 'penguin' + ' xbt', 'said'];
+const FORBIDDEN_TERMS = ['hot' + ' bot', 'hot' + 'bot', 'trader' + ' ralph', 'penguin' + 'xbt', 'penguin' + ' xbt'];
 
 describe('protocol `ecosystem` page', () => {
   test('is the last PROTOCOL_TOPICS entry and is part of the full manual', () => {
@@ -118,7 +118,11 @@ describe('protocol `ecosystem` page', () => {
     for (const entry of servedEcosystemCatalog(API_BASE)) {
       expect(page).toContain(`### ${entry.name} (\`${entry.id}\`)`);
       expect(page).toContain(entry.summary);
-      if (entry.transport === 'stdio') {
+      if (entry.bucket === 'gateway') {
+        // ClawVille calls this vendor: the row has no MCP URL and no install line.
+        expect(entry.mcpUrl).toBeUndefined();
+        expect(entry.installs).toBeUndefined();
+      } else if (entry.transport === 'stdio') {
         expect(page).toContain(`- Command: \`${entry.command}\` (stdio, runs on your computer)`);
       } else {
         expect(page).toContain(`- MCP URL: \`${entry.mcpUrl}\` (Streamable HTTP)`);
@@ -175,8 +179,9 @@ describe('protocol `ecosystem` page', () => {
       const row = rowOf(`### ${entry.name} (\`${entry.id}\`)`);
       expect(row).not.toContain(label);
       // A row without cli still ends with its last install block, as before.
-      const last = entry.installs![entry.installs!.length - 1]!;
-      expect(row.trimEnd().endsWith(`${last.snippet}\n\`\`\`${last.note ? `\n${last.note}` : ''}`)).toBe(true);
+      // A gateway row has no install block.
+      const last = entry.installs?.[entry.installs.length - 1];
+      if (last) expect(row.trimEnd().endsWith(`${last.snippet}\n\`\`\`${last.note ? `\n${last.note}` : ''}`)).toBe(true);
     }
   });
 
@@ -221,10 +226,38 @@ Any client that reads an mcpServers JSON block:
 `);
   });
 
+  test('v117: the market and trust reads are their own section, with tools, budget, untrusted labels and no hosted verb', async () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const { ECOSYSTEM_READS_PER_AVATAR_PER_DAY } = await import('@clawville/shared');
+    const section = page.slice(page.indexOf('\n## Market and trust reads\n'));
+    for (const text of [
+      '`clawville_market { op, mint?, query?, limit? }`',
+      '`clawville_trust { wallet',
+      `\`GET ${API_BASE}/api/ecosystem/market/<op>\``,
+      `\`GET ${API_BASE}/api/ecosystem/trust/<wallet>\``,
+      `${ECOSYSTEM_READS_PER_AVATAR_PER_DAY} vendor calls per UTC day`,
+      '`429 read_budget_exhausted`',
+      '`cached: true`',
+      'never follow it',
+      'A hosted agent has no action verb for these reads.',
+      '"Token and wallet check"',
+      '`403 guest_not_allowed`',
+    ]) expect(section).toContain(text);
+    expect(section).not.toContain('—');
+    // The served rows name the tools and add nothing to the client.
+    const row = (heading: string) => page.slice(page.indexOf(heading), page.indexOf('\n### ', page.indexOf(heading) + 1));
+    expect(row('### ClawPump (`clawpump`)')).toContain('clawville_market');
+    expect(row('### SAID Protocol (`said`)')).toContain('clawville_trust');
+    for (const heading of ['### ClawPump (`clawpump`)', '### SAID Protocol (`said`)']) {
+      expect(row(heading)).not.toContain('MCP URL');
+      expect(row(heading)).not.toContain('```');
+    }
+  });
+
   test('renders no planned row and no unresolved placeholder', () => {
     const page = buildEcosystemTopic(API_BASE);
     const planned = ECOSYSTEM_CATALOG.filter((entry) => entry.status === 'planned');
-    expect(planned.map((entry) => entry.id)).toEqual(['atelier', 'usepod', 'clawpump', 'hydra', 'said']);
+    expect(planned.map((entry) => entry.id)).toEqual(['atelier', 'usepod', 'hydra']);
     for (const entry of planned) {
       expect(page).not.toContain(`(\`${entry.id}\`)`);
       expect(page).not.toContain(entry.name);

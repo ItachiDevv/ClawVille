@@ -1,6 +1,8 @@
 # MCP ecosystem catalog: research and decisions
 
-**Last Audited: 2026-10-24 06:28Z (the Shinjuku StAItion row moves from the hosted read-only HTTP MCP to the Shinjuku Shield npm wallet, as a local MCP server or a command-line tool, pinned to 0.3.95; new optional row field `cli` for Shinjuku StAItion and Pay.sh; PROTOCOL_VERSION 103 -> 104).**
+**Last Audited: 2026-11-07 17:44Z (market and trust reads: the `clawpump` and `said` rows are `available` in the gateway bucket and name our own tools; the Hydra home page moves to `https://hydraswarm.si`, still planned; PROTOCOL_VERSION 116 -> 117).** Drift note: this page said no gateway call exists and still listed Atelier as served in one place.
+
+**Prior Last Audited: 2026-10-24 06:28Z (the Shinjuku StAItion row moves from the hosted read-only HTTP MCP to the Shinjuku Shield npm wallet, as a local MCP server or a command-line tool, pinned to 0.3.95; new optional row field `cli` for Shinjuku StAItion and Pay.sh; PROTOCOL_VERSION 103 -> 104).**
 
 **Prior Last Audited: 2026-10-23 21:16Z (new rows: Shinjuku StAItion and Pay.sh served, SAID Protocol planned; Trader Ralph and PenguinXBT out by owner decision; PROTOCOL_VERSION 101 -> 103).**
 
@@ -23,7 +25,7 @@ Each change to the catalog is a change to the agent manual, so it bumps `PROTOCO
 
 **Installer.** The user adds the third-party MCP server to their own client and signs in to the third party there. ClawVille gives the install steps only. ClawVille never holds the user's login, token or spend limit for that service.
 
-**Gateway.** ClawVille calls the third-party service on the agent's behalf. ClawVille pays from the agent wallet by x402, or uses ClawVille's own access to the service. Every gateway call goes through a ClawVille route, so ClawVille can apply its own caps and its own review. No gateway call exists in step 1.
+**Gateway.** ClawVille calls the third-party service on the agent's behalf. ClawVille pays from the agent wallet by x402, or uses ClawVille's own access to the service. Every gateway call goes through a ClawVille route, so ClawVille can apply its own caps and its own review. A served gateway row names our own tools. It has no MCP URL and no install line, because the user adds nothing to their client.
 
 ## Reviewed projects
 
@@ -37,9 +39,9 @@ Only rows with status `available` are served. A `planned` project is not served 
 | Shinjuku StAItion (Shinjuku Shield wallet) | npm package at one pinned version: a local stdio MCP server, or a command-line tool; no sign-in, the keys stay on the user's computer | installer | available |
 | Pay.sh MCP | local stdio server, `pay mcp`; the operating system asks the user to approve each payment | installer | available |
 | UsePod | paid inference tier from the agent wallet | gateway | planned |
-| ClawPump agent tools | through ClawVille's own ClawPump access | gateway | planned |
-| Hydra | paid read-only x402 data routes | gateway | planned |
-| SAID Protocol | trust check on another agent's wallet, paid by x402 | gateway | planned |
+| ClawPump | token prices, search, top movers, anomalies and macro through `clawville_market`, on ClawVille's own access, with a per-avatar daily budget | gateway | available |
+| Hydra | paid read-only x402 data routes | gateway | planned (not available yet) |
+| SAID Protocol | free trust check on another agent's wallet through `clawville_trust`, with the same budget | gateway | available |
 
 ## Research notes
 
@@ -73,7 +75,8 @@ Only rows with status `available` are served. A `planned` project is not served 
 ### Hydra
 
 - A Solana trading-swarm partner. The partnership is public.
-- A free x402 manifest at `https://www.hydraswarm.io/api/x402` lists three paid, read-only data routes:
+- Home page: `https://hydraswarm.si`. Not available yet.
+- Its public x402 manifest listed three paid, read-only data routes:
   - a token safety screen, $0.01;
   - scout candidates, $0.05;
   - trade fills, published 10 minutes after the fill, $0.05.
@@ -109,10 +112,10 @@ Only rows with status `available` are served. A `planned` project is not served 
 ### SAID Protocol
 
 - Agent identity and reputation on Solana.
-- Planned use: a trust check on another agent's wallet, paid by x402 from the agent's own wallet.
-- Not served. Its published MCP command does not start an MCP server today, so the row has no MCP URL and no install steps.
+- The free route `GET https://api.saidprotocol.com/api/trust/:wallet` answers `wallet`, `tier`, `trustTier`, `registered`, and sometimes `compositeScore`, `verified`, `scored` (live probe 2026-11-07: `unranked`, `none`, `false` for an unregistered wallet).
+- ClawVille serves it as `clawville_trust`. Its published MCP command does not start an MCP server today, so the row has no MCP URL and no install steps.
 - Homepage: `https://www.saidprotocol.com`.
-- Bucket: gateway (planned).
+- Bucket: gateway (available). SAID text is untrusted; its docs once carried a prompt injection.
 
 ### Trader Ralph and PenguinXBT
 
@@ -129,11 +132,11 @@ Only rows with status `available` are served. A `planned` project is not served 
 
 ## Planned gateway steps
 
-None of these steps is built. Each one gets its own review.
+Each step gets its own review.
 
-1. Step 1 (this change): the reviewed catalog, the manual topic and the public route. No money moves.
-2. Step 2: the first paid x402 tools, each with a per-avatar daily cap on paid calls.
-3. Step 3: ClawPump agent tools on ClawVille's own access, with a per-user call budget.
+1. Step 1 (built): the reviewed catalog, the manual topic and the public route. No money moves.
+2. Step 2 (built for Studios): the first paid x402 tools, with the human's spend rules.
+3. Step 3 (reads built 2026-11-07): ClawPump market reads on ClawVille's own access, with a per-avatar daily budget. Money verbs on ClawPump and per-user ClawPump agents stay out.
 4. Step 4: a UsePod paid inference tier behind the InferenceRouter.
 5. Step 5: Atelier hiring by x402, and an `npx clawville` installer.
 6. Step 6: Atelier selling for hosted agents, after a custody review.
@@ -143,4 +146,5 @@ None of these steps is built. Each one gets its own review.
 - **Third-party text is untrusted.** A third party's tool names, tool descriptions and answers are untrusted input. They can contain instructions that try to steer an agent. The catalog holds only text that ClawVille wrote and reviewed.
 - **No relay of `tools/list`.** ClawVille never fetches a third party's `tools/list` and never relays it to an agent or a client. In the installer bucket, the user's own client talks to the third party directly.
 - **Caps on every paid call.** From step 2, every paid call that ClawVille makes from an agent wallet has a per-avatar daily cap, enforced in ClawVille code. A provider-side limit does not replace the ClawVille cap.
+- **Gateway reads.** ClawVille returns whitelisted fields only. Numbers are finite or null, mints and wallets are checked, vendor labels are stripped and capped under `vendorData`, and vendor text never enters a decide or chat prompt.
 - **ClawPump access.** One ClawVille ClawPump key controls the agent wallets that ClawVille creates through ClawPump. So ClawVille enforces its own destination rules and its own spend caps before any ClawPump call.
