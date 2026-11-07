@@ -1,6 +1,8 @@
 # MCP ecosystem catalog: research and decisions
 
-**Last Audited: 2026-11-07 17:44Z (market and trust reads: the `clawpump` and `said` rows are `available` in the gateway bucket and name our own tools; the Hydra home page moves to `https://hydraswarm.si`, still planned; PROTOCOL_VERSION 116 -> 117).** Drift note: this page said no gateway call exists and still listed Atelier as served in one place.
+**Last Audited: 2026-11-07 17:59Z (paid SAID screen: `clawville_trust` with `screen: true`, still PROTOCOL_VERSION 117).** Drift note: the SAID notes now cover the paid route and its unverified reply format.
+
+**Prior Last Audited: 2026-11-07 17:44Z (market and trust reads: the `clawpump` and `said` rows are `available` in the gateway bucket and name our own tools; the Hydra home page moves to `https://hydraswarm.si`, still planned; PROTOCOL_VERSION 116 -> 117).** Drift note: this page said no gateway call exists and still listed Atelier as served in one place.
 
 **Prior Last Audited: 2026-10-24 06:28Z (the Shinjuku StAItion row moves from the hosted read-only HTTP MCP to the Shinjuku Shield npm wallet, as a local MCP server or a command-line tool, pinned to 0.3.95; new optional row field `cli` for Shinjuku StAItion and Pay.sh; PROTOCOL_VERSION 103 -> 104).**
 
@@ -41,7 +43,7 @@ Only rows with status `available` are served. A `planned` project is not served 
 | UsePod | paid inference tier from the agent wallet | gateway | planned |
 | ClawPump | token prices, search, top movers, anomalies and macro through `clawville_market`, on ClawVille's own access, with a per-avatar daily budget | gateway | available |
 | Hydra | paid read-only x402 data routes | gateway | planned (not available yet) |
-| SAID Protocol | free trust check on another agent's wallet through `clawville_trust`, with the same budget | gateway | available |
+| SAID Protocol | free trust check on another agent's wallet through `clawville_trust`, with the same budget; a paid screen from the avatar wallet inside the spend rules | gateway | available |
 
 ## Research notes
 
@@ -113,7 +115,8 @@ Only rows with status `available` are served. A `planned` project is not served 
 
 - Agent identity and reputation on Solana.
 - The free route `GET https://api.saidprotocol.com/api/trust/:wallet` answers `wallet`, `tier`, `trustTier`, `registered`, and sometimes `compositeScore`, `verified`, `scored` (live probe 2026-11-07: `unranked`, `none`, `false` for an unregistered wallet).
-- ClawVille serves it as `clawville_trust`. Its published MCP command does not start an MCP server today, so the row has no MCP URL and no install steps.
+- The paid route `GET https://api.saidprotocol.com/api/screen?wallet=` answers 402 with an x402 v2 quote in the `PAYMENT-REQUIRED` header (live probe 2026-11-07, no payment): one Solana mainnet USDC `exact` entry of 10000 atomic ($0.01), payTo `3Q6QAbCWmqJfXthcXxsxpj2SXvDcmDsJJsevwMgC8BrU`, with a fee payer. Its docs describe a verdict (`allow`, `review`, `caution`), five axes and an EigenTrust score. The paid reply shape is NOT verified, because no paid call has run.
+- ClawVille serves both as `clawville_trust` (`screen: true` for the paid one). Its published MCP command does not start an MCP server today, so the row has no MCP URL and no install steps.
 - Homepage: `https://www.saidprotocol.com`.
 - Bucket: gateway (available). SAID text is untrusted; its docs once carried a prompt injection.
 

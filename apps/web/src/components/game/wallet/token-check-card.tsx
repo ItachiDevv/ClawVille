@@ -7,22 +7,27 @@
  * the vendor costs one unit of the avatar's daily budget.
  *
  * Labels under `vendorData` are vendor text: React renders them as plain text.
+ *
+ * The paid SAID screen button shows only when the spend rules allow it. The
+ * request key stays after an unclear outcome, so a second press cannot pay twice.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import {
   ECOSYSTEM_READS_PER_AVATAR_PER_DAY,
   ECOSYSTEM_SEARCH_QUERY_MAX,
+  SAID_SCREEN_AXES,
   type EcosystemMarketReply,
   type EcosystemTokenPrice,
   type EcosystemTokenSignal,
   type EcosystemTrustReply,
+  type SaidScreenReply,
 } from '@clawville/shared';
 import { api, ApiError } from '@/lib/api';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useHumanSpendPolicy } from './spending-card';
-import { StudiosSection } from './studios-card';
+import { StudiosSection, newIdempotencyKey } from './studios-card';
 
 const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const FIELD = 'w-full min-w-0 min-h-[44px] rounded-md bg-black/30 border border-white/20 px-3 text-sm text-white placeholder:text-white/40';
@@ -48,6 +53,48 @@ export function readErrorText(error: unknown): string {
     }
   }
   return 'The check failed. Try again.';
+}
+
+/**
+ * Refusals where the server says nothing was paid: the next press may use a new
+ * request key. After any other outcome (a lost reply, an unclear payment) the
+ * same key goes again, and the server answers `duplicate_request`.
+ */
+const SCREEN_NOT_PAID = new Set([
+  'approval_not_supported_for_said', 'spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap',
+  'wallet_missing', 'vendor_unreachable', 'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed',
+  'payment_prepare_failed', 'rate_limited', 'duplicate_request',
+]);
+
+/** Plain text for a refused paid screen. Branches on the API `code`, never on raw text. */
+export function screenErrorText(error: unknown): string {
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case 'approval_not_supported_for_said':
+        return 'The paid screen does not work while "Ask me before each payment" is on. Nothing was paid.';
+      case 'spend_rules_not_set':
+      case 'vendor_not_allowed':
+        return 'Set your spend caps and allow SAID first (Spending, above). Nothing was paid.';
+      case 'over_per_call_cap':
+      case 'over_daily_cap':
+        return 'This screen would pass your spend caps. Nothing was paid.';
+      case 'payment_ambiguous':
+        return 'SAID did not confirm the result. The payment may have gone through, and it counts toward your daily cap. Do not try again.';
+      case 'duplicate_request':
+        return 'This screen already ran. Nothing new was paid, and ClawVille does not keep the result. Press again for a new screen.';
+      case 'wallet_missing':
+        return 'Your agent has no wallet. Nothing was paid.';
+      case 'rate_limited':
+        return 'Too many paid screens. Wait one minute. Nothing was paid.';
+      case 'vendor_unreachable':
+      case 'vendor_refused':
+      case 'vendor_quote_invalid':
+      case 'vendor_pay_to_changed':
+      case 'payment_prepare_failed':
+        return 'The screen did not start. Nothing was paid. Try again later.';
+    }
+  }
+  return 'We could not confirm the result. The payment may have gone through. Press again to check; it cannot pay twice.';
 }
 
 function usd(value: number | null): string {
@@ -180,6 +227,67 @@ function TrustView({ reply }: { reply: EcosystemTrustReply }) {
   );
 }
 
+function ScreenView({ reply }: { reply: SaidScreenReply }) {
+  const paid = `Paid ${reply.payment.usdCents} cent${reply.payment.usdCents === 1 ? '' : 's'} from your agent wallet.`;
+  if (reply.status === 'screen_unreadable') {
+    return (
+      <p className="text-xs text-amber-200 leading-relaxed" data-testid="said-screen">
+        SAID sent a reply ClawVille cannot read. {paid} Do not pay again for this wallet now.
+      </p>
+    );
+  }
+  return (
+    <dl className="text-xs text-white/80 space-y-1 break-words" data-testid="said-screen">
+      <div><dt className="inline text-white/60">Verdict: </dt><dd className="inline font-semibold">{reply.verdict}</dd></div>
+      {SAID_SCREEN_AXES.map((axis) => (
+        <div key={axis}><dt className="inline text-white/60">{axis}: </dt><dd className="inline">{reply.axes[axis] ?? 'not known'}</dd></div>
+      ))}
+      <div><dt className="inline text-white/60">eigentrust: </dt><dd className="inline">{reply.eigentrust ?? 'not known'}</dd></div>
+      <div className="text-white/60">{paid}</div>
+    </dl>
+  );
+}
+
+function PaidScreen({ wallet }: { wallet: string }) {
+  const { query } = useHumanSpendPolicy();
+  const policy = query.data;
+  const pendingKeys = useRef(new Map<string, string>());
+  const screen = useMutation<SaidScreenReply, unknown, string>({
+    mutationFn: (address) => {
+      const key = pendingKeys.current.get(address) ?? newIdempotencyKey();
+      pendingKeys.current.set(address, key);
+      return api.saidScreen(address, key);
+    },
+    onSuccess: (_reply, address) => {
+      pendingKeys.current.delete(address);
+    },
+    onError: (error, address) => {
+      if (error instanceof ApiError && error.code && SCREEN_NOT_PAID.has(error.code)) pendingKeys.current.delete(address);
+    },
+  });
+  if (!policy) return null;
+  if (policy.requireApproval) {
+    return <p className="text-xs text-white/60 leading-relaxed">The paid SAID screen does not work while &quot;Ask me before each payment&quot; is on.</p>;
+  }
+  if (!policy.configured || !policy.allowedVendors.includes('said')) {
+    return <p className="text-xs text-white/60 leading-relaxed">For a paid SAID screen with a verdict, set your spend caps and allow SAID (Spending, above).</p>;
+  }
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        className={`w-full ${BUTTON}`}
+        disabled={!BASE58_ADDRESS.test(wallet) || screen.isPending}
+        onClick={() => screen.mutate(wallet)}
+      >
+        {screen.isPending ? 'Paying...' : 'Paid screen (about 1 cent, at most 5 cents)'}
+      </button>
+      {screen.isError && <p role="alert" className="text-xs text-red-300 leading-relaxed">{screenErrorText(screen.error)}</p>}
+      {screen.data && <ScreenView reply={screen.data} />}
+    </div>
+  );
+}
+
 function WalletTrust() {
   const isMobile = useIsMobile();
   const [wallet, setWallet] = useState('');
@@ -210,6 +318,7 @@ function WalletTrust() {
       {read.isError && <p role="alert" className="text-xs text-red-300 leading-relaxed">{readErrorText(read.error)}</p>}
       {read.data && <TrustView reply={read.data} />}
       <p className="text-xs text-white/60 leading-relaxed">An unregistered wallet is not proof of a bad actor. It is one signal.</p>
+      <PaidScreen wallet={address} />
     </div>
   );
 }
@@ -225,7 +334,7 @@ export function TokenCheckCard() {
       </div>
       <div className="bg-sky-500/10 border border-sky-400/25 rounded-lg p-3 space-y-2 min-w-0">
         <p className="text-xs text-white/70 leading-relaxed">
-          Free checks, up to {ECOSYSTEM_READS_PER_AVATAR_PER_DAY} a day for you and your agent together. Prices come from ClawPump and trust comes from SAID. This is not advice.
+          Free checks, up to {ECOSYSTEM_READS_PER_AVATAR_PER_DAY} a day for you and your agent together. Prices come from ClawPump and trust comes from SAID. Only the paid screen costs money. This is not advice.
         </p>
         <StudiosSection title="Token price or search"><TokenLookup /></StudiosSection>
         <StudiosSection title="Top movers"><TopMovers /></StudiosSection>

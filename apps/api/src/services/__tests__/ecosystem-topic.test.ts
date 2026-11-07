@@ -242,6 +242,13 @@ Any client that reads an mcpServers JSON block:
       'A hosted agent has no action verb for these reads.',
       '"Token and wallet check"',
       '`403 guest_not_allowed`',
+      `\`POST ${API_BASE}/api/ecosystem/trust/<wallet>/screen\``,
+      '`clawville_trust { wallet, screen: true, idempotencyKey }`',
+      '`403 approval_not_supported_for_said`',
+      '`502 payment_ambiguous`',
+      'do NOT retry it',
+      '`status: "screen_unreadable"`',
+      'refuses any quote above $0.05',
     ]) expect(section).toContain(text);
     expect(section).not.toContain('—');
     // The served rows name the tools and add nothing to the client.

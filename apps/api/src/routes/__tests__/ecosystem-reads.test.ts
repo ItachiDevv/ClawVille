@@ -12,6 +12,7 @@ import * as realAuth from '../../middleware/auth';
 import * as realAgentAuth from '../../middleware/require-auth-or-agent';
 import * as realGuard from '../../middleware/require-non-guest';
 import * as realReads from '../../services/ecosystem-reads';
+import * as realSaid from '../../services/vendors/said';
 
 type Identity = { kind: 'user' | 'agent'; userId: string; avatarId: string; agentId: string | null; ledgerCapable?: boolean; guest?: boolean };
 let identity: Identity | null = null;
@@ -51,6 +52,16 @@ mock.module('../../services/ecosystem-reads', () => ({
   },
 }));
 
+const screenCalls: Array<Record<string, unknown>> = [];
+let screenResult: unknown = { ok: true, reply: { status: 'screened', verdict: 'allow' } };
+mock.module('../../services/vendors/said', () => ({
+  ...realSaid,
+  screenSaidWallet: async (input: Record<string, unknown>) => {
+    screenCalls.push(input);
+    return screenResult;
+  },
+}));
+
 const { ecosystemReadRoutes, resetEcosystemReadRateLimit } = await import('../ecosystem-reads');
 const { runMcpTool, answerText } = await import('../../services/agent-mcp-tools');
 
@@ -67,6 +78,8 @@ beforeEach(() => {
   budgetExhausted = false;
   marketCalls.length = 0;
   trustCalls.length = 0;
+  screenCalls.length = 0;
+  screenResult = { ok: true, reply: { status: 'screened', verdict: 'allow' } };
   resetEcosystemReadRateLimit();
 });
 
@@ -131,6 +144,65 @@ describe('answers', () => {
   });
 });
 
+describe('POST /trust/:wallet/screen', () => {
+  const post = (headers: Record<string, string> = { 'Idempotency-Key': 'said-key-1' }) =>
+    app.request(`/api/ecosystem/trust/${WALLET}/screen`, { method: 'POST', headers });
+
+  it('no session 401, a guest 403, and nothing is called', async () => {
+    expect((await post()).status).toBe(401);
+    identity = { ...HUMAN, guest: true };
+    expect((await post()).status).toBe(403);
+    expect(screenCalls).toHaveLength(0);
+  });
+
+  it('an agent session without ledger capability gets 403', async () => {
+    identity = { ...AGENT, ledgerCapable: false };
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { code: string }).code).toBe('agent_session_not_ledger_authorized');
+    expect(screenCalls).toHaveLength(0);
+  });
+
+  it('a missing or short Idempotency-Key is 400 before the service', async () => {
+    identity = AGENT;
+    const bad: Array<Record<string, string>> = [{}, { 'Idempotency-Key': '' }, { 'Idempotency-Key': 'short' }];
+    for (const headers of bad) {
+      const res = await post(headers);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { code: string }).code).toBe('idempotency_key_required');
+    }
+    expect(screenCalls).toHaveLength(0);
+  });
+
+  it('a ledger-capable agent pays from its own avatar and is recorded as the agent', async () => {
+    identity = AGENT;
+    expect((await post()).status).toBe(200);
+    expect(screenCalls).toEqual([{ avatarId: 'avatar-of-agent', actor: 'agent', wallet: WALLET, idempotencyKey: 'said-key-1' }]);
+  });
+
+  it('a cookie with no human sign-in origin is recorded as the agent', async () => {
+    identity = HUMAN;
+    await post();
+    expect(screenCalls[0]).toMatchObject({ avatarId: 'avatar-of-user', actor: 'agent' });
+  });
+
+  it('a refusal keeps its status, code and ledger id', async () => {
+    identity = AGENT;
+    screenResult = { ok: false, code: 'payment_ambiguous', httpStatus: 502, message: 'Do not retry.', ledgerId: 'ledger-1' };
+    const res = await post();
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'payment_ambiguous', code: 'payment_ambiguous', message: 'Do not retry.', ledgerId: 'ledger-1' });
+  });
+
+  it('more than 6 paid screens in one minute per avatar is 429', async () => {
+    identity = AGENT;
+    for (let i = 0; i < 6; i++) expect((await post()).status).toBe(200);
+    const res = await post();
+    expect(res.status).toBe(429);
+    expect(screenCalls).toHaveLength(6);
+  });
+});
+
 describe('MCP tools', () => {
   function runtime() {
     const seen: Array<{ method: string; path: string; headers?: Record<string, string> }> = [];
@@ -166,6 +238,18 @@ describe('MCP tools', () => {
     expect(seen).toHaveLength(0);
     await runMcpTool('clawville_trust', { wallet: 'a/../b' }, rt as never);
     expect(seen[0]!.path).toBe('/api/ecosystem/trust/a%2F..%2Fb');
+  });
+
+  it('clawville_trust with screen: true posts with the key; without it the free read runs', async () => {
+    const { rt, seen } = runtime();
+    await runMcpTool('clawville_trust', { wallet: WALLET, screen: true, idempotencyKey: 'said-key-1' }, rt as never);
+    expect(seen[0]).toMatchObject({ method: 'POST', path: `/api/ecosystem/trust/${WALLET}/screen`, headers: { 'Idempotency-Key': 'said-key-1' } });
+    await runMcpTool('clawville_trust', { wallet: WALLET, idempotencyKey: 'said-key-1' }, rt as never);
+    await runMcpTool('clawville_trust', { wallet: WALLET, screen: false }, rt as never);
+    expect(seen.slice(1).map((c) => c.method)).toEqual(['GET', 'GET']);
+    // With no key the header is empty, and the route answers 400 before any quote.
+    await runMcpTool('clawville_trust', { wallet: WALLET, screen: true }, rt as never);
+    expect(seen[3]!.headers).toEqual({ 'Idempotency-Key': '' });
   });
 
   it('with no session both tools answer not_connected before any call', async () => {

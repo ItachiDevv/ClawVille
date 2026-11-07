@@ -5,7 +5,7 @@
  */
 
 /** Vendors a human can let their agent pay. Ids match ECOSYSTEM_CATALOG rows. */
-export const SPEND_VENDOR_IDS = ['studios'] as const;
+export const SPEND_VENDOR_IDS = ['studios', 'said'] as const;
 export type SpendVendorId = (typeof SPEND_VENDOR_IDS)[number];
 
 /** Typo guard for one cap value: $1000. Not a product limit. */

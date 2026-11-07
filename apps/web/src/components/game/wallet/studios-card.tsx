@@ -202,7 +202,7 @@ export function studiosPayerNotice(
   return 'Studios is paid from your agent wallet in USDC, only inside your spend caps. An image costs about half a cent. Studios does not keep these results in your Studios account.';
 }
 
-function newIdempotencyKey(): string {
+export function newIdempotencyKey(): string {
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID().replace(/-/g, '')
     : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;

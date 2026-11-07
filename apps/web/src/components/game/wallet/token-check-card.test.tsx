@@ -23,7 +23,9 @@ let api: Record<string, unknown>;
 let ApiErrorClass: typeof import('@/lib/api').ApiError;
 let originalApi: Record<string, unknown> = {};
 let isGuest = false;
+let spend: Record<string, unknown> = {};
 const log: Array<{ fn: string; arg: unknown }> = [];
+let screenFails: Error | null = null;
 
 const MINT = 'So11111111111111111111111111111111111111112';
 const WALLET = '3Q6QAbCWmqJfXthcXxsxpj2SXvDcmDsJJsevwMgC8BrU';
@@ -47,10 +49,15 @@ beforeAll(async () => {
   ApiErrorClass = apiModule.ApiError;
   api = apiModule.api as unknown as Record<string, unknown>;
   ({ TokenCheckCard, readErrorText } = await import('./token-check-card'));
-  const names = ['me', 'getSpendPolicy', 'ecosystemMarket', 'ecosystemTrust'];
+  const names = ['me', 'getSpendPolicy', 'ecosystemMarket', 'ecosystemTrust', 'saidScreen'];
   originalApi = Object.fromEntries(names.map((n) => [n, api[n]]));
   api.me = async () => ({ user: { id: 'user-1', isGuest } });
-  api.getSpendPolicy = async () => ({ dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], configured: false, requireApproval: false, updatedAt: null });
+  api.getSpendPolicy = async () => ({ dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], configured: false, requireApproval: false, updatedAt: null, ...spend });
+  api.saidScreen = async (wallet: string, key: string) => {
+    log.push({ fn: 'screen', arg: { wallet, key } });
+    if (screenFails) throw screenFails;
+    return { status: 'screened', vendor: 'said', wallet, verdict: 'caution', axes: { delivery: 1, payments: null, validation: null, identity: null, community: null }, eigentrust: 0.5, payment: { ledgerId: 'l', usdCents: 1, txSignature: 't' } };
+  };
   api.ecosystemMarket = async (op: string, params: unknown) => {
     log.push({ fn: `market:${op}`, arg: params });
     if (op === 'search') return { ...meta, op, tokens: [{ mint: MINT, decimals: 9, verified: true, confidence: 'high', vendorData: { symbol: INJECTION, name: 'n' } }] };
@@ -71,6 +78,8 @@ afterEach(async () => {
   container = null;
   client = null;
   isGuest = false;
+  spend = {};
+  screenFails = null;
   log.length = 0;
 });
 
@@ -163,6 +172,69 @@ describe('TokenCheckCard', () => {
     const view = host.querySelector('[data-testid="wallet-trust"]')?.textContent ?? '';
     expect(view).toContain('unranked');
     expect(view).toContain('not known');
+  });
+
+  async function openTrust(): Promise<HTMLElement> {
+    const host = await mount();
+    await press(button(host, 'Wallet trust'));
+    await type(host.querySelector('#wallet-check-input') as HTMLInputElement, WALLET);
+    return host;
+  }
+  const hasPaidButton = (host: HTMLElement) => Array.from(host.querySelectorAll('button')).some((b) => b.textContent?.includes('Paid screen'));
+
+  test('the paid button shows only when the spend rules allow it', async () => {
+    const off = await openTrust();
+    expect(hasPaidButton(off)).toBe(false);
+    expect(off.textContent).toContain('allow SAID');
+    await act(async () => root?.unmount());
+    root = null;
+
+    spend = { configured: true, allowedVendors: ['studios'] };
+    const notAllowed = await openTrust();
+    expect(hasPaidButton(notAllowed)).toBe(false);
+    await act(async () => root?.unmount());
+    root = null;
+
+    spend = { configured: true, allowedVendors: ['said'], requireApproval: true };
+    const approval = await openTrust();
+    expect(hasPaidButton(approval)).toBe(false);
+    expect(approval.textContent).toContain('Ask me before each payment');
+    expect(log).toHaveLength(0);
+  });
+
+  test('a paid screen shows the verdict; each finished screen gets a new key', async () => {
+    spend = { configured: true, allowedVendors: ['said'] };
+    const host = await openTrust();
+    await press(button(host, 'Paid screen'));
+    expect(host.querySelector('[data-testid="said-screen"]')?.textContent).toContain('caution');
+    await press(button(host, 'Paid screen'));
+    const keys = log.filter((e) => e.fn === 'screen').map((e) => (e.arg as { key: string }).key);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  test('an unclear outcome keeps the same key, so a second press cannot pay twice', async () => {
+    spend = { configured: true, allowedVendors: ['said'] };
+    const host = await openTrust();
+    screenFails = new ApiErrorClass('x', 502, 'payment_ambiguous');
+    await press(button(host, 'Paid screen'));
+    expect(host.textContent).toContain('Do not try again');
+    screenFails = new Error('network');
+    await press(button(host, 'Paid screen'));
+    const keys = log.filter((e) => e.fn === 'screen').map((e) => (e.arg as { key: string }).key);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  test('a refusal with nothing paid gets a new key on the next press', async () => {
+    spend = { configured: true, allowedVendors: ['said'] };
+    const host = await openTrust();
+    screenFails = new ApiErrorClass('x', 402, 'over_daily_cap');
+    await press(button(host, 'Paid screen'));
+    screenFails = null;
+    await press(button(host, 'Paid screen'));
+    const keys = log.filter((e) => e.fn === 'screen').map((e) => (e.arg as { key: string }).key);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   test('tap targets are at least 44 px by class', async () => {

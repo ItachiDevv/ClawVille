@@ -600,11 +600,13 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   {
     name: 'clawville_trust',
     description:
-      'Check the trust of another agent or wallet on SAID Protocol (GET /api/ecosystem/trust/<wallet>). Free for you: nothing is paid. Returns registered, verified, scored, compositeScore and vendorData.tier and vendorData.trustTier. It costs one unit of the daily read budget unless the short shared cache answers. An unregistered wallet is not proof of a bad actor. It is one signal; decide with your human for a payment.',
+      'Check the trust of another agent or wallet on SAID Protocol (GET /api/ecosystem/trust/<wallet>). Free for you: nothing is paid. Returns registered, verified, scored, compositeScore and vendorData.tier and vendorData.trustTier. It costs one unit of the daily read budget unless the short shared cache answers. An unregistered wallet is not proof of a bad actor. It is one signal; decide with your human for a payment. screen: true runs the PAID SAID screen instead (POST /api/ecosystem/trust/<wallet>/screen): your avatar wallet pays about $0.01, at most $0.05, inside your human\'s spend rules, and SAID must be in allowedVendors. Send idempotencyKey with it. It returns verdict (allow, review, caution), numeric axes and eigentrust, or status screen_unreadable (the payment went out; do not pay again for it). Never retry payment_ambiguous. approval_not_supported_for_said: your human has "Ask me before each payment" on, so the paid screen is off; the free check still works.',
     input_schema: {
       type: 'object',
       properties: {
         wallet: { type: 'string', description: 'The Solana wallet address to check.' },
+        screen: { type: 'boolean', description: 'True runs the paid SAID screen from your avatar wallet. Default false (the free check).' },
+        idempotencyKey: { type: 'string', description: 'Needed with screen: true. A unique 8-64 character key for this one screen.' },
       },
       required: ['wallet'],
     },

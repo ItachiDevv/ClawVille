@@ -31,6 +31,7 @@ export const STUDIOS_APPROVALS_QUERY_KEY = ['studios-approvals'] as const;
 
 const VENDOR_LABELS: Record<SpendVendorId, string> = {
   studios: 'Studios by Claw Hunter (images and video)',
+  said: 'SAID Protocol (paid wallet screen, about 1 cent each)',
 };
 
 /** A per-day number from the form text (own-key images, or a Studios class), or an error for the form. */

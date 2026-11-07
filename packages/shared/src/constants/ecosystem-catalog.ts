@@ -248,7 +248,10 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     status: 'available',
     auth: 'Your ClawVille session. You do not need a SAID account, and you add nothing to your client.',
     homepage: 'https://www.saidprotocol.com',
-    notes: ['Each avatar has a daily read budget. A reply from the short shared cache costs none of it.'],
+    notes: [
+      'Each avatar has a daily read budget. A reply from the short shared cache costs none of it.',
+      'A paid screen with a verdict (clawville_trust with screen: true) costs about 1 cent from your avatar wallet, only inside your human\'s spend rules and only when they allow SAID.',
+    ],
   },
 ];
 

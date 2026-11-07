@@ -56,28 +56,34 @@ export interface VendorPin {
   maxCallAtomic: bigint;
 }
 
-export interface VendorCallInput {
+interface VendorCallBase {
   avatarId: string;
   actor: 'human' | 'agent';
   pin: VendorPin;
   tool: string;
   idempotencyKey: string;
   url: string;
-  body: Record<string, unknown>;
   /** Time limit for the paid request (default 120 s; a Studios video waits up to 5 minutes). */
   paidTimeoutMs?: number;
   /** Largest reply read (default 12 MB). */
   replyMaxBytes?: number;
   /**
-   * The caller's ownership check (Codex review 2026-11-06). Called inside the
-   * admission transaction (before the ledger row is inserted) and inside the
-   * transaction that stores our signature (the last step before the send). It
-   * must lock the caller's job row and return true only while the caller
-   * still owns it and the job is not terminal. False: no ledger row, no
+   * The caller's check that the call may still go on (Codex review 2026-11-06).
+   * Called inside the admission transaction (before the ledger row is inserted)
+   * and inside the transaction that stores our signature (the last step before
+   * the send). Studios: lock the caller's job row and return true only while the
+   * caller still owns it and the job is not terminal. SAID: return true only
+   * while "Ask me before each payment" is off. False: no ledger row, no
    * signature stored, nothing sent (`payment_fenced`).
    */
   fence?: (tx: LedgerTx) => Promise<boolean>;
 }
+
+/** The default is POST with a JSON body. A GET sends no body and no Content-Type. */
+export type VendorCallInput = VendorCallBase & (
+  | { method?: 'POST'; body: Record<string, unknown> }
+  | { method: 'GET'; body?: undefined }
+);
 
 /** The transaction handle `fence` gets. */
 export type LedgerTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -267,6 +273,24 @@ async function postJson(
   });
 }
 
+/** One vendor request, for the quote and for the paid send. */
+function sendVendorRequest(
+  f: OutboundDeps['fetch'],
+  input: VendorCallInput,
+  timeoutMs: number,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  if (input.method === 'GET') {
+    return f(input.url, {
+      method: 'GET',
+      headers: { Accept: 'application/json', ...headers },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'error',
+    });
+  }
+  return postJson(f, input.url, input.body, timeoutMs, headers);
+}
+
 function readPaymentRequired(res: Response): PaymentRequired | null {
   const header = res.headers.get('PAYMENT-REQUIRED');
   if (!header) return null;
@@ -446,7 +470,7 @@ export async function callVendorWithAvatarWallet(
   // 1) Unpaid request: the seller answers 402 with its quote.
   let quoteRes: Response;
   try {
-    quoteRes = await postJson(deps.fetch, input.url, input.body, QUOTE_TIMEOUT_MS);
+    quoteRes = await sendVendorRequest(deps.fetch, input, QUOTE_TIMEOUT_MS);
   } catch {
     return { ok: false, code: 'vendor_unreachable' };
   }
@@ -521,7 +545,7 @@ export async function callVendorWithAvatarWallet(
   // 5) Paid request. From here on the payment may have settled.
   let paidRes: Response;
   try {
-    paidRes = await postJson(deps.fetch, input.url, input.body, input.paidTimeoutMs ?? PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': signed.header });
+    paidRes = await sendVendorRequest(deps.fetch, input, input.paidTimeoutMs ?? PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': signed.header });
   } catch {
     await finish(admission.ledgerId, 'ambiguous', { failureReason: 'no_response_after_payment' });
     console.warn(`[outbound-x402] ${input.pin.vendor} ${input.tool}: no response after payment; ledger ${admission.ledgerId} ambiguous`);

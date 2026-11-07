@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-07 17:44Z (market and trust reads, PROTOCOL_VERSION 116 -> 117, migration 0098).** Drift note: new MCP tools `clawville_market` and `clawville_trust` and new routes under `/api/ecosystem`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed. Vendor text never enters a decide prompt.
+**Last Audited: 2026-11-07 17:59Z (paid SAID screen, still PROTOCOL_VERSION 117).** Drift note: `SPEND_VENDOR_IDS` gains `said` and `clawville_trust` gains `screen`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed.
+
+**Prior Last Audited: 2026-11-07 17:44Z (market and trust reads, PROTOCOL_VERSION 116 -> 117, migration 0098).** Drift note: new MCP tools `clawville_market` and `clawville_trust` and new routes under `/api/ecosystem`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed. Vendor text never enters a decide prompt.
 
 **Prior Last Audited: 2026-11-06 17:41Z (Studios dedupe review fixes, still PROTOCOL_VERSION 116).** Drift note: a hosted Studios verb is now blocked by the same input in any pay mode, and for 30 minutes after an unclear request ended (not after it was made). No verb, param, Hatcher route or partner contract changed.
 

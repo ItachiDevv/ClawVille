@@ -80,6 +80,25 @@ export type EcosystemMarketReply = EcosystemReadMeta & { vendor: 'clawpump' } & 
   | { op: 'macro'; assets: EcosystemMacroRow[] }
 );
 
+/** The paid SAID screen (avatar wallet, inside the spend rules). */
+export const SAID_SCREEN_VERDICTS = ['allow', 'review', 'caution'] as const;
+export type SaidScreenVerdict = (typeof SAID_SCREEN_VERDICTS)[number];
+export const SAID_SCREEN_AXES = ['delivery', 'payments', 'validation', 'identity', 'community'] as const;
+export type SaidScreenAxis = (typeof SAID_SCREEN_AXES)[number];
+export type SaidScreenAxes = Record<SaidScreenAxis, number | null>;
+
+interface SaidScreenPayment {
+  ledgerId: string;
+  usdCents: number;
+  /** Null when SAID sent no valid settlement evidence (the ledger row is then ambiguous). */
+  txSignature: string | null;
+}
+
+export type SaidScreenReply =
+  | { status: 'screened'; vendor: 'said'; wallet: string; verdict: SaidScreenVerdict; axes: SaidScreenAxes; eigentrust: number | null; payment: SaidScreenPayment }
+  /** The payment went out, but the reply could not be read. Do not pay again for it. */
+  | { status: 'screen_unreadable'; vendor: 'said'; wallet: string; verdict: null; axes: null; eigentrust: null; payment: SaidScreenPayment };
+
 export interface EcosystemTrustReply extends EcosystemReadMeta {
   vendor: 'said';
   wallet: string;

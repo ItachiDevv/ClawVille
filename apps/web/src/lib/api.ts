@@ -5,6 +5,7 @@ import type {
   EcosystemMarketOp,
   EcosystemMarketReply,
   EcosystemTrustReply,
+  SaidScreenReply,
   HatcherLaunchExchangeResponse,
   LandTier,
   SpendPolicyView,
@@ -839,6 +840,12 @@ export const api = {
     return request<EcosystemMarketReply>(`/api/ecosystem/market/${op}${qs ? `?${qs}` : ''}`);
   },
   ecosystemTrust: (wallet: string) => request<EcosystemTrustReply>(`/api/ecosystem/trust/${encodeURIComponent(wallet)}`),
+  /** The paid SAID screen: the avatar wallet pays inside the spend rules. */
+  saidScreen: (wallet: string, idempotencyKey: string) =>
+    request<SaidScreenReply>(`/api/ecosystem/trust/${encodeURIComponent(wallet)}/screen`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
   /** A free Studios menu (ids, prices and option values; cached 10 minutes on the server). */
   studiosOptions: <M extends StudiosMenuId>(menu: M) =>
     request<StudiosMenus[M]>(`/api/vendors/studios/options/${menu}`),
