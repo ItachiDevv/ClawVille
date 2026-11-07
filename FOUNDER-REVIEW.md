@@ -972,3 +972,9 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 ---
 
 *(Verdict log: 2026-09-13 — LAND Founders' Row ✅ ruled HOLD-ONLY (auction rejected; live behavior already matches, no change). LAND prepay ✅ ruled CONFIRM STEP (one-click rejected; shipped same day, see the LAND entry above). ECONOMY recovered-SOL destination ✅ ruled: swept 0.397129 SOL from the prod house wallet to the founder wallet 2WhyS…ea5H, tx finalized (5PrkM…BnPbfc), house at zero. 2026-08-20 — buildings-gated reveal ✅ founder-approved ("looks pretty good, I'm pretty happy"); absorbed into 3dStructure/spec, entry replaced by the Nori amendment. 2026-09-29: BRAND decisions absorbed (logo A with vector wood, claw-girl icons, font-rendered banner, usage rules variation 1).)*
+
+## MCP hub: Token and wallet check (session claw2.0, 2026-11-07)
+- **Look at:** staging, `https://staging.clawville.world/game`, wallet panel, the "Token and wallet check" card, on a phone and an iPad.
+- **Try:** search a token, open its price, read top movers and the macro row; paste a wallet for the free trust check.
+- **Feedback wanted:** is the card useful where it is? Is 300 vendor calls per avatar per day right?
+- **Paid screen:** needs your dollar cap before a live test. Until then it has only mock tests, and SAID's reply shape is not verified.
