@@ -120,10 +120,12 @@ export const realSpawn: SpawnFn = (request) =>
     let stderr = '';
     let timedOut = false;
     let settled = false;
+    let grace: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: SpawnResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (grace !== undefined) clearTimeout(grace);
       resolve(result);
     };
     const child = nodeSpawn(request.file, [...request.args], {
@@ -153,7 +155,7 @@ export const realSpawn: SpawnFn = (request) =>
     // A grandchild (a shim's real program) can keep the pipes open after the
     // child exits, so 'close' may come late: wait 3 s after 'exit', then finish.
     child.on('exit', (code) => {
-      setTimeout(() => finish({ code: timedOut ? null : code, stdout, stderr, timedOut }), 3000);
+      grace = setTimeout(() => finish({ code: timedOut ? null : code, stdout, stderr, timedOut }), 3000);
     });
     child.on('close', (code) => finish({ code: timedOut ? null : code, stdout, stderr, timedOut }));
   });
