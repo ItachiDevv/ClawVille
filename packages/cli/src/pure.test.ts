@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, parseArgs, UsageError, validateApiBase } from './args
 import { catalogRows, gatewayTools } from './catalog';
 import { parseCodexListJson, parseHermesList } from './clients';
 import { buildSpawnRequest, makeWhich, UnsafeCommandError, windowsCmdExe } from './exec';
-import { KNOWN_CLAWVILLE_HOSTS, manualReason, planClient, planRow, rowUsesOAuth, serverNameOf } from './plan';
+import { KNOWN_CLAWVILLE_ORIGINS, manualReason, planClient, planRow, rowUsesOAuth, serverNameOf } from './plan';
 import { outputTail, stripControl } from './text';
 import { isSafeToken, tokenizeSnippet, tokenizeSnippetLine, UnsafeTokenError } from './tokenize';
 import { CLI_VERSION } from './version';
@@ -205,22 +205,30 @@ describe('plans', () => {
     expect(manualReason(row('clawville'), 'hermes', ['hermes', 'mcp', 'add', 'clawville', '--url', 'https://api-staging.clawville.world/api/agent/mcp'])).toBeNull();
   });
 
-  test('finding 4: the ClawVille add runs only for a known API host', () => {
-    expect([...KNOWN_CLAWVILLE_HOSTS].sort()).toEqual(['127.0.0.1', 'api-staging.clawville.world', 'api.clawville.world', 'localhost']);
-    const known = ['https://api.clawville.world', 'https://api-staging.clawville.world', 'http://localhost:4000', 'http://127.0.0.1:4000', 'https://api.clawville.world:443'];
-    for (const apiBase of known) {
-      const clawville = catalogRows(apiBase).find((r) => r.id === 'clawville')!;
+  test('item B: the ClawVille add runs only for the exact https origins of the two ClawVille APIs', () => {
+    expect([...KNOWN_CLAWVILLE_ORIGINS].sort()).toEqual(['https://api-staging.clawville.world', 'https://api.clawville.world']);
+    // `--api` values as the CLI passes them (validateApiBase), so a default :443 is dropped.
+    const known = ['https://api.clawville.world', 'https://api-staging.clawville.world', 'https://api.clawville.world:443', 'https://API.ClawVille.world/'];
+    for (const value of known) {
+      const clawville = catalogRows(validateApiBase(value)).find((r) => r.id === 'clawville')!;
       for (const client of ['claude-code', 'codex-cli', 'hermes'] as const) expect(planClient(clawville, client, 'linux').kind).toBe('run');
     }
-    const unknown = ['https://evil.example', 'https://api.clawville.world.evil.example', 'https://clawville.world', 'https://API-STAGING.clawville.world.example:8443'];
-    for (const apiBase of unknown) {
-      const clawville = catalogRows(apiBase).find((r) => r.id === 'clawville')!;
+    const manual = [
+      'https://evil.example', 'https://api.clawville.world.evil.example', 'https://clawville.world', 'https://API-STAGING.clawville.world.example:8443',
+      'http://localhost:4000', 'http://127.0.0.1:4000', 'http://localhost', 'https://localhost', 'https://127.0.0.1',
+      'https://api.clawville.world:8443', 'https://api-staging.clawville.world:4000',
+    ];
+    for (const value of manual) {
+      const clawville = catalogRows(validateApiBase(value)).find((r) => r.id === 'clawville')!;
       for (const client of ['claude-code', 'codex-cli', 'hermes'] as const) {
         const plan = planClient(clawville, client, 'linux');
         expect(plan.kind).toBe('manual');
-        if (plan.kind === 'manual') expect(plan.reason).toContain('is not a ClawVille host that clawville knows');
+        if (plan.kind === 'manual') expect(plan.reason).toContain('is not one of the ClawVille APIs that clawville runs commands for');
       }
     }
+    // http on a ClawVille host (only reachable through catalogRows, since --api refuses it) is manual too.
+    const plainHttp = catalogRows('http://api.clawville.world').find((r) => r.id === 'clawville')!;
+    expect(planClient(plainHttp, 'codex-cli', 'linux').kind).toBe('manual');
     // Third-party rows keep their own URL, so a custom --api does not change them.
     const studios = catalogRows('https://evil.example').find((r) => r.id === 'studios')!;
     expect(planClient(studios, 'claude-code', 'linux').kind).toBe('run');

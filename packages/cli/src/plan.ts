@@ -94,8 +94,12 @@ export function planClient(row: EcosystemCatalogEntry, client: ClientId, platfor
   return { kind: 'run', client, serverName, add, followUps };
 }
 
-/** API hosts where clawville runs the ClawVille add itself. Any other `--api` host is print-only. */
-export const KNOWN_CLAWVILLE_HOSTS: ReadonlySet<string> = new Set(['api.clawville.world', 'api-staging.clawville.world', 'localhost', '127.0.0.1']);
+/**
+ * API origins where clawville runs the ClawVille add itself: https, the exact host, the
+ * default port. Any other `--api` origin (another host, http, an explicit port, localhost,
+ * 127.0.0.1) is print-only.
+ */
+export const KNOWN_CLAWVILLE_ORIGINS: ReadonlySet<string> = new Set(['https://api.clawville.world', 'https://api-staging.clawville.world']);
 
 /** Why an add must be printed, not run; null when clawville may run it. */
 export function manualReason(row: EcosystemCatalogEntry, client: ClientId, add: readonly string[]): string | null {
@@ -110,14 +114,16 @@ export function manualReason(row: EcosystemCatalogEntry, client: ClientId, add: 
     return 'Hermes starts the server command when you add it (it lists the tools first), so clawville does not run it. Do the setup in the notes, then run it yourself.';
   }
   if (row.id === CLAWVILLE_ROW_ID && row.mcpUrl !== undefined) {
-    let host = '';
+    let origin = '';
     try {
-      host = new URL(row.mcpUrl).hostname;
+      const url = new URL(row.mcpUrl);
+      // URL drops a default port (`:443`); any other port stays in `origin` and fails the match.
+      origin = url.origin;
     } catch {
-      // An unparsable URL is never a known host.
+      // An unparsable URL is never a known origin.
     }
-    if (!KNOWN_CLAWVILLE_HOSTS.has(host)) {
-      return `The API host ${host || '(unknown)'} is not a ClawVille host that clawville knows. A client can start a sign-in at once when a server offers one, so clawville does not run it. Run it yourself only if you trust that host.`;
+    if (!KNOWN_CLAWVILLE_ORIGINS.has(origin)) {
+      return `The API ${origin || '(unknown)'} is not one of the ClawVille APIs that clawville runs commands for (https://api.clawville.world, https://api-staging.clawville.world). A client can start a sign-in at once when a server offers one, so clawville does not run it. Run it yourself only if you trust that server.`;
     }
   }
   return null;

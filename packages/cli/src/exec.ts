@@ -63,6 +63,11 @@ function envValue(env: Readonly<Record<string, string | undefined>>, name: strin
  * The cmd.exe that starts a `.cmd` shim: `<SystemRoot or WINDIR>\System32\cmd.exe`,
  * never `ComSpec` (any program can sit there). Refuses unless the path is
  * absolute, its file name is cmd.exe, its folder is System32 and the file exists.
+ *
+ * Why SystemRoot / WINDIR are trusted: the CLI trusts the user's own environment in
+ * the same way as PATH, which already selects npx and each client CLI. These checks
+ * stop an accidental or unrelated program (as ComSpec could name), not a user who
+ * controls their own environment.
  */
 export function windowsCmdExe(env: Readonly<Record<string, string | undefined>>, fileExists: (path: string) => boolean = isFile): string {
   const root = envValue(env, 'SYSTEMROOT') ?? envValue(env, 'WINDIR');

@@ -64,6 +64,7 @@ function fakeClients(state: { claude?: string[]; codex?: string[]; hermes?: stri
   const hermes = new Set(state.hermes ?? []);
   return (argv, request) => {
     const [bin, , verb] = argv;
+    if (argv[1] === '--version') return { code: 0, stdout: `${bin} 9.9.9\n` };
     if (bin === 'claude' && verb === 'add') {
       const name = argv.find((token, i) => i > 2 && !token.startsWith('-') && argv[i - 1] !== '--transport' && argv[i - 1] !== '--scope')!;
       if (claude.has(name)) return { code: 1, stderr: `MCP server ${name} already exists in local config` };
@@ -251,15 +252,18 @@ describe('add <id>', () => {
     expect(pay.out.join('\n')).toContain('pay setup');
   });
 
-  test('finding 4: a custom --api host prints every ClawVille add as manual and runs nothing', async () => {
-    const h = harness({ handler: fakeClients() });
-    expect(await runCli(['--yes', '--api', 'https://mcp.other-host.example'], h.deps)).toBe(0);
-    expect(h.calls).toEqual([]);
-    const text = h.out.join('\n');
-    expect(text).toContain('The API host mcp.other-host.example is not a ClawVille host that clawville knows.');
-    expect(text).toContain('codex mcp add clawville --url https://mcp.other-host.example/api/agent/mcp');
-    expect(h.out.slice(-3).every((line) => line.includes(': manual ('))).toBe(true);
-    for (const api of ['https://api.clawville.world', 'https://api-staging.clawville.world', 'http://localhost:4000', 'http://127.0.0.1:4000']) {
+  test('item B: any --api origin other than the two https ClawVille APIs prints every ClawVille add as manual and runs nothing', async () => {
+    const manualOrigins = ['https://mcp.other-host.example', 'http://localhost:4000', 'http://127.0.0.1:4000', 'https://api.clawville.world:8443', 'https://api-staging.clawville.world:4000'];
+    for (const api of manualOrigins) {
+      const h = harness({ handler: fakeClients() });
+      expect(await runCli(['--yes', '--api', api], h.deps)).toBe(0);
+      expect(h.calls).toEqual([]);
+      const text = h.out.join('\n');
+      expect(text).toContain(`The API ${api} is not one of the ClawVille APIs that clawville runs commands for`);
+      expect(text).toContain(`codex mcp add clawville --url ${api}/api/agent/mcp`);
+      expect(h.out.slice(-3).every((line) => line.includes(': manual ('))).toBe(true);
+    }
+    for (const api of ['https://api.clawville.world', 'https://api-staging.clawville.world']) {
       const known = harness({ handler: fakeClients() });
       expect(await runCli(['--yes', '--api', api], known.deps)).toBe(0);
       expect(known.calls.filter((c) => c.argv[2] === 'add').length).toBe(3);
@@ -352,21 +356,40 @@ describe('list, help, version, usage', () => {
 describe('doctor', () => {
   const okBody = { jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18', serverInfo: { name: 'clawville', version: '1.0.0' } } };
 
-  test('lists each client, then one initialize POST to the API', async () => {
+  test('item A: doctor runs --version per client, list only for codex and hermes, never a claude mcp command, then one initialize POST', async () => {
     const h = harness({
       handler: fakeClients({ claude: ['clawville'], codex: [], hermes: ['clawville'] }),
       fetchImpl: async () => new Response(JSON.stringify(okBody), { status: 200, headers: { 'content-type': 'application/json' } }),
     });
     expect(await runCli(['doctor', ...STAGING], h.deps)).toBe(0);
-    expect(h.out).toContain('Claude Code: found at /bin/claude; clawville is in its MCP list');
-    expect(h.out).toContain('Codex CLI: found at /bin/codex; clawville is not in its MCP list');
-    expect(h.out).toContain('Hermes: found at /bin/hermes; clawville is in its MCP list');
+    expect(h.calls.map((c) => c.argv.join(' '))).toEqual([
+      'claude --version',
+      'codex --version',
+      'codex mcp list --json',
+      'hermes --version',
+      'hermes mcp list',
+    ]);
+    // Claude Code's own check connects to (and starts) the server, so it is only printed.
+    expect(h.calls.some((c) => c.argv[0] === 'claude' && c.argv[1] === 'mcp')).toBe(false);
+    expect(h.out).toContain('Claude Code: found at /bin/claude; claude --version: claude 9.9.9');
+    expect(h.out).toContain('  To see whether clawville is added, run: claude mcp get clawville');
+    expect(h.out).toContain('  clawville is not in its MCP list (codex mcp list --json)');
+    expect(h.out).toContain('  clawville is in its MCP list (hermes mcp list)');
     expect(h.out.at(-1)).toBe('  ok: HTTP 200, server clawville 1.0.0, protocol 2025-06-18');
     expect(h.fetches.length).toBe(1);
     expect(h.fetches[0]!.url).toBe('https://api-staging.clawville.world/api/agent/mcp');
     const body = JSON.parse(String(h.fetches[0]!.init?.body)) as { method: string };
     expect(body.method).toBe('initialize');
-    expect(h.calls.every((c) => c.argv[2] === 'get' || c.argv[2] === 'list')).toBe(true);
+  });
+
+  test('item A: a client whose --version fails is a doctor failure, and its list is not run', async () => {
+    const h = harness({
+      handler: (argv) => (argv[1] === '--version' ? { code: 1, stderr: 'broken install' } : { code: 0, stdout: '[]' }),
+      fetchImpl: async () => new Response(JSON.stringify(okBody), { status: 200 }),
+    });
+    expect(await runCli(['doctor', '--client', 'codex-cli'], h.deps)).toBe(1);
+    expect(h.calls.map((c) => c.argv.join(' '))).toEqual(['codex --version']);
+    expect(h.out).toContain('Codex CLI: found at /bin/codex; "codex --version" failed');
   });
 
   test('an HTTP error or a JSON-RPC error fails with exit 1', async () => {
@@ -390,9 +413,9 @@ describe('doctor', () => {
     expect(lookups).toBe(0);
     expect(h.out).toEqual([
       'Dry run: doctor would check:',
-      '  Claude Code: is claude on PATH; then run: claude mcp get clawville',
-      '  Codex CLI: is codex on PATH; then run: codex mcp list --json',
-      '  Hermes: is hermes on PATH; then run: hermes mcp list',
+      '  Claude Code: is claude on PATH; run: claude --version; then print "claude mcp get clawville" for you to run',
+      '  Codex CLI: is codex on PATH; run: codex --version; then run: codex mcp list --json',
+      '  Hermes: is hermes on PATH; run: hermes --version; then run: hermes mcp list',
       '  MCP initialize: POST https://api-staging.clawville.world/api/agent/mcp',
       'Nothing ran.',
     ]);

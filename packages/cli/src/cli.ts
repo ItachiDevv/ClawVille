@@ -338,14 +338,14 @@ async function commandAdd(args: ParsedArgs, deps: CliDeps): Promise<number> {
 // ---------------------------------------------------------------------------
 // doctor
 
-async function clawvilleListed(deps: CliDeps, client: ClientId): Promise<{ listed: boolean | null; result?: SpawnResult }> {
-  if (client === 'claude-code') {
-    // `claude mcp list` health-checks (starts) every configured stdio server; `get` checks only this one.
-    const result = await runArgv(deps, DOCTOR_LIST_ARGV['claude-code'], { timeoutMs: CHECK_TIMEOUT_MS });
-    if (result.code === 0) return { listed: true };
-    if (result.code !== null && /not found|No MCP server/i.test(stripControl(result.stdout + result.stderr))) return { listed: false };
-    return { listed: null, result };
-  }
+/**
+ * Does the client's own list show clawville? Codex CLI and Hermes only: their list
+ * commands read the config and start no server (checked with a marker-file stdio
+ * entry in a temp config: codex-cli 0.162.1 `mcp list` and `mcp get`, Hermes 0.22.2
+ * `mcp list`). Claude Code `mcp list` and `mcp get` run a connection check, which
+ * starts a stdio server, so doctor never runs them.
+ */
+async function clawvilleListed(deps: CliDeps, client: Exclude<ClientId, 'claude-code'>): Promise<{ listed: boolean | null; result?: SpawnResult }> {
   if (client === 'codex-cli') {
     const result = await runArgv(deps, DOCTOR_LIST_ARGV['codex-cli'], { timeoutMs: CHECK_TIMEOUT_MS });
     const names = result.code === 0 ? parseCodexListJson(result.stdout) : null;
@@ -369,12 +369,14 @@ export function parseMcpBody(body: string): unknown {
   throw new Error('no JSON in the answer');
 }
 
-/** The argv `doctor` runs to see whether a client lists clawville. */
-const DOCTOR_LIST_ARGV: Readonly<Record<ClientId, readonly string[]>> = {
-  'claude-code': ['claude', 'mcp', 'get', CLAWVILLE_ID],
+/** The list commands doctor runs itself (they start no MCP server). */
+const DOCTOR_LIST_ARGV = {
   'codex-cli': ['codex', 'mcp', 'list', '--json'],
   hermes: ['hermes', 'mcp', 'list'],
-};
+} as const satisfies Readonly<Record<Exclude<ClientId, 'claude-code'>, readonly string[]>>;
+
+/** Claude Code's check, printed for the user only: it connects to the server (and starts a stdio one). */
+const CLAUDE_CHECK_LINE = `claude mcp get ${CLAWVILLE_ID}`;
 
 async function commandDoctor(args: ParsedArgs, deps: CliDeps): Promise<number> {
   const url = `${args.apiBase}/api/agent/mcp`;
@@ -383,7 +385,8 @@ async function commandDoctor(args: ParsedArgs, deps: CliDeps): Promise<number> {
     deps.out('Dry run: doctor would check:');
     for (const client of chosenClients(args)) {
       const { label, bin } = clientInfo(client);
-      deps.out(`  ${label}: is ${bin} on PATH; then run: ${DOCTOR_LIST_ARGV[client].join(' ')}`);
+      const list = client === 'claude-code' ? `print "${CLAUDE_CHECK_LINE}" for you to run` : `run: ${DOCTOR_LIST_ARGV[client].join(' ')}`;
+      deps.out(`  ${label}: is ${bin} on PATH; run: ${bin} --version; then ${list}`);
     }
     deps.out(`  MCP initialize: POST ${url}`);
     deps.out('Nothing ran.');
@@ -398,13 +401,26 @@ async function commandDoctor(args: ParsedArgs, deps: CliDeps): Promise<number> {
       if (args.client) ok = false;
       continue;
     }
+    const version = await runArgv(deps, [bin, '--version'], { timeoutMs: CHECK_TIMEOUT_MS });
+    if (version.code !== 0) {
+      ok = false;
+      deps.out(`${label}: found at ${path}; "${bin} --version" failed`);
+      printFailureOutput(deps, label, version);
+      continue;
+    }
+    deps.out(`${label}: found at ${path}; ${bin} --version: ${shortText(version.stdout.split('\n').find((line) => line.trim().length > 0) ?? '')}`);
+    if (client === 'claude-code') {
+      deps.out(`  To see whether clawville is added, run: ${CLAUDE_CHECK_LINE}`);
+      deps.out('  (doctor does not run it: Claude Code connects to the server for that check, and starts a local one.)');
+      continue;
+    }
     const listed = await clawvilleListed(deps, client);
     if (listed.listed === null) {
       ok = false;
-      deps.out(`${label}: found at ${path}; its MCP list command failed`);
+      deps.out(`  its MCP list command failed (${DOCTOR_LIST_ARGV[client].join(' ')})`);
       if (listed.result) printFailureOutput(deps, label, listed.result);
     } else {
-      deps.out(`${label}: found at ${path}; clawville ${listed.listed ? 'is' : 'is not'} in its MCP list`);
+      deps.out(`  clawville ${listed.listed ? 'is' : 'is not'} in its MCP list (${DOCTOR_LIST_ARGV[client].join(' ')})`);
     }
   }
 

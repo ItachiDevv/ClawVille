@@ -35,8 +35,10 @@ It runs each client's own `mcp add` command.
 - It reads no secret, makes no key and pays nothing.
 - It does not sign in for you. A command that starts a sign-in is printed for you to run. Today this applies to Studios on Codex CLI and Hermes.
 - It does not start a local server. Hermes starts the server command when you add it, so the local (stdio) servers are printed for Hermes, not run.
-- With an `--api` host other than `api.clawville.world`, `api-staging.clawville.world`, `localhost` or `127.0.0.1`, the ClawVille commands are printed, not run. A client can start a sign-in at once when an unknown server offers one.
+- The ClawVille commands run only for the API `https://api.clawville.world` or `https://api-staging.clawville.world` (https, that exact host, the default port). For any other `--api` (another host, a port, `localhost` or `127.0.0.1`), they are printed, not run. A client can start a sign-in at once when an unknown server offers one.
+- `doctor` starts no MCP server. Per client it checks that the CLI is on PATH and that `<cli> --version` works. For Codex CLI and Hermes it also runs their list command, which starts no server (a test with a marker command showed this). For Claude Code it prints `claude mcp get clawville` for you to run, because that check connects to the server and starts a local one. Then it sends one MCP `initialize` POST to the API.
 - `doctor --dry-run` prints the checks. It starts no program and makes no network call.
+- The CLI trusts your own environment in the same way as PATH. PATH selects npx and each client CLI, and `SystemRoot` (or `WINDIR`) selects the Windows cmd.exe.
 - An error about `--api` never repeats the value, because it can hold a password or a token.
 - It does not run a setup step (for example `pay setup` or the Shinjuku setup). It prints the reviewed notes for that server.
 - When stdin is not a terminal and `--yes` is not given, it prints the commands and changes nothing.
