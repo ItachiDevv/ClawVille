@@ -6,7 +6,7 @@
  * the API process so both loopback gateway mocks are reachable from that process.
  * It never prints response bodies, prompts, cookies, database URLs, or secrets.
  */
-import {assertBrainchainProbeTarget,deriveBrainchainRuntimeEvidence,assertBrainchainStoredSections,brainchainChatHasEvidence,brainchainDecisionHasEvidence,brainchainWorkerResultReachedDecision,type BrainchainRuntimeEvidence} from '../brainchain/runtime-evidence';
+import {runBrainchainOnlySequence,BRAINCHAIN_PROBE_DECISION_LIMIT,assertBrainchainProbeTarget,deriveBrainchainRuntimeEvidence,assertBrainchainStoredSections,brainchainChatHasEvidence,brainchainDecisionHasEvidence,brainchainWorkerResultReachedDecision,type BrainchainRuntimeEvidence} from '../brainchain/runtime-evidence';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import postgres from 'postgres';
@@ -115,6 +115,7 @@ interface ProtocolEvidence {
 let assertionNumber = 0;
 const probeAbortController = new AbortController();
 let strictBrainchain=false;
+let brainchainSequenceSignal:AbortSignal|undefined;
 
 export function abortProbe(): void { probeAbortController.abort(); }
 function ok(condition: unknown, message: string): asserts condition {
@@ -124,7 +125,7 @@ function ok(condition: unknown, message: string): asserts condition {
 }
 
 function throwIfInterrupted(): void {
-  if (probeAbortController.signal.aborted) throw new ProbeFailure('probe interrupted');
+  if (probeAbortController.signal.aborted||brainchainSequenceSignal?.aborted) throw new ProbeFailure('probe interrupted');
 }
 
 export function parseCli(args: string[]): CliOptions {
@@ -295,7 +296,7 @@ async function fetchWithTimeout(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const signal = respectProbeAbort
-      ? AbortSignal.any([controller.signal, probeAbortController.signal])
+      ? AbortSignal.any([controller.signal, probeAbortController.signal,...(brainchainSequenceSignal?[brainchainSequenceSignal]:[])])
       : controller.signal;
     return await fetch(url, { ...init,...(strictBrainchain?{redirect:'error' as const}:{}), signal });
   } catch {
@@ -772,12 +773,14 @@ export async function startDeclaredGatewayMock(): Promise<{
   queueNoriQuestion: (directiveMarker: string) => void;
   queueAppearanceChange: (directiveMarker: string) => void;
   queueBrainchainRead:(directiveMarker:string)=>void;
+  limitBrainchainDecisions:()=>void;
   noriCounts: () => Record<string, number>;
 }> {
   const captured: CapturedGatewayRequest[] = [];
   let noriDirective: string | null = null;
   let appearanceDirective: string | null = null;
   let brainchainDirective:string|null=null;
+  let brainchainDecisionCount=0,brainchainDecisionLimited=false;
   let noriQueued = 0;
   let noriEmitted = 0;
   let decisionRequests = 0;
@@ -812,6 +815,7 @@ export async function startDeclaredGatewayMock(): Promise<{
       }
       const parsed = gatewayRequestSchema.safeParse(raw);
       if (!parsed.success) return Response.json({ error: 'invalid_body' }, { status: 400 });
+      if(brainchainDecisionLimited&&parsed.data.messages.some(message=>message.content.includes('Available actions (choose exactly one'))&&++brainchainDecisionCount>BRAINCHAIN_PROBE_DECISION_LIMIT)return Response.json({error:'probe_decision_quota'},{status:429});
       captureRequest(captured, parsed.data.messages.map((message) => message.content));
       if (parsed.data.messages.some((message) => message.content.includes('Available actions (choose exactly one'))) decisionRequests++;
       if (noriDirective) {
@@ -848,6 +852,7 @@ export async function startDeclaredGatewayMock(): Promise<{
   return {
     server, captured,
     queueBrainchainRead:marker=>{brainchainDirective=marker;},
+    limitBrainchainDecisions:()=>{brainchainDecisionLimited=true;brainchainDecisionCount=0;},
     queueNoriQuestion: (marker) => { noriDirective = marker; noriQueued++; },
     queueAppearanceChange: (marker) => { appearanceDirective = marker; },
     noriCounts: () => ({ noriQueued, noriEmitted, decisionRequests, noriMarkerRequests, noriDecisionRequests, noriDirectiveBlocks, noriBothSameMessage }),
@@ -1350,14 +1355,23 @@ async function main(): Promise<void> {
       'API and probe share the exact canary fixture database row',
     );
 
+    if(options.brainchain){
+      const evidence=deriveBrainchainRuntimeEvidence({manual:sharedSource.buildBrainchainOfficeManual(),paragraphs:sharedSource.BRAINCHAIN_CURRICULUM_SECTIONS.flatMap(s=>s.paragraphs),chatParagraphs:sharedSource.BRAINCHAIN_CURRICULUM_SECTIONS.find(s=>s.id==='payments')!.paragraphs,protocolVersion:protocolEvidence.version,toolOperations:(sharedSource.CLAWVILLE_GAME_TOOLS.find(t=>t.name==='clawville_brainchain')!.input_schema.properties!.op as {enum:string[]}).enum});
+      const mock=declaredMock;mock.limitBrainchainDecisions();let receiptCursor=0;
+      await runBrainchainOnlySequence({
+        install:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();await verifyBrainchainInstall(client,apiBase,fixture,evidence,protocolSource.buildProtocolManual(apiBase));},
+        chat:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();const start=captureCursor(mock.captured);await founderChat(apiBase,fixture,'Explain the BrainChain payment and cash-out limits, including parent funding, quote limits, refund holds and separate approval.');await waitForCapturedPrompt(mock.captured,start,p=>brainchainChatHasEvidence(p,evidence));ok(true,'BrainChain source payment paragraphs reach fresh chat provider context');},
+        decide:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();const start=captureCursor(mock.captured);await postAutonomy(apiBase,fixture,true);await waitForCapturedPrompt(mock.captured,start,p=>brainchainDecisionHasEvidence(p,evidence));ok(true,'BrainChain full source curriculum, version and tools reach the real decide wire');},
+        workers:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();receiptCursor=captureCursor(mock.captured);const marker=`brainchain-read-${runId}`;mock.queueBrainchainRead(marker);await postProbeDirective(apiBase,fixture,`${marker}: inspect your BrainChain workers only. Do not install, sign or spend.`);},
+        receipt:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();await waitForCapturedPrompt(mock.captured,receiptCursor,p=>brainchainWorkerResultReachedDecision(p),240000);ok(true,'BrainChain private workers action result reaches a later decide wire');},
+      });
+    }else{
     const claim = await claimSkill(apiBase, fixture, buildingId);
     ok(claim.buildingId === buildingId && claim.installed === 'runtime', 'claim route installed the canary into the hosted runtime');
 
     await waitForKnowledge(client, fixture, buildingId, canary, protocolEvidence.version);
     ok(true, 'current skill and protocol memories are ready for retrieval');
 
-    let brainchainEvidence:BrainchainRuntimeEvidence|undefined;
-    if(options.brainchain){brainchainEvidence=deriveBrainchainRuntimeEvidence({manual:sharedSource.buildBrainchainOfficeManual(),paragraphs:sharedSource.BRAINCHAIN_CURRICULUM_SECTIONS.flatMap(s=>s.paragraphs),chatParagraphs:sharedSource.BRAINCHAIN_CURRICULUM_SECTIONS.find(s=>s.id==='payments')!.paragraphs,protocolVersion:protocolEvidence.version,toolOperations:(sharedSource.CLAWVILLE_GAME_TOOLS.find(t=>t.name==='clawville_brainchain')!.input_schema.properties!.op as {enum:string[]}).enum});await verifyBrainchainInstall(client,apiBase,fixture,brainchainEvidence,protocolSource.buildProtocolManual(apiBase));}
     const query = "What is the hosted runtime probe's unique canary token, and what is the current connection protocol version?";
     const chat = await founderChat(apiBase, fixture, query);
     ok(chat.message.content.includes(DECLARED_GATEWAY_MARKER), 'Lane A founder-chat turn used the declared gateway');
@@ -1370,7 +1384,6 @@ async function main(): Promise<void> {
     ok(Boolean(composedPrompt), 'Lane A current-state context contains canary and source-derived protocol evidence');
     ok(currentStateContext(composedPrompt!).includes('[Current state context]'), 'Lane A proves provider composition rather than history echo');
 
-    if(brainchainEvidence){const start=captureCursor(declaredMock.captured);await founderChat(apiBase,fixture,'Explain the BrainChain payment and cash-out limits, including parent funding, quote limits, refund holds and separate approval.');const prompt=await waitForCapturedPrompt(declaredMock.captured,start,p=>brainchainChatHasEvidence(p,brainchainEvidence!));ok(brainchainChatHasEvidence(prompt,brainchainEvidence),'BrainChain source payment paragraphs reach fresh chat provider context');}
     const hermesCaptured = await runHermesLane(composedPrompt!);
     const hermesPrompts = hermesCaptured.flatMap((entry) => entry.prompts);
     ok(hermesPrompts.length >= 1, 'Lane B transparent proxy captured the Hermes-local request');
@@ -1388,7 +1401,6 @@ async function main(): Promise<void> {
           && prompt.includes('Trading desk:')
           && prompt.includes('TRADING IS HALTED:'),
       );
-      if(brainchainEvidence){ok(brainchainDecisionHasEvidence(haltedPrompt,brainchainEvidence),'BrainChain full source curriculum, manual version and tool operations reach decide wire');const marker=`brainchain-read-${runId}`,cursor=captureCursor(declaredMock.captured);declaredMock.queueBrainchainRead(marker);await postProbeDirective(apiBase,fixture,`${marker}: inspect your BrainChain workers only. Do not install, sign or spend.`);await waitForCapturedPrompt(declaredMock.captured,cursor,p=>brainchainWorkerResultReachedDecision(p),240000);ok(true,'BrainChain private bound-agent workers result reaches a later decide wire');}
       ok(haltedPrompt.includes('Status: armed=false; killed=true'), 'autonomous wire carries fleet arm and kill state');
       ok(haltedPrompt.includes('Objective: conservative-rebalancer'), 'autonomous wire carries the objective brief');
       ok(haltedPrompt.includes('Equity:') && haltedPrompt.includes('Cooldown:'), 'autonomous wire carries equity and cooldown state');
@@ -1485,6 +1497,7 @@ async function main(): Promise<void> {
 
     if (options.withEcho) {
       await runEchoLane(client, apiBase, buildingId, canary, protocolEvidence.version, runId, fixtures);
+    }
     }
   } finally {
     await cleanup();

@@ -630,3 +630,31 @@ The cost-plan document proposes changes; root has not yet accepted its database 
 Do not fabricate task IDs to pass the worker compute fence. Reuse cumulative provider authority; never create another independent10USDpool.
 Root owns the index again. A future3Drelease push still belongs to actualClaude after approved GitHub identity verification.
 Keep unsupported credit/refund/finality requirements visible. Do not retry the rejectedC1review task or the rejectedChrome launch.
+
+## Probe cost boundary checkpoint
+
+Current HEAD remains bde04258146640536630fd0b97ffb4e1802e553d. The new probe changes remain uncommitted.
+Root read the latest handoff and verified Git status on itachi222.
+Fit narrowed BrainChain mode to install, chat, decide, workers read, and later private receipt.
+The sequence has an eight-minute bound and eight mock decisions. Legacy probe modes remain separate.
+Backend added only the fixed embedding adapter and controlled tests; no ledger or runtime injection exists yet.
+The adapter pins OpenAI text-embedding-3-small,1536 dimensions,8192 tokens,32768 input bytes and131072 response bytes.
+Each proposed call reserves200microUSD and permits one ticket invocation, with bounded transport/body waits and no retry.
+Root independently ran all three adapter/probe suites:40tests263assertions passed, zero failures.
+Backend reports API typecheck53422exit0. Fit reports dedicated script/transitive typecheck0.
+Independent reviewer owns the budget review and adapter challenges. Full ledger implementation still awaits root assignment.
+Offline source counts P46/B11 yield135slots and a proposed27000microUSD ceiling. This is not an issued reservation.
+Official model-page pricing supports20000microUSD per million input tokens. The generic pricing page did not expose that row.
+Fit now maps runtime injection, fixture marking, complete provider coverage and cleanup, without source edits.
+Migration0118 is available. No schema migration, persistent root provisioning, provider request or credential access occurred.
+Both provider ledgers remain zero spent and zero reserved. Release authentication and browser access remain separate release gates.
+
+Independent design review now approves the written scope and fixed adapter only.
+Root repeated the separate adversarial adapter probe:3tests15assertions passed.
+Backend now owns approved0118 ledger/schema and narrow shared close/root-reconciliation implementation, with controlled55439 tests.
+Its source scope excludes runtime injection, keys, provider calls and persistent root provisioning.
+Identity_audit now reviews the runtime injection design against actual source before that implementation starts.
+Fit authored docs/brainchain-probe-runtime-injection-design.md and coordinates the marker/transport interface with backend.
+Fit confirms cleanup requests intentionally ignore the sequence signal and retain individual timeouts.
+The new durable paid-admission stop must precede runtime disposal and mock-gateway shutdown.
+Root owns the index. No new commit or push occurred during this checkpoint.

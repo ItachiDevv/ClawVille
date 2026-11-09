@@ -92,18 +92,16 @@ The fixture session explicitly uses created_via=agent_exchange. This proves no r
 The separate human sequence above remains required.
 
 Before an actual run, root must reserve installation and runtime costs under the existing cumulative OpenAI 10USD cap.
-Potential paid paths in the entire mode include initial protocol and world-scope installation, the legacy canary installation, and BrainChain curriculum installation.
-Each missing stored section can invoke the fixed OpenAI embedding path.
-Fresh founder chat, BrainChain chat, autonomous decisions, directives, and later decision turns can invoke semantic retrieval query embeddings.
-Runtime initialization, memory persistence, summarization, or extraction can invoke the runtime model or embedding providers if configured.
-The inherited Nori question uses the separate system-agent Eliza runtime. Its query retrieval, model answer, and memory persistence can cost money.
-The inherited appearance action is a state change. Its preceding and later decisions can still incur retrieval or inference costs.
-The declared gateway mock controls fixture chat and decision generation. The Hermes lane uses its repository mock through a loopback proxy.
-Those mocks do not control every embedding, teacher, or auxiliary runtime provider.
-Legacy optional echo fixtures are refused in this mode. There is no claim that all provider costs already pass through the isolated-task budget proxy.
-Root must inventory actual provider configuration and reserve all applicable OpenAI and OpenRouter costs under their existing separate 10USD caps.
+The BrainChain-only branch does not claim the canary skill or run canary cognition, Hermes, Nori, appearance, or echo flows.
+It retains the unique canary database row only to check that the API and probe share a database.
+Legacy modes retain those separate checks. Required onboarding verification remains separate.
+Potential provider costs in this branch include protocol installation, BrainChain curriculum installation, query retrieval, and runtime persistence or auxiliary calls.
+The standalone and plugin embedding paths still use OpenAI. The fixture gateway controls text generation only.
+Unexpected paid text or provider paths need a fail-closed transport boundary before actual execution.
+The proposed reserved transport is not implemented by this probe-only change.
+Root must inventory actual provider configuration and reserve every permitted request under the existing separate provider caps.
 Stop before an actual run if any provider path lacks that accounting boundary.
-A loopback chat gateway does not prove zero total provider spend.
+The legacy modes still have their canary, Nori teacher, Hermes, appearance, and optional echo cost boundaries described in the cost plan.
 Do not execute this mode before the root budget mechanism and reservation exist.
 Current verification uses pure assertions and controlled loopback HTTP only. It creates no staging account and performs no provider request.
 
@@ -116,6 +114,15 @@ It checks the full curriculum and operation inventory in an actual autonomous de
 The gateway emits one safe workers read. It emits no payment, signature, funding, exit, or approval action.
 A later decision request must contain its exact unexpired private workers receipt with HTTP200 and an empty fixture-owned workers array.
 The receipt check permits up to 240 seconds for the ordinary autonomous decision interval. It does not change production scheduling.
+The branch has one absolute eight-minute sequence deadline and an eight-request decision quota.
+The quota counts only decision requests. The branch makes one focused BrainChain founder-chat turn and emits one workers read.
+All five required assertion stages run in order: install, chat, decide, workers, receipt.
+A failed assertion, quota exhaustion, or elapsed deadline fails the gate. Late completion cannot start another stage.
+The sequence abort propagates to API requests. Cleanup uses its separate existing abort-safe path.
+Do not extend or renew root authorization for this first probe. Reserve at least 30 seconds for cleanup within the signed root expiry.
+A later trusted budget transport must use the smaller of remaining root authorization and this fixed sequence deadline.
+Insufficient remaining time is a refusal, not permission to skip an assertion.
+This eight-minute value supersedes the earlier fifteen-minute proposal for the initial lane.
 
 The finalizer stops the runtime, disconnects its body, and verifies registry removal before deleting fixture-owned rows.
 The BrainChain curriculum row is canonical shared source, so cleanup never deletes it.
@@ -129,7 +136,7 @@ cd apps/api
 bun test ./scripts/brainchain/runtime-evidence.test.ts ./scripts/agent-connect/hosted-skill-runtime-probe.test.ts
 ```
 
-Last Audited: 2026-11-09: these controlled tests passed 18 tests and 190 assertions.
+Last Audited: 2026-11-09: these controlled tests passed 21 tests and 217 assertions.
 Drift: the probe now has a strict BrainChain mode with stored-knowledge, chat-wire, decide-wire, and private action-result assertions.
 A successful controlled test does not prove staging runtime consumption, human wallet consent, settlement, or leaderboard credit.
 

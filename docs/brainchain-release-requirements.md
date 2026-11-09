@@ -15,9 +15,9 @@ A scoped test or source approval does not satisfy a broader release requirement.
 | Task purchases | BaseSepolia buyer B1/B2 and Solana S1/S2 corrections have scoped independent approval. No-ID discovery/best-first task criteria review18/153 passed. Prior eight-size selector and delayed SDK checks use synthetic API | Final discovery browser checks, genuine settlement proof, verified refund attribution and authenticated staging parity remain; execution remains disabled |
 | Earnings and cash-out | Ownership-bound read-only balances/stake/receipts, independent source tests, eight-size synthetic private UI captures | Actual authenticated staging reads, held/partial exit recovery, supported destination confirmation and parity UI/tools |
 | Work history and credit | Ownership-bound chain identity and Priors reads, exact amounts, explicit unknown loan terms, independent freshness correction29tests/123assertions, eight-size synthetic UI captures | Actual authenticated staging reads, distinct credit authorities and transaction preparation without live debt |
-| Budget and credentials | Root ledger with stable job UUID and separate caps; no API spending | Protected signed authority provisioning, reserve-before-dispatch trial and actual usage reconciliation |
+| Budget and credentials | Root ledger with stable job UUID and separate caps; no API spending; scoped probe budget design approval and fixed embedding adapter tests | Durable probe accounting and runtime provider coverage, protected signed authority provisioning, reserve-before-dispatch trial and actual usage reconciliation |
 | Independent review | Scoped identity/task/signer/typed-result/earnings/stdio/navigation reports; protected store/trial and read-only credit correction reviews | Purchase and credit transaction reviews; fresh integrated adversarial audit |
-| Release | Strict local web builds, API typechecks and targeted fixture suites | Coherent implementation commits, staging-first push, actual SOURCE_COMMIT/health/manual/browser checks and promotion PR |
+| Release | Strict local web builds, API typechecks and targeted fixture suites; asset26e5814f, world984f9f28, applicationbab9e66f and staging-lineage mergeccc224f recorded locally | Remaining probe changes, release authentication, staging-first push, actual SOURCE_COMMIT/health/manual/browser checks and promotion PR |
 | Durable CI coverage | Pure72 suites/498 passes with one expected Docker skip; PostgreSQL23 suites/151 passes without skips; Linux4 suites/12 passes with five expected skips; independent0117 full-schema and retained-history replay | Remote workflow evidence |
 
 ## External and authorization boundaries
@@ -162,3 +162,16 @@ The final source pass found four existing protocol fixtures outside the pure inv
 They now assert127. Two preserved brand assertions also found CT in new served copy; the sentence now uses vCLAW.
 The expanded pure lane independently passed72suites498tests with one expected Docker skip, process97350exit0.
 PostgreSQL and protected Linux source did not change. Their recorded results remain applicable.
+
+## Current probe and release checkpoint
+
+The implementation checkpoints and staging-lineage merge are local commits. No staging deployment or promotion PR exists.
+The required approved GitHub identity remains unavailable. The existing ItachiDevv identity does not satisfy that requirement.
+A fresh browser inventory again reports the browser access host unavailable. No rejected launch was retried.
+The narrowed probe covers five required stages, with eight minutes and eight mock decisions.
+Root independently passed40tests263assertions across adapter and probe suites, then three separate adversarial tests with15assertions.
+The independent review approves the probe budget design and fixed adapter scope only.
+Migration0118 and durable probe accounting are under implementation. Runtime injection remains under source review.
+The runtime review identified initialization hooks, hosted knowledge embedding and provider fallback as paths requiring explicit coverage.
+No paid provider request, reservation, credential provisioning or live probe occurred.
+Earlier checkpoint sections describe historical states; this section and the opening matrix define current release gaps.

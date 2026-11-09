@@ -2,6 +2,16 @@ import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {splitProtocolManualSections} from '../../../../packages/agent-runtime/src/protocol-knowledge';
 export const BRAINCHAIN_STAGING_API='https://api-staging.clawville.world';
+export const BRAINCHAIN_PROBE_STEPS=['install','chat','decide','workers','receipt'] as const;
+export const BRAINCHAIN_PROBE_DECISION_LIMIT=8;
+export const BRAINCHAIN_PROBE_LIFETIME_MS=8*60*1000;
+/** Only these required stages execute. A failed stage cannot reach another stage. */
+export async function runBrainchainOnlySequence(stages:Record<typeof BRAINCHAIN_PROBE_STEPS[number],(signal:AbortSignal)=>Promise<void>>,deadlineMs=BRAINCHAIN_PROBE_LIFETIME_MS){
+ if(!Number.isSafeInteger(deadlineMs)||deadlineMs<=0||deadlineMs>BRAINCHAIN_PROBE_LIFETIME_MS)throw Error('BrainChain probe sequence deadline');
+ const controller=new AbortController(),until=performance.now()+deadlineMs;let timer:ReturnType<typeof setTimeout>|undefined;
+ const expired=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('BrainChain probe sequence deadline'));},deadlineMs);});
+ try{for(const step of BRAINCHAIN_PROBE_STEPS){if(controller.signal.aborted||performance.now()>=until)throw Error('BrainChain probe sequence deadline');await Promise.race([stages[step](controller.signal),expired]);if(controller.signal.aborted||performance.now()>=until)throw Error('BrainChain probe sequence deadline');}}finally{clearTimeout(timer);controller.abort();}
+}
 /** Probe guards are stricter than legacy local-only runtime diagnostics. */
 export function assertBrainchainProbeTarget(input:{api:string;keep:boolean;allowUnmarkedDb:boolean;autonomousDecision:boolean;environment:string|undefined;marker?:string|null}){
  if(input.api!==BRAINCHAIN_STAGING_API||input.environment!=='staging'||input.keep||input.allowUnmarkedDb||!input.autonomousDecision||('marker'in input&&input.marker!=='staging'))throw Error('BrainChain runtime probe requires exact staging target, staging marker, autonomous decisions, and mandatory cleanup');
