@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-07 22:54Z (session claw2.0). **STAGING API + WEB = `57db1b911`, VERIFIED 22:52Z: the MCP `initialize` negotiates a newer protocol version (Hermes can connect), and the `npx clawville` installer package is in the repo (NOT published).** PROD = `c0be4c3e6`. SCHEMA: prod-migration-pending: 0093, 0094, 0095, 0096, 0097, 0098.
+Last Audited: 2026-11-09 05:35Z (session new-ville). **PROD API + WEB = `b74f1f942` (promotion #26, PR #338), VERIFIED 05:29Z: spend approval, Studios phase 3, hub reads, installer; PROTOCOL 117; migrations 0093-0098 applied.** STAGING code = `57db1b911` (same code). SCHEMA: synced.
+
+Prior - Last Audited: 2026-11-07 22:54Z (session claw2.0). **STAGING API + WEB = `57db1b911`, VERIFIED 22:52Z: the MCP `initialize` negotiates a newer protocol version (Hermes can connect), and the `npx clawville` installer package is in the repo (NOT published).** PROD = `c0be4c3e6`. SCHEMA: prod-migration-pending: 0093, 0094, 0095, 0096, 0097, 0098.
 
 Prior - Last Audited: 2026-11-07 18:45Z (session claw2.0). **STAGING API + WEB = `de5932a52`, VERIFIED 18:40Z: market and trust reads through ClawVille (MCP tools `clawville_market`, `clawville_trust`, paid `clawville_trust_screen`; PROTOCOL 117, migration 0098).** PROD = `c0be4c3e6`. SCHEMA: prod-migration-pending: 0093, 0094, 0095, 0096, 0097, 0098.
 
@@ -736,6 +738,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-09 05:35Z (session new-ville) - Promotion #26 ON PROD (`b74f1f942`, PR #338, PROTOCOL 117, migrations 0093-0098), VERIFIED
+- **What changed:** staging `9f3b0525d` (code `57db1b911`) merged to master. Contents: ask before each payment (linked-wallet approval) + Atelier down; Studios phase 3 (pay mode wallet x402 / own API key / Studios sign-in, video, character shots, recast, options, account, media gallery with signed delete, server duplicate protection); ClawPump read tools + SAID trust check; `packages/cli` installer (not published) + the `agent-mcp.ts` initialize fix for Hermes. Founder go 2026-11-09.
+- **Gates before merge (staging `57db1b911`):** agent-onboarding smoke 14/14 PASS; hosted-skill runtime probe ALL PASS (16) inside the staging API container; PR #338 checks all green.
+- **Verified on prod:** run 42566584601 gates + migrate + deploy green; migrate-ci applied 0093, 0094, 0095, 0096, 0097, 0098; both containers `SOURCE_COMMIT=b74f1f942` (flip done 05:29Z, 6/6 `/health` samples); served manual `protocol_version: 117`; `/.well-known/oauth-client/studios.json` serves the prod client; `/api/vendors/studios/oauth` and `/approvals` answer 401 without a session; `/game` renders (town center, buildings, HUD, minimap). Headless RTX 3080 FPS 41/50/55/53 with the desktop CPU at 100% from other processes (first run 37/27/32/27 with a second game tab open); no 3D change in this promotion.
+- **What broke:** nothing.
+- **NOT verified:** a real Studios sign-in (founder sign-in on staging in progress), paid video / character / recast calls (founder cap $3, 2026-11-09), real phone or iPad.
+- **Who it's for:** every human and agent who uses Studios or the hub reads.
+- **SCHEMA:** synced.
 
 ### 2026-11-07 22:54Z (session claw2.0) - Hermes can connect to the ClawVille MCP; `npx clawville` installer in the repo (`57db1b911`, no PROTOCOL bump, no migration), VERIFIED
 - **What changed:** `apps/api/src/routes/agent-mcp.ts`: a lone `initialize` skips the `MCP-Protocol-Version` header check, so the body negotiation answers a newer client (Hermes 0.22.2 sends `2025-11-25`) with `2025-06-18`; every other request and any batch still needs a supported version. New package `packages/cli` (npm name `clawville`, NOT published): `clawville`, `list`, `add <id>`, `doctor`, `--dry-run`, `--yes`, `--api`; the catalog is bundled at build time; argv spawn with no shell; never overwrites an entry; non-TTY without `--yes` changes nothing; adds run by itself only for the exact origins `https://api.clawville.world` and `https://api-staging.clawville.world`; Hermes stdio rows and Codex/Hermes Studios are printed as manual steps; `doctor` starts no MCP server. One CI step in `gates.yml`; `@clawville/shared` gets the `./ecosystem-catalog` subpath export.
