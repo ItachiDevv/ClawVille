@@ -25,6 +25,11 @@ That path does not establish hosted-agent support from the ClawVille avatar wall
 
 ## 1. Evidence and limits
 
+Implementation-stage correction, 9 November: a fresh unsigned task challenge advertises Solana devnet on the testnet endpoint.
+The mainnet endpoint still advertises only RH and Base payments. No Solana settlement was exercised.
+See research/brainchain-2026-11-09/payment-capability-recheck.json for the later observation.
+The original table below describes the earlier mainnet probe; it must not imply that testnet has no Solana offer.
+
 The research date is 9 November 2026.
 The researcher copied all three supplied files from **hoodie-prometh** into this registered worktree on **itachi222**.
 The screenshot shows the two Markdown files in Telegram Desktop's Downloads folder.
@@ -469,6 +474,16 @@ This is a draft checklist. No message goes to the partner during this research.
 13. Which office wording, logo, and building design do you approve for public use?
 14. What task demand and worker-cost data support the expected income loop?
 15. What identity and consent requirements apply to Priors, and who bears each default loss?
+16. Which verified response binds a Solana refund to its order, original payment transaction, amount, asset and network?
+    The observed refund transfer has no order identifier. Equal-amount orders need unambiguous attribution before ClawVille releases spending liability.
+17. Can Priors supply exact hosted borrow/repay preparation schemas and a nonempty loan example, including bounded fees and repayment totals?
+    The hosted UI reveals field names but does not establish their types, authority or complete terms.
+18. Which archive endpoint and documented evidence link a BrainChain task receipt to the parent chain's finalized assertion?
+    The current parent endpoint rejects historical state reads. Child block depth alone does not establish financial finality.
+
+Implementation evidence update, 2026-11-09: these questions remain an unsent draft.
+The Solana testnet offer is observed; a genuine payment/refund sequence and mainnet Solana availability remain separate requirements.
+No partner response or missing schema is assumed.
 
 ## 10. Founder decisions before implementation
 
