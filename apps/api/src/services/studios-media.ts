@@ -4,8 +4,10 @@
  *   - Results arrive as base64, as an artifact path under
  *     https://mystudios.fun/api/v1/media/artifacts/, or as a signed URL that
  *     expires. ClawVille downloads a URL at once, but ONLY from
- *     https://mystudios.fun (docs.md names no other result host): no other
- *     host, no redirect, no user info, no port, a byte limit and a time limit.
+ *     https://mystudios.fun or Studios' own storage (STUDIOS_STORAGE_HOST,
+ *     path STUDIOS_STORAGE_PATH_PREFIX only; sign-in results live there):
+ *     no other host, no redirect, no user info, no port, a byte limit and a
+ *     time limit.
  *     The Studios key is never sent on these downloads (docs.md: no key needed).
  *   - Bytes are checked by their first bytes, never by a vendor header: png,
  *     jpeg, webp (at most 8 MB) or mp4, webm (at most 50 MB).
@@ -17,7 +19,7 @@
  */
 
 import { and, avatarMedia, db, eq, sql } from '@clawville/database';
-import { IMAGE_MAX_BYTES, STUDIOS_ARTIFACT_PREFIX, STUDIOS_HOST, STUDIOS_ORIGIN, VIDEO_MAX_BYTES } from './vendors/studios-operations';
+import { IMAGE_MAX_BYTES, STUDIOS_ARTIFACT_PREFIX, STUDIOS_HOST, STUDIOS_ORIGIN, STUDIOS_STORAGE_HOST, STUDIOS_STORAGE_PATH_PREFIX, VIDEO_MAX_BYTES } from './vendors/studios-operations';
 
 export const MEDIA_QUOTA_BYTES_PER_AVATAR = 500 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
@@ -51,7 +53,7 @@ export type ArtifactFetchFailure = 'media_host_refused' | 'media_redirect_refuse
 
 /**
  * The absolute download URL for a Studios result, or null when it is not on
- * Studios' own host. An artifact path gets the Studios origin in front.
+ * Studios' own host or its storage path. An artifact path gets the Studios origin in front.
  */
 export function studiosDownloadUrl(raw: string): string | null {
   let url: URL;
@@ -68,8 +70,14 @@ export function studiosDownloadUrl(raw: string): string | null {
     return null;
   }
   if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
-  if (url.hostname.toLowerCase() !== STUDIOS_HOST) return null;
-  return url.href;
+  const host = url.hostname.toLowerCase();
+  if (host === STUDIOS_HOST) return url.href;
+  // Studios' storage: only its signed studio-artifacts paths. No '..' and no
+  // encoded '/', '' or '.', so the storage server cannot decode a path that
+  // leaves the prefix.
+  if (host === STUDIOS_STORAGE_HOST && url.pathname.startsWith(STUDIOS_STORAGE_PATH_PREFIX)
+    && !url.pathname.includes('/../') && !/%(2f|5c|2e)/i.test(url.pathname)) return url.href;
+  return null;
 }
 
 /**

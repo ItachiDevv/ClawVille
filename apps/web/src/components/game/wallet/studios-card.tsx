@@ -64,6 +64,8 @@ export function studiosErrorText(error: unknown): string {
         return 'Your Studios sign-in stopped working. Sign in with Studios again. Nothing was paid.';
       case 'studios_signin_changed':
         return 'You signed in with Studios again after this request, so it was not sent. Nothing was paid. Send it again.';
+      case 'studios_connection_limit':
+        return 'Your daily limit for ClawVille on Studios is too low for this. Nothing was sent or paid. Raise it on mystudios.fun, or wait for Studios to reset it.';
       case 'signin_option_unsupported':
         return 'Your Studios sign-in does not take one of these settings. Nothing was paid. Remove it and try again.';
       case 'operation_needs_studios_key':
@@ -220,7 +222,7 @@ const FINAL_NOTHING_CHARGED = new Set([
   'spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'vendor_unreachable',
   'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed', 'wallet_missing', 'payment_prepare_failed',
   'studios_key_invalid', 'studios_key_changed', 'studios_account_refused', 'daily_limit', 'hosted_daily_cap',
-  'studios_key_missing', 'studios_signin_missing', 'studios_signin_broken', 'studios_signin_changed',
+  'studios_key_missing', 'studios_signin_missing', 'studios_signin_broken', 'studios_signin_changed', 'studios_connection_limit',
   'signin_option_unsupported', 'operation_needs_studios_key', 'interrupted_not_paid', 'job_failed', 'media_quota_full',
   // A replay of a request the human declined, or that expired, ends it: a new click needs a new key.
   'approval_declined', 'approval_expired',

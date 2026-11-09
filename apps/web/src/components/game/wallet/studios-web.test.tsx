@@ -152,7 +152,7 @@ beforeAll(async () => {
   };
   m.studiosSigninAccount = async () => {
     log.push({ fn: 'account', arg: null });
-    return { balanceUsd: 4.5, freeUsageLeft: null, connectionSpendLeftUsd: 1, readable: true };
+    return { balanceUsd: 4.5, freeUsageLeft: null, connectionSpendLeftUsd: 1, connectionDailyLimitUsd: 5, connectionSpentTodayUsd: 4, readable: true };
   };
   m.studiosSigninMedia = async () => ({ items: [{ id: 'sm_1', kind: 'video', state: 'ready', createdAt: '2026-11-06T10:00:00Z' }], nextCursor: null });
   m.studiosImages = async () => ({
@@ -373,7 +373,10 @@ describe('Studios sign-in', () => {
     await openSection('How Studios is paid');
     const account = container?.querySelector('[data-testid="studios-account"]')?.textContent ?? '';
     expect(account).toContain('$4.50');
-    expect(account).toContain('Studios did not say');
+    // Free use left is hidden when Studios does not send it; the connection limit rows show.
+    expect(account).not.toContain('Free use left');
+    expect(account).toContain('$5.00 per day');
+    expect(account).toContain('$4.00');
     expect(account).toContain('$1.00');
     await click(button('Sign out of Studios'));
     expect(calls('oauth-challenge').map((l) => l.arg)).toEqual(['unlink']);

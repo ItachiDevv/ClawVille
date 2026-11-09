@@ -473,6 +473,8 @@ export interface StudiosSigninAccount {
   balanceUsd: number | null;
   freeUsageLeft: number | null;
   connectionSpendLeftUsd: number | null;
+  connectionDailyLimitUsd: number | null;
+  connectionSpentTodayUsd: number | null;
   readable: boolean;
 }
 

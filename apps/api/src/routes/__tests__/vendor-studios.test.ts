@@ -97,7 +97,7 @@ mock.module('../../services/studios-images', () => ({
   },
   readStudiosSigninAccount: async (avatarId: string) => {
     signinReads.push({ kind: 'account', avatarId });
-    return nextSigninRead ?? { ok: true, account: { balanceUsd: 1.5, freeUsageLeft: 2, connectionSpendLeftUsd: 0.5, readable: true } };
+    return nextSigninRead ?? { ok: true, account: { balanceUsd: 1.5, freeUsageLeft: 2, connectionSpendLeftUsd: 0.5, connectionDailyLimitUsd: 5, connectionSpentTodayUsd: 4.5, readable: true } };
   },
   listStudiosSigninMedia: async (avatarId: string, query: Record<string, unknown>) => {
     signinReads.push({ kind: 'media', avatarId, query });
@@ -494,7 +494,7 @@ describe('GET /api/vendors/studios/signin/account and /signin/media (free sign-i
   it('serve the human session and an agent session of the same avatar (no ledger capability needed; nothing is spent)', async () => {
     const account = await app.request('/api/vendors/studios/signin/account');
     expect(account.status).toBe(200);
-    expect(await account.json()).toEqual({ balanceUsd: 1.5, freeUsageLeft: 2, connectionSpendLeftUsd: 0.5, readable: true });
+    expect(await account.json()).toEqual({ balanceUsd: 1.5, freeUsageLeft: 2, connectionSpendLeftUsd: 0.5, connectionDailyLimitUsd: 5, connectionSpentTodayUsd: 4.5, readable: true });
     identity = { kind: 'agent', userId: 'u1', avatarId: 'a7', agentId: 'g1', ledgerCapable: false };
     const media = await app.request('/api/vendors/studios/signin/media?kind=video&limit=5&cursor=c-1');
     expect(media.status).toBe(200);

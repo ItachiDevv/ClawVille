@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-07 17:59Z (paid SAID screen, still PROTOCOL_VERSION 117).** Drift note: `SPEND_VENDOR_IDS` gains `said` and the paid MCP tool `clawville_trust_screen` is new. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed.
+**Last Audited: 2026-11-09 06:45Z (Studios sign-in live fixes, PROTOCOL_VERSION 117 -> 118, no migration).** Drift note: the Studios sign-in account read gains `connectionDailyLimitUsd` and `connectionSpentTodayUsd`, and a sign-in request can fail `studios_connection_limit` before any call. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed.
+
+**Prior Last Audited: 2026-11-07 17:59Z (paid SAID screen, still PROTOCOL_VERSION 117).** Drift note: `SPEND_VENDOR_IDS` gains `said` and the paid MCP tool `clawville_trust_screen` is new. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed.
 
 **Prior Last Audited: 2026-11-07 17:44Z (market and trust reads, PROTOCOL_VERSION 116 -> 117, migration 0098).** Drift note: new MCP tools `clawville_market` and `clawville_trust` and new routes under `/api/ecosystem`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed. Vendor text never enters a decide prompt.
 

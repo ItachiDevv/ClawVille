@@ -61,6 +61,13 @@ export const STUDIOS_ORIGIN = 'https://mystudios.fun';
 export const STUDIOS_HOST = 'mystudios.fun';
 /** Where video results live (docs.md, POST /videos/generations: "prepend https://mystudios.fun"). */
 export const STUDIOS_ARTIFACT_PREFIX = '/api/v1/media/artifacts/';
+/**
+ * Studios' own file storage. Sign-in results (get_job `media[].url` /
+ * `original_url`) are signed links on this host, verified live 2026-11-09.
+ * Only this host and this path prefix are accepted.
+ */
+export const STUDIOS_STORAGE_HOST = 'icnrwbdrfbyalifdshrs.supabase.co';
+export const STUDIOS_STORAGE_PATH_PREFIX = '/storage/v1/object/sign/studio-artifacts/';
 
 const MB = 1024 * 1024;
 export const IMAGE_MAX_BYTES = 8 * MB;

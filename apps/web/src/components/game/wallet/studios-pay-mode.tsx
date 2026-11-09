@@ -316,13 +316,24 @@ function StudiosSigninBlock() {
             <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 text-xs" data-testid="studios-account">
               <dt className="text-white/60">Studios balance</dt>
               <dd className="text-white text-right">{usdOrUnknown(account.balanceUsd)}</dd>
-              <dt className="text-white/60">Free use left today</dt>
-              <dd className="text-white text-right">{account.freeUsageLeft === null ? 'Studios did not say' : String(account.freeUsageLeft)}</dd>
+              {account.freeUsageLeft !== null && (
+                <>
+                  <dt className="text-white/60">Free use left today</dt>
+                  <dd className="text-white text-right">{String(account.freeUsageLeft)}</dd>
+                </>
+              )}
+              <dt className="text-white/60">Your Studios limit for ClawVille</dt>
+              <dd className="text-white text-right">{usdOrUnknown(account.connectionDailyLimitUsd)} per day</dd>
+              <dt className="text-white/60">Spent today</dt>
+              <dd className="text-white text-right">{usdOrUnknown(account.connectionSpentTodayUsd)}</dd>
               <dt className="text-white/60">ClawVille may still spend today</dt>
               <dd className="text-white text-right">{usdOrUnknown(account.connectionSpendLeftUsd)}</dd>
             </dl>
           ) : null}
-          <p className="text-xs text-white/55 leading-relaxed">You set how much ClawVille may spend per day on Studios itself.</p>
+          <p className="text-xs text-white/55 leading-relaxed">
+            You set this daily limit on Studios when you signed in. It is separate from the ClawVille spending limits
+            above. To change it, change it on mystudios.fun.
+          </p>
         </>
       )}
       {status?.linked && (

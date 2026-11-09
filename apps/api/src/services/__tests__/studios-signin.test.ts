@@ -76,10 +76,15 @@ describe('tool result readers', () => {
 
 describe('free read mappers', () => {
   it('account: our numbers only; unknown names give null and readable false', () => {
+    // The live get_account shape (2026-11-09): the connection limit is nested.
+    expect(mapSigninAccount({ balance_usd: 2.5, connection: { daily_limit_usd: 10, spent_today_usd: 0.06, remaining_today_usd: 9.94 }, library_url: 'https://mystudios.fun/studio/library' }))
+      .toEqual({ balanceUsd: 2.5, freeUsageLeft: null, connectionSpendLeftUsd: 9.94, connectionDailyLimitUsd: 10, connectionSpentTodayUsd: 0.06, readable: true });
+    // The old flat guesses are not read any more.
     expect(mapSigninAccount({ balance_usd: 2, free_usage_left: 1, connection_spend_left_usd: 0.5, text: 'x' }))
-      .toEqual({ balanceUsd: 2, freeUsageLeft: 1, connectionSpendLeftUsd: 0.5, readable: true });
-    expect(mapSigninAccount({ balance: { usd: 3 } })).toEqual({ balanceUsd: 3, freeUsageLeft: null, connectionSpendLeftUsd: null, readable: true });
-    expect(mapSigninAccount({ credits: '9' })).toEqual({ balanceUsd: null, freeUsageLeft: null, connectionSpendLeftUsd: null, readable: false });
+      .toEqual({ balanceUsd: 2, freeUsageLeft: 1, connectionSpendLeftUsd: null, connectionDailyLimitUsd: null, connectionSpentTodayUsd: null, readable: true });
+    expect(mapSigninAccount({ connection: 'x' })).toEqual({ balanceUsd: null, freeUsageLeft: null, connectionSpendLeftUsd: null, connectionDailyLimitUsd: null, connectionSpentTodayUsd: null, readable: false });
+    expect(mapSigninAccount({ balance: { usd: 3 } })).toEqual({ balanceUsd: 3, freeUsageLeft: null, connectionSpendLeftUsd: null, connectionDailyLimitUsd: null, connectionSpentTodayUsd: null, readable: true });
+    expect(mapSigninAccount({ credits: '9' })).toEqual({ balanceUsd: null, freeUsageLeft: null, connectionSpendLeftUsd: null, connectionDailyLimitUsd: null, connectionSpentTodayUsd: null, readable: false });
   });
 
   it('media: ids by pattern, kind and state from a fixed set; no Studios text (description, summary, title) and no links', () => {

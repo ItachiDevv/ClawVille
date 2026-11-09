@@ -70,6 +70,7 @@ import {
 } from '@clawville/shared';
 import { callVendorWithAvatarWallet, readJsonCapped, type LedgerTx, type VendorCallFailure } from './outbound-x402';
 import { lockSpendRules, policyColumns, toSpendPolicyView } from './spend-policy';
+import { readStudiosMenu } from './studios-menus';
 import { StudiosMcpError, callStudiosTool, type StudiosMcpClientOptions } from './vendors/studios-mcp-client';
 import { StudiosOAuthError, getAccessToken, readStudiosSignInLink, studiosSignInDigest } from './vendors/studios-oauth';
 import {
@@ -128,6 +129,7 @@ export type StudiosImageFailure =
   | 'studios_signin_missing'
   | 'studios_signin_broken'
   | 'studios_signin_changed'
+  | 'studios_connection_limit'
   | 'signin_option_unsupported'
   | 'studios_account_refused'
   | 'operation_needs_studios_key'
@@ -274,6 +276,7 @@ const MESSAGES: Record<StudiosImageFailure, { httpStatus: FailureStatus; message
   studios_signin_missing: { httpStatus: 403, message: 'Your human chose their Studios sign-in to pay, but no Studios sign-in is linked. Nothing was paid. Ask your human to sign in with Studios or choose another way to pay.' },
   studios_signin_broken: { httpStatus: 403, message: 'The Studios sign-in stopped working. Nothing was paid. Ask your human to sign in with Studios again.' },
   studios_signin_changed: { httpStatus: 409, message: 'Your human signed in with Studios again after this request was made, so it was not sent. Nothing was paid. Send a new request.' },
+  studios_connection_limit: { httpStatus: 429, message: "Your human's daily limit for ClawVille on their Studios account is too low for this request. Nothing was sent or paid. Ask your human to raise the ClawVille limit on Studios (mystudios.fun), or try again after Studios resets it." },
   signin_option_unsupported: { httpStatus: 400, message: 'This setting does not work with the Studios sign-in (a character model, quality or resolution, or a recast of a clip by URL). Nothing was called or paid. Leave it out.' },
   studios_account_refused: { httpStatus: 402, message: "Studios refused the call on your human's Studios account (for example, no credits left). ClawVille paid nothing." },
   image_missing: { httpStatus: 502, message: 'Studios sent no readable image. Do not retry; contact support with the ledgerId if one is shown.' },
@@ -599,7 +602,7 @@ const NOT_CHARGED_FAILURES: StudiosImageFailure[] = [
   'spend_rules_not_set', 'vendor_not_allowed', 'over_per_call_cap', 'over_daily_cap', 'wallet_missing',
   'vendor_unreachable', 'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed', 'payment_prepare_failed',
   'studios_key_invalid', 'studios_key_changed', 'studios_key_missing', 'studios_account_refused',
-  'studios_signin_missing', 'studios_signin_broken', 'studios_signin_changed', 'signin_option_unsupported',
+  'studios_signin_missing', 'studios_signin_broken', 'studios_signin_changed', 'studios_connection_limit', 'signin_option_unsupported',
   'operation_needs_studios_key', 'interrupted_not_paid', 'job_failed', 'media_quota_full', 'daily_limit', 'hosted_daily_cap',
 ];
 // A code cannot be both: a failed row that may have charged always counts.
@@ -1340,6 +1343,44 @@ function signinSources(op: StudiosOperationDef, params: StudiosParams, media: Si
   return sources;
 }
 
+/** The smallest charge we check against the Studios connection limit (US dollars). */
+const SIGNIN_MIN_CHARGE_USD = 0.01;
+
+/** The menu price of a recast preset at its resolution (US dollars), or null. */
+async function recastMenuPriceUsd(params: StudiosParams): Promise<number | null> {
+  const p = params as { preset?: string; resolution?: string };
+  if (!p.preset) return null;
+  const menu = await readStudiosMenu('recast-presets').catch(() => null);
+  const presets = Array.isArray(menu?.presets) ? menu.presets as Array<Record<string, unknown>> : [];
+  const preset = presets.find((x) => x.id === p.preset);
+  if (!preset) return null;
+  const resolution = p.resolution ?? (typeof preset.defaultResolution === 'string' ? preset.defaultResolution : null);
+  const rows = Array.isArray(preset.resolutions) ? preset.resolutions as Array<Record<string, unknown>> : [];
+  const row = rows.find((r) => r.id === resolution);
+  const price = typeof row?.priceUsd === 'number' ? row.priceUsd : typeof preset.priceUsd === 'number' ? preset.priceUsd : null;
+  return price !== null && Number.isFinite(price) && price > 0 ? price : null;
+}
+
+/**
+ * True when the Studios connection limit left today is known and lower than
+ * this request needs (a recast: its menu price; anything else: one cent).
+ * An unreadable account never blocks: Studios still enforces its own limit
+ * and refuses without a charge (`vendor_refused`).
+ */
+async function signinConnectionTooLow(options: StudiosMcpClientOptions, operation: StudiosOperationId, params: StudiosParams): Promise<boolean> {
+  let left: number | null;
+  try {
+    const reply = await callStudiosTool(options, 'get_account', {});
+    if (reply.isError) return false;
+    left = mapSigninAccount(toolPayload(reply.result)).connectionSpendLeftUsd;
+  } catch {
+    return false;
+  }
+  if (left === null) return false;
+  const needed = (operation === 'recast' ? await recastMenuPriceUsd(params) : null) ?? SIGNIN_MIN_CHARGE_USD;
+  return left < needed;
+}
+
 /**
  * A sign-in request (any operation): call the create tool ONCE (its job ids
  * are stored at once), then poll `get_job` (never charged) until every job is
@@ -1362,6 +1403,10 @@ async function runSignin(input: RunInput & { credentialSha256: string | null; jo
   if (!started) {
     const call = buildSigninToolCall(op.id, input.params);
     if (!call.ok) return finishRequest(claim, failure('signin_option_unsupported'));
+    // The human sets a daily dollar limit for ClawVille on Studios itself. Read
+    // what is left (free) and refuse before the create call when it is too
+    // low: a clear code instead of a vague Studios refusal. Nothing is sent.
+    if (await signinConnectionTooLow(options, op.id, input.params)) return finishRequest(claim, failure('studios_connection_limit'));
     // Never send for a row another runner took over.
     if (!(await holdsClaim(claim))) return lostClaim();
     let replyJobs: SigninJob[];
