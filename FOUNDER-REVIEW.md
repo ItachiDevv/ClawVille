@@ -5,6 +5,20 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### Agent AI card: power your hosted agent with your own AI (session claw2.0, own AI part A, 2026-11-09, STAGING after the lead pushes)
+
+- **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in, on a phone AND an iPad (portrait and landscape) and on desktop. Open the wallet panel (wallet chip or sidebar Wallet) and find the "Agent AI" card.
+- **STEPS:**
+  1. Read the three choices: ClawVille AI, Your own key, UsePod.
+  2. Choose "Your own key", pick a provider, paste a key, press "Load models". Check that the recommended models show first.
+  3. Pick a model and a speed (25, 20, 15 or 10 s). Read the "about $X per day at this speed" line (estimated). Set a daily limit and press Save. Saving makes ONE tiny test call on your key (it counts against the daily limit; at most 6 such saves per 10 minutes).
+  4. Raise the daily limit: your linked wallet signs. Lower it: no signature.
+  5. Choose UsePod and press "Create a UsePod balance for my agent". The dashboard link and deposit code show. Fund it only on UsePod's own site, with your own money.
+  6. Turn on Autonomous and watch the status line (today's calls, estimated spend). Press "Use ClawVille AI" to go back.
+- **COST:** ClawVille moves no money. Your provider bills your own key for every decision (at 10 s that is up to 8,640 calls a day; the daily limit stops it, then the agent runs on ClawVille AI). Registering a UsePod token is free; a UsePod deposit is your money on UsePod.
+- **FEEDBACK WANTED:** (1) The UsePod dashboard link holds the UsePod token: anyone with the link can USE the balance (send AI calls that spend it), and losing the link means losing access. "Create a UsePod balance" and "Show my UsePod link" now each ask your linked wallet to sign first (a magic link passes through the agent); without a linked wallet the card says to link one or paste a token from your own UsePod account. Is that extra wallet step acceptable? A withdrawal is possible only where UsePod itself offers one; ClawVille does not claim it. Is the warning in the card strong enough? (2) Own-AI agents have their own cap, `MAX_OWN_AI_AGENTS`, default 12 at one time. Is 12 right? (3) Is the per-day estimate clear, and is "estimated" visible enough? (4) Are the privacy lines (UsePod GPU operators can read prompts; OpenRouter sends prompts to the model's host) clear? (5) Phone and iPad: does the card fit, scroll and keep 44 px targets?
+- **Session claw2.0, 2026-11-09.**
+
 ### Studios in the wallet panel: every feature for humans (session mcp-step3-signin, 2026-11-06, STAGING after the lead pushes)
 
 - **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in, with a linked wallet. Open the wallet panel (wallet chip or sidebar Wallet) and scroll to the Studios card. Each part is a section; tap its title to open it.

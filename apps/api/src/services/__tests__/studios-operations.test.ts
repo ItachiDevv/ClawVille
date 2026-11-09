@@ -215,10 +215,26 @@ describe('free menu cache', () => {
 });
 
 describe('result download and media type', () => {
-  it('only Studios hosts its results: artifact paths and https://mystudios.fun', () => {
+  it('only Studios hosts its results: artifact paths, https://mystudios.fun and its signed storage path', () => {
     expect(studiosDownloadUrl('/api/v1/media/artifacts/j/video.mp4')).toBe('https://mystudios.fun/api/v1/media/artifacts/j/video.mp4');
     expect(studiosDownloadUrl('https://mystudios.fun/x/y.mp4')).toBe('https://mystudios.fun/x/y.mp4');
-    for (const bad of ['//evil.example/x', '/api/v1/other', '/api/v1/media/artifacts/../../admin', 'https://evil.example/x.mp4', 'http://mystudios.fun/x', 'https://mystudios.fun:444/x', 'https://u@mystudios.fun/x', 'https://icnrwbdrfbyalifdshrs.supabase.co/x.mp4']) {
+    // Sign-in results (live 2026-11-09): signed links on Studios' own storage.
+    const signed = 'https://icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/sign/studio-artifacts/did:privy:abc/job-1/0.webp?token=t';
+    expect(studiosDownloadUrl(signed)).toBe(signed);
+    for (const bad of [
+      '//evil.example/x', '/api/v1/other', '/api/v1/media/artifacts/../../admin', 'https://evil.example/x.mp4', 'http://mystudios.fun/x',
+      'https://mystudios.fun:444/x', 'https://u@mystudios.fun/x', 'https://icnrwbdrfbyalifdshrs.supabase.co/x.mp4',
+      // Storage: another path, a path escape, another project, http, a port, user info.
+      'https://icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/public/other/x.webp',
+      'https://icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/sign/studio-artifacts/../../public/x.webp',
+      'https://icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/sign/studio-artifacts/%2e%2e/%2e%2e/public/x.webp',
+      'https://icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/sign/studio-artifacts/a%2F..%2F..%2Fpublic/x.webp',
+      'https://icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/sign/studio-artifacts/a%5c..%5cpublic/x.webp',
+      'https://other-project.supabase.co/storage/v1/object/sign/studio-artifacts/x.webp',
+      'http://icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/sign/studio-artifacts/x.webp',
+      'https://icnrwbdrfbyalifdshrs.supabase.co:8443/storage/v1/object/sign/studio-artifacts/x.webp',
+      'https://u@icnrwbdrfbyalifdshrs.supabase.co/storage/v1/object/sign/studio-artifacts/x.webp',
+    ]) {
       expect(studiosDownloadUrl(bad)).toBeNull();
     }
   });

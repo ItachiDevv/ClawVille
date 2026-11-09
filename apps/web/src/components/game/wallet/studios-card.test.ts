@@ -90,7 +90,7 @@ describe('keepsRequestKey', () => {
     for (const code of [
       'spend_rules_not_set', 'over_daily_cap', 'studios_account_refused', 'daily_limit', 'vendor_refused',
       // The rest of the server's not-charged set (studios-images.ts NOT_CHARGED_FAILURES).
-      'studios_key_changed', 'studios_signin_changed', 'signin_option_unsupported', 'operation_needs_studios_key',
+      'studios_key_changed', 'studios_signin_changed', 'studios_connection_limit', 'signin_option_unsupported', 'operation_needs_studios_key',
       'interrupted_not_paid', 'job_failed', 'media_quota_full', 'hosted_daily_cap',
     ]) {
       expect(keepsRequestKey(new ApiError(code, 403, code))).toBe(false);
@@ -145,7 +145,7 @@ describe('studiosErrorText', () => {
       'vendor_unreachable', 'vendor_refused', 'vendor_quote_invalid', 'vendor_pay_to_changed',
       'duplicate_request', 'payload_too_large', 'daily_limit', 'image_missing', 'studios_key_needs_wallet_link',
       'studios_key_needs_wallet_proof', 'studios_key_invalid_wallet_proof', 'some_new_code',
-      'studios_key_changed', 'studios_signin_changed', 'signin_option_unsupported', 'operation_needs_studios_key',
+      'studios_key_changed', 'studios_signin_changed', 'studios_connection_limit', 'signin_option_unsupported', 'operation_needs_studios_key',
       'interrupted_not_paid', 'job_failed', 'media_quota_full', 'hosted_daily_cap', 'invalid_request', 'request_not_found',
       'vendor_reply_unreadable', 'studios_signin_needs_wallet_link', 'studios_signin_needs_wallet_proof',
       'studios_signin_invalid_wallet_proof', 'studios_signin_human_only', 'studios_signin_needs_human_login',

@@ -249,21 +249,34 @@ export interface StudiosSigninAccountView {
   freeUsageLeft: number | null;
   /** US dollars THIS ClawVille connection may still spend today (set by the human on Studios); null when the reply did not say. */
   connectionSpendLeftUsd: number | null;
+  /** The daily limit the human set for THIS connection on Studios (US dollars); null when the reply did not say. */
+  connectionDailyLimitUsd: number | null;
+  /** US dollars THIS connection spent today on Studios; null when the reply did not say. */
+  connectionSpentTodayUsd: number | null;
   /** False when none of the fields could be read (the reply shape is not the one we expect). */
   readable: boolean;
 }
 
-/** Our fields from a get_account result. Field names are not verified live; unknown names give null. */
+/**
+ * Our fields from a get_account result. Live shape (2026-11-09):
+ * `{ balance_usd, connection: { daily_limit_usd, spent_today_usd, remaining_today_usd }, library_url }`.
+ * Unknown names give null.
+ */
 export function mapSigninAccount(payload: Record<string, unknown> | null): StudiosSigninAccountView {
   const p = payload ?? {};
+  const c = isPlainObject(p.connection) ? p.connection : {};
   const balanceUsd = firstNum(p, ['balance_usd', 'balance']);
   const freeUsageLeft = firstNum(p, ['free_usage_left', 'free_left_today', 'free_usage_left_today']);
-  const connectionSpendLeftUsd = firstNum(p, ['connection_spend_left_usd', 'app_spend_left_usd', 'spend_left_today_usd']);
+  const connectionSpendLeftUsd = firstNum(c, ['remaining_today_usd']);
+  const connectionDailyLimitUsd = firstNum(c, ['daily_limit_usd']);
+  const connectionSpentTodayUsd = firstNum(c, ['spent_today_usd']);
   return {
     balanceUsd,
     freeUsageLeft,
     connectionSpendLeftUsd,
-    readable: balanceUsd !== null || freeUsageLeft !== null || connectionSpendLeftUsd !== null,
+    connectionDailyLimitUsd,
+    connectionSpentTodayUsd,
+    readable: balanceUsd !== null || freeUsageLeft !== null || connectionSpendLeftUsd !== null || connectionDailyLimitUsd !== null,
   };
 }
 

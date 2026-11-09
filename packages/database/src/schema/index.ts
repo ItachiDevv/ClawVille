@@ -30,6 +30,8 @@ export * from './daily-reward-caps';
 export * from './user-spend-policies';
 export * from './vendor-spend-ledger';
 export * from './ecosystem-read-usage';
+// Own AI for hosted agents (MCP hub step 4 part A, 2026-11-09). Migration 0099.
+export * from './agent-ai';
 export * from './avatar-media';
 export * from './vendor-oauth';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner

@@ -17,6 +17,15 @@ export {
 export { characterRoomId, CHARACTER_ROOM_NAMESPACE } from './room-scoping';
 export { createOpenClawProviderPlugin } from './plugins/openclaw-provider';
 export type { OpenClawGatewayConfig } from './plugins/openclaw-provider';
+// Own AI (2026-11-09) — the human's own key / UsePod token at priority 98.
+export { createOwnAiProviderPlugin } from './plugins/own-ai-provider';
+export type {
+  OwnAiProviderConfig,
+  OwnAiFallbackHandler,
+  OwnAiPluginFallbackReason,
+  OwnAiCallEstimate,
+  OwnAiReservation,
+} from './plugins/own-ai-provider';
 export { loadLocationTemplate, loadCharacter, mergeCustomizations } from './character-loader';
 
 // Character exporter (Phase 3 — "take my agent home" bundle builder)

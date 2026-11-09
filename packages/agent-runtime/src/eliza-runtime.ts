@@ -23,6 +23,11 @@ import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createOpenAIEmbeddingPlugin } from './plugins/openai-embedding-provider';
 import { createOpenAITextPlugin } from './plugins/openai-text-provider';
+import {
+  createOwnAiProviderPlugin,
+  type OwnAiFallbackHandler,
+  type OwnAiProviderConfig,
+} from './plugins/own-ai-provider';
 import type { InferenceRoute } from './inference/inference-router';
 import { embedText } from './plugins/embed-text';
 import { clawvillePlugin } from './plugins/clawville-plugin';
@@ -166,6 +171,15 @@ export interface ElizaRuntimeConfig {
    * `openclawGateway` is set (that path wins at priority 100).
    */
   inferenceRoute?: InferenceRoute;
+  /**
+   * Own AI (2026-11-09): the human's own key or UsePod token powers THIS
+   * runtime's TEXT_SMALL/TEXT_LARGE at priority 98 (between the OpenClaw gateway
+   * 100 and the router 95). Each call the own AI cannot serve (daily limit, key
+   * rejected, empty balance, model unavailable, timeout/5xx/network) is answered
+   * by the router text handler. Ignored (logged once, never thrown) when
+   * `openclawGateway` is also set: the gateway wins. Embeddings stay platform.
+   */
+  ownAi?: OwnAiProviderConfig;
   databaseUrl?: string;
   apiKeys?: {
     /** OpenAI API key — the sole backend for TEXT_SMALL/TEXT_LARGE generation and embeddings. */
@@ -599,7 +613,7 @@ export class ElizaRuntime {
     // plugin-solana is a legacy dep that was never installed — removed.
     // plugin-anthropic + ultrathink-provider removed. Both text generation AND
     // embeddings go through OpenAI — the sole non-OpenClaw backend.
-    // Text generation priority chain: OpenClaw(100) > OpenAI(95).
+    // Text generation priority chain: OpenClaw(100) > own AI(98) > OpenAI(95).
     const pluginMap: Record<string, string> = {
       '@elizaos/plugin-sql': 'sqlPlugin',
     };
@@ -647,6 +661,26 @@ export class ElizaRuntime {
       const openclawPlugin = createOpenClawProviderPlugin(this.config.openclawGateway);
       this.loadedPlugins.unshift(openclawPlugin as Plugin);
       console.log(`[ElizaRuntime] Loaded OpenClaw provider plugin (gateway: ${this.config.openclawGateway.gatewayUrl})`);
+      if (this.config.ownAi) {
+        // Never throw here (a throw kills the agent at warm): the gateway wins.
+        console.warn('[ElizaRuntime] ownAi ignored: an OpenClaw gateway is set for this agent (gateway wins)');
+      }
+    } else if (this.config.ownAi) {
+      // Own AI (priority 98). The fallback is the router handler CAPTURED from
+      // the plugin built above: calling it directly answers one call on
+      // ClawVille AI. `runtime.useModel` would pick priority 98 again (a loop).
+      const routerSmall = openaiTextPlugin.models?.[ModelType.TEXT_SMALL] as OwnAiFallbackHandler | undefined;
+      const routerLarge = openaiTextPlugin.models?.[ModelType.TEXT_LARGE] as OwnAiFallbackHandler | undefined;
+      if (routerSmall) {
+        const ownAiPlugin = createOwnAiProviderPlugin(this.config.ownAi, routerSmall, routerLarge);
+        this.loadedPlugins.unshift(ownAiPlugin as Plugin);
+        // Never log baseUrl (a UsePod base URL contains the token) or the key.
+        console.log(
+          `[ElizaRuntime] Loaded own-AI provider (protocol=${this.config.ownAi.protocol}, model=${this.config.ownAi.model}, priority 98)`,
+        );
+      } else {
+        console.warn('[ElizaRuntime] ownAi skipped: router text handler missing (ClawVille AI only)');
+      }
     }
   }
 

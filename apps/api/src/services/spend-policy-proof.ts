@@ -273,6 +273,91 @@ export function verifyMediaDeleteProof(input: {
     buildMediaDeleteMessage(input.userId, input.avatarId, input.mediaId, input.nonce));
 }
 
+/**
+ * Raising the daily limit of the agent's own AI (MCP hub step 4, founder
+ * 2026-11-08 decision 6): saving a key needs only the human login, but a
+ * HIGHER daily limit lets the agent spend more of the owner's AI money, so the
+ * linked wallet signs it. The first line names the purpose, so a spend-rules,
+ * key or approval signature can never be replayed here. The message names the
+ * account, the avatar and the exact new limit.
+ */
+export function buildOwnAiLimitMessage(userId: string, avatarId: string, dailyLimitCents: number, nonce: string): string {
+  return [
+    'ClawVille agent AI daily limit',
+    `account: ${userId}`,
+    `avatar: ${avatarId}`,
+    `daily limit: ${usd(dailyLimitCents)}`,
+    `nonce: ${nonce}`,
+  ].join('\n');
+}
+
+export function issueOwnAiLimitChallenge(userId: string, avatarId: string, dailyLimitCents: number): SpendProofChallenge {
+  const nonce = bs58.encode(randomBytes(32));
+  const message = buildOwnAiLimitMessage(userId, avatarId, dailyLimitCents, nonce);
+  const expiresAtMs = Date.now() + NONCE_TTL_MS;
+  nonces.set(nonce, { userId, message, expiresAt: expiresAtMs });
+  return { nonce, expiresAt: new Date(expiresAtMs).toISOString(), messageToSign: message };
+}
+
+/** Consume the nonce and verify the linked wallet signed THIS limit for THIS user and avatar. */
+export function verifyOwnAiLimitProof(input: {
+  userId: string;
+  avatarId: string;
+  dailyLimitCents: number;
+  nonce: string;
+  signature: string;
+  walletPubkey: string;
+}): SpendProofResult {
+  return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
+    buildOwnAiLimitMessage(input.userId, input.avatarId, input.dailyLimitCents, input.nonce));
+}
+
+/**
+ * The UsePod token of the agent (own AI part A). ClawVille registers a UsePod
+ * token for the agent; the UsePod dashboard link CONTAINS that token and
+ * controls the funded balance. A magic_link session is not proof of a human
+ * (the link passes through the agent), so registering a token and showing the
+ * link both need the linked wallet's signature. Each action has its OWN first
+ * line, so no other signature (spend rules, own-AI limit, the other UsePod
+ * action) can be replayed here.
+ */
+export type UsepodProofAction = 'register' | 'link';
+
+const USEPOD_PURPOSE: Record<UsepodProofAction, string> = {
+  register: 'ClawVille UsePod register',
+  link: 'ClawVille UsePod link',
+};
+
+export function buildUsepodMessage(action: UsepodProofAction, userId: string, avatarId: string, nonce: string): string {
+  return [
+    USEPOD_PURPOSE[action],
+    `account: ${userId}`,
+    `avatar: ${avatarId}`,
+    `nonce: ${nonce}`,
+  ].join('\n');
+}
+
+export function issueUsepodChallenge(action: UsepodProofAction, userId: string, avatarId: string): SpendProofChallenge {
+  const nonce = bs58.encode(randomBytes(32));
+  const message = buildUsepodMessage(action, userId, avatarId, nonce);
+  const expiresAtMs = Date.now() + NONCE_TTL_MS;
+  nonces.set(nonce, { userId, message, expiresAt: expiresAtMs });
+  return { nonce, expiresAt: new Date(expiresAtMs).toISOString(), messageToSign: message };
+}
+
+/** Consume the nonce and verify the linked wallet signed THIS UsePod action for THIS user and avatar. */
+export function verifyUsepodProof(input: {
+  action: UsepodProofAction;
+  userId: string;
+  avatarId: string;
+  nonce: string;
+  signature: string;
+  walletPubkey: string;
+}): SpendProofResult {
+  return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
+    buildUsepodMessage(input.action, input.userId, input.avatarId, input.nonce));
+}
+
 function verifyMessage(userId: string, nonce: string, signature: string, walletPubkey: string, expected: string): SpendProofResult {
   const entry = nonces.get(nonce);
   if (!entry) return 'invalid_challenge';

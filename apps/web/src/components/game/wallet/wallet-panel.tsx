@@ -52,6 +52,7 @@ import { useWalletBalances } from '@/hooks/use-wallet-balances';
 import { SpendingCard } from './spending-card';
 import { StudiosCard } from './studios-card';
 import { TokenCheckCard } from './token-check-card';
+import { AgentAiCard } from './agent-ai-card';
 import { ApprovalsCard } from './approvals-card';
 import { useGameStore } from '@/stores/game';
 import { claimQuestsAfterStep } from '@/stores/quest';
@@ -96,6 +97,7 @@ export function WalletPanel({ variant = 'section' }: { variant?: 'section' | 'mo
       <ApprovalsCard />
       <StudiosCard />
       <TokenCheckCard />
+      <AgentAiCard />
       <LinkedWalletCard />
     </div>
   );

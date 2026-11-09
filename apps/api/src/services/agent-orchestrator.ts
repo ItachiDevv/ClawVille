@@ -4,11 +4,169 @@ import {
   ElizaRuntime,
   createElizaRuntime,
   resolveInferenceRoute,
+  type OwnAiCallEstimate,
+  type OwnAiPluginFallbackReason,
+  type OwnAiProviderConfig,
+  type OwnAiReservation,
 } from '@clawville/agent-runtime';
 import type { AgentStatus } from '@clawville/shared';
 // P3 slice 6 (surface #3): the public, token-free connection protocol manual +
 // its single-source version, injected into hosted PLAYER runtimes on start.
 import { buildProtocolManual, resolveApiBase, PROTOCOL_VERSION } from './skill-protocol';
+// Own AI (2026-11-09): the human's own key / UsePod token for a user-owned avatar's agent.
+import {
+  loadOwnAiRuntimeConfig,
+  ownAiActiveNow,
+  ownAiMayCall,
+  recordOwnAiUsage,
+  recordOwnAiFallback,
+  releaseOwnAiReservation,
+  onOwnAiSettingsChanged,
+  type OwnAiRuntimeConfig,
+} from './own-ai';
+
+/** Budget-gate timeout. A slow gate fails CLOSED (ClawVille AI answers that call). */
+export const OWN_AI_GATE_TIMEOUT_MS = 2_000;
+/** Config-load timeout at runtime start. A slow load starts the agent on ClawVille AI. */
+export const OWN_AI_LOAD_TIMEOUT_MS = 5_000;
+/** OpenRouter app attribution headers (public values, no secret). */
+const OPENROUTER_EXTRA_HEADERS: Record<string, string> = {
+  'HTTP-Referer': 'https://clawville.world',
+  'X-Title': 'ClawVille',
+};
+
+/**
+ * In-memory own-AI state of ONE running runtime. `fallbackReason` is the last
+ * reason the plugin fell back (null = the last own-AI call worked). It is set by
+ * onFallback and cleared by a successful onUsage, so the driver's speed check is
+ * a Map read, not a DB read.
+ */
+export interface OwnAiLiveState {
+  avatarId: string;
+  speedSeconds: number;
+  timeoutMs: number;
+  fallbackReason: OwnAiPluginFallbackReason | null;
+  /** The last gate miss was a timeout/error (not the daily limit). */
+  gateFailure: boolean;
+}
+
+export interface OwnAiServiceDeps {
+  /** Reserves the call's worst-case cost (priced with `model`); null = no room under the limit. */
+  mayCall: (avatarId: string, model: string, estimate: OwnAiCallEstimate) => Promise<OwnAiReservation | null>;
+  /** Settles a reservation with the real usage (one atomic upsert). */
+  recordUsage: (
+    avatarId: string,
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    reservation: OwnAiReservation,
+  ) => Promise<void>;
+  /** Gives back the reservation of a call that spent nothing. */
+  release: (avatarId: string, reservation: OwnAiReservation) => Promise<void>;
+  recordFallback: (avatarId: string, reason: OwnAiPluginFallbackReason) => Promise<void>;
+}
+
+const defaultOwnAiDeps: OwnAiServiceDeps = {
+  mayCall: (avatarId, model, estimate) => ownAiMayCall(avatarId, model, estimate),
+  recordUsage: (avatarId, model, i, o, reservation) => recordOwnAiUsage(avatarId, model, i, o, reservation),
+  release: (avatarId, reservation) => releaseOwnAiReservation(avatarId, reservation),
+  recordFallback: (avatarId, reason) => recordOwnAiFallback(avatarId, reason),
+};
+
+function errorCode(err: unknown): string {
+  // Never log an error MESSAGE here: a provider or crypto error can echo a key.
+  if (err && typeof err === 'object' && typeof (err as { code?: unknown }).code === 'string') {
+    return (err as { code: string }).code;
+  }
+  return err instanceof Error ? err.name : 'unknown';
+}
+
+/**
+ * Builds the `ownAi` runtime config: the decrypted key in memory plus the
+ * callbacks bound to the own-ai service.
+ *  - mayCall: reserves the call's worst-case cost (priced with the configured
+ *    model), awaited with a 2 s timeout; timeout or error -> null (fail CLOSED).
+ *    A reservation that lands after the timeout is released at once.
+ *  - onUsage: fire-and-forget settlement of the reservation (errors logged by
+ *    code); clears the fallback.
+ *  - onRelease: fire-and-forget release of the reservation of a failed call.
+ *  - onFallback: sets the in-memory reason. 'daily_limit' after a REAL limit is
+ *    persisted by ownAiMayCall (only when the spent estimate has no room); after a gate timeout/error it is kept in
+ *    memory as 'provider_error' and not persisted. Other reasons persist only
+ *    when the reason changes (no DB write per call while a key stays rejected).
+ */
+export function buildOwnAiPluginConfig(
+  cfg: OwnAiRuntimeConfig,
+  state: OwnAiLiveState,
+  deps: OwnAiServiceDeps = defaultOwnAiDeps,
+  gateTimeoutMs: number = OWN_AI_GATE_TIMEOUT_MS,
+): OwnAiProviderConfig {
+  const avatarId = cfg.avatarId;
+  return {
+    protocol: cfg.protocol,
+    baseUrl: cfg.baseUrl,
+    apiKey: cfg.apiKey,
+    model: cfg.model,
+    maxTokensFloor: cfg.maxTokensFloor,
+    timeoutMs: cfg.timeoutMs,
+    reasoning: cfg.reasoning,
+    extraHeaders: cfg.provider === 'openrouter' ? { ...OPENROUTER_EXTRA_HEADERS } : undefined,
+    mayCall: async (estimate) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      // A synchronous throw becomes a rejection (caught below, fail closed).
+      const gate = Promise.resolve().then(() => deps.mayCall(avatarId, cfg.model, estimate));
+      try {
+        const timeout = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), gateTimeoutMs);
+        });
+        const verdict = await Promise.race([gate, timeout]);
+        if (verdict === 'timeout') {
+          state.gateFailure = true;
+          console.warn(`[Orchestrator] own_ai_gate_timeout avatar=${avatarId}`);
+          // The call goes to ClawVille AI: a reservation that lands late is given back.
+          void gate.then(
+            (late) => (late ? deps.release(avatarId, late) : undefined),
+            () => undefined,
+          ).catch((err) => {
+            console.warn(`[Orchestrator] own_ai_release_failed avatar=${avatarId} code=${errorCode(err)}`);
+          });
+          return null;
+        }
+        state.gateFailure = false;
+        return verdict ?? null;
+      } catch (err) {
+        state.gateFailure = true;
+        console.warn(`[Orchestrator] own_ai_gate_failed avatar=${avatarId} code=${errorCode(err)}`);
+        return null;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    },
+    onUsage: (u, reservation) => {
+      state.fallbackReason = null;
+      void deps.recordUsage(avatarId, u.model, u.inputTokens, u.outputTokens, reservation).catch((err) => {
+        console.warn(`[Orchestrator] own_ai_usage_record_failed avatar=${avatarId} code=${errorCode(err)}`);
+      });
+    },
+    onRelease: (reservation) => {
+      void deps.release(avatarId, reservation).catch((err) => {
+        console.warn(`[Orchestrator] own_ai_release_failed avatar=${avatarId} code=${errorCode(err)}`);
+      });
+    },
+    onFallback: (reason) => {
+      if (reason === 'daily_limit') {
+        state.fallbackReason = state.gateFailure ? 'provider_error' : 'daily_limit';
+        return;
+      }
+      const changed = state.fallbackReason !== reason;
+      state.fallbackReason = reason;
+      if (!changed) return;
+      void deps.recordFallback(avatarId, reason).catch((err) => {
+        console.warn(`[Orchestrator] own_ai_fallback_record_failed avatar=${avatarId} code=${errorCode(err)}`);
+      });
+    },
+  };
+}
 
 interface RunningAgent {
   runtime: ElizaRuntime;
@@ -34,6 +192,10 @@ interface RunningAgent {
    * lifecycles stay distinct.
    */
   isHouse?: boolean;
+  /** Own AI: the user-owned avatar this runtime plays (set for hosted-user runtimes). */
+  avatarId?: string;
+  /** Own AI: present when the runtime runs on the human's own AI. */
+  ownAi?: OwnAiLiveState;
 }
 
 const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -42,12 +204,103 @@ class AgentOrchestrator {
   private runningAgents: Map<string, RunningAgent> = new Map();
   private inactivityCheckInterval: ReturnType<typeof setInterval> | null = null;
   private recoveryInProgress: Set<string> = new Set();
+  /**
+   * Own AI: settings generation per avatar. Bumped on every settings change. A
+   * start that read generation N and finishes after a change stops itself, so a
+   * runtime never keeps settings older than the last save.
+   */
+  private ownAiSettingsGen: Map<string, number> = new Map();
 
   constructor() {
     // Check for inactive agents every 5 minutes
     this.inactivityCheckInterval = setInterval(() => {
       this.stopInactiveAgents().catch(console.error);
     }, 5 * 60 * 1000);
+    // Own AI: a settings change stops that avatar's running runtime; the next
+    // use (chat or the autonomy driver) re-warms it with the new settings.
+    try {
+      onOwnAiSettingsChanged((avatarId) => {
+        void this.handleOwnAiSettingsChanged(avatarId);
+      });
+    } catch (err) {
+      console.warn(`[Orchestrator] own_ai_subscribe_failed code=${errorCode(err)}`);
+    }
+  }
+
+  /** Own AI: stop every running runtime of this avatar (fail-soft). */
+  async handleOwnAiSettingsChanged(avatarId: string): Promise<void> {
+    this.ownAiSettingsGen.set(avatarId, (this.ownAiSettingsGen.get(avatarId) ?? 0) + 1);
+    for (const [agentId, ra] of this.runningAgents) {
+      if (ra.avatarId !== avatarId) continue;
+      try {
+        console.log(`[Orchestrator] own AI settings changed for avatar ${avatarId}; stopping agent ${agentId} to re-warm`);
+        await this.stopAgent(agentId);
+      } catch (err) {
+        console.warn(`[Orchestrator] own_ai_restart_failed agent=${agentId} code=${errorCode(err)}`);
+      }
+    }
+  }
+
+  /**
+   * Own AI: the avatar a USER-OWNED hosted runtime plays, or null. Only called
+   * for route 'hosted-user' (never a teacher, system or house runtime). The
+   * avatar must point at this platform agent AND belong to the agent's owner,
+   * and the owner must have no house bot (belt and braces next to the route).
+   */
+  private async resolveUserOwnedAvatarId(agentId: string, userId: string): Promise<string | null> {
+    const rows = await db
+      .select({ id: avatars.id })
+      .from(avatars)
+      .where(and(eq(avatars.platformAgentId, agentId), eq(avatars.userId, userId)))
+      .limit(1);
+    const avatarId = rows[0]?.id;
+    if (!avatarId) return null;
+    const house = await db
+      .select({ id: agentBots.id })
+      .from(agentBots)
+      .where(and(eq(agentBots.userId, userId), eq(agentBots.isHouse, true)))
+      .limit(1);
+    return house.length > 0 ? null : avatarId;
+  }
+
+  /**
+   * Own AI: load the runtime config for a user-owned avatar. Any failure or a
+   * slow load (> 5 s) returns null: the agent starts on ClawVille AI.
+   */
+  private async loadOwnAiForStart(agentId: string, avatarId: string): Promise<OwnAiRuntimeConfig | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), OWN_AI_LOAD_TIMEOUT_MS);
+      });
+      const result = await Promise.race([loadOwnAiRuntimeConfig(avatarId), timeout]);
+      if (result === 'timeout') {
+        console.warn(`[Orchestrator] own_ai_load_timeout agent=${agentId}; running on ClawVille AI`);
+        return null;
+      }
+      return result;
+    } catch (err) {
+      console.warn(`[Orchestrator] own_ai_load_failed agent=${agentId} code=${errorCode(err)}; running on ClawVille AI`);
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Own AI: seconds between decisions for the autonomy driver. null = the agent
+   * runs on ClawVille AI now (no own AI, or the last own-AI call fell back).
+   * A Map read; does not bump lastActivity.
+   */
+  getOwnAiSpeedSeconds(agentId: string): number | null {
+    const own = this.runningAgents.get(agentId)?.ownAi;
+    return own && own.fallbackReason === null ? own.speedSeconds : null;
+  }
+
+  /** Own AI: the own-AI call timeout (ms) for the driver's decide budget; null as above. */
+  getOwnAiTimeoutMs(agentId: string): number | null {
+    const own = this.runningAgents.get(agentId)?.ownAi;
+    return own && own.fallbackReason === null ? own.timeoutMs : null;
   }
 
   /**
@@ -176,6 +429,52 @@ class AgentOrchestrator {
           }
         : undefined;
 
+      // Own AI — ONLY for a user-owned avatar's hosted runtime (route
+      // 'hosted-user' excludes teachers, Nori/system agents and the house
+      // fleet) and never next to an OpenClaw gateway (the gateway wins). A
+      // load failure never stops the agent: it runs on ClawVille AI.
+      let avatarId: string | undefined;
+      let ownAiState: OwnAiLiveState | undefined;
+      let ownAi: OwnAiProviderConfig | undefined;
+      let ownAiGenAtStart = 0;
+      if (inferenceRoute === 'hosted-user' && !openclawGateway) {
+        try {
+          avatarId = (await this.resolveUserOwnedAvatarId(agentId, userId)) ?? undefined;
+        } catch (err) {
+          console.warn(`[Orchestrator] own_ai_avatar_lookup_failed agent=${agentId} code=${errorCode(err)}`);
+        }
+        if (avatarId) {
+          ownAiGenAtStart = this.ownAiSettingsGen.get(avatarId) ?? 0;
+          const cfg = await this.loadOwnAiForStart(agentId, avatarId);
+          if (cfg) {
+            // A sticky fallback already makes cfg null. Today's daily limit
+            // does not, so seed the in-memory state from the DB: the driver
+            // must not run the fast lane on ClawVille AI. A failed (> 5 s) read seeds 'daily_limit' too (house spacing);
+            // the first working own-AI call clears it (onUsage).
+            let activeTimer: ReturnType<typeof setTimeout> | undefined;
+            const activeNow = await Promise.race([
+              ownAiActiveNow(avatarId),
+              new Promise<'clawville'>((resolve) => {
+                activeTimer = setTimeout(() => resolve('clawville'), OWN_AI_LOAD_TIMEOUT_MS);
+              }),
+            ]).catch((err: unknown) => {
+              console.warn(`[Orchestrator] own_ai_active_read_failed agent=${agentId} code=${errorCode(err)}`);
+              return 'clawville' as const;
+            }).finally(() => {
+              if (activeTimer) clearTimeout(activeTimer);
+            });
+            ownAiState = {
+              avatarId,
+              speedSeconds: cfg.speedSeconds,
+              timeoutMs: cfg.timeoutMs,
+              fallbackReason: activeNow === 'own' ? null : 'daily_limit',
+              gateFailure: false,
+            };
+            ownAi = buildOwnAiPluginConfig(cfg, ownAiState);
+          }
+        }
+      }
+
       const runtime: ElizaRuntime = createElizaRuntime({
         agentId,
         agentType,
@@ -197,6 +496,7 @@ class AgentOrchestrator {
         agentConfig: (agent.config as Record<string, unknown>) ?? {},
         openclawGateway,
         inferenceRoute,
+        ownAi,
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
           // OpenAI backs BOTH text generation (openai-text-provider) and
@@ -220,6 +520,8 @@ class AgentOrchestrator {
         heartbeatIntervalId,
         type: agent.type ?? undefined,
         isHouse: opts?.isHouse ?? false,
+        avatarId,
+        ownAi: ownAiState,
       });
 
       // P3 slice 6 (surface #3): inject the connection protocol manual into a
@@ -243,6 +545,13 @@ class AgentOrchestrator {
 
       await this.updateAgentStatus(agentId, 'running');
       console.log(`[Orchestrator] Agent ${agentId} started`);
+
+      // Own AI: the settings changed while this runtime was starting -> stop it
+      // so the next use re-warms with the new settings.
+      if (avatarId && (this.ownAiSettingsGen.get(avatarId) ?? 0) !== ownAiGenAtStart) {
+        console.log(`[Orchestrator] own AI settings changed during start of ${agentId}; stopping to re-warm`);
+        await this.stopAgent(agentId);
+      }
     } catch (error) {
       await this.updateAgentStatus(agentId, 'error');
       throw error;

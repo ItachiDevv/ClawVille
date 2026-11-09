@@ -180,6 +180,7 @@ import { walletLinkRoutes } from './routes/wallet-link';
 // the flag is unset, so this static import is dark-safe.
 import { walletWithdrawRoutes } from './routes/wallet-withdraw';
 import { spendPolicyRoutes } from './routes/spend-policy';
+import { agentAiRoutes } from './routes/agent-ai';
 import { tradingFloorRoutes } from './routes/trading-floor';
 import { adminTradingRoutes } from './routes/admin-trading';
 import { floorArenaRoutes } from './routes/floor-arena';
@@ -556,6 +557,9 @@ app.route('/api/wallet/link', walletLinkRoutes);
 // the avatar's agent, PUT for the human owner only. Mounted before the generic
 // /api/wallet routes.
 app.route('/api/wallet/spend-policy', spendPolicyRoutes);
+// The AI that powers a hosted agent (MCP hub step 4, own AI part A): GET for
+// the human or the avatar's agent; every write for the human owner only.
+app.route('/api/agent-ai', agentAiRoutes);
 app.route('/api/wallet', walletWithdrawRoutes);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
