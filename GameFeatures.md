@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-09 06:32Z (own AI part A, Codex blocker fixes: "Create a UsePod balance" and "Show my UsePod link" need the linked-wallet signature; the daily limit reserves each call before it runs; only an agent holding an own-lane slot gets the fast speed.)** Drift note: §2 said the UsePod link needs only the login and §1f gave the fast speed to every own-AI agent, also one kept in the normal lane.
+**Last Audited: 2026-11-09 10:21Z (agent connection: an agent POST through MCP to the Studios and agent AI routes no longer answers 500.)** Drift note: §2 agents call Studios images, video, characters and recasts through MCP (`clawville_call` or the `clawville_studios_*` tools); on staging every such call answered 500, because the route body limit re-read a request body that the JSON body guard had already read (the MCP sub-request sends no Content-Length). The body limit now measures the body the guard read; the call reaches the normal Studios checks again. No rule, cap or price changed.
+
+Prior **Last Audited: 2026-11-09 06:32Z (own AI part A, Codex blocker fixes: "Create a UsePod balance" and "Show my UsePod link" need the linked-wallet signature; the daily limit reserves each call before it runs; only an agent holding an own-lane slot gets the fast speed.)** Drift note: §2 said the UsePod link needs only the login and §1f gave the fast speed to every own-AI agent, also one kept in the normal lane.
 
 Prior **Last Audited: 2026-11-09 05:26Z (agent connection: own AI part A, protocol 119, migration 0099: the wallet panel "Agent AI" card lets the human power their hosted agent with their own AI key or a UsePod balance; the agent reads its AI status.)** Drift note: §2 and §1f said every hosted user agent runs on ClawVille AI at one shared decide spacing under `MAX_AUTONOMOUS_USER_AGENTS`; an own-AI agent now uses its human's AI, its own speed and its own cap `MAX_OWN_AI_AGENTS`.
 
