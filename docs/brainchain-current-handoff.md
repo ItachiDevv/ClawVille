@@ -16,7 +16,8 @@ OpenAI and OpenRouter each have a separate cumulative10USDcap. Both spent0/reser
 Stable budget job2482562a-c3fd-4684-b3a8-963224c4f479. No signed root genesis, persistent protected store, paid reservation/trial or owned live hire exists.
 
 Worktree C:/Users/itachi/Documents/Crypto/ClawVille/.worktrees/brainchain-plan; branch docs/brainchain-plan.
-Current HEAD710fd1ea5e78f683b37d053a832add4b39a7d26c. Root owns index; current new ledger/runtime work remains uncommitted.
+Latest source checkpoint710fd1ea5e78f683b37d053a832add4b39a7d26c; documentation checkpoint6ed779c60 follows. Recheck HEAD before release.
+Root owns index; current new ledger/runtime work remains uncommitted.
 Root orchestrates/reviews/tests/docs/commits. Workers own source. Actual Claude owns final3Dcommit/push.
 Four active slots include root. Preserve unrelated root checkout/worktrees. No broad staging/reset/clean; no bun run dev; no memory writes.
 Host itachi222 uses C:/Users/itachi. Laptop hoodie-prometh uses ssh -n laptop and C:/Users/newma. Never print secrets.
@@ -65,11 +66,34 @@ Cleanup: durable paid stop -> autonomy/runtime stop -> disconnect/absence verifi
 Protocol IDs bind trusted run/startOrdinal/version/section; installer IDs bind run/curriculumhash/section. New query/memory invocation IDs have no automatic uncertainty retries.
 Preserve injectable scope dependencies so ordinary installer/hosted-knowledge unit tests do not require a realDB.
 
-### identity_audit: bootstrap pre-read
+### identity_audit: bootstrap scoped review passed; CI owner
 
-Owns docs/brainchain-probe-bootstrap-review.md. Constraints already sent. Frozen implementation review remains pending.
+Owns docs/brainchain-probe-bootstrap-review.md. Frozen bootstrap implementation passed scoped independent review.
+Independent55440 evidence:bootstrap6/31,envelope5/23,ledger10/63,additionaladversarial3/11. All seven frozen hashes match.
+Protected Linux file checks passed1/7. This verdict excludes runtime integration and live provisioning.
 Also retains CI/bootstrap ownership for later lanes. Current CI registers19migrations/24PGsuites, including0118/probe-budget.
 No active CI command at last report. Do not run full pure/runtime lanes before fitfreeze.
+
+### runtime_audit: independent runtime review active
+
+Owns docs/brainchain-probe-runtime-final-review.md and ignored independent probes. Reads actual Eliza initialization, scoped providers, API/action guards and cleanup.
+Fit still owns implementation. Final runtime verdict requires source freeze; no live provider calls or credentials are permitted.
+Runtime auditor found R1: an approved plugin init rejection leaves the boundary active. A later useModel reaches controlled embedExact once.
+Root independently reproduced R1 with bun test ./.brainchain-work/runtime-independent-review.test.ts. Current3-test draft reports1pass2fail.
+The second failure involves core service-registration rejection in the retained-callback test; reviewer must separate fixture cleanup from boundary behavior.
+Fit owns plugin/start failure and timeout latch correction. Final review remains withheld; no paid request occurred.
+R1 correction now passes root's original independent probe3/6. Reviewer corrected core teardown order in its retained-callback fixture without suppressing failures.
+Reviewer additionally found stop-boundary, internal action and gateway/disposal ordering gaps. Fit owns corrections and regressions.
+Required /api/avatars/me/directive still reaches ordinary moderation; expert and gateway teacher paths also need marked-fixture controls.
+Root approved narrow fit edits to routes/agent-v2.ts,avatars.ts,agent-gateway.ts. Exact trusted probe directive only; ordinary moderation remains unchanged.
+Reviewer assesses a finite canonical marker allowlist boundary. No arbitrary directive bypass, live provider call, or source freeze is approved.
+Actual probe founderChat uses /api/avatars/me/chat; this route also needs exact trusted text handling before ordinary moderation.
+Root approved narrow shared assertProbeHttpOperation checks after existing canonical resolution in middleware/auth.ts,require-auth-or-agent.ts,and gateway resolveSession.
+Allowed operations must enumerate actual probe writes/bodies and diagnostic reads. Preserve auth precedence, restoration behavior, stop/disconnect proofs and ordinary callers.
+Do not add global session restoration or claim containment for anonymous requests that omit fixture identity. Fit reads Hatcher mandate5 and coordinates the concrete allowlist with reviewer.
+Root independently repeated expanded runtime probes6/16: init failure, wrapper stop, internal action refusal, unknown model, retained callback and ordinary-core isolation passed.
+CI owner classified bootstrap and cleanup into PostgreSQL, scope through isolated pure discovery, and actual-core runtime through explicit pure entry. PG inventory now26suites.
+No combined lane ran before final source freeze. Runtime review still awaits the attributed HTTP checks and cleanup/attach final evidence.
 
 ### durable_audit: terminal, available for changed ledger review
 
@@ -98,6 +122,20 @@ Six-file freeze manifest .brainchain-work/probe-budget-freeze.json is historical
 Owner actual-core/localgateway6/17passed; root independently repeated6/17.
 Owner ordinary installer+hostedknowledge26/62passed. Runtime strict typecheck passed; latest owner APIstrict check passed after runtime build.
 No final runtime freeze/independent integrated approval exists. Current edits can invalidate those intermediate typechecks.
+Root independently ran current bootstrap5tests28assertions, including exact realbuilder hashes and precredential refusal. No actual protected file/key/provider was used.
+Backend reports envelope expectedID5/23and ledger10/63; strict APItypecheck5769was active at report. Recheck owner result.
+Backend subsequently froze seven paths in .brainchain-work/probe-bootstrap-freeze.json. Canonical bootstrap tests passed6/31; APItypecheck43608 exited0.
+Identity reviewer passed the frozen canonical identity and replay scope on55440. Runtime approval remains separate.
+Independent Linux protected-reader checks passed1/7, covering private files and unsafe path/ownership refusal.
+Root repeated current actual-core runtime tests:8tests25assertions passed. Fit still owns cleanup/route tests and final runtime freeze.
+Root found action-marker lookup omitted its accepted platformAgentId input. Fit received this draft finding for correction and regression coverage.
+Fit corrected platform-only marker lookup. Root independently passed updated scope tests3/12, including exact workers action and mixed-action refusal.
+Root corrected stale design wording to platform_agents/avatar binding and SHA256(buildBrainchainOfficeManual()).
+Identity reviewer now inspects authored bootstrap and prepares actualLinux/PGchecks; final bootstrap source freeze remains pending.
+Reviewer found bootstrap used synthetic agents table and lacked avatars.platform_agent_id equality. Canonical tables are platform_agents and avatars.platform_agent_id.
+The preceding bootstrap5/28result therefore does not prove canonical identity binding. Backend corrects query and fixture; final review remains open.
+Fit authored protected prepare/attach without execution. Stop-only cleanup SQL is allowed with exact run/manifest/identity, bounded orderedlocks and checked affected state.
+Such cleanup never releases reserved/uncertain liability; root later uses budget.stop/reconciliation. Runtime/disconnect absence must precede live identity deletion.
 
 ## CI and local fixture infrastructure
 
