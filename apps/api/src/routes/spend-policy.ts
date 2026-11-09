@@ -61,7 +61,7 @@ const GATE: HumanGateCopy = {
 const NEEDS_WALLET_LINK = {
   error: 'spend_policy_needs_wallet_link',
   code: 'spend_policy_needs_wallet_link',
-  message: 'Link your own wallet first. Your linked wallet must approve higher caps.',
+  message: 'Link your own wallet first. Your linked wallet must approve higher caps, and it signs each payment you approve.',
 } as const;
 
 async function activeAvatarId(userId: string): Promise<string> {

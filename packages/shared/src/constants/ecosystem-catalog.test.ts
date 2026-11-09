@@ -27,14 +27,36 @@ describe('ECOSYSTEM_CATALOG', () => {
     const served = servedEcosystemCatalog(API_BASE);
     const planned = ECOSYSTEM_CATALOG.filter((entry) => entry.status === 'planned').map((entry) => entry.id);
     expect(planned.length).toBeGreaterThan(0);
-    expect(served.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'atelier', 'shinjuku', 'paysh']);
-    expect(planned).toEqual(['usepod', 'clawpump', 'hydra', 'said']);
+    expect(served.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'shinjuku', 'paysh', 'clawpump', 'said']);
+    expect(planned).toEqual(['atelier', 'usepod', 'hydra']);
     for (const id of planned) expect(served.some((entry) => entry.id === id)).toBe(false);
     for (const entry of served) expect(entry.status).toBe('available');
   });
 
-  test('every served row has an MCP URL (http) or a command (stdio), auth text and install lines', () => {
-    for (const entry of servedEcosystemCatalog(API_BASE)) {
+  test('a served gateway row names our own tool and has no MCP URL, no command and no install line', () => {
+    const tools: Record<string, string> = { clawpump: 'clawville_market', said: 'clawville_trust' };
+    const gateway = servedEcosystemCatalog(API_BASE).filter((entry) => entry.bucket === 'gateway');
+    expect(gateway.map((entry) => entry.id).sort()).toEqual(['clawpump', 'said']);
+    for (const entry of gateway) {
+      expect(entry.summary).toContain(tools[entry.id]!);
+      expect(entry.auth.trim().length).toBeGreaterThan(0);
+      expect(entry.mcpUrl).toBeUndefined();
+      expect(entry.command).toBeUndefined();
+      expect(entry.transport).toBeUndefined();
+      expect(entry.installs).toBeUndefined();
+      expect(entry.cli).toBeUndefined();
+    }
+  });
+
+  test('the Hydra row stays planned, with its current home page', () => {
+    const hydra = ECOSYSTEM_CATALOG.find((entry) => entry.id === 'hydra')!;
+    expect(hydra.status).toBe('planned');
+    expect(hydra.homepage).toBe('https://hydraswarm.si');
+    expect(hydra.auth).toBe('Not available yet.');
+  });
+
+  test('every served installer row has an MCP URL (http) or a command (stdio), auth text and install lines', () => {
+    for (const entry of servedEcosystemCatalog(API_BASE).filter((row) => row.bucket !== 'gateway')) {
       if (entry.transport === 'stdio') {
         expect(entry.mcpUrl).toBeUndefined();
         expect(entry.command?.trim().length ?? 0).toBeGreaterThan(0);
@@ -150,8 +172,6 @@ describe('ECOSYSTEM_CATALOG', () => {
       expect({ term, inSource: source.includes(term) }).toEqual({ term, inSource: false });
       expect({ term, inServed: served.includes(term) }).toEqual({ term, inServed: false });
     }
-    // The planned SAID row lives in the source but is never served.
-    expect(served).not.toContain('said');
     expect(JSON.stringify(ECOSYSTEM_CATALOG)).not.toContain('—');
   });
 });

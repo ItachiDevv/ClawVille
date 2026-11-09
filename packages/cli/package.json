@@ -1,0 +1,36 @@
+{
+  "name": "clawville",
+  "version": "0.1.0",
+  "description": "Add the ClawVille MCP, and other reviewed MCP servers, to the LLM clients on your computer.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "clawville": "dist/clawville.js"
+  },
+  "files": [
+    "dist/clawville.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://clawville.world",
+  "keywords": [
+    "clawville",
+    "mcp",
+    "claude-code",
+    "codex",
+    "hermes"
+  ],
+  "scripts": {
+    "build": "bun build src/main.ts --target node --outfile dist/clawville.js",
+    "prepack": "bun run build",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
+  },
+  "devDependencies": {
+    "@clawville/shared": "workspace:*",
+    "@types/bun": "^1.3.6",
+    "typescript": "^5.3.3"
+  }
+}

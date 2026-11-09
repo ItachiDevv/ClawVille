@@ -70,6 +70,15 @@ export const HUD_Z = {
    * 2026-11-06; at 110 it drew over modal content on a 390x844 phone.
    */
   hotbar: 47,
+  /**
+   * "Ask me before each payment" notice on /game (2026-11-06,
+   * `wallet/approval-notice.tsx`, stand-alone pill; on touch it renders
+   * inside the quest tracker's row instead and takes the tracker's z): above
+   * the hotbar, below every dialog
+   * (z-50 Radix dialogs, the z-[95] spend-cap prompt, the z-[100] modals), so
+   * an open dialog always covers it. It hides while the wallet modal is open.
+   */
+  approvalNotice: 48,
   /** Interact button, floating prompts. */
   overlay: 51,
   /** Full game modals (slots / blackjack / hold'em / baccarat). */
@@ -179,7 +188,29 @@ export const GAME_HUD: readonly GameHudEntry[] = [
   },
   { file: 'components/game/perf-hud.tsx', name: 'perf-hud', layer: 'seatedGameHud', expectedZ: HUD_Z.seatedGameHud, form: 'class' },
   { file: 'components/game/emote-hotbar.tsx', name: 'emote-hotbar', layer: 'hotbar', expectedZ: HUD_Z.hotbar, form: 'class' },
+  {
+    file: 'components/game/wallet/approval-notice.tsx',
+    name: 'approval-notice stand-alone pill (desktop, or touch with no quest tracker)',
+    layer: 'approvalNotice',
+    expectedZ: HUD_Z.approvalNotice,
+    form: 'class',
+  },
 ] as const;
+
+/**
+ * Upright phone: the top-centre row of `quest-tracker.tsx` (tracker pill +
+ * the approval badge of `wallet/approval-notice.tsx`) must keep
+ * 8 px from the columns beside it. Left: the Map button, `left: 16`, 44 px
+ * wide (`components/game/minimap.tsx`, PHONE_MAP_BUTTON_TOP_PX). Right: the controls-help
+ * button, `right: 12`, 44 px wide (`components/game/tutorial-overlay.tsx`), the widest-reaching
+ * of the right column. The row is centred, so it keeps the larger reserve on
+ * both sides: max(16, 12) + 44 + 8 = 68 px (plus the safe-area insets). At
+ * 390 px the row gets 254 px, so the pill shrinks (its title truncates) and
+ * the 44 px badge keeps its size. Wider screens never reach the cap.
+ */
+export const MOBILE_ROW_SIDE_RESERVE_PX = 68;
+export const MOBILE_ROW_MAX_WIDTH_CSS =
+  `calc(100vw - ${2 * MOBILE_ROW_SIDE_RESERVE_PX}px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))`;
 
 /**
  * Bottom touch-control band geometry, shared by every touch-control

@@ -22,6 +22,7 @@ mock.module('../studios-images', () => ({
 
 import { HATCHER_ACTION_MENU, HATCHER_ACTION_VERBS } from '@clawville/shared';
 import {
+  formatGenerateImageDeclined,
   formatGenerateImageInFlightRefusal,
   formatGeneratedImageResult,
   npcSimulation,
@@ -80,7 +81,8 @@ describe('generate_image hosted action', () => {
     expect(HATCHER_ACTION_VERBS).toContain('generate_image');
     const item = HATCHER_ACTION_MENU.find((entry) => entry.verb === 'generate_image');
     expect(item?.syntax).toBe('generate_image(prompt="<1..1000 characters; no double quote and no closing parenthesis>")');
-    expect(item?.whenToUse).toContain('inside the images per day they set; one per reply');
+    expect(item?.whenToUse).toContain('inside the images per day they set;');
+    expect(item?.whenToUse).toContain('if your human asks to approve each payment, it waits for them (do not send another while one waits); one per reply');
     expect(item?.whenToUse).not.toContain('at most 3');
     expect(prompt()).toContain('generate_image(prompt=');
   });
@@ -233,10 +235,31 @@ describe('generate_image hosted action', () => {
       httpStatus: 502,
       ledgerId: 'LEDGER_Z',
     });
-    expect(refused.startsWith('Studio: generate_image refused (payment_ambiguous): Studios did not confirm')).toBe(true);
+    expect(refused.startsWith('Studio: generate_image refused (payment_ambiguous): Do not retry; it counts toward the daily cap until it is checked on chain. Studios did not confirm')).toBe(true);
     expect(refused).not.toContain('LEDGER_Z');
     for (const line of [ok, odd, refused, formatGenerateImageInFlightRefusal()]) {
       expect(line.length).toBeLessThanOrEqual(200);
     }
+  });
+});
+
+describe('generate_image with "ask me before each payment"', () => {
+  test('a waiting request gives a short line that says to wait for the human, and fits the 200-char slot', () => {
+    const waiting = formatGeneratedImageResult({
+      ok: false,
+      code: 'awaiting_approval',
+      httpStatus: 202,
+      message: 'ignored long text with GET /api/vendors/studios/requests/ID',
+      ledgerId: null,
+      requestId: '11111111-2222-4333-8444-555555555555',
+      expiresAt: '2026-11-06T12:15:00.000Z',
+    });
+    expect(waiting).toContain('waits for your human to approve it');
+    expect(waiting).toContain('15 minutes');
+    expect(waiting).toContain('Do not send another generate_image');
+    expect(waiting).not.toContain('refused');
+    const declined = formatGenerateImageDeclined();
+    expect(declined).toContain('declined');
+    for (const line of [waiting, declined]) expect(line.length).toBeLessThanOrEqual(200);
   });
 });

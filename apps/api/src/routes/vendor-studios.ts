@@ -6,6 +6,36 @@
  *          bills the human's own account. Mode B (no key): the avatar wallet
  *          pays with x402 inside the spend rules. Returns the stored image path.
  *   GET    /api/vendors/studios/images  the avatar's newest images.
+ *   POST   /api/vendors/studios/videos      video (wallet or key mode), 202 running
+ *   POST   /api/vendors/studios/characters  character shots (key mode only)
+ *   POST   /api/vendors/studios/recasts     recast (key mode only), 202 running
+ *          (phase 3b; same headers, rate limit and approval flow as images;
+ *          bodies = `vendors/studios-operations.ts` schemas).
+ *   GET    /api/vendors/studios/options/:menu  a free Studios menu (ids,
+ *          prices, option values only), cached 10 minutes.
+ *   GET    /api/vendors/studios/requests/:id  one Studios request of this
+ *          avatar (agent or human): status, and the media paths when done.
+ *   GET    /api/vendors/studios/signin/account  through the human's Studios
+ *          sign-in (phase 3c): balance in USD, free usage left, this
+ *          connection's spend left today. Free; no request row.
+ *   GET    /api/vendors/studios/signin/media?kind&limit&cursor  the human's
+ *          Studios My Media: id, kind, ready/problem, createdAt. No Studios
+ *          text (titles, descriptions) for any caller. Free; no request row.
+ *          Both: human session or agent session of the same avatar; 404
+ *          `studios_signin_missing`, 409 `studios_signin_broken`.
+ *   Who pays (phase 3c): the human's `studiosPayMode` in the spend rules
+ *          (wallet, key or signin; not chosen = key if saved, else wallet).
+ *          In sign-in mode every POST above answers 202 `running` (also an
+ *          image) and the runner calls the Studios MCP tools.
+ *   GET    /api/vendors/studios/approvals  the requests that wait for the
+ *          human ("ask me before each payment"). Human only.
+ *   POST   /api/vendors/studios/approvals/:id/challenge  the message for
+ *          the human's linked wallet to sign for ONE waiting request. Human only.
+ *   POST   /api/vendors/studios/approvals/:id/approve  body `{ proof }`: run
+ *          one waiting request now (every cap and limit checked again). Human
+ *          only, and only with the linked wallet's signature over the challenge.
+ *   POST   /api/vendors/studios/approvals/:id/decline  decline it; nothing
+ *          is called or paid. Human only.
  *   GET    /api/vendors/studios/key     whether a key is saved (last 4 only).
  *   POST   /api/vendors/studios/key/challenge  a message for the human's
  *          linked wallet to sign (`{ action: 'save', last4, sha256 }` or
@@ -16,15 +46,25 @@
  *          wallet `proof`. Human only.
  *
  * PARITY (Rule E5): human path = these routes with a Lucia session (wallet
- * panel, Studios card); agent path = the same image routes with the agent
- * session header (ledger-capable for POST), the MCP tool
- * `clawville_studios_image` and the hosted `[ACTION:] generate_image` verb,
- * all through `services/studios-images.ts`. The key routes are human-only by
+ * panel, Studios card); agent path = the same routes with the agent session
+ * header (ledger-capable for POST), the MCP tools `clawville_studios_image`,
+ * `clawville_studios_video`, `clawville_studios_character`,
+ * `clawville_studios_recast`, `clawville_studios_options`,
+ * `clawville_studios_account` (the two sign-in reads) and the hosted
+ * `[ACTION:]` verbs `generate_image`, `generate_video`, `make_character`,
+ * `recast_character`, all through `services/studios-images.ts`. The key routes are human-only by
  * design: the human chooses whose account pays, and the linked wallet signs
  * each change (a magic-link session alone does not prove a human).
+ * "Ask me before each payment": every image request (the human's web form
+ * too) answers 202 `awaiting_approval` and the agent reads `GET /requests/:id`;
+ * approve needs the linked wallet's signature (a magic link passes through the
+ * agent, so a cookie alone never approves); decline needs only the human
+ * session (it spends nothing). Both are human-only by design (the owner
+ * decides each payment), like the
+ * spend-rules write.
  */
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -37,15 +77,47 @@ import {
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity, requireNonGuestUser } from '../middleware/require-non-guest';
 import {
+  HUMAN_SESSION_ORIGINS,
   refuseAgentHeader,
   requireHumanSessionOrigin,
   type HumanGateCopy,
 } from '../middleware/require-human-session';
+import type { SessionCreatedVia } from '../lib/auth';
 import { noStorePrivate } from '../middleware/no-store';
-import { issueVendorKeyChallenge, vendorKeyRef, verifyVendorKeyProof } from '../services/spend-policy-proof';
-import { generateStudiosImage, listMedia } from '../services/studios-images';
+import {
+  issueApprovalChallenge,
+  issueVendorKeyChallenge,
+  vendorKeyRef,
+  verifyApprovalProof,
+  verifyVendorKeyProof,
+} from '../services/spend-policy-proof';
+import {
+  approveStudiosRequest,
+  declineStudiosRequest,
+  generateStudiosImage,
+  listAwaitingApprovals,
+  listMedia,
+  listStudiosSigninMedia,
+  readApprovalTerms,
+  readStudiosRequest,
+  readStudiosSigninAccount,
+  requestStudiosOperation,
+  type StudiosImageResult,
+  type StudiosOperationResult,
+  type StudiosSigninReadFailure,
+} from '../services/studios-images';
+import { signinMediaQuerySchema } from '../services/vendors/studios-signin';
+import { readStudiosMenu } from '../services/studios-menus';
 import { STUDIOS_KEY_PATTERN, deleteVendorKey, readVendorKeyStatus, saveVendorKey } from '../services/vendor-credentials';
-import { STUDIOS_IMAGE_MODELS, STUDIOS_PROMPT_MAX } from '../services/vendors/studios';
+import {
+  STUDIOS_MENU_IDS,
+  characterParamsSchema,
+  imageParamsSchema,
+  recastParamsSchema,
+  videoParamsSchema,
+  type StudiosMenuId,
+  type StudiosParams,
+} from '../services/vendors/studios-operations';
 
 export const vendorStudiosRoutes = new Hono<ActivityAuthContext>();
 vendorStudiosRoutes.use('*', sessionMiddleware, noStorePrivate);
@@ -60,16 +132,21 @@ export function resetStudiosRateLimit(): void {
 }
 
 const idempotencyKeySchema = z.string().trim().regex(/^[A-Za-z0-9._:-]{8,64}$/);
-const bodySchema = z.object({
-  prompt: z.string().trim().min(1).max(STUDIOS_PROMPT_MAX),
-  model: z.enum(STUDIOS_IMAGE_MODELS).optional(),
-}).strict();
 const smallBody = bodyLimit({
   maxSize: 16 * 1024,
   onError: (c) => c.json({ error: 'payload_too_large', code: 'payload_too_large' }, 413),
 });
 
-vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+type PaidContext = Context<ActivityAuthContext>;
+
+/**
+ * The checks every paid Studios POST shares: a ledger-capable session, an
+ * Idempotency-Key header, a valid body and the per-avatar rate limit. Returns
+ * the refusal response, or what the call needs.
+ */
+async function readPaidRequest<T>(c: PaidContext, schema: z.ZodType<T, z.ZodTypeDef, unknown>): Promise<
+  Response | { avatarId: string; actor: 'human' | 'agent'; idempotencyKey: string; body: T }
+> {
   const identity = c.get('identity');
   if (identity.kind === 'agent' && identity.ledgerCapable !== true) {
     return c.json({ error: 'agent_session_not_ledger_authorized', code: 'agent_session_not_ledger_authorized' }, 403);
@@ -82,30 +159,133 @@ vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requir
       message: 'Send an Idempotency-Key header: 8-64 letters, digits, dots, underscores, colons or hyphens.',
     }, 400);
   }
-  const body = bodySchema.safeParse(await c.req.json().catch(() => null));
+  const body = schema.safeParse(await c.req.json().catch(() => null));
   if (!body.success) {
     return c.json({ error: 'invalid_request', code: 'invalid_request', issues: body.error.issues }, 400);
   }
   if (!studiosRateLimiter.check(identity.avatarId)) {
-    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many image calls. Wait one minute.' }, 429);
+    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios calls. Wait one minute.' }, 429);
   }
+  // The recorded actor: a cookie counts as the human only when a human
+  // sign-in made it ('agent_exchange' and pre-0089 sessions count as the
+  // agent). It does not decide the wait: with "ask me before each payment" on,
+  // every request waits for the linked wallet's signature.
+  const createdVia = (c.get('session') as { createdVia?: SessionCreatedVia | null } | null | undefined)?.createdVia ?? null;
+  const humanPressed = identity.kind === 'user' && createdVia !== null && HUMAN_SESSION_ORIGINS.has(createdVia);
+  return { avatarId: identity.avatarId, actor: humanPressed ? 'human' : 'agent', idempotencyKey: idempotencyKey.data, body: body.data };
+}
 
-  const result = await generateStudiosImage({
-    avatarId: identity.avatarId,
-    actor: identity.kind === 'agent' ? 'agent' : 'human',
-    prompt: body.data.prompt,
-    model: body.data.model,
-    idempotencyKey: idempotencyKey.data,
-  });
+/** The HTTP answer for a Studios result: 202 while it waits or runs. */
+function answer(c: Context, result: StudiosOperationResult | StudiosImageResult): Response {
+  if (!result.ok && result.code === 'awaiting_approval') {
+    return c.json({ status: 'awaiting_approval', requestId: result.requestId, expiresAt: result.expiresAt, message: result.message }, 202);
+  }
+  if (!result.ok && result.code === 'running') {
+    return c.json({ status: 'running', requestId: result.requestId, message: result.message }, 202);
+  }
+  if (!result.ok && result.code === 'duplicate_request_in_flight') {
+    // The same input already waits or runs under another key: attach to it.
+    return c.json({ error: result.code, code: result.code, message: result.message, requestId: result.requestId, status: result.status }, 409);
+  }
   if (!result.ok) {
-    return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId }, result.httpStatus);
+    // A same-key replay names the request it found (poll it, or drop the key when it ended).
+    const request = result.requestId
+      ? { requestId: result.requestId, status: result.status, ...(result.failureCode ? { failureCode: result.failureCode } : {}) }
+      : {};
+    return c.json({ error: result.code, code: result.code, message: result.message, ledgerId: result.ledgerId, ...request }, result.httpStatus);
   }
   return c.json(result);
+}
+
+vendorStudiosRoutes.post('/images', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+  const read = await readPaidRequest(c, imageParamsSchema);
+  if (read instanceof Response) return read;
+  return answer(c, await generateStudiosImage({
+    avatarId: read.avatarId,
+    actor: read.actor,
+    prompt: read.body.prompt,
+    model: read.body.model,
+    idempotencyKey: read.idempotencyKey,
+  }));
+});
+
+/** One paid Studios operation route (phase 3b). */
+function operationHandler<T extends StudiosParams>(operation: 'video' | 'character_shots' | 'recast', schema: z.ZodType<T, z.ZodTypeDef, unknown>) {
+  return async (c: PaidContext) => {
+    const read = await readPaidRequest(c, schema);
+    if (read instanceof Response) return read;
+    return answer(c, await requestStudiosOperation({
+      avatarId: read.avatarId,
+      actor: read.actor,
+      operation,
+      params: read.body,
+      idempotencyKey: read.idempotencyKey,
+    }));
+  };
+}
+
+vendorStudiosRoutes.post('/videos', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, operationHandler('video', videoParamsSchema));
+vendorStudiosRoutes.post('/characters', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, operationHandler('character_shots', characterParamsSchema));
+vendorStudiosRoutes.post('/recasts', smallBody, requireAuthOrAgentSession, requireNonGuestIdentity, operationHandler('recast', recastParamsSchema));
+
+vendorStudiosRoutes.get('/options/:menu', requireAuthOrAgentSession, async (c) => {
+  const menu = c.req.param('menu');
+  if (!(STUDIOS_MENU_IDS as readonly string[]).includes(menu)) {
+    return c.json({ error: 'unknown_menu', code: 'unknown_menu', menus: STUDIOS_MENU_IDS }, 400);
+  }
+  const data = await readStudiosMenu(menu as StudiosMenuId);
+  if (!data) return c.json({ error: 'vendor_unreachable', code: 'vendor_unreachable', message: 'Studios did not answer. Try again later.' }, 502);
+  return c.json({ menu, ...data });
+});
+
+// Each read sends the human's sign-in token to Studios once: limited per avatar.
+const signinReadRateLimiter = createRateLimiter({ maxPerWindow: 12, windowMs: 60_000 });
+
+/** Test-only: reset the per-avatar read limiter between cases. */
+export function resetStudiosSigninReadRateLimit(): void {
+  signinReadRateLimiter.reset();
+}
+
+function readRefusal(c: Context, failure: StudiosSigninReadFailure): Response {
+  return c.json({ error: failure.code, code: failure.code, message: failure.message }, failure.httpStatus);
+}
+
+vendorStudiosRoutes.get('/signin/account', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  if (!signinReadRateLimiter.check(identity.avatarId)) {
+    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios reads. Wait one minute.' }, 429);
+  }
+  const read = await readStudiosSigninAccount(identity.avatarId);
+  return read.ok ? c.json(read.account) : readRefusal(c, read);
+});
+
+vendorStudiosRoutes.get('/signin/media', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const query = signinMediaQuerySchema.safeParse(c.req.query());
+  if (!query.success) return c.json({ error: 'invalid_request', code: 'invalid_request', issues: query.error.issues }, 400);
+  if (!signinReadRateLimiter.check(identity.avatarId)) {
+    return c.json({ error: 'rate_limited', code: 'rate_limited', message: 'Too many Studios reads. Wait one minute.' }, 429);
+  }
+  const read = await listStudiosSigninMedia(identity.avatarId, query.data);
+  if (!read.ok) return readRefusal(c, read);
+  // No Studios text for any caller: an agent can hold a session that reads as
+  // a user (an agent_exchange cookie), so the API never carries descriptions.
+  return c.json(read.media);
 });
 
 vendorStudiosRoutes.get('/images', requireAuthOrAgentSession, async (c) => {
   const identity = c.get('identity');
   return c.json({ images: await listMedia(identity.avatarId) });
+});
+
+const requestIdSchema = z.string().uuid();
+
+vendorStudiosRoutes.get('/requests/:id', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  const view = id.success ? await readStudiosRequest(identity.avatarId, id.data) : null;
+  if (!view) return c.json({ error: 'request_not_found', code: 'request_not_found' }, 404);
+  return c.json(view);
 });
 
 vendorStudiosRoutes.get('/key', requireAuthOrAgentSession, async (c) => {
@@ -164,6 +344,116 @@ async function linkedWallet(userId: string): Promise<string | null> {
   const owner = await db.query.users.findFirst({ where: eq(users.id, userId), columns: { linkedWalletPubkey: true } });
   return owner?.linkedWalletPubkey ?? null;
 }
+
+const APPROVAL_GATE: HumanGateCopy = {
+  humanOnlyCode: 'studios_approval_human_only',
+  humanOnlyMessage: 'Only your human can approve or decline a payment, in the ClawVille wallet panel (Approvals). Wait for their answer.',
+  needsLoginCode: 'studios_approval_needs_human_login',
+  needsLoginMessage: 'Sign in again in your browser, then approve or decline the request.',
+};
+const approvalGate = [refuseAgentHeader(APPROVAL_GATE), requireAuth, requireHumanSessionOrigin(APPROVAL_GATE), requireNonGuestUser] as const;
+
+/**
+ * Tell a hosted agent the human's answer: one short line for its next decide
+ * (the same slot as the generate_image result). Best effort; the agent can
+ * also see the image in its media list.
+ */
+async function tellHostedAgent(userId: string, avatarId: string, line: string): Promise<void> {
+  try {
+    const { agentAutonomyDriver } = await import('../services/agent-autonomy-driver');
+    const agentId = agentAutonomyDriver.getEnrolledAgentForOwner(userId);
+    if (agentId) agentAutonomyDriver.rememberActionResult(agentId, avatarId, line);
+  } catch {
+    // The human's answer still stands; only the note to the agent is lost.
+  }
+}
+
+vendorStudiosRoutes.get('/approvals', ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  return c.json({ approvals: await listAwaitingApprovals(await activeAvatarId(user.id)) });
+});
+
+const APPROVAL_NEEDS_WALLET_LINK = {
+  error: 'studios_approval_needs_wallet_link',
+  code: 'studios_approval_needs_wallet_link',
+  message: 'Link your own wallet in the wallet panel first. It signs each payment you approve.',
+} as const;
+const APPROVAL_NEEDS_WALLET_PROOF = {
+  error: 'studios_approval_needs_wallet_proof',
+  code: 'studios_approval_needs_wallet_proof',
+  message: 'Approving a payment needs a signature from your linked wallet. Ask POST /api/vendors/studios/approvals/<id>/challenge first.',
+} as const;
+const APPROVAL_INVALID_WALLET_PROOF = {
+  error: 'studios_approval_invalid_wallet_proof',
+  code: 'studios_approval_invalid_wallet_proof',
+  message: 'The wallet signature did not match. Ask for a new challenge and sign again.',
+} as const;
+const approveBodySchema = z.object({
+  proof: z.object({ nonce: z.string().min(32).max(64), signature: z.string().min(80).max(100) }).strict(),
+}).strict();
+
+vendorStudiosRoutes.post('/approvals/:id/challenge', smallBody, ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'approval_not_found', code: 'approval_not_found' }, 404);
+  const avatarId = await activeAvatarId(user.id);
+  const wallet = await linkedWallet(user.id);
+  if (!wallet) return c.json(APPROVAL_NEEDS_WALLET_LINK, 403);
+  const read = await readApprovalTerms(avatarId, id.data);
+  if (!read.ok) return c.json({ error: read.result.code, code: read.result.code, message: read.result.message }, read.result.httpStatus);
+  return c.json({ ...issueApprovalChallenge(user.id, read.terms), walletPubkey: wallet });
+});
+
+vendorStudiosRoutes.post('/approvals/:id/approve', smallBody, ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'approval_not_found', code: 'approval_not_found' }, 404);
+  const body = approveBodySchema.safeParse(await c.req.json().catch(() => ({})));
+  // No per-minute limiter here: the agent's own calls already used it, and
+  // at most 5 requests can wait, so the human's clicks are bounded.
+  const avatarId = await activeAvatarId(user.id);
+  const wallet = await linkedWallet(user.id);
+  if (!wallet) return c.json(APPROVAL_NEEDS_WALLET_LINK, 403);
+  if (!body.success) return c.json(APPROVAL_NEEDS_WALLET_PROOF, 403);
+  // The terms are read again now; the signature must cover exactly these.
+  const read = await readApprovalTerms(avatarId, id.data);
+  if (!read.ok) return c.json({ error: read.result.code, code: read.result.code, message: read.result.message }, read.result.httpStatus);
+  const verdict = verifyApprovalProof({
+    userId: user.id,
+    terms: read.terms,
+    nonce: body.data.proof.nonce,
+    signature: body.data.proof.signature,
+    walletPubkey: wallet,
+  });
+  if (verdict !== 'ok') return c.json(APPROVAL_INVALID_WALLET_PROOF, 401);
+  const { result, surface, operation } = await approveStudiosRequest({ avatarId, userId: user.id, requestId: id.data, terms: read.terms });
+  if (surface === 'hosted') {
+    const { formatGeneratedImageResult, formatStudiosJobLine } = await import('../services/npc-simulation');
+    await tellHostedAgent(user.id, avatarId, operation === 'image' || operation === null
+      ? formatGeneratedImageResult(result as StudiosImageResult)
+      : formatStudiosJobLine(operation, result));
+  }
+  return answer(c, result);
+});
+
+vendorStudiosRoutes.post('/approvals/:id/decline', ...approvalGate, async (c) => {
+  const user = c.get('user') as { id: string };
+  const id = requestIdSchema.safeParse(c.req.param('id'));
+  if (!id.success) return c.json({ error: 'approval_not_found', code: 'approval_not_found' }, 404);
+  const avatarId = await activeAvatarId(user.id);
+  const declined = await declineStudiosRequest({ avatarId, userId: user.id, requestId: id.data });
+  if (!declined.ok) {
+    const { result } = declined;
+    return c.json({ error: result.code, code: result.code, message: result.message }, result.httpStatus);
+  }
+  if (declined.surface === 'hosted') {
+    const { formatGenerateImageDeclined, formatStudiosJobLine } = await import('../services/npc-simulation');
+    await tellHostedAgent(user.id, avatarId, declined.operation === 'image'
+      ? formatGenerateImageDeclined()
+      : formatStudiosJobLine(declined.operation, { ok: false, code: 'approval_declined' }));
+  }
+  return c.json({ requestId: declined.requestId, status: declined.status });
+});
 
 vendorStudiosRoutes.post('/key/challenge', smallBody, refuseAgentHeader(KEY_GATE), requireAuth, requireHumanSessionOrigin(KEY_GATE), requireNonGuestUser, async (c) => {
   const user = c.get('user') as { id: string };

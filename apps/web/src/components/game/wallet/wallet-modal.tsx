@@ -23,12 +23,16 @@ import {
   DialogClose,
 } from '@/components/ui/dialog';
 import { WalletPanel } from './wallet-panel';
+import { StudiosReturnHandler } from './studios-pay-mode';
 
 export default function WalletModal() {
   const walletLinkModalOpen = useGameStore((s) => s.walletLinkModalOpen);
   const closeWalletLink = useGameStore((s) => s.closeWalletLink);
 
   return (
+    <>
+    {/* Back from the Studios sign-in page (?studios=...): opens this panel once. */}
+    <StudiosReturnHandler />
     <Dialog
       open={walletLinkModalOpen}
       onOpenChange={(open) => {
@@ -62,5 +66,6 @@ export default function WalletModal() {
         </div>
       </DialogContent>
     </Dialog>
+    </>
   );
 }

@@ -73,9 +73,12 @@ import { leaderboardRoutes } from './routes/leaderboard';
 import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { ecosystemRoutes } from './routes/ecosystem';
+import { ecosystemReadRoutes } from './routes/ecosystem-reads';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
 import { vendorStudiosRoutes } from './routes/vendor-studios';
+import { redactStudiosOAuthCallbackQuery, vendorStudiosOAuthRoutes } from './routes/vendor-studios-oauth';
+import { STUDIOS_OAUTH_CLIENT_METADATA_PATH, buildStudiosClientMetadata } from './services/vendors/studios-oauth';
 import { mediaRoutes } from './routes/media';
 // Tokenomics E1/E2 — internal, admin-only EARNED import/verifier/claw-back.
 // Service + route are independently gated by TOKENOMICS_EARN_ENABLED.
@@ -218,12 +221,15 @@ const app = new Hono<AppContext>();
 // print fn scrubs only the LOG string; URLs/responses to the Hatcher partner are
 // unchanged. Pre-existing leak folded in at the P0 Codex gate (2026-07-01), same
 // class as the B1 body-id leak. See services/log-redact.ts.
+// The Studios sign-in callback query (OAuth `code`, `state`, `iss`) is
+// removed from the line the same way (routes/vendor-studios-oauth.ts).
+const redactLogLine = (line: string): string => redactBearerTokens(redactStudiosOAuthCallbackQuery(line));
 app.use(
   '*',
   logger((message: string, ...rest: string[]) => {
     console.log(
-      redactBearerTokens(message),
-      ...rest.map((r) => (typeof r === 'string' ? redactBearerTokens(r) : r)),
+      redactLogLine(message),
+      ...rest.map((r) => (typeof r === 'string' ? redactLogLine(r) : r)),
     );
   }),
 );
@@ -263,6 +269,12 @@ app.use('*', fingerprintMiddleware);
 // setMcpDispatcher call after the last route mount).
 app.route('/api/agent', agentMcpRoutes);
 
+// Studios sign-in (OAuth) routes (MCP hub phase 3c). Mounted BEFORE
+// jsonBodyGuard so their 1 KB body limit runs before anything reads the body,
+// and before the parent /api/vendors/studios prefix so its session middleware
+// does not run twice on these paths.
+app.route('/api/vendors/studios/oauth', vendorStudiosOAuthRoutes);
+
 // Reject malformed, non-empty JSON before route handlers call `c.req.json()`.
 // Raw-body signed/HMAC endpoints are exempt inside the guard so their exact
 // request bytes remain available to signature verification. Must stay before
@@ -295,6 +307,13 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
     // Env var missing → 503 so partners know to retry after rotation.
     return c.json({ error: 'issuer_key_unconfigured', detail: String(err) }, 503);
   }
+});
+
+// Studios sign-in: Client ID Metadata Document (MCP hub phase 3c). Its URL is
+// the OAuth client_id; Studios fetches it to read our redirect URI. Public.
+app.get(STUDIOS_OAUTH_CLIENT_METADATA_PATH, (c) => {
+  c.header('Cache-Control', 'public, max-age=300');
+  return c.json(buildStudiosClientMetadata());
 });
 
 // ---------------------------------------------------------------------------
@@ -378,9 +397,12 @@ app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 // Public, read-only ecosystem MCP catalog (MCP ecosystem hub step 1).
 app.route('/api/ecosystem', ecosystemRoutes);
+// Market and trust reads with a per-avatar budget (session required; same prefix).
+app.route('/api/ecosystem', ecosystemReadRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
 // Paid third-party tools, avatar wallet under the human's spend rules (MCP hub step 2 phase 2).
+// The Studios sign-in routes are mounted above jsonBodyGuard (MCP hub phase 3c).
 app.route('/api/vendors/studios', vendorStudiosRoutes);
 // Images made by paid tools, served by unguessable id (MCP hub step 2 phase 2b).
 app.route('/api/media', mediaRoutes);
@@ -930,6 +952,15 @@ process.on('uncaughtException', (err) => {
     startVendorLedgerReconcile();
   } catch (err) {
     console.error('[API] vendor ledger reconcile worker failed to start:', err);
+  }
+
+  // MCP hub phase 3b: long Studios jobs (video, recast) run in this process;
+  // every minute, recover rows a dead runner left (never calls or pays again).
+  try {
+    const { startStudiosJobRunner } = await import('./services/studios-job-runner');
+    startStudiosJobRunner();
+  } catch (err) {
+    console.error('[API] studios job runner failed to start:', err);
   }
 
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
@@ -1913,6 +1944,12 @@ async function gracefulShutdown(signal: string) {
       stopX402AutoReconcile();
     } catch {
       // If the worker module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopStudiosJobRunner } = await import('./services/studios-job-runner');
+      stopStudiosJobRunner();
+    } catch {
+      // If the runner module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopWagerIntentReconciler } = await import(

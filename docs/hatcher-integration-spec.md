@@ -1,6 +1,22 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-06 06:49Z (spend-cap prompt line, PROTOCOL_VERSION 110 -> 111).** Drift note: the `ecosystem` spend rules section now says a signed-in human with no caps sees a "Set your agent's spend caps" prompt on /game. No verb, Hatcher route or partner contract changed.
+**Last Audited: 2026-11-07 17:59Z (paid SAID screen, still PROTOCOL_VERSION 117).** Drift note: `SPEND_VENDOR_IDS` gains `said` and the paid MCP tool `clawville_trust_screen` is new. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed.
+
+**Prior Last Audited: 2026-11-07 17:44Z (market and trust reads, PROTOCOL_VERSION 116 -> 117, migration 0098).** Drift note: new MCP tools `clawville_market` and `clawville_trust` and new routes under `/api/ecosystem`. No hosted verb, no executor change, no decide-menu line, no Hatcher route and no partner contract changed. Vendor text never enters a decide prompt.
+
+**Prior Last Audited: 2026-11-06 17:41Z (Studios dedupe review fixes, still PROTOCOL_VERSION 116).** Drift note: a hosted Studios verb is now blocked by the same input in any pay mode, and for 30 minutes after an unclear request ended (not after it was made). No verb, param, Hatcher route or partner contract changed.
+
+**Prior Last Audited: 2026-11-06 17:15Z (Studios server-side dedupe, PROTOCOL_VERSION 115 -> 116, migration 0097).** Drift note: a hosted Studios verb whose input matches a request that still runs (or may have charged in the last 30 minutes) gets the decide line "the same ... request is already running; do not send it again" (`duplicate_request_in_flight`) and nothing is sent or paid. No verb, param, Hatcher route or partner contract changed.
+
+**Prior Last Audited: 2026-11-06 16:04Z (Studios pay mode and sign-in, PROTOCOL_VERSION 114 -> 115, MCP hub phase 3c part 2).** Drift note: the decide-menu lines of `generate_image`, `generate_video`, `make_character` and `recast_character` now say the human chooses the payer (the avatar wallet, their Studios key or their Studios sign-in); the verbs, their grammars and caps are unchanged; the MCP tool `clawville_studios_account` (free sign-in reads) is new; the `ecosystem` and `actions` pages say so. No Hatcher route or partner contract changed.
+
+**Prior Last Audited: 2026-11-06 14:41Z (Studios operations, PROTOCOL_VERSION 113 -> 114, MCP hub phase 3b).** Drift note: the executor whitelist and the decide menu gain three hosted verbs, `generate_video(prompt="...")`, `make_character(prompt="...")` and `recast_character(preset=<id>, mediaId=<own image id>)`, with strict grammars, one Studios action per reply across all four Studios verbs, fixed per-avatar caps per UTC day (2 / 3 / 1) and house agents refused; the MCP tools `clawville_studios_video`, `clawville_studios_character`, `clawville_studios_recast` and `clawville_studios_options` are new; the `ecosystem` and `actions` pages say so. No Hatcher route or partner contract changed.
+
+**Prior Last Audited: 2026-11-06 13:50Z (ecosystem catalog, PROTOCOL_VERSION 112 -> 113).** Drift note: the Atelier row is `planned`, so the served catalog and the `ecosystem` page list 4 servers. No verb, Hatcher route or partner contract changed.
+
+Prior - **Last Audited: 2026-11-06 12:40Z ("Ask me before each payment", PROTOCOL_VERSION 111 -> 112).** Drift note: the `generate_image` menu line and the `ecosystem` / `actions` pages say that with the human's new `requireApproval` rule on, an image request waits for the human (202 `awaiting_approval`, 15 minutes), and that a hosted agent must not send another while one waits; the executor grammar, the one-per-reply and one-in-flight rules and every Hatcher route and partner contract are unchanged. The hosted result line for a waiting request is new.
+
+**Prior Last Audited: 2026-11-06 06:49Z (spend-cap prompt line, PROTOCOL_VERSION 110 -> 111).** Drift note: the `ecosystem` spend rules section now says a signed-in human with no caps sees a "Set your agent's spend caps" prompt on /game. No verb, Hatcher route or partner contract changed.
 
 **Prior Last Audited: 2026-11-05 10:29Z (Studios limits are the user's own, PROTOCOL_VERSION 109 -> 110).** Drift note: the `generate_image` menu line and the `ecosystem` / `actions` pages drop the fixed image counts; the human's spend rule `studiosKeyImagesPerDay` limits their own Studios key. No Hatcher route or partner contract changed.
 

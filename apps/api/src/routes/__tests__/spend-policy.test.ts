@@ -154,6 +154,11 @@ describe('GET /api/wallet/spend-policy', () => {
       perCallCapUsdCents: null,
       allowedVendors: [],
       studiosKeyImagesPerDay: 10,
+      studiosVideosPerDay: 2,
+      studiosCharacterShotsPerDay: 5,
+      studiosRecastsPerDay: 1,
+      requireApproval: false,
+      studiosPayMode: null,
       configured: false,
       updatedAt: null,
     });
@@ -312,5 +317,36 @@ describe('POST /api/wallet/spend-policy/challenge', () => {
     linkedWallets.set('user-new', 'WalletPubkey1111111111111111111111111111111');
     const res = await call('POST', { cookie: 'pw-new', path: '/challenge', body: { dailyCapUsdCents: 1, perCallCapUsdCents: 5, allowedVendors: [] } });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('"Ask me before each payment" (requireApproval)', () => {
+  it('passes requireApproval through to the checked writer and returns it', async () => {
+    const res = await call('PUT', { cookie: 'pw-new', body: { ...VALID, requireApproval: true } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ requireApproval: true });
+    expect(writes[0]?.input).toMatchObject({ requireApproval: true });
+  });
+
+  it('refuses the agent, also when it only turns the setting off', async () => {
+    for (const opts of [{ agent: 'agent-session' }, { cookie: 'exchanged-set' }]) {
+      const res = await call('PUT', { ...opts, body: { ...VALID, requireApproval: false } });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'spend_policy_human_only' });
+    }
+    expect(writes).toHaveLength(0);
+  });
+
+  it('names the setting in the message the linked wallet signs', async () => {
+    linkedWallets.set('user-new', 'WalletPubkey1111111111111111111111111111111');
+    const off = await call('POST', { cookie: 'pw-new', path: '/challenge', body: { ...VALID, requireApproval: false } });
+    expect((await off.json() as { messageToSign: string }).messageToSign).toContain('ask me before each payment: no');
+    const on = await call('POST', { cookie: 'pw-new', path: '/challenge', body: { ...VALID, requireApproval: true } });
+    expect((await on.json() as { messageToSign: string }).messageToSign).toContain('ask me before each payment: yes');
+  });
+
+  it('shows the setting to the agent on GET', async () => {
+    const res = await call('GET', { agent: 'agent-session' });
+    expect(await res.json()).toMatchObject({ requireApproval: false });
   });
 });

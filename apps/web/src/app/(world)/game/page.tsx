@@ -62,6 +62,12 @@ const ExchangeModal = dynamic(() => import('@/components/game/exchange-modal'), 
 const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-modal'), { ssr: false });
 const WorldMapModal = dynamic(() => import('@/components/game/world-map-modal'), { ssr: false });
 const WalletModal = dynamic(() => import('@/components/game/wallet/wallet-modal'), { ssr: false });
+// "Ask me before each payment": a pill while an agent payment waits for the
+// human; it opens the wallet panel (Approvals). Renders nothing otherwise.
+const ApprovalNotice = dynamic(
+  () => import('@/components/game/wallet/approval-notice').then((m) => m.ApprovalNotice),
+  { ssr: false },
+);
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
@@ -686,6 +692,7 @@ export default function GamePage() {
       )}
       <FirstTimeBackupModal />
       <SpendCapPrompt />
+      <ApprovalNotice />
       <SkillBuilderModal />
       <LandOfficeModal />
       <QuestBoardModal />

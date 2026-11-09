@@ -20,9 +20,9 @@ describe('GET /api/ecosystem/catalog', () => {
     expect(Object.keys(body).sort()).toEqual(['entries', 'protocolVersion']);
     expect(body.protocolVersion).toBe(PROTOCOL_VERSION);
     expect(body.entries).toEqual(JSON.parse(JSON.stringify(servedEcosystemCatalog(resolveApiBase()))));
-    expect(body.entries.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'atelier', 'shinjuku', 'paysh']);
+    expect(body.entries.map((entry) => entry.id)).toEqual(['clawville', 'studios', 'shinjuku', 'paysh', 'clawpump', 'said']);
     const bodyText = JSON.stringify(body).toLowerCase();
-    for (const term of ['said', 'trader' + ' ralph', 'penguin' + 'xbt', 'hot' + ' bot', 'hot' + 'bot']) {
+    for (const term of ['trader' + ' ralph', 'penguin' + 'xbt', 'hot' + ' bot', 'hot' + 'bot']) {
       expect({ term, found: bodyText.includes(term) }).toEqual({ term, found: false });
     }
     for (const entry of body.entries) expect(entry.status).toBe('available');
@@ -35,7 +35,7 @@ describe('GET /api/ecosystem/catalog', () => {
     expect(shinjuku.mcpUrl).toBeUndefined();
     expect(shinjuku.cli).toMatch(/^npm install -g shinjuku@\d+\.\d+\.\d+\nshinjuku help$/);
     expect(body.entries.find((entry) => entry.id === 'paysh')!.cli).toBe('brew install pay\npay setup');
-    for (const id of ['clawville', 'studios', 'atelier']) {
+    for (const id of ['clawville', 'studios']) {
       expect(body.entries.find((entry) => entry.id === id)!.cli).toBeUndefined();
     }
   });

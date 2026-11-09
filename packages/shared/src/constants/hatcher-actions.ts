@@ -30,6 +30,9 @@ export const HATCHER_ACTION_VERBS = [
   'equip_cosmetic',
   'buy_cosmetic',
   'generate_image',
+  'generate_video',
+  'make_character',
+  'recast_character',
 ] as const;
 
 export type HatcherActionVerb = (typeof HATCHER_ACTION_VERBS)[number];
@@ -67,7 +70,25 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'generate_image',
     syntax: 'generate_image(prompt="<1..1000 characters; no double quote and no closing parenthesis>")',
     whenToUse:
-      'make one Studios image for yourself; it is stored and you get its media path; it can spend your avatar wallet USDC only inside the spend rules your human set (no rules set = refused), or your human\'s own Studios key inside the images per day they set; one per reply',
+      'make one Studios image for yourself; it is stored and you get its media path; your human chooses who pays: your avatar wallet USDC only inside the spend rules your human set (no rules set = refused), or your human\'s own Studios account (their key or their Studios sign-in) inside the images per day they set; with the sign-in it runs in the background and a later decision gets its media path; if your human asks to approve each payment, it waits for them (do not send another while one waits); one per reply',
+  },
+  {
+    verb: 'generate_video',
+    syntax: 'generate_video(prompt="<1..1000 characters; no double quote and no closing parenthesis>")',
+    whenToUse:
+      'make one short Studios video for yourself; it runs for several minutes and a later decision gets its media path; it can spend your avatar wallet USDC only inside your human\'s spend rules, or uses your human\'s own Studios account (their key or their Studios sign-in), as your human chose; your human\'s videos per day apply and you start at most 2 per UTC day; if your human asks to approve each payment, it waits for them; one Studios action per reply',
+  },
+  {
+    verb: 'make_character',
+    syntax: 'make_character(prompt="<1..1000 characters; no double quote and no closing parenthesis>")',
+    whenToUse:
+      'make a character headshot of the described character on your human\'s own Studios account, their key or their Studios sign-in (refused without one; no wallet payment); it is stored and its media id can feed recast_character; your human\'s character shots per day apply and you make at most 3 per UTC day; one Studios action per reply',
+  },
+  {
+    verb: 'recast_character',
+    syntax: 'recast_character(preset=<Recast preset id>, mediaId=<id of one of your own stored images>)',
+    whenToUse:
+      'cast your stored character image into a Studios Recast preset clip at 480p on your human\'s own Studios account, their key or their Studios sign-in (refused without one; at 480p a preset costs about $1 to $4 of their Studios credits); it runs for several minutes; your human\'s recasts per day apply and you start at most 1 per UTC day; preset ids are in the recast presets menu of the ecosystem page; one Studios action per reply',
   },
   {
     verb: 'chat_nori',

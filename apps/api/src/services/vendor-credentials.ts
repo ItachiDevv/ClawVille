@@ -8,6 +8,7 @@
 
 import { and, db, eq, userVendorCredentials } from '@clawville/database';
 import { decryptToken, encryptToken } from './keypair-vault';
+import { lockSpendRules } from './spend-policy';
 
 /** Studios keys look like `chk_` + letters and digits. */
 export const STUDIOS_KEY_PATTERN = /^chk_[A-Za-z0-9_-]{16,128}$/;
@@ -32,25 +33,33 @@ export async function saveVendorKey(avatarId: string, vendor: string, userId: st
   const sealed = encryptToken(key);
   const now = new Date();
   const values = { ...sealed, last4: key.slice(-4), updatedByUserId: userId, updatedAt: now };
-  await db
-    .insert(userVendorCredentials)
-    .values({ avatarId, vendor, ...values })
-    .onConflictDoUpdate({ target: [userVendorCredentials.avatarId, userVendorCredentials.vendor], set: values });
+  // The key decides who pays: written under the avatar's spend-rules lock.
+  await db.transaction(async (tx) => {
+    await lockSpendRules(tx, avatarId);
+    await tx
+      .insert(userVendorCredentials)
+      .values({ avatarId, vendor, ...values })
+      .onConflictDoUpdate({ target: [userVendorCredentials.avatarId, userVendorCredentials.vendor], set: values });
+  });
   return { linked: true, last4: values.last4, updatedAt: now.toISOString() };
 }
 
 export async function deleteVendorKey(avatarId: string, vendor: string): Promise<void> {
-  await db
-    .delete(userVendorCredentials)
-    .where(and(eq(userVendorCredentials.avatarId, avatarId), eq(userVendorCredentials.vendor, vendor)));
+  await db.transaction(async (tx) => {
+    await lockSpendRules(tx, avatarId);
+    await tx
+      .delete(userVendorCredentials)
+      .where(and(eq(userVendorCredentials.avatarId, avatarId), eq(userVendorCredentials.vendor, vendor)));
+  });
 }
 
-/** The decrypted key for one vendor call, or null. Never log the result. */
-export async function loadVendorKey(avatarId: string, vendor: string): Promise<string | null> {
-  const row = await db.query.userVendorCredentials.findFirst({
-    where: and(eq(userVendorCredentials.avatarId, avatarId), eq(userVendorCredentials.vendor, vendor)),
-    columns: { enc: true, iv: true, tag: true },
-  });
+/** The decrypted key for one vendor call, or null. Never log the result. `executor`: a transaction that holds the spend-rules lock. */
+export async function loadVendorKey(avatarId: string, vendor: string, executor: Pick<typeof db, 'select'> = db): Promise<string | null> {
+  const [row] = await executor
+    .select({ enc: userVendorCredentials.enc, iv: userVendorCredentials.iv, tag: userVendorCredentials.tag })
+    .from(userVendorCredentials)
+    .where(and(eq(userVendorCredentials.avatarId, avatarId), eq(userVendorCredentials.vendor, vendor)))
+    .limit(1);
   if (!row) return null;
   return decryptToken(row.enc, row.iv, row.tag);
 }

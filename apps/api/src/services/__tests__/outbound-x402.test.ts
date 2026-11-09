@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { PaymentRequired } from '@x402/core/types';
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
-import { SOLANA_MAINNET, checkQuote, isBase58Of, payerSignatureFromPayload, selectSolanaUsdcRequirement } from '../outbound-x402';
+import { SOLANA_MAINNET, callVendorWithAvatarWallet, checkQuote, isBase58Of, payerSignatureFromPayload, selectSolanaUsdcRequirement } from '../outbound-x402';
 import { STUDIOS_MAX_CALL_ATOMIC, STUDIOS_PAY_TO, parseStudiosImage } from '../vendors/studios';
 
 // Shape of the live Studios quote (2026-11-05): several chains and assets.
@@ -19,6 +19,46 @@ const others = [
   { scheme: 'exact', network: 'eip155:8453', amount: '5000', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', payTo: '0x3201', maxTimeoutSeconds: 300, extra: {} },
   { scheme: 'exact', network: SOLANA_MAINNET, amount: '12057878', asset: '6GGY8GViCR5v4xR4Lxb4nfiAJsEoJua5Gj6YecxbJ4BQ', payTo: PAY_TO, maxTimeoutSeconds: 300, extra: { feePayer: FEE_PAYER } },
 ];
+
+describe('the request on the wire (a refused quote stops before the database)', () => {
+  async function firstRequest(input: { method?: 'GET' | 'POST'; body?: Record<string, unknown> }) {
+    const seen: Array<{ url: string; init: RequestInit }> = [];
+    const result = await callVendorWithAvatarWallet({
+      avatarId: 'a', actor: 'agent', pin: PIN, tool: 't', idempotencyKey: 'key-00001', url: 'https://vendor.example/x',
+      ...input,
+    } as never, {
+      fetch: async (url, init) => {
+        seen.push({ url, init });
+        return new Response('no', { status: 500 });
+      },
+    });
+    expect(result).toEqual({ ok: false, code: 'vendor_refused', httpStatus: 500 });
+    expect(seen).toHaveLength(1);
+    return seen[0]!;
+  }
+
+  it('POST is unchanged: the default method, JSON headers and the JSON body', async () => {
+    const body = { model: 'm', prompt: 'p' };
+    for (const input of [{ body }, { method: 'POST' as const, body }]) {
+      const { url, init } = await firstRequest(input);
+      expect(url).toBe('https://vendor.example/x');
+      expect(init.method).toBe('POST');
+      expect(init.headers).toEqual({ 'Content-Type': 'application/json', Accept: 'application/json' });
+      expect(init.body).toBe(JSON.stringify(body));
+      expect(init.redirect).toBe('error');
+      expect(init.signal).toBeDefined();
+    }
+  });
+
+  it('GET sends no body and no Content-Type, and refuses redirects', async () => {
+    const { init } = await firstRequest({ method: 'GET' });
+    expect(init.method).toBe('GET');
+    expect(init.headers).toEqual({ Accept: 'application/json' });
+    expect('body' in init).toBe(false);
+    expect(init.redirect).toBe('error');
+    expect(init.signal).toBeDefined();
+  });
+});
 
 describe('selectSolanaUsdcRequirement', () => {
   it('picks the Solana mainnet USDC entry wherever it sits', () => {

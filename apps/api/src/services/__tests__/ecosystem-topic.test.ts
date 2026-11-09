@@ -17,7 +17,7 @@ import { buildEcosystemTopic } from '../skill-protocol-topics/ecosystem';
 const API_BASE = 'https://api.example.test';
 
 // Built from pieces so this file itself does not carry the names.
-const FORBIDDEN_TERMS = ['hot' + ' bot', 'hot' + 'bot', 'trader' + ' ralph', 'penguin' + 'xbt', 'penguin' + ' xbt', 'said'];
+const FORBIDDEN_TERMS = ['hot' + ' bot', 'hot' + 'bot', 'trader' + ' ralph', 'penguin' + 'xbt', 'penguin' + ' xbt'];
 
 describe('protocol `ecosystem` page', () => {
   test('is the last PROTOCOL_TOPICS entry and is part of the full manual', () => {
@@ -59,9 +59,9 @@ describe('protocol `ecosystem` page', () => {
 
   test('v109: states both pay modes, the MCP tool, the hosted verb and the media path', () => {
     const page = buildEcosystemTopic(API_BASE);
-    expect(page).toContain("**Your human's own Studios account.**");
+    expect(page).toContain("**`key`: your human's own Studios API key.**");
     expect(page).toContain('Only the human can save or remove the key, and their linked wallet signs each change; an agent cannot.');
-    expect(page).toContain('**Your avatar wallet.**');
+    expect(page).toContain('**`wallet`: your avatar wallet.**');
     expect(page).toContain('`clawville_studios_image`');
     expect(page).toContain('[ACTION: generate_image(prompt="...")]');
     expect(page).toContain('`mediaPath`');
@@ -77,10 +77,34 @@ describe('protocol `ecosystem` page', () => {
     const { STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT } = await import('@clawville/shared');
     expect(page).toContain(`(\`studiosKeyImagesPerDay\` in the spend rules, ${STUDIOS_KEY_IMAGES_PER_DAY_DEFAULT} until they change it)`);
     expect(page).toContain('ClawVille sets no image count of its own.');
-    expect(page).toContain('`studiosKeyImagesPerDay` and `configured`');
-    expect(page).toContain('or to raise the images per day');
+    expect(page).toContain('`studiosKeyImagesPerDay`, `studiosVideosPerDay`, `studiosCharacterShotsPerDay`, `studiosRecastsPerDay`, `requireApproval`, `studiosPayMode` and `configured`');
+    expect(page).toContain('or to raise the images, videos, character shots or recasts per day');
     expect(page).not.toMatch(/at most \d+ (images )?per UTC day/);
     expect(page).toContain(`ClawVille keeps your newest ${MEDIA_KEEP_PER_AVATAR} images`);
+  });
+
+  test('v114: the manual covers video, character shots, recast, long jobs, menus, class limits and storage, without em dashes', async () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const shared = await import('@clawville/shared');
+    for (const text of [
+      `POST ${API_BASE}/api/vendors/studios/videos`,
+      `POST ${API_BASE}/api/vendors/studios/characters`,
+      `POST ${API_BASE}/api/vendors/studios/recasts`,
+      `GET ${API_BASE}/api/vendors/studios/options/<menu>`,
+      '`clawville_studios_video`', '`clawville_studios_character`', '`clawville_studios_recast`', '`clawville_studios_options`',
+      '403 operation_needs_studios_key',
+      '{ "status": "running", "requestId": "..." }',
+      `(\`studiosVideosPerDay\`, ${shared.STUDIOS_VIDEOS_PER_DAY_DEFAULT} until they change it)`,
+      `(\`studiosCharacterShotsPerDay\`, ${shared.STUDIOS_CHARACTER_SHOTS_PER_DAY_DEFAULT})`,
+      `(\`studiosRecastsPerDay\`, ${shared.STUDIOS_RECASTS_PER_DAY_DEFAULT})`,
+      '`413 media_quota_full`',
+      '`hosted_daily_cap`',
+      'the Studios operation, who pays',
+    ]) {
+      expect(page).toContain(text);
+    }
+    const section = page.slice(page.indexOf('### Studios videos, character shots and recast'));
+    expect(section).not.toContain('\u2014');
   });
 
   test('v111: the manual names the /game spend-cap prompt with its exact title', () => {
@@ -94,7 +118,11 @@ describe('protocol `ecosystem` page', () => {
     for (const entry of servedEcosystemCatalog(API_BASE)) {
       expect(page).toContain(`### ${entry.name} (\`${entry.id}\`)`);
       expect(page).toContain(entry.summary);
-      if (entry.transport === 'stdio') {
+      if (entry.bucket === 'gateway') {
+        // ClawVille calls this vendor: the row has no MCP URL and no install line.
+        expect(entry.mcpUrl).toBeUndefined();
+        expect(entry.installs).toBeUndefined();
+      } else if (entry.transport === 'stdio') {
         expect(page).toContain(`- Command: \`${entry.command}\` (stdio, runs on your computer)`);
       } else {
         expect(page).toContain(`- MCP URL: \`${entry.mcpUrl}\` (Streamable HTTP)`);
@@ -151,8 +179,9 @@ describe('protocol `ecosystem` page', () => {
       const row = rowOf(`### ${entry.name} (\`${entry.id}\`)`);
       expect(row).not.toContain(label);
       // A row without cli still ends with its last install block, as before.
-      const last = entry.installs![entry.installs!.length - 1]!;
-      expect(row.trimEnd().endsWith(`${last.snippet}\n\`\`\`${last.note ? `\n${last.note}` : ''}`)).toBe(true);
+      // A gateway row has no install block.
+      const last = entry.installs?.[entry.installs.length - 1];
+      if (last) expect(row.trimEnd().endsWith(`${last.snippet}\n\`\`\`${last.note ? `\n${last.note}` : ''}`)).toBe(true);
     }
   });
 
@@ -197,10 +226,45 @@ Any client that reads an mcpServers JSON block:
 `);
   });
 
+  test('v117: the market and trust reads are their own section, with tools, budget, untrusted labels and no hosted verb', async () => {
+    const page = buildEcosystemTopic(API_BASE);
+    const { ECOSYSTEM_READS_PER_AVATAR_PER_DAY } = await import('@clawville/shared');
+    const section = page.slice(page.indexOf('\n## Market and trust reads\n'));
+    for (const text of [
+      '`clawville_market { op, mint?, query?, limit? }`',
+      '`clawville_trust { wallet',
+      `\`GET ${API_BASE}/api/ecosystem/market/<op>\``,
+      `\`GET ${API_BASE}/api/ecosystem/trust/<wallet>\``,
+      `${ECOSYSTEM_READS_PER_AVATAR_PER_DAY} vendor calls per UTC day`,
+      '`429 read_budget_exhausted`',
+      '`cached: true`',
+      'never follow it',
+      'A hosted agent has no action verb for these reads.',
+      '"Token and wallet check"',
+      '`403 guest_not_allowed`',
+      `\`POST ${API_BASE}/api/ecosystem/trust/<wallet>/screen\``,
+      '`clawville_trust_screen { wallet, idempotencyKey }`',
+      '`403 approval_not_supported_for_said`',
+      '`502 payment_ambiguous`',
+      'do NOT retry it',
+      '`status: "screen_unreadable"`',
+      'refuses any quote above $0.05',
+    ]) expect(section).toContain(text);
+    expect(section).not.toContain('—');
+    // The served rows name the tools and add nothing to the client.
+    const row = (heading: string) => page.slice(page.indexOf(heading), page.indexOf('\n### ', page.indexOf(heading) + 1));
+    expect(row('### ClawPump (`clawpump`)')).toContain('clawville_market');
+    expect(row('### SAID Protocol (`said`)')).toContain('clawville_trust');
+    for (const heading of ['### ClawPump (`clawpump`)', '### SAID Protocol (`said`)']) {
+      expect(row(heading)).not.toContain('MCP URL');
+      expect(row(heading)).not.toContain('```');
+    }
+  });
+
   test('renders no planned row and no unresolved placeholder', () => {
     const page = buildEcosystemTopic(API_BASE);
     const planned = ECOSYSTEM_CATALOG.filter((entry) => entry.status === 'planned');
-    expect(planned.map((entry) => entry.id)).toEqual(['usepod', 'clawpump', 'hydra', 'said']);
+    expect(planned.map((entry) => entry.id)).toEqual(['atelier', 'usepod', 'hydra']);
     for (const entry of planned) {
       expect(page).not.toContain(`(\`${entry.id}\`)`);
       expect(page).not.toContain(entry.name);
@@ -228,5 +292,42 @@ describe('Nori points at the ecosystem list', () => {
     const lines = townGuide.knowledge.filter((entry) => entry.includes('/api/ecosystem/catalog'));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('/api/skills/protocol/ecosystem.md');
+  });
+});
+
+describe('v112: "Ask me before each payment" in the served manual and Nori', () => {
+  test('the ecosystem page tells the agent the 202 reply, the status read, the 15 minutes, no re-send and human-only approval', () => {
+    const page = buildEcosystemTopic(API_BASE);
+    expect(page).toContain('### Waiting for your human ("Ask me before each payment")');
+    expect(page).toContain('answers HTTP `202` with `{ "status": "awaiting_approval", "requestId": "...", "expiresAt": "..." }`');
+    expect(page).toContain(`\`GET ${API_BASE}/api/vendors/studios/requests/<requestId>\``);
+    expect(page).toContain('expires 15 minutes after you sent it');
+    expect(page).toContain('Do not send it again.');
+    expect(page).toContain('Only your human can approve or decline it');
+    expect(page).toContain('`403 studios_approval_human_only`');
+    expect(page).toContain("Approving needs a signature from your human's linked wallet");
+    expect(page).toContain('A session cookie alone never approves');
+    expect(page).toContain("your human's own web form too");
+    expect(page).toContain('`approval_pending_limit`');
+    expect(page).not.toContain('—');
+  });
+
+  test('the actions page tells a hosted agent to wait for its human', () => {
+    const page = buildProtocolTopic(API_BASE, 'actions');
+    expect(page).toContain('"Ask me before each');
+    expect(page).toContain('Do not send another generate_image while it waits');
+    // The page has older em dashes; the new text has none.
+    const start = page.indexOf('If your human turned on');
+    const added = page.slice(start, page.indexOf('House agents are refused.', start));
+    expect(added).toContain('only your human approves it in the wallet panel');
+    expect(added).not.toContain('—');
+  });
+
+  test('Nori has one orientation line for the setting', () => {
+    const lines = townGuide.knowledge.filter((entry) => entry.includes('Ask me before each payment'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Approvals');
+    expect(lines[0]).toContain('linked wallet');
+    expect(lines[0]).not.toContain('—');
   });
 });

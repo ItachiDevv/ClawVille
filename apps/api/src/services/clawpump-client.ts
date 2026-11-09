@@ -111,7 +111,29 @@ export function clawPumpUrl(config: { origin: string; basePath: string }, path: 
   return url;
 }
 
-async function getJson(path: string, options: ClawPumpClientOptions): Promise<unknown> {
+/** Read a reply body and stop at the cap, so a long chunked reply is never buffered whole. */
+async function readTextCapped(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const decoder = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    text += decoder.decode(value, { stream: true });
+    if (text.length > MAX_RESPONSE_CHARS) {
+      await reader.cancel().catch(() => {});
+      throw new ClawPumpClientError('response_too_large', response.status);
+    }
+  }
+}
+
+/**
+ * The one authenticated GET. The key goes only to the allowlisted host, redirects
+ * are refused, and the timeout and the reply cap apply. Callers parse the result
+ * as untrusted data.
+ */
+export async function getClawPumpJson(path: string, options: ClawPumpClientOptions = {}): Promise<unknown> {
   const config = resolveClawPumpConfig(options.env ?? process.env);
   const url = clawPumpUrl(config, path);
   let response: Response;
@@ -133,8 +155,12 @@ async function getJson(path: string, options: ClawPumpClientOptions): Promise<un
     throw new ClawPumpClientError('response_too_large', response.status);
   }
   let text: string;
-  try { text = await response.text(); } catch { throw new ClawPumpClientError('timeout', response.status); }
-  if (text.length > MAX_RESPONSE_CHARS) throw new ClawPumpClientError('response_too_large', response.status);
+  try {
+    text = await readTextCapped(response);
+  } catch (error) {
+    if (error instanceof ClawPumpClientError) throw error;
+    throw new ClawPumpClientError('timeout', response.status);
+  }
   try { return JSON.parse(text); } catch { throw new ClawPumpClientError('schema_invalid', response.status); }
 }
 
@@ -150,14 +176,14 @@ function toAgent(wire: z.infer<typeof agentWire>): ClawPumpAgent {
 
 /** Lists ONLY the agents of the account that owns CLAWPUMP_API_KEY. */
 export async function listClawPumpAgents(options: ClawPumpClientOptions = {}): Promise<ClawPumpAgent[]> {
-  const parsed = listWire.safeParse(await getJson('/agents', options));
+  const parsed = listWire.safeParse(await getClawPumpJson('/agents', options));
   if (!parsed.success) throw new ClawPumpClientError('schema_invalid');
   return (Array.isArray(parsed.data) ? parsed.data : parsed.data.agents).map(toAgent);
 }
 
 export async function getClawPumpAgent(agentId: string, options: ClawPumpClientOptions = {}): Promise<ClawPumpAgent> {
   if (!agentIdSchema.safeParse(agentId).success) throw new ClawPumpClientError('invalid_agent_id');
-  const body = await getJson(`/agents/${agentId}`, options);
+  const body = await getClawPumpJson(`/agents/${agentId}`, options);
   const direct = agentWire.safeParse(body);
   const wrapped = direct.success ? null : wrappedAgentWire.safeParse(body);
   const wire = direct.success ? direct.data : wrapped?.success ? wrapped.data.agent : null;

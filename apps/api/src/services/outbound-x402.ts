@@ -56,15 +56,37 @@ export interface VendorPin {
   maxCallAtomic: bigint;
 }
 
-export interface VendorCallInput {
+interface VendorCallBase {
   avatarId: string;
   actor: 'human' | 'agent';
   pin: VendorPin;
   tool: string;
   idempotencyKey: string;
   url: string;
-  body: Record<string, unknown>;
+  /** Time limit for the paid request (default 120 s; a Studios video waits up to 5 minutes). */
+  paidTimeoutMs?: number;
+  /** Largest reply read (default 12 MB). */
+  replyMaxBytes?: number;
+  /**
+   * The caller's check that the call may still go on (Codex review 2026-11-06).
+   * Called inside the admission transaction (before the ledger row is inserted)
+   * and inside the transaction that stores our signature (the last step before
+   * the send). Studios: lock the caller's job row and return true only while the
+   * caller still owns it and the job is not terminal. SAID: return true only
+   * while "Ask me before each payment" is off. False: no ledger row, no
+   * signature stored, nothing sent (`payment_fenced`).
+   */
+  fence?: (tx: LedgerTx) => Promise<boolean>;
 }
+
+/** The default is POST with a JSON body. A GET sends no body and no Content-Type. */
+export type VendorCallInput = VendorCallBase & (
+  | { method?: 'POST'; body: Record<string, unknown> }
+  | { method: 'GET'; body?: undefined }
+);
+
+/** The transaction handle `fence` gets. */
+export type LedgerTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export type VendorCallFailure =
   | 'duplicate_request'
@@ -78,7 +100,8 @@ export type VendorCallFailure =
   | 'over_daily_cap'
   | 'wallet_missing'
   | 'payment_prepare_failed'
-  | 'payment_ambiguous';
+  | 'payment_ambiguous'
+  | 'payment_fenced';
 
 export type VendorCallResult =
   | {
@@ -250,6 +273,24 @@ async function postJson(
   });
 }
 
+/** One vendor request, for the quote and for the paid send. */
+function sendVendorRequest(
+  f: OutboundDeps['fetch'],
+  input: VendorCallInput,
+  timeoutMs: number,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  if (input.method === 'GET') {
+    return f(input.url, {
+      method: 'GET',
+      headers: { Accept: 'application/json', ...headers },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'error',
+    });
+  }
+  return postJson(f, input.url, input.body, timeoutMs, headers);
+}
+
 function readPaymentRequired(res: Response): PaymentRequired | null {
   const header = res.headers.get('PAYMENT-REQUIRED');
   if (!header) return null;
@@ -284,6 +325,8 @@ async function admit(input: VendorCallInput, requirement: PaymentRequirements, a
   const usdCents = Number((amount + ATOMIC_PER_CENT - 1n) / ATOMIC_PER_CENT);
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend-policy:${input.avatarId}`}, 0))`);
+    // The caller lost its job (a recovery pass took it over): no ledger row.
+    if (input.fence && !(await input.fence(tx))) return { ok: false, code: 'payment_fenced' } as const;
     const [existing] = await tx
       .select({ id: vendorSpendLedger.id })
       .from(vendorSpendLedger)
@@ -385,10 +428,10 @@ async function finish(
   }
 }
 
-/** Read a JSON reply up to MAX_REPLY_BYTES; null when larger or not JSON. */
-export async function readJsonCapped(res: Response): Promise<unknown> {
+/** Read a JSON reply up to `maxBytes` (default MAX_REPLY_BYTES); null when larger or not JSON. */
+export async function readJsonCapped(res: Response, maxBytes = MAX_REPLY_BYTES): Promise<unknown> {
   const declared = Number(res.headers.get('content-length') ?? '0');
-  if (declared > MAX_REPLY_BYTES) {
+  if (declared > maxBytes) {
     await res.body?.cancel().catch(() => {});
     return null;
   }
@@ -400,7 +443,7 @@ export async function readJsonCapped(res: Response): Promise<unknown> {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_REPLY_BYTES) {
+    if (total > maxBytes) {
       await reader.cancel().catch(() => {});
       return null;
     }
@@ -427,7 +470,7 @@ export async function callVendorWithAvatarWallet(
   // 1) Unpaid request: the seller answers 402 with its quote.
   let quoteRes: Response;
   try {
-    quoteRes = await postJson(deps.fetch, input.url, input.body, QUOTE_TIMEOUT_MS);
+    quoteRes = await sendVendorRequest(deps.fetch, input, QUOTE_TIMEOUT_MS);
   } catch {
     return { ok: false, code: 'vendor_unreachable' };
   }
@@ -476,21 +519,33 @@ export async function callVendorWithAvatarWallet(
   }
 
   // 4) Store our signature BEFORE sending, so the transaction can be found on
-  //    chain later. If this write fails, nothing is sent.
+  //    chain later. If this write fails, nothing is sent. The write is fenced:
+  //    if the caller lost its job, or a recovery pass already closed this
+  //    unsigned row, nothing is stored and nothing is sent.
+  let stored: 'stored' | 'fenced';
   try {
-    await db
-      .update(vendorSpendLedger)
-      .set({ payerSignature: signed.payerSignature, signedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(vendorSpendLedger.id, admission.ledgerId), eq(vendorSpendLedger.status, 'pending')));
+    stored = await db.transaction(async (tx) => {
+      if (input.fence && !(await input.fence(tx))) return 'fenced' as const;
+      const rows = await tx
+        .update(vendorSpendLedger)
+        .set({ payerSignature: signed.payerSignature, signedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(vendorSpendLedger.id, admission.ledgerId), eq(vendorSpendLedger.status, 'pending')))
+        .returning({ id: vendorSpendLedger.id });
+      return rows.length > 0 ? 'stored' as const : 'fenced' as const;
+    });
   } catch {
     await finish(admission.ledgerId, 'failed', { failureReason: 'not_sent_ledger_write_failed' });
     return { ok: false, code: 'payment_prepare_failed', ledgerId: admission.ledgerId };
+  }
+  if (stored === 'fenced') {
+    await finish(admission.ledgerId, 'failed', { failureReason: 'not_sent_job_taken_over' });
+    return { ok: false, code: 'payment_fenced', ledgerId: admission.ledgerId };
   }
 
   // 5) Paid request. From here on the payment may have settled.
   let paidRes: Response;
   try {
-    paidRes = await postJson(deps.fetch, input.url, input.body, PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': signed.header });
+    paidRes = await sendVendorRequest(deps.fetch, input, input.paidTimeoutMs ?? PAID_CALL_TIMEOUT_MS, { 'PAYMENT-SIGNATURE': signed.header });
   } catch {
     await finish(admission.ledgerId, 'ambiguous', { failureReason: 'no_response_after_payment' });
     console.warn(`[outbound-x402] ${input.pin.vendor} ${input.tool}: no response after payment; ledger ${admission.ledgerId} ambiguous`);
@@ -501,7 +556,7 @@ export async function callVendorWithAvatarWallet(
   if (paidRes.ok) {
     let json: unknown = null;
     try {
-      json = await readJsonCapped(paidRes);
+      json = await readJsonCapped(paidRes, input.replyMaxBytes);
     } catch {
       json = null;
     }

@@ -105,7 +105,8 @@ import {
 import type { CosmeticActor, CosmeticActionFailure } from './cosmetic-actions';
 import type { CustodialBalancesResult } from './wallet-withdraw-executor';
 // Type-only: the Studios service loads lazily inside its test seam.
-import type { StudiosImageResult } from './studios-images';
+import type { StudiosImageResult, StudiosOperationResult } from './studios-images';
+import type { StudiosOperationId } from '@clawville/shared';
 // Hydra (wandering coin analyst): DB-only coin pool + template lines, no LLM.
 import { HYDRA_NPC_ID, hydraAmbientLine, pickHydraCoin } from './hydra-coin-chatter';
 import type { HydraAgentReply } from './hydra-agent-reply';
@@ -366,15 +367,33 @@ export function parseGenerateImageParams(paramStr: string): string | null {
 }
 
 /**
+ * One refusal line of at most 200 characters. A "Do not retry" sentence in the
+ * message (payment_ambiguous, outcome_unknown, ...) goes first and whole, so
+ * the cut at 200 characters only ever removes the explanation after it.
+ */
+export function formatStudiosRefusalLine(verb: string, code: string, message: string | undefined): string {
+  const head = `Studio: ${verb} refused (${String(code).slice(0, 40)})`;
+  if (typeof message !== 'string') return head.slice(0, 200);
+  const text = message.replace(/\s+/g, ' ').trim();
+  const stop = /Do not retry[^.]*\./.exec(text);
+  const body = stop ? `${stop[0]} ${text.replace(stop[0], '').trim()}`.trim() : text;
+  return `${head}: ${body}`.slice(0, 200);
+}
+
+/**
  * One short line for the agent's next decide prompt about a generate_image
  * result. Only our own fields: the media path, the paid cents, or our refusal
  * code and message. Never vendor text, never the prompt.
  */
 export function formatGeneratedImageResult(result: StudiosImageResult): string {
-  if (!result.ok) {
-    const message = result.message.replace(/\s+/g, ' ').slice(0, 130);
-    return `Studio: generate_image refused (${result.code}): ${message}`;
+  if (!result.ok && result.code === 'awaiting_approval') {
+    return 'Studio: generate_image waits for your human to approve it in the wallet panel (it expires in 15 minutes); nothing was paid yet. Do not send another generate_image until your human answers.';
   }
+  // Sign-in mode: the image is a Studios job (running first, then the operation shape).
+  if ((!result.ok && (result.code === 'running' || result.code === 'duplicate_request_in_flight')) || (result.ok && 'operation' in result)) {
+    return formatStudiosJobLine('image', result);
+  }
+  if (!result.ok) return formatStudiosRefusalLine('generate_image', result.code, result.message);
   const path = /^\/api\/media\/[A-Za-z0-9-]{1,64}$/.test(result.mediaPath) ? result.mediaPath : 'your media list';
   const cents = typeof result.paidUsdCents === 'number' && Number.isFinite(result.paidUsdCents)
     ? Math.max(0, Math.round(result.paidUsdCents))
@@ -388,6 +407,86 @@ export function formatGeneratedImageResult(result: StudiosImageResult): string {
 /** One short line for the agent's next decide prompt while an image is still being made. */
 export function formatGenerateImageInFlightRefusal(): string {
   return 'Studio: generate_image refused (in_flight): your last image is still being made; wait for its result.';
+}
+
+/** One short line for the agent's next decide prompt after its human declined its request. */
+export function formatGenerateImageDeclined(): string {
+  return 'Studio: your human declined your generate_image request; nothing was made or paid. Do not send the same request again.';
+}
+
+/**
+ * Hosted Studios verbs of phase 3b. Each has a fixed per-avatar daily cap in
+ * the service (`hostedPerDay` in vendors/studios-operations.ts: videos 2,
+ * character shots 3, recasts 1 per UTC day) on top of the human's own per-day
+ * counts and spend caps (the 2026-10-22 rule: every autonomous money verb has
+ * a per-avatar daily cap). The executor adds one Studios tag per reply and one
+ * in flight per avatar, shared with generate_image.
+ */
+export const STUDIOS_VERB_OPERATION = {
+  generate_video: 'video',
+  make_character: 'character_shots',
+  recast_character: 'recast',
+} as const satisfies Record<string, Exclude<StudiosOperationId, 'image'>>;
+export type StudiosOperationVerb = keyof typeof STUDIOS_VERB_OPERATION;
+
+const VERB_OF_OPERATION: Record<StudiosOperationId, string> = {
+  image: 'generate_image',
+  video: 'generate_video',
+  character_shots: 'make_character',
+  recast: 'recast_character',
+};
+const LABEL_OF_OPERATION: Record<StudiosOperationId, string> = {
+  image: 'image',
+  video: 'video',
+  character_shots: 'character shots',
+  recast: 'recast clip',
+};
+
+/** Exact `preset=<id>, mediaId=<uuid>` grammar (either order, each once). */
+const RECAST_PARAM_RE = /^\s*(preset|mediaId)\s*=\s*([A-Za-z0-9_-]{1,64})\s*,\s*(preset|mediaId)\s*=\s*([A-Za-z0-9_-]{1,64})\s*$/;
+
+/** The recast preset and media id from a strict param string, or null. */
+export function parseRecastCharacterParams(paramStr: string): { preset: string; mediaId: string } | null {
+  const match = RECAST_PARAM_RE.exec(paramStr);
+  if (!match || match[1] === match[3]) return null;
+  const values: Record<string, string> = { [match[1]!]: match[2]!, [match[3]!]: match[4]! };
+  const preset = values.preset!;
+  const mediaId = values.mediaId!.toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(preset) || !COSMETIC_SKU_ID_RE.test(mediaId)) return null;
+  return { preset, mediaId };
+}
+
+/**
+ * One short line (at most 200 characters) for the agent's next decide prompt
+ * about a Studios video, character-shot or recast request: our own status,
+ * media path and cents only, never vendor text.
+ */
+export function formatStudiosJobLine(
+  operation: StudiosOperationId,
+  result: StudiosOperationResult | { ok: false; code: string; message?: string },
+): string {
+  const verb = VERB_OF_OPERATION[operation] ?? 'studios';
+  const label = LABEL_OF_OPERATION[operation] ?? 'media';
+  if (!result.ok && result.code === 'running') {
+    return `Studio: your ${label} is being made; it can take several minutes. Your next decision gets the result. Do not send it again.`;
+  }
+  if (!result.ok && result.code === 'awaiting_approval') {
+    return `Studio: ${verb} waits for your human to approve it in the wallet panel (it expires in 15 minutes); nothing was paid yet. Do not send another until your human answers.`;
+  }
+  if (!result.ok && result.code === 'approval_declined') {
+    return `Studio: your human declined your ${verb} request; nothing was made or paid. Do not send the same request again.`;
+  }
+  if (!result.ok && result.code === 'duplicate_request_in_flight') {
+    return `Studio: the same ${verb} request is already running; nothing new was sent or paid. Do not send it again; your next decision gets the result.`;
+  }
+  if (!result.ok) return formatStudiosRefusalLine(verb, result.code, result.message);
+  if ('operation' in result && result.mediaPath === null) {
+    return `Studio: your ${label} was made on your human's Studios account (it is in their Studios My Media); ClawVille could not copy it.`;
+  }
+  const path = typeof result.mediaPath === 'string' && /^\/api\/media\/[A-Za-z0-9-]{1,64}$/.test(result.mediaPath) ? result.mediaPath : 'your media list';
+  const cents = typeof result.paidUsdCents === 'number' && Number.isFinite(result.paidUsdCents) ? Math.max(0, Math.round(result.paidUsdCents)) : null;
+  const paid = cents !== null ? `your wallet paid ${cents} US cents` : "your human's Studios account paid; your wallet paid nothing";
+  return `Studio: ${label} ready at ${path}; ${paid}.`.slice(0, 200);
 }
 
 /** One short line for the agent's next decide prompt. Numbers only, no pubkey. */
@@ -1276,6 +1375,46 @@ class NpcSimulation {
     const resolved = await resolveAgentSession(sessionId);
     return resolved?.agentId === expectedAgentId ? resolved : null;
   };
+  /**
+   * Test seam; the SAME Studios operation service as the REST routes and MCP
+   * tools (video, character shots, recast).
+   */
+  autonomousStudiosOperation: (input: {
+    avatarId: string;
+    actor: 'agent';
+    operation: Exclude<StudiosOperationId, 'image'>;
+    params: Record<string, unknown>;
+    idempotencyKey: string;
+    surface: 'hosted';
+  }) => Promise<StudiosOperationResult> = async (input) => {
+    const [{ requestStudiosOperation }, { STUDIOS_OPERATIONS }] = await Promise.all([
+      import('./studios-images'),
+      import('./vendors/studios-operations'),
+    ]);
+    // The same schema as the REST body: anything it refuses never runs.
+    const parsed = STUDIOS_OPERATIONS[input.operation].schema.safeParse(input.params);
+    if (!parsed.success) {
+      return { ok: false, code: 'media_missing', httpStatus: 400, ledgerId: null, message: 'The image for this action is not usable. Nothing was made or paid.' };
+    }
+    return requestStudiosOperation({ ...input, params: parsed.data });
+  };
+  /**
+   * Test seam; the public https URL of one stored IMAGE of this avatar (recast
+   * input), or null when it is not this avatar's image. Studios fetches it.
+   */
+  autonomousOwnImageUrl: (avatarId: string, mediaId: string) => Promise<string | null> = async (avatarId, mediaId) => {
+    const [{ db, avatarMedia, and, eq }, { resolveApiBase }, { validateMediaInputUrl }] = await Promise.all([
+      import('@clawville/database'),
+      import('./skill-protocol'),
+      import('./vendors/studios-operations'),
+    ]);
+    const row = await db.query.avatarMedia.findFirst({
+      where: and(eq(avatarMedia.id, mediaId), eq(avatarMedia.avatarId, avatarId)),
+      columns: { mimeType: true },
+    });
+    if (!row || !row.mimeType.startsWith('image/')) return null;
+    return validateMediaInputUrl(`${resolveApiBase()}/api/media/${mediaId}`);
+  };
   /** Test seam; the SAME Studios image service as the web form, REST route and MCP tool. */
   autonomousImageGenerate: (input: {
     avatarId: string;
@@ -1345,7 +1484,7 @@ class NpcSimulation {
    * Bounded by the number of concurrent settles.
    */
   private autonomousCosmeticBuyInFlight = new Set<string>();
-  /** Avatars with a generate_image settle still running; never evicted. */
+  /** Avatars with a Studios verb settle (generate_image, generate_video, make_character, recast_character) still running; never evicted. */
   private autonomousImageInFlight = new Set<string>();
   private autonomousSalvageLastAdmittedAt = new Map<string, number>();
   private autonomousTradeLastAdmittedAt = new Map<string, number>();
@@ -2881,7 +3020,8 @@ class NpcSimulation {
       void this.autonomousActionResult(attribution.agentId, attribution.avatarId, line).catch(() => undefined);
     };
 
-    // generate_image can spend wallet USDC: at most one per reply.
+    // A Studios verb (generate_image, generate_video, make_character,
+    // recast_character) can spend money: at most one Studios tag per reply.
     let imageTagAdmitted = false;
 
     let match: RegExpExecArray | null;
@@ -2957,7 +3097,28 @@ class NpcSimulation {
         imageTagAdmitted = true;
         params.prompt = imagePrompt;
       }
-      if (paramStr.length > 0 && imagePrompt === null) {
+      // The phase 3b Studios verbs: the same strict grammar (one quoted
+      // prompt; recast: exactly preset + mediaId) and the same one per reply.
+      let studiosParsed = false;
+      if (name === 'generate_video' || name === 'make_character' || name === 'recast_character') {
+        const parsed = name === 'recast_character' ? parseRecastCharacterParams(paramStr) : parseGenerateImageParams(paramStr);
+        if (parsed === null) {
+          console.warn(`[Hatcher] ${name} dropped — invalid parameters`);
+          noteDrop(name === 'recast_character'
+            ? 'Studio: that recast_character tag was not valid, so nothing was made or paid. Write preset=<recast preset id>, mediaId=<id of your own stored image>.'
+            : `Studio: that ${name} tag was not valid, so nothing was made or paid. Write prompt="<1 to 1000 characters>" with no double quote or closing parenthesis inside.`);
+          continue;
+        }
+        if (imageTagAdmitted) {
+          console.warn(`[Hatcher] ${name} dropped — one Studios action per reply`);
+          continue;
+        }
+        imageTagAdmitted = true;
+        studiosParsed = true;
+        if (typeof parsed === 'string') params.prompt = parsed;
+        else Object.assign(params, parsed);
+      }
+      if (paramStr.length > 0 && imagePrompt === null && !studiosParsed) {
         for (const part of paramStr.split(',')) {
           const eq = part.indexOf('=');
           if (eq > 0) {
@@ -3520,9 +3681,63 @@ class NpcSimulation {
    * (`generateStudiosImage`), with `actor: 'agent'` and the agent's OWN
    * avatar id. The service picks the human's chosen mode: their saved Studios
    * key (no ClawVille money), or the avatar wallet inside the human's spend
-   * rules (refused when unset).
-   *   0. synchronously, before any await: refuse while an image for this avatar
-   *      is in flight; else mark it in flight (released when this settle ends);
+   * rules (refused when unset). The guard chain is `settleAutonomousStudios`.
+   */
+  private async settleAutonomousImageGeneration(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    prompt: string,
+  ): Promise<void> {
+    await this.settleAutonomousStudios(npcId, attribution, 'generate_image', async (avatarId) => {
+      const idempotencyKey = `hosted-img-${avatarId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}-${randomUUID()}`;
+      const result = await this.autonomousImageGenerate({ avatarId, actor: 'agent', prompt, idempotencyKey, surface: 'hosted' });
+      if (!result.ok) console.warn(`[Hatcher] generate_image not made — ${result.code}`);
+      return { line: formatGeneratedImageResult(result), intent: result.ok ? 'made a Studios image' : result.code === 'running' ? 'started a Studios image' : null };
+    });
+  }
+
+  /**
+   * generate_video, make_character, recast_character as the bound avatar:
+   * the SAME service as the REST routes and MCP tools
+   * (`requestStudiosOperation`), with `actor: 'agent'`, surface 'hosted' (the
+   * service keeps the fixed per-avatar daily cap) and the agent's OWN avatar.
+   * recast_character sends Studios the public URL of one of the avatar's own
+   * stored images (never a URL the model wrote) at 480p, the cheapest size.
+   */
+  private async settleAutonomousStudiosOperation(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    verb: StudiosOperationVerb,
+    params: Record<string, string>,
+  ): Promise<void> {
+    const operation = STUDIOS_VERB_OPERATION[verb];
+    await this.settleAutonomousStudios(npcId, attribution, verb, async (avatarId) => {
+      let input: Record<string, unknown>;
+      if (verb === 'recast_character') {
+        const imageUrl = await this.autonomousOwnImageUrl(avatarId, params.mediaId ?? '');
+        if (!imageUrl) {
+          return { line: 'Studio: recast_character refused (media_not_found): mediaId must be one of your own stored images. Nothing was made or paid.', intent: null };
+        }
+        input = { preset: params.preset, imageUrls: [imageUrl], resolution: '480p' };
+      } else if (verb === 'make_character') {
+        input = { prompt: params.prompt, shots: ['headshot'] };
+      } else {
+        input = { prompt: params.prompt };
+      }
+      const idempotencyKey = `hosted-${operation.slice(0, 5)}-${avatarId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}-${randomUUID()}`;
+      const result = await this.autonomousStudiosOperation({ avatarId, actor: 'agent', operation, params: input, idempotencyKey, surface: 'hosted' });
+      if (!result.ok && result.code !== 'running') console.warn(`[Hatcher] ${verb} not made — ${result.code}`);
+      return {
+        line: formatStudiosJobLine(operation, result),
+        intent: result.ok || result.code === 'running' ? `started a Studios ${LABEL_OF_OPERATION[operation]}` : null,
+      };
+    });
+  }
+
+  /**
+   * The shared guard chain of every hosted Studios verb.
+   *   0. synchronously, before any await: refuse while a Studios request for
+   *      this avatar is being sent; else mark it (released when this ends);
    *   1. refuse a house actor BEFORE any session resolve (fail closed);
    *   2. re-resolve the live connected session for this exact agentId;
    *   3. require a ledger-authorized session;
@@ -3531,16 +3746,19 @@ class NpcSimulation {
    * An unbound or non-ledger agent is DROPPED, never demoted to a guest.
    * The result goes to the hosted driver as one short line for the next decide.
    */
-  private async settleAutonomousImageGeneration(
+  private async settleAutonomousStudios(
     npcId: string,
     attribution: AgentActionAttribution,
-    prompt: string,
+    verb: string,
+    run: (avatarId: string) => Promise<{ line: string; intent: string | null }>,
   ): Promise<void> {
     const avatarId = attribution.avatarId;
     if (this.autonomousImageInFlight.has(avatarId)) {
-      console.warn('[Hatcher] generate_image dropped — an image is in flight');
-      await this.autonomousActionResult(attribution.agentId, avatarId, formatGenerateImageInFlightRefusal())
-        .catch(() => undefined);
+      console.warn(`[Hatcher] ${verb} dropped — a Studios request is in flight`);
+      const line = verb === 'generate_image'
+        ? formatGenerateImageInFlightRefusal()
+        : `Studio: ${verb} refused (in_flight): your last Studios request is still being sent; wait for its result.`;
+      await this.autonomousActionResult(attribution.agentId, avatarId, line).catch(() => undefined);
       return;
     }
     this.autonomousImageInFlight.add(avatarId);
@@ -3550,46 +3768,44 @@ class NpcSimulation {
         // or not the verb is in HOUSE_REFUSED_AUTONOMY_VERBS: a house bot has
         // no session, and the resolve below would unregister its body.
         if (await this.autonomousHouseActorCheck(attribution.agentId)) {
-          console.warn('[Hatcher] generate_image dropped - house actor (no connected session)');
+          console.warn(`[Hatcher] ${verb} dropped - house actor (no connected session)`);
           return;
         }
       } catch {
-        console.warn('[Hatcher] generate_image dropped — house actor check unavailable');
+        console.warn(`[Hatcher] ${verb} dropped — house actor check unavailable`);
         return;
       }
       const resolved = await this.autonomousImageAgentResolve(attribution.sessionId, attribution.agentId);
       if (!resolved) {
-        console.warn('[Hatcher] generate_image dropped — no live connected session');
+        console.warn(`[Hatcher] ${verb} dropped — no live connected session`);
         return;
       }
       if (!resolved.ledgerCapable) {
-        console.warn('[Hatcher] generate_image dropped — agent session is not ledger-authorized');
+        console.warn(`[Hatcher] ${verb} dropped — agent session is not ledger-authorized`);
         return;
       }
       if (!resolved.avatarId || !resolved.userId) {
-        console.warn('[Hatcher] generate_image dropped — agent has no bound avatar');
+        console.warn(`[Hatcher] ${verb} dropped — agent has no bound avatar`);
         return;
       }
       if (resolved.avatarId !== avatarId || resolved.agentId !== attribution.agentId) {
-        console.warn('[Hatcher] generate_image dropped — live agent/avatar binding changed');
+        console.warn(`[Hatcher] ${verb} dropped — live agent/avatar binding changed`);
         return;
       }
-      const idempotencyKey = `hosted-img-${avatarId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}-${randomUUID()}`;
       let resultLine: string;
       try {
-        const result = await this.autonomousImageGenerate({ avatarId, actor: 'agent', prompt, idempotencyKey, surface: 'hosted' });
-        resultLine = formatGeneratedImageResult(result);
-        if (!result.ok) console.warn(`[Hatcher] generate_image not made — ${result.code}`);
+        const outcome = await run(avatarId);
+        resultLine = outcome.line;
         const body = this.npcs.get(npcId);
-        if (result.ok && body) body.intentDescription = 'made a Studios image';
+        if (outcome.intent && body) body.intentDescription = outcome.intent;
       } catch (err) {
-        console.warn(`[Hatcher] generate_image failed — ${err instanceof Error ? err.message : String(err)}`);
-        resultLine = 'Studio: generate_image failed (internal_error): the result is unknown and it may have been paid. Do not retry now.';
+        console.warn(`[Hatcher] ${verb} failed — ${err instanceof Error ? err.message : String(err)}`);
+        resultLine = `Studio: ${verb} failed (internal_error): the result is unknown and it may have been paid. Do not retry now.`;
       }
       await this.autonomousActionResult(attribution.agentId, avatarId, resultLine);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      console.warn(`[Hatcher] generate_image dropped — ${reason}`);
+      console.warn(`[Hatcher] ${verb} dropped — ${reason}`);
     } finally {
       this.autonomousImageInFlight.delete(avatarId);
     }
@@ -4425,6 +4641,27 @@ class NpcSimulation {
           return;
         }
         void this.settleAutonomousImageGeneration(npcId, attribution, prompt);
+        return;
+      }
+      case 'generate_video':
+      case 'make_character':
+      case 'recast_character': {
+        const expected = name === 'recast_character' ? ['mediaId', 'preset'] : ['prompt'];
+        const keys = Object.keys(params).sort();
+        const prompt = params.prompt ?? '';
+        if (
+          keys.join(',') !== expected.join(',')
+          || (name !== 'recast_character' && (prompt.trim() !== prompt || prompt.length < 1 || prompt.length > GENERATE_IMAGE_PROMPT_MAX || GENERATE_IMAGE_CONTROL_RE.test(prompt)))
+          || (name === 'recast_character' && parseRecastCharacterParams(`preset=${params.preset ?? ''}, mediaId=${params.mediaId ?? ''}`) === null)
+        ) {
+          console.warn(`[Hatcher] ${name} dropped — expected exactly ${expected.join(' and ')}`);
+          return;
+        }
+        if (!attribution) {
+          console.warn(`[Hatcher] ${name} dropped — no bound agent/avatar attribution`);
+          return;
+        }
+        void this.settleAutonomousStudiosOperation(npcId, attribution, name, params);
         return;
       }
       case 'salvage_node': {

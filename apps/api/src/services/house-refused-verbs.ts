@@ -38,6 +38,9 @@ const HOUSE_REFUSED_VERB_LIST = [
   'equip_cosmetic',
   'buy_cosmetic',
   'generate_image',
+  'generate_video',
+  'make_character',
+  'recast_character',
 ] as const satisfies readonly HatcherActionVerb[];
 
 export const HOUSE_REFUSED_AUTONOMY_VERBS: ReadonlySet<string> = new Set<string>(HOUSE_REFUSED_VERB_LIST);
