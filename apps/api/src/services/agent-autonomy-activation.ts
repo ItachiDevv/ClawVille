@@ -183,7 +183,11 @@ export async function activateAutonomyForOwner(
   // D1/D2 — capacity pre-check BEFORE the §B.2 mint. A full registry for a
   // not-yet-enrolled agent must not mint a session/body it can never enroll
   // (orphan body). Already-enrolled agents always pass (idempotent re-arm).
-  if (!agentAutonomyDriver.canEnrollUser(platformAgentId)) {
+  // Own AI (MCP hub step 4): the avatar's saved AI choice is read first, so an
+  // own-AI agent is checked against its own lane (MAX_OWN_AI_AGENTS), the same
+  // lane registerUserAgent will put it in.
+  await agentAutonomyDriver.primeOwnAiConfigured(avatar.id);
+  if (!agentAutonomyDriver.canEnrollUser(platformAgentId, avatar.id)) {
     console.warn(
       `[AutonomyActivation] capacity full (${agentAutonomyDriver.userAgentCount()}/${agentAutonomyDriver.getUserAgentCapacity()}) — rejecting owner enrollment for agent ${sessionDigest(platformAgentId)}`,
     );

@@ -812,3 +812,292 @@ describe('phase-edge poll: lifecycle', () => {
     expect(driver.phaseEdgeInterval).toBeNull();
   });
 });
+
+// ── Own AI (MCP hub step 4): fast lane, per-entry spacing, cap split, timeout ──
+// Seams only (no env, no DB): `ownAiSpeedSeconds` / `ownAiTimeoutMs` stand in
+// for the orchestrator reads, `noteOwnAiConfigured` for the saved setting.
+
+type OwnAiInternals = {
+  ownAiSpeedSeconds: (platformAgentId: string) => number | null;
+  ownAiTimeoutMs: (platformAgentId: string) => number | null;
+  ownAiSubscribe: (cb: (avatarId: string) => void) => Promise<() => void>;
+  ownAiConfiguredRead: (avatarId: string) => Promise<boolean>;
+  ownAiConfigured: Map<string, boolean>;
+  ownAiInterval: ReturnType<typeof setInterval> | null;
+  ownAiStaggerTimers: Set<ReturnType<typeof setTimeout>>;
+  userAgents: Map<string, DriverEntry & { lastDecideAt: number; ownAiLane: boolean; isHouse: boolean }>;
+};
+const ownAi = agentAutonomyDriver as unknown as OwnAiInternals;
+const originalSpeed = ownAi.ownAiSpeedSeconds;
+const originalTimeout = ownAi.ownAiTimeoutMs;
+const originalSubscribe = ownAi.ownAiSubscribe;
+const originalConfiguredRead = ownAi.ownAiConfiguredRead;
+const LLM_TIMEOUT_MS = 15_000; // mirrors the driver's private constant
+const speeds = new Map<string, number>();
+
+function registerOwnUser(n: number, opts: { ownAi?: boolean } = {}) {
+  const avatarId = `own-avatar-${n}`;
+  if (opts.ownAi) agentAutonomyDriver.noteOwnAiConfigured(avatarId, true);
+  const result = agentAutonomyDriver.registerUserAgent({
+    agentId: `own-agent-${n}`,
+    bodyId: `own-body-${n}`,
+    platformAgentId: `own-platform-${n}`,
+    systemUserId: `own-owner-${n}`,
+    houseUserId: `own-owner-${n}`,
+    avatarId,
+  });
+  return { result, entry: ownAi.userAgents.get(`own-agent-${n}`) };
+}
+
+describe('own AI', () => {
+  beforeEach(() => {
+    speeds.clear();
+    ownAi.ownAiConfigured.clear();
+    ownAi.ownAiSpeedSeconds = (platformAgentId) => speeds.get(platformAgentId) ?? null;
+    ownAi.ownAiTimeoutMs = (platformAgentId) => (speeds.has(platformAgentId) ? 20_000 : null);
+    ownAi.ownAiSubscribe = async () => () => {};
+    ownAi.ownAiConfiguredRead = async () => false;
+  });
+  afterEach(() => {
+    ownAi.ownAiSpeedSeconds = originalSpeed;
+    ownAi.ownAiTimeoutMs = originalTimeout;
+    ownAi.ownAiSubscribe = originalSubscribe;
+    ownAi.ownAiConfiguredRead = originalConfiguredRead;
+    ownAi.ownAiConfigured.clear();
+  });
+
+  it('fast lane drives only a deciding own-AI user entry whose last decide is older than its spacing', () => {
+    const house = registerHouse();
+    const user = registerUser();
+    const own = registerOwnUser(1, { ownAi: true }).entry!;
+    speeds.set('own-platform-1', 10);
+    const now = Date.now();
+    house.phase = 'deciding';
+    user.phase = 'deciding';
+    own.lastDecideAt = now - 9_000;
+
+    // 9 s < 10 s spacing: not due.
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    own.lastDecideAt = now - 10_000;
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual(['own-agent-1']);
+    expect(drive).toHaveBeenCalledTimes(1);
+    expect(drive.mock.calls[0]![0]).toBe('own-agent-1');
+  });
+
+  it('fast lane skips walking, directive-pending, in-flight and warming entries, a fallback, and standby', () => {
+    const own = registerOwnUser(1, { ownAi: true }).entry!;
+    speeds.set('own-platform-1', 10);
+    const now = Date.now();
+    own.lastDecideAt = 0;
+
+    stampWalk(own, now);
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    own.phase = 'deciding';
+    own.directivePending = true;
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    own.directivePending = false;
+    driver.inFlight.add('own-agent-1');
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    driver.inFlight.clear();
+    driver.warming.set('own-agent-1', now);
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    driver.warming.clear();
+    // Fallback to ClawVille AI: the runtime reports no own-AI speed.
+    speeds.delete('own-platform-1');
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    speeds.set('own-platform-1', 10);
+    enterStandby();
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    expect(drive).not.toHaveBeenCalled();
+  });
+
+  it('spacing is per entry and due entries are staggered, oldest decide first, never all at once', () => {
+    const fast = registerOwnUser(1, { ownAi: true }).entry!;
+    const slow = registerOwnUser(2, { ownAi: true }).entry!;
+    const other = registerOwnUser(3, { ownAi: true }).entry!;
+    speeds.set('own-platform-1', 10);
+    speeds.set('own-platform-2', 25);
+    speeds.set('own-platform-3', 15);
+    const now = Date.now();
+    fast.lastDecideAt = now - 12_000;
+    slow.lastDecideAt = now - 12_000; // 12 s < 25 s: not due
+    other.lastDecideAt = now - 20_000;
+
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual(['own-agent-3', 'own-agent-1']);
+    // Only the first starts now; the second waits on a stagger timer.
+    expect(drive).toHaveBeenCalledTimes(1);
+    expect(drive.mock.calls[0]![0]).toBe('own-agent-3');
+    expect(ownAi.ownAiStaggerTimers.size).toBe(1);
+    // stop() clears the stagger timers with the intervals.
+    agentAutonomyDriver.stop();
+    expect(ownAi.ownAiStaggerTimers.size).toBe(0);
+  });
+
+  it('tick leaves a deciding own-AI entry to the fast lane and drives everything else as before', () => {
+    const house = registerHouse();
+    const user = registerUser();
+    const own = registerOwnUser(1, { ownAi: true }).entry!;
+    speeds.set('own-platform-1', 10);
+    house.phase = 'deciding';
+    user.phase = 'deciding';
+    own.phase = 'deciding';
+    driver.tick();
+    const driven = drive.mock.calls.map((call) => call[0]);
+    expect(driven).toContain(AGENT);
+    expect(driven).toContain(USER_AGENT);
+    expect(driven).not.toContain('own-agent-1');
+
+    // A walking own-AI entry stays on the tick (wedge check is tick-paced),
+    // and a fallback entry (no own-AI speed) is driven by the tick again.
+    drive.mockClear();
+    stampWalk(own);
+    driver.tick();
+    expect(drive.mock.calls.map((call) => call[0])).toContain('own-agent-1');
+    drive.mockClear();
+    own.phase = 'deciding';
+    speeds.delete('own-platform-1');
+    driver.tick();
+    expect(drive.mock.calls.map((call) => call[0])).toContain('own-agent-1');
+  });
+
+  it('decide timeout: house and fallback keep 15 s; own AI = its timeout + the router cloud timeout', async () => {
+    const { buildEndpointsFromEnv } = await import('@clawville/agent-runtime');
+    const cloud = buildEndpointsFromEnv(process.env).find((e) => e.id === 'openai')!.timeoutMs;
+    const house = registerHouse();
+    const own = registerOwnUser(1, { ownAi: true }).entry!;
+    const asEntry = (e: unknown) => e as Parameters<typeof agentAutonomyDriver.decideTimeoutMs>[0];
+    expect(agentAutonomyDriver.decideTimeoutMs(asEntry(house))).toBe(LLM_TIMEOUT_MS);
+    expect(agentAutonomyDriver.decideTimeoutMs(asEntry(own))).toBe(LLM_TIMEOUT_MS);
+    speeds.set('own-platform-1', 10);
+    expect(agentAutonomyDriver.decideTimeoutMs(asEntry(own))).toBe(Math.max(LLM_TIMEOUT_MS, 20_000 + cloud));
+    // A house entry never reads the own-AI seams, even with a speed for its id.
+    speeds.set(PLATFORM, 10);
+    expect(agentAutonomyDriver.decideTimeoutMs(asEntry(house))).toBe(LLM_TIMEOUT_MS);
+  });
+
+  it('own-AI agents use their own cap; a full user lane does not block them and vice versa', () => {
+    const userCap = agentAutonomyDriver.getUserAgentCapacity();
+    const ownCap = agentAutonomyDriver.getOwnAiAgentCapacity();
+    let n = 0;
+    for (let i = 0; i < userCap; i++) expect(registerOwnUser(++n).result).toEqual({ ok: true, reused: false });
+    const overUser = registerOwnUser(++n);
+    expect(overUser.result).toEqual({ ok: false, reason: 'capacity' });
+    expect(agentAutonomyDriver.canEnrollUser('fresh-agent', 'fresh-avatar')).toBe(false);
+    agentAutonomyDriver.noteOwnAiConfigured('fresh-avatar', true);
+    expect(agentAutonomyDriver.canEnrollUser('fresh-agent', 'fresh-avatar')).toBe(true);
+
+    for (let i = 0; i < ownCap; i++) {
+      const own = registerOwnUser(++n, { ownAi: true });
+      expect(own.result).toEqual({ ok: true, reused: false });
+      expect(own.entry!.ownAiLane).toBe(true);
+    }
+    expect(agentAutonomyDriver.ownAiAgentCount()).toBe(ownCap);
+    expect(registerOwnUser(++n, { ownAi: true }).result).toEqual({ ok: false, reason: 'capacity' });
+    expect(agentAutonomyDriver.canEnrollUser('fresh-agent', 'fresh-avatar')).toBe(false);
+    // An already-enrolled agent always passes the pre-check (idempotent re-arm).
+    expect(agentAutonomyDriver.canEnrollUser('own-agent-1', 'own-avatar-1')).toBe(true);
+  });
+
+  it('a saved-setting change moves an enrolled entry to the other lane only when that lane has room', () => {
+    const { entry } = registerOwnUser(1);
+    expect(entry!.ownAiLane).toBe(false);
+    agentAutonomyDriver.noteOwnAiConfigured('own-avatar-1', true);
+    expect(entry!.ownAiLane).toBe(true);
+    agentAutonomyDriver.noteOwnAiConfigured('own-avatar-1', false);
+    expect(entry!.ownAiLane).toBe(false);
+
+    // Fill the own lane, then a switch to own AI keeps the user lane (never evicts).
+    const ownCap = agentAutonomyDriver.getOwnAiAgentCapacity();
+    for (let i = 0; i < ownCap; i++) registerOwnUser(100 + i, { ownAi: true });
+    agentAutonomyDriver.noteOwnAiConfigured('own-avatar-1', true);
+    expect(entry!.ownAiLane).toBe(false);
+    expect(ownAi.userAgents.has('own-agent-1')).toBe(true);
+  });
+
+  it('own AI saved but own lane full: no fast lane, no own-AI timeout, today\'s 25 s spacing; a freed slot moves it', async () => {
+    const { buildEndpointsFromEnv } = await import('@clawville/agent-runtime');
+    const cloud = buildEndpointsFromEnv(process.env).find((e) => e.id === 'openai')!.timeoutMs;
+    const ownCap = agentAutonomyDriver.getOwnAiAgentCapacity();
+    for (let i = 0; i < ownCap; i++) {
+      const own = registerOwnUser(300 + i, { ownAi: true });
+      expect(own.entry!.ownAiLane).toBe(true);
+      own.entry!.phase = 'walking';
+    }
+    expect(agentAutonomyDriver.ownAiAgentCount()).toBe(ownCap);
+
+    // A normal-lane agent whose owner now enables own AI (its runtime runs on
+    // the own key at speed 10): the own lane is full, so it stays in the user lane.
+    const { entry } = registerOwnUser(1);
+    agentAutonomyDriver.noteOwnAiConfigured('own-avatar-1', true);
+    expect(entry!.ownAiLane).toBe(false);
+    speeds.set('own-platform-1', 10);
+    const asEntry = (e: unknown) => e as Parameters<typeof agentAutonomyDriver.decideTimeoutMs>[0];
+    const now = Date.now();
+    entry!.phase = 'deciding';
+    entry!.lastDecideAt = now - 60_000;
+
+    // Not in the fast interval, and the default decide timeout.
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual([]);
+    expect(agentAutonomyDriver.decideTimeoutMs(asEntry(entry))).toBe(LLM_TIMEOUT_MS);
+    expect(agentAutonomyDriver.ownAiAgentCount()).toBe(ownCap);
+
+    // The 30 s tick drives it under today's 25 s decide spacing.
+    entry!.edgeDecideAt = now - 10_000;
+    driver.tick();
+    expect(drive.mock.calls.map((call) => call[0])).not.toContain('own-agent-1');
+    drive.mockClear();
+    entry!.edgeDecideAt = now - 25_000;
+    driver.tick();
+    expect(drive.mock.calls.map((call) => call[0])).toContain('own-agent-1');
+
+    // An own-lane agent leaves: the waiting entry takes the freed slot.
+    agentAutonomyDriver.unregisterUserAgent('own-agent-300');
+    expect(entry!.ownAiLane).toBe(true);
+    expect(agentAutonomyDriver.ownAiAgentCount()).toBe(ownCap);
+    expect(agentAutonomyDriver.decideTimeoutMs(asEntry(entry))).toBe(Math.max(LLM_TIMEOUT_MS, 20_000 + cloud));
+    drive.mockClear();
+    expect(agentAutonomyDriver.ownAiFastLanePoll(now)).toEqual(['own-agent-1']);
+  });
+
+  it('registration re-reads the saved setting only while the driver runs', async () => {
+    const reads: string[] = [];
+    ownAi.ownAiConfiguredRead = async (avatarId) => {
+      reads.push(avatarId);
+      return true;
+    };
+    registerOwnUser(1);
+    await Promise.resolve();
+    expect(reads).toEqual([]);
+
+    agentAutonomyDriver.start();
+    try {
+      expect(ownAi.ownAiInterval).not.toBeNull();
+      const { entry } = registerOwnUser(2);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(reads).toEqual(['own-avatar-2']);
+      expect(entry!.ownAiLane).toBe(true);
+    } finally {
+      agentAutonomyDriver.stop();
+    }
+    expect(ownAi.ownAiInterval).toBeNull();
+  });
+
+  it('the activation prime reads the saved choice, so a full user lane admits a known own-AI agent; a failed read is soft', async () => {
+    const userCap = agentAutonomyDriver.getUserAgentCapacity();
+    for (let i = 0; i < userCap; i++) registerOwnUser(200 + i);
+    agentAutonomyDriver.start();
+    try {
+      ownAi.ownAiConfiguredRead = async () => {
+        throw new Error('db down');
+      };
+      await agentAutonomyDriver.primeOwnAiConfigured('prime-avatar');
+      expect(agentAutonomyDriver.canEnrollUser('prime-agent', 'prime-avatar')).toBe(false);
+
+      ownAi.ownAiConfiguredRead = async (avatarId) => avatarId === 'prime-avatar';
+      await agentAutonomyDriver.primeOwnAiConfigured('prime-avatar');
+      expect(agentAutonomyDriver.canEnrollUser('prime-agent', 'prime-avatar')).toBe(true);
+    } finally {
+      agentAutonomyDriver.stop();
+    }
+  });
+});

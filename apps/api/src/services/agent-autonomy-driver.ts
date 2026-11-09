@@ -68,6 +68,9 @@ import {
   WORLD_COLLIDER_MAP_HALF,
 } from '@clawville/shared';
 import { createHash } from 'crypto';
+// Namespace import: several test files mock '@clawville/agent-runtime' with a
+// partial module, and a missing NAMED export fails the whole file at link time.
+import * as agentRuntime from '@clawville/agent-runtime';
 import { NPC_WORLD_WALK_SPEED_WU_PER_S, npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
@@ -255,6 +258,17 @@ interface HouseAgentEntry {
    */
   edgeDecideAt: number;
   /**
+   * Own AI (MCP hub step 4): epoch-ms when the deciding branch last called the
+   * model (0 = never). The fast lane and tick() keep an own-AI entry's decides
+   * at least its own spacing apart. House entries write it but never read it.
+   */
+  lastDecideAt: number;
+  /**
+   * Own AI: which user cap this entry counts against. true = MAX_OWN_AI_AGENTS,
+   * false = MAX_AUTONOMOUS_USER_AGENTS. Always false for a house entry.
+   */
+  ownAiLane: boolean;
+  /**
    * Teacher-talk prefetch started by phaseEdgePoll during the final approach
    * (see TALK_PREFETCH_LEAD_MS). The arrived branch uses `promise` only when
    * buildingId, the byte-identical prompt and directiveRevision all still match
@@ -346,6 +360,34 @@ const MAX_AUTONOMOUS_USER_AGENTS = (() => {
   if (!Number.isFinite(raw)) return 12;
   return Math.max(1, raw);
 })();
+// Own AI (MCP hub step 4, founder 2026-11-08 decision 6): user agents whose
+// owner chose their own AI key or UsePod use their OWN cap, not
+// MAX_AUTONOMOUS_USER_AGENTS (they do not use our inference boxes). Same
+// parsing, default 12, floor 1, and the same typed 429 `autonomy_capacity`.
+const MAX_OWN_AI_AGENTS = (() => {
+  const raw = Number.parseInt(process.env.MAX_OWN_AI_AGENTS ?? '', 10);
+  if (!Number.isFinite(raw)) return 12;
+  return Math.max(1, raw);
+})();
+// Own-AI fast lane: a separate interval drives own-AI entries in the deciding
+// phase once their own spacing (speedSeconds) has passed. The spacing floor is
+// 10 s (OWN_AI_SPEEDS_SECONDS), so a 5 s poll adds at most 5 s to it.
+const OWN_AI_FAST_POLL_MS = 5_000;
+// Bound on the per-avatar "own AI saved" cache (oldest row evicted first).
+const OWN_AI_CONFIGURED_CACHE_MAX = 4_096;
+// The own-AI plugin falls back to the platform router INSIDE one decide call
+// (limit reached, key refused, provider error). The decide timeout must cover
+// the own-AI call plus that fallback, so it adds the router's cloud timeout
+// (INFERENCE_CLOUD_TIMEOUT_MS, read the way the router reads it; the 'openai'
+// endpoint is always present). Read once, on the first own-AI decide.
+let routerCloudTimeoutMsCache: number | null = null;
+function routerCloudTimeoutMs(): number {
+  if (routerCloudTimeoutMsCache === null) {
+    const openai = agentRuntime.buildEndpointsFromEnv(process.env).find((endpoint) => endpoint.id === 'openai');
+    routerCloudTimeoutMsCache = openai?.timeoutMs ?? LLM_TIMEOUT_MS;
+  }
+  return routerCloudTimeoutMsCache;
+}
 const DECIDE_MAX_TOKENS = 200;
 // Maximum time one immediate cycle waits for a cold runtime. On timeout the
 // drive skips, but the non-cancellable warm remains tracked until it settles so
@@ -743,6 +785,8 @@ class AgentAutonomyDriver {
       directivePending: false,
       directiveRevision: 0,
       edgeDecideAt: 0,
+      lastDecideAt: 0,
+      ownAiLane: false,
       talkPrefetch: null,
     });
     console.log(
@@ -788,13 +832,239 @@ class AgentAutonomyDriver {
    * The activation service calls this BEFORE minting the §B.2 session/body so a
    * full registry never produces an orphan body.
    */
-  canEnrollUser(agentId: string): boolean {
-    return this.userAgents.has(agentId) || this.userAgents.size < MAX_AUTONOMOUS_USER_AGENTS;
+  canEnrollUser(agentId: string, avatarId?: string): boolean {
+    if (this.userAgents.has(agentId)) return true;
+    return this.laneHasRoom(avatarId !== undefined && this.ownAiConfigured.get(avatarId) === true);
   }
 
   /** The user-agent cap (env `MAX_AUTONOMOUS_USER_AGENTS`, default 12, floor 1). */
   getUserAgentCapacity(): number {
     return MAX_AUTONOMOUS_USER_AGENTS;
+  }
+
+  /** The own-AI user-agent cap (env `MAX_OWN_AI_AGENTS`, default 12, floor 1). */
+  getOwnAiAgentCapacity(): number {
+    return MAX_OWN_AI_AGENTS;
+  }
+
+  // ── Own AI (MCP hub step 4) ─────────────────────────────────────────────────
+  //
+  // LANE (which cap an entry counts against) follows the owner's SAVED choice:
+  // `ownAiConfigured` caches "source is own_key or usepod AND no sticky
+  // fallback is stored" per avatar (a sticky key_rejected / balance_empty /
+  // model_unavailable runs on ClawVille AI until a save, so it counts in the
+  // user lane). The activation pre-check reads it fresh (primeOwnAiConfigured).
+  // It is filled by a read after each registration and on every settings change
+  // (`onOwnAiSettingsChanged`), only while the driver runs. A cold cache counts
+  // the entry in the user lane until the read lands; then the entry moves lanes
+  // only when the new lane has room (a cap is an admission gate: a running
+  // agent is never evicted).
+  //
+  // SPACING and TIMEOUT apply ONLY to an entry that holds an own-AI lane slot
+  // (`ownAiLane`), so MAX_OWN_AI_AGENTS bounds the fast lane. An entry with own
+  // AI saved but kept in the user lane (own lane full) decides at today's
+  // spacing and timeout, and moves to the own lane when a slot frees
+  // (rebalanceLanes on an unregister or a lane move) or on its next settings
+  // change / re-registration. For a slot holder they follow the LIVE runtime:
+  // `ownAiSpeedSeconds` is non-null
+  // only while the warmed runtime uses the owner's AI. A fallback to ClawVille
+  // AI (limit, key refused, balance empty) returns null, and the entry runs at
+  // today's spacing and timeout. A settings switch restarts the runtime.
+  // House entries never read any of this.
+
+  /** avatarId -> the owner saved own AI (own_key or usepod). */
+  private ownAiConfigured = new Map<string, boolean>();
+  private ownAiInterval: ReturnType<typeof setInterval> | null = null;
+  private ownAiStaggerTimers = new Set<ReturnType<typeof setTimeout>>();
+  private ownAiUnsubscribe: (() => void) | null = null;
+  /** Bumped on every start and stop (see start()). */
+  private ownAiRunId = 0;
+  /** Seam: the live own-AI speed of a running runtime (orchestrator key = platformAgentId). */
+  ownAiSpeedSeconds = (platformAgentId: string): number | null =>
+    agentOrchestrator.getOwnAiSpeedSeconds?.(platformAgentId) ?? null;
+  /** Seam: the own-AI call timeout of a running runtime, or null. */
+  ownAiTimeoutMs = (platformAgentId: string): number | null =>
+    agentOrchestrator.getOwnAiTimeoutMs?.(platformAgentId) ?? null;
+  /**
+   * Seam: does the avatar's saved setting use own AI (and no sticky fallback
+   * keeps it on ClawVille AI)? Lazy import (DB-free tests).
+   */
+  ownAiConfiguredRead = async (avatarId: string): Promise<boolean> => {
+    const { readOwnAiStatus, isOwnAiStickyFallback } = await import('./own-ai');
+    const status = await readOwnAiStatus(avatarId);
+    return status.source !== 'clawville' && !isOwnAiStickyFallback(status.fallbackReason);
+  };
+
+  /**
+   * Activation pre-check: read the avatar's saved choice now (cold cache after
+   * a restart), so canEnrollUser checks the lane the registration will use.
+   * Fail-soft and bounded (2 s): on error or timeout the cache stays as is.
+   */
+  async primeOwnAiConfigured(avatarId: string): Promise<void> {
+    // Same rule as refreshOwnAiConfigured: only while the driver runs.
+    if (!this.interval) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), 2_000);
+      });
+      const configured = await Promise.race([this.ownAiConfiguredRead(avatarId), timeout]);
+      if (configured !== 'timeout') this.noteOwnAiConfigured(avatarId, configured);
+    } catch (err) {
+      console.warn(
+        '[AutonomyDriver] own-AI setting read failed (lane check uses the cache):',
+        err instanceof Error ? err.message : err,
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  /** Seam: subscribe to settings changes. Lazy import (DB-free tests). */
+  ownAiSubscribe = async (cb: (avatarId: string) => void): Promise<() => void> => {
+    const { onOwnAiSettingsChanged } = await import('./own-ai');
+    return onOwnAiSettingsChanged(cb);
+  };
+
+  private countLane(ownLane: boolean): number {
+    let n = 0;
+    for (const entry of this.userAgents.values()) if (entry.ownAiLane === ownLane) n++;
+    return n;
+  }
+
+  private laneHasRoom(ownLane: boolean): boolean {
+    return this.countLane(ownLane) < (ownLane ? MAX_OWN_AI_AGENTS : MAX_AUTONOMOUS_USER_AGENTS);
+  }
+
+  /** Own-AI enrollment count (capacity introspection). */
+  ownAiAgentCount(): number {
+    return this.countLane(true);
+  }
+
+  /**
+   * Record the avatar's saved own-AI choice and move its enrolled entries to
+   * the matching lane when that lane has room. Public so the settings path and
+   * tests can set it directly.
+   */
+  noteOwnAiConfigured(avatarId: string, configured: boolean): void {
+    this.ownAiConfigured.delete(avatarId);
+    this.ownAiConfigured.set(avatarId, configured);
+    // Bounded: oldest row first (a missing row only means "user lane until read").
+    while (this.ownAiConfigured.size > OWN_AI_CONFIGURED_CACHE_MAX) {
+      const oldest = this.ownAiConfigured.keys().next().value;
+      if (oldest === undefined) break;
+      this.ownAiConfigured.delete(oldest);
+    }
+    for (const entry of this.userAgents.values()) {
+      if (entry.avatarId !== avatarId || entry.ownAiLane === configured) continue;
+      if (this.laneHasRoom(configured)) {
+        entry.ownAiLane = configured;
+      } else {
+        console.warn(
+          `[AutonomyDriver] ${configured ? 'own-AI' : 'user'} lane full — ${sessionDigest(entry.agentId)} keeps its current lane`,
+        );
+      }
+    }
+    // A move above can free a slot another waiting entry wants.
+    this.rebalanceLanes();
+  }
+
+  /**
+   * Move every entry whose saved choice differs from its lane into the lane it
+   * wants, while that lane has room (oldest registration first). Called when a
+   * slot frees: an unregister, or a lane move. Never evicts.
+   */
+  private rebalanceLanes(): void {
+    let moved = true;
+    while (moved) {
+      moved = false;
+      for (const entry of this.userAgents.values()) {
+        const want = this.ownAiConfigured.get(entry.avatarId) === true;
+        if (entry.ownAiLane === want || !this.laneHasRoom(want)) continue;
+        entry.ownAiLane = want;
+        moved = true;
+        console.log(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} moved to the ${want ? 'own-AI' : 'user'} lane (a slot freed)`,
+        );
+      }
+    }
+  }
+
+  /** Re-read one avatar's saved choice (fail-soft; only while the driver runs). */
+  private refreshOwnAiConfigured(avatarId: string): void {
+    if (!this.interval) return;
+    void this.ownAiConfiguredRead(avatarId).then(
+      (configured) => this.noteOwnAiConfigured(avatarId, configured),
+      (err: unknown) => {
+        console.warn(
+          '[AutonomyDriver] own-AI setting read failed (entry stays in its lane):',
+          err instanceof Error ? err.message : err,
+        );
+      },
+    );
+  }
+
+  /**
+   * Live own-AI spacing for an entry in ms, or null when the entry runs on
+   * ClawVille AI right now (house, cold runtime, clawville source, fallback).
+   */
+  private ownAiSpacingMs(entry: HouseAgentEntry): number | null {
+    // Only an entry that HOLDS an own-AI lane slot gets the fast spacing and the
+    // own-AI timeout, so MAX_OWN_AI_AGENTS bounds the fast lane. An entry with
+    // own AI saved but kept in the user lane (own lane full) decides at today's
+    // spacing; it may still use its own key at that speed.
+    if (entry.isHouse || !entry.ownAiLane) return null;
+    const seconds = this.ownAiSpeedSeconds(entry.platformAgentId);
+    return seconds !== null && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  }
+
+  /** Decide timeout: own-AI call + the router fallback, else LLM_TIMEOUT_MS. */
+  decideTimeoutMs(entry: HouseAgentEntry): number {
+    if (this.ownAiSpacingMs(entry) === null) return LLM_TIMEOUT_MS;
+    const ownMs = this.ownAiTimeoutMs(entry.platformAgentId);
+    if (ownMs === null || !Number.isFinite(ownMs) || ownMs <= 0) return LLM_TIMEOUT_MS;
+    return Math.max(LLM_TIMEOUT_MS, ownMs + routerCloudTimeoutMs());
+  }
+
+  /**
+   * Own-AI fast lane (every OWN_AI_FAST_POLL_MS). Drives ONLY user entries
+   * that run on own AI right now, in the 'deciding' phase, not in flight or
+   * warming, with no pending directive, whose last decide is at least their
+   * own spacing old. Never a walking entry (the wedge check is tuned to the
+   * 30 s tick) and never an arrived/talking edge (phaseEdgePoll owns those).
+   * Staggered: the due entries (oldest decide first) start spread across the
+   * poll window, so they never all call at once. Returns the due agentIds.
+   */
+  ownAiFastLanePoll(nowMs: number = Date.now()): string[] {
+    if (!isAutonomyActive()) return [];
+    const due: HouseAgentEntry[] = [];
+    for (const entry of this.userAgents.values()) {
+      if (entry.phase !== 'deciding' || entry.directivePending) continue;
+      if (this.inFlight.has(entry.agentId) || this.warming.has(entry.agentId)) continue;
+      const spacing = this.ownAiSpacingMs(entry);
+      if (spacing === null || nowMs - entry.lastDecideAt < spacing) continue;
+      due.push(entry);
+    }
+    due.sort((a, b) => a.lastDecideAt - b.lastDecideAt);
+    const stepMs = due.length > 0 ? Math.floor(OWN_AI_FAST_POLL_MS / due.length) : 0;
+    due.forEach((entry, index) => {
+      const run = () =>
+        void this.driveAgentNow(entry.agentId).catch((err) =>
+          console.error(
+            `[AutonomyDriver] own-AI drive failed for ${sessionDigest(entry.agentId)}:`,
+            err instanceof Error ? err.message : err,
+          ),
+        );
+      if (index === 0) {
+        run();
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.ownAiStaggerTimers.delete(timer);
+        run();
+      }, index * stepMs);
+      this.ownAiStaggerTimers.add(timer);
+    });
+    return due.map((entry) => entry.agentId);
   }
 
   /**
@@ -858,9 +1128,17 @@ class AgentAutonomyDriver {
       }
       // Body/avatar rotated (re-mint / avatar switch) → re-seat a fresh entry
       // below. Still `reused:true` (the ENROLLMENT persisted; no cap consumption).
-    } else if (this.userAgents.size >= MAX_AUTONOMOUS_USER_AGENTS) {
+    }
+    // Own AI: the lane the saved setting asks for. A re-seat keeps its slot
+    // (no cap consumption) and changes lane only when the new lane has room.
+    const wantOwnLane = this.ownAiConfigured.get(entry.avatarId) === true;
+    let lane = wantOwnLane;
+    if (existing) {
+      if (existing.ownAiLane !== wantOwnLane && !this.laneHasRoom(wantOwnLane)) lane = existing.ownAiLane;
+    } else if (!this.laneHasRoom(wantOwnLane)) {
+      const cap = wantOwnLane ? MAX_OWN_AI_AGENTS : MAX_AUTONOMOUS_USER_AGENTS;
       console.warn(
-        `[AutonomyDriver] user-agent registry full (${MAX_AUTONOMOUS_USER_AGENTS}) — rejecting ${sessionDigest(entry.agentId)} (typed capacity rejection, surfaced as 429 autonomy_capacity)`,
+        `[AutonomyDriver] ${wantOwnLane ? 'own-AI' : 'user'}-agent registry full (${cap}) — rejecting ${sessionDigest(entry.agentId)} (typed capacity rejection, surfaced as 429 autonomy_capacity)`,
       );
       return { ok: false, reason: 'capacity' };
     }
@@ -898,6 +1176,8 @@ class AgentAutonomyDriver {
       directivePending: false,
       directiveRevision: 0,
       edgeDecideAt: 0,
+      lastDecideAt: 0,
+      ownAiLane: lane,
       talkPrefetch: null,
     });
     // An owner change re-seats above: drop the previous owner's index entry.
@@ -906,8 +1186,9 @@ class AgentAutonomyDriver {
     }
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
     console.log(
-      `[AutonomyDriver] registered user agent ${sessionDigest(entry.agentId)} (${this.userAgents.size}/${MAX_AUTONOMOUS_USER_AGENTS} user, ${this.houseAgents.size} house)`,
+      `[AutonomyDriver] registered user agent ${sessionDigest(entry.agentId)} (${this.countLane(false)}/${MAX_AUTONOMOUS_USER_AGENTS} user, ${this.countLane(true)}/${MAX_OWN_AI_AGENTS} own-AI, ${this.houseAgents.size} house)`,
     );
+    this.refreshOwnAiConfigured(entry.avatarId);
     return { ok: true, reused: !!existing };
   }
 
@@ -931,6 +1212,8 @@ class AgentAutonomyDriver {
     for (const [ownerUserId, enrolledAgentId] of this.enrolledOwners) {
       if (enrolledAgentId === agentId) this.enrolledOwners.delete(ownerUserId);
     }
+    // Own AI: the freed slot goes to an entry waiting for that lane.
+    this.rebalanceLanes();
   }
 
   /** A shared Nori turn must affect the next choice even when RAG ranks it lower. */
@@ -1070,7 +1353,7 @@ class AgentAutonomyDriver {
         console.log(
           `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=${entry.phase} runtime=yes`,
         );
-        await this.driveOnce(entry.agentId, this.runtimeDecideFn(runtime));
+        await this.driveOnce(entry.agentId, this.runtimeDecideFn(runtime, entry));
       }
     } finally {
       this.inFlight.delete(agentId);
@@ -1195,6 +1478,21 @@ class AgentAutonomyDriver {
     this.lastTickAt = Date.now();
     this.interval = setInterval(() => this.tick(), TICK_MS);
     this.phaseEdgeInterval = setInterval(() => this.phaseEdgePoll(), PHASE_EDGE_POLL_MS);
+    this.ownAiInterval = setInterval(() => this.ownAiFastLanePoll(), OWN_AI_FAST_POLL_MS);
+    // A settings change re-reads the lane (the orchestrator restarts the runtime).
+    // The run id drops a subscription that resolves after a stop (or after a
+    // stop + a new start), so no listener leaks.
+    const run = ++this.ownAiRunId;
+    void this.ownAiSubscribe((avatarId) => this.refreshOwnAiConfigured(avatarId)).then(
+      (unsubscribe) => {
+        if (this.interval && run === this.ownAiRunId) this.ownAiUnsubscribe = unsubscribe;
+        else unsubscribe();
+      },
+      (err: unknown) => console.warn(
+        '[AutonomyDriver] own-AI settings subscribe failed (lanes refresh on registration only):',
+        err instanceof Error ? err.message : err,
+      ),
+    );
     console.log(
       `[AutonomyDriver] started - driving every ${TICK_MS}ms, phase-edge poll every ${PHASE_EDGE_POLL_MS}ms`,
     );
@@ -1208,6 +1506,17 @@ class AgentAutonomyDriver {
     if (this.phaseEdgeInterval) {
       clearInterval(this.phaseEdgeInterval);
       this.phaseEdgeInterval = null;
+    }
+    if (this.ownAiInterval) {
+      clearInterval(this.ownAiInterval);
+      this.ownAiInterval = null;
+    }
+    for (const timer of this.ownAiStaggerTimers) clearTimeout(timer);
+    this.ownAiStaggerTimers.clear();
+    this.ownAiRunId++;
+    if (this.ownAiUnsubscribe) {
+      this.ownAiUnsubscribe();
+      this.ownAiUnsubscribe = null;
     }
   }
 
@@ -1293,11 +1602,14 @@ class AgentAutonomyDriver {
    */
   private runtimeDecideFn(
     runtime: NonNullable<ReturnType<typeof agentOrchestrator.getRunningAgentRuntime>>,
+    entry: HouseAgentEntry,
   ): DecideFn {
+    // Own AI: read per call, so a fallback (or a restart) between the drive
+    // start and the call uses the timeout of what runs now.
     return (prompt) => this.withTimeout(runtime.decide(prompt, {
       maxTokens: DECIDE_MAX_TOKENS,
       localAttemptTimeoutMs: 6_000,
-    }));
+    }), this.decideTimeoutMs(entry));
   }
 
   /**
@@ -1354,7 +1666,7 @@ class AgentAutonomyDriver {
       building.cryptoFocus,
       this.getPriorQuestions(entry.agentId, buildingId),
     );
-    const promise = this.runtimeDecideFn(runtime)(prompt);
+    const promise = this.runtimeDecideFn(runtime, entry)(prompt);
     // withTimeout never rejects; this keeps a discarded prefetch from ever
     // surfacing as an unhandled rejection.
     promise.catch(() => {});
@@ -1464,6 +1776,16 @@ class AgentAutonomyDriver {
         && !entry.directivePending
         && entry.edgeDecideAt > 0
         && now - entry.edgeDecideAt < DECIDE_MIN_SPACING_MS
+      ) {
+        continue;
+      }
+      // Own AI: a deciding entry that runs on its owner's AI right now belongs
+      // to the fast lane (ownAiFastLanePoll), which keeps its own spacing. A
+      // pending directive still drives here. House entries never match.
+      if (
+        entry.phase === 'deciding'
+        && !entry.directivePending
+        && this.ownAiSpacingMs(entry) !== null
       ) {
         continue;
       }
@@ -1889,6 +2211,7 @@ class AgentAutonomyDriver {
         `[AutonomyDriver][debug] directive fast path ${sessionDigest(entry.agentId)} action=${parseDriverAction(fastReply)?.verb ?? 'unknown'}`,
       );
     }
+    if (!fastReply) entry.lastDecideAt = Date.now();
     const reply = fastReply ?? await decide(prompt);
     // This also fences decisions based on known-null state, which have no
     // directive SHA claim to detect a new instruction received during inference.
@@ -2950,15 +3273,15 @@ class AgentAutonomyDriver {
    * the tick. On timeout we resolve to '' (the executor drops an empty reply
    * safely) rather than reject, so the .catch in tick() only logs genuine errors.
    */
-  private withTimeout(p: Promise<string>): Promise<string> {
+  private withTimeout(p: Promise<string>, timeoutMs: number = LLM_TIMEOUT_MS): Promise<string> {
     return new Promise<string>((resolve) => {
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        console.warn(`[AutonomyDriver] decision timed out after ${LLM_TIMEOUT_MS}ms`);
+        console.warn(`[AutonomyDriver] decision timed out after ${timeoutMs}ms`);
         resolve('');
-      }, LLM_TIMEOUT_MS);
+      }, timeoutMs);
       p.then(
         (v) => {
           if (settled) return;

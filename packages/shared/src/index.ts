@@ -59,6 +59,7 @@ export * from './constants/orientation-skill';
 // MCP ecosystem hub step 1 (2026-10-23): reviewed ecosystem MCP catalog.
 export * from './constants/ecosystem-catalog';
 export * from './constants/ecosystem-reads';
+export * from './constants/own-ai';
 export * from './constants/spend-policy';
 export * from './constants/hatcher-actions';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
