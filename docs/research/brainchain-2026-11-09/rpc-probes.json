@@ -1,0 +1,10 @@
+[
+    {
+        "result":  "0x430e7",
+        "url":  "https://rpc.usebrainchain.com"
+    },
+    {
+        "result":  "0x430c6",
+        "url":  "https://rpc.testnet.usebrainchain.com"
+    }
+]
