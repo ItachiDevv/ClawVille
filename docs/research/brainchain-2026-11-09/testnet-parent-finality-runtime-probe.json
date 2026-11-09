@@ -1,0 +1,59 @@
+{
+  "observedAt": "2026-11-09T18:02:03.553Z",
+  "endpoint": "https://rpc.testnet.chain.robinhood.com",
+  "runtime": "1.3.14",
+  "scope": "Read-only production-runtime transport comparison after urllib403; no credentials or writes",
+  "results": [
+    {
+      "method": "eth_chainId",
+      "params": [],
+      "httpStatus": 200,
+      "result": "0xb626"
+    },
+    {
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "latest",
+        false
+      ],
+      "httpStatus": 200,
+      "result": {
+        "number": "0x8ff91d7",
+        "hash": "0x3e0fc0c65a589f94a266370c1d449722ed46747770567e22da9140fe3ada433d",
+        "parentHash": "0xf75e2934923a84b222e2dfe6374a8b60ba862d04fc9b2982073ace5fb5ebb9ac",
+        "timestamp": "0x6af20a9b",
+        "l1BlockNumber": "0xb89e61"
+      }
+    },
+    {
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "safe",
+        false
+      ],
+      "httpStatus": 200,
+      "result": {
+        "number": "0x8ff7983",
+        "hash": "0x2b2e60af67a4e4c5fd7a689c33e76b8e0daea78f413858610f7d0f5c01bf6d53",
+        "parentHash": "0x10ac7d5eb6a5d226daabb81ea1ed110f73a6b6658cac14e31f5d8c1c8e0872c2",
+        "timestamp": "0x6af206b2",
+        "l1BlockNumber": "0xb89e0e"
+      }
+    },
+    {
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "finalized",
+        false
+      ],
+      "httpStatus": 200,
+      "result": {
+        "number": "0x8ff6ed9",
+        "hash": "0x31533a7928fb620228334d886de69430163ab359d7182546f82e64d37181e7cf",
+        "parentHash": "0x1ce66229593cc127a75ba5f97b93103c5ce269d87041936f03e0ea08ecd50631",
+        "timestamp": "0x6af204ec",
+        "l1BlockNumber": "0xb89de8"
+      }
+    }
+  ]
+}

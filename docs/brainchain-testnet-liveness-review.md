@@ -123,4 +123,30 @@ The root's four unsigned calls to that endpoint returned HTTP403 on itachi222: c
 Evidence: research/brainchain-2026-11-09/testnet-parent-finality-probe.json.
 Sources: https://docs.usebrainchain.com/network and https://docs.robinhood.com/chain/add-network-to-wallet/.
 This result does not prove the parent chain lacks finality tags. It leaves the public endpoint verification unavailable from this host.
-No credential was loaded and no authority changed. A verified alternative parent RPC or operator configuration remains necessary for finality release evidence.
+No credential was loaded and no authority changed. The later runtime comparison below resolves endpoint access, but not operator configuration.
+
+## Bun runtime comparison at18:02UTC
+
+The same four reads succeeded with Bun1.3.14 fetch on itachi222, using the same official endpoint and no credentials.
+The response identifies chain46630. Latest was0x8ff91d7, safe0x8ff7983 and finalized0x8ff6ed9.
+Evidence: research/brainchain-2026-11-09/testnet-parent-finality-runtime-probe.json.
+The earlier urllib403 therefore does not establish endpoint unavailability for the application runtime.
+The precise cause of the different HTTP results was not established.
+Parent tags now have direct interface evidence; deployed child-node mapping and financial release rules still require review.
+Do not infer a child batch's parent inclusion block from its l1BlockNumber field without verifying that field's semantics for this nested chain.
+
+## Rollup linkage at18:03UTC
+
+The official testnet deployment lists rollup0xfC97950B5016cB2aa593046729e79d75b69859D1 on parent46630.
+A read of its chainId at the parent's finalized header failed because historical state was unavailable.
+The failed attempt remains in child-parent-finality-link-probe.json.
+A separate explicitly latest-only read returned chainId274630, bridge0x4C03B62CE639656f2E0E51a62Cb2680BA292b01d and sequencer inbox0xC13bF9b45c1496C19FD70Cc84D5D9CE92117A57a.
+These current getters support the deployment linkage; they are not finalized contract-state reads.
+Source: https://raw.githubusercontent.com/usebrainchain/brainchain/main/deployments/testnet.json.
+
+The child's finalized block5099 mapped to batch658 through arb_findBatchContainingBlock.
+arb_getL1Confirmations returned371 for that block. This number alone is not a settlement rule.
+Both selected parent and child finalized headers retained their hashes on the final reads.
+Evidence: research/brainchain-2026-11-09/child-parent-finality-current-link-probe.json.
+The probe did not retrieve and verify the batch's parent inclusion event or an assertion confirmation.
+Historical contract-state verification needs a suitable archive endpoint; no silent latest fallback belongs in a finality verifier.
