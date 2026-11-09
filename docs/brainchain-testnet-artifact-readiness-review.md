@@ -275,3 +275,70 @@ Strict single-word ABI checks, canonical re-encoding, fourteen exact pins, and t
 
 This verdict covers no consumer integration, migration 0117, operation-policy propagation, activation, or live testnet lifecycle.
 No network request, key, provider charge, database change, or application-source edit occurred during this correction review.
+
+## Configured-policy consumer review, first findings
+
+Scope: new configured-policy propagation only. This review does not repeat the separate C1 review.
+The backend supplied .brainchain-work/configured-authority-consumer-freeze.json with nineteen source hashes.
+The core nine consumers include issuance, execution, compute, signer service, result signatures, delivery, and exact recovery.
+No overall consumer approval follows from the reader tests.
+
+### CP1: exact capture lacks a shared hire/policy anchor
+
+ExactCaptureRecovery.current originally validated fresh configured evidence but discarded its selected block and hash.
+It therefore lacked the equality check already present in execution admission and DeliveryRecovery.verify.
+The backend confirmed this omission and added the block/hash equality guard. The exact-capture freeze reopened only for that correction.
+A focused negative test must supply valid policy evidence from another block or hash and observe refusal before acceptance or key effect.
+The same-anchor positive path must remain reachable. Independent regression execution remains pending.
+
+### CP2: effect policy enters the reconciliation reader
+
+createWorkerDeliveryEvidenceReader unconditionally calls readConfiguredAuthority before returning canonical hire evidence.
+DeliveryRecovery.verify always invokes its evidence reader, including stage reconcile. Its explicit policy exemption occurs later.
+Composing these two exported services therefore rejects read-only reconciliation when the configured brain or owner drifts.
+The design requires reconciliation to remain available while new effects stop. Keep canonical hire reads separate from effect-policy enforcement.
+Effect stages still require their fresh policy reader and shared anchor. A public caller must not select a bypass for those stages.
+No production instantiation of this exported worker evidence reader was found in the source search. This finding concerns the intended integration composition.
+
+The independent existing worker-delivery-evidence suite returned three passes and one failure.
+Its idle positive failed with Configured authority ABI word required after the new getter reads entered its task-only RPC fixture.
+This failure proves stale test coverage; the separate source trace establishes the reconciliation-policy coupling.
+The backend owner received both findings. No database fixture, live RPC, key, provider, or transaction was used.
+
+### Source observations, pending final evidence
+
+The proxy now checks the persisted execution policy and requires workerFence for owner-policy grants, even outside the scheduler.
+It repeats policy and database-time checks after asynchronous root verification before provider dispatch.
+Signer operations copy the current pair from the persisted grant. Ordinary historical NULL operations refuse current admission.
+Exact delivery authorities persist a current pair for effects and retain NULL pairs for reconcile-only grants.
+Result-signature journal recovery and captured-transaction recovery remain separate methods without a new policy read.
+These observations are scoped source evidence. Final consumer approval still requires corrected frozen source and the targeted database regressions.
+
+## Independent CP1 and CP2 correction verdict
+
+Verdict: both configured-policy consumer findings are resolved in the reviewed frozen source and targeted independent tests.
+Exact-capture source SHA-256: 165a60eba043c42f5c0d34bbe65b46cd8ec079745ed882149695dd4eef12a0c8.
+Read-only worker evidence source SHA-256: 278507717a9d98b3ad12e5862d6e52be81243340f9a00ac6e24ccc81e23dbfac.
+Both hashes match the refreshed consumer freeze manifest.
+
+Independent runs used separate processes and the coordinated disposable PostgreSQL fixture on port 55439:
+
+| Regression | Tests passed | Assertions | Observed boundary |
+|---|---:|---:|---|
+| Different configured block or hash | 1 | 6 | Both mismatches refuse; accepted_at stays NULL; zero key calls |
+| Expired retained capture and replay | 1 | 16 | Same-anchor positive captures once and preserves nonce and original authority |
+| Authority drift during reconciliation | 1 | 5 | Reconciliation records provisional evidence without a policy read; upload refuses and leaves grant unconsumed |
+| Worker evidence reader | 4 | 13 | Idle positive, reorg, acquisition expiry, and code mismatch checks pass |
+
+The positive capture test uses a public synthetic fixture key and local mock driver. No production key or transaction is involved.
+The delivery test injects controlled chain evidence and a policy reader that refuses. Its result does not establish live chain reconciliation.
+The corrected worker evidence reader no longer fetches configured authority. Effect consumers retain their independent policy enforcement.
+The exact-capture consumer compares configured block and hash against hire evidence before acceptance. It retains final database-time checks.
+
+After the targeted tests, the reviewer restored fixture wrappers in order: migration 0112, then migration 0115.
+The restoration returned FIXTURE_WRAPPERS_0112_0115_RESTORED. Port 55439 was released to the team with no active review process.
+
+No further configured-policy blocker was confirmed in this scoped source pass. This is not overall integration approval.
+The separate migration 0117 review and combined consumer regression run remain release evidence requirements.
+Historical NULL ordinary grants still refuse effects. Fresh exact recovery uses its own current authority without rewriting original operation policy.
+Read-only captured-byte recovery remains separate. Neither this verdict nor the fixture gate substitutes authorize activation.

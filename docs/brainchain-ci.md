@@ -19,10 +19,10 @@ CI refuses that fallback even when the flag exists. Credentials never appear in 
 
 The PostgreSQL lane runs fixture DDL sequentially and preserves unrelated databases.
 Before tests, its guarded bootstrap creates minimal owner tables and the canonical sessions shape.
-It applies vendor ledger migration 0090 and BrainChain migrations 0100 through 0116.
+It applies vendor ledger migration 0090 and BrainChain migrations 0100 through 0117.
 Existing signer tables skip legacy migration 0102, whose old constraints exclude retained result signatures.
 Migration 0106 supplies the current signer constraints.
-After every suite, including failures, bootstrap restores migrations 0112 then 0115 and verifies the exact-consent function wrapper.
+After every suite, including failures, bootstrap restores migrations 0112, 0115, then 0117 and verifies the exact-consent function wrapper.
 This prevents older migration replay, including 0109, from weakening later consent tests.
 The required runner refuses absent opt-in, absent Docker opt-in, and zero executed tests.
 It also runs the actual database/proxy/isolated-child exchange with controlled, zero-charge inference.
@@ -118,3 +118,12 @@ The failed logs and reports remain under .brainchain-work with failed-coordinato
 The protected Linux lane passed four suites and 12 tests, with exactly five reviewed skips.
 It used the pinned image, isolated UID, disabled network, read-only root, and five-file verified mount.
 These failures prevent a combined-lane approval. No remote CI or staging result is claimed.
+## Combined 0117 retry evidence
+
+The corrected pure lane passed 68 isolated suites and 424 tests, with one expected Docker skip.
+The PostgreSQL retry passed the coordinator fixture, then stopped at worker-owner-policy.test.ts.
+That suite reported eight passes and five failures, including missing configured-policy evidence and a dependent absent issuance.
+Backend received the full preserved log: .brainchain-work/ci-postgres-failed-owner-policy-0117.log.
+The capture suite had not run when this lane stopped. No complete PostgreSQL result is claimed.
+The protected Linux result remains four suites and 12 tests, with five reviewed skips.
+No protected-source correction occurred between that run and this retry.
