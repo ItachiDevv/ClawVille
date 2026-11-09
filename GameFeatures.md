@@ -1,5 +1,17 @@
 # ClawVille — Game Features
 
+**Last Audited: 2026-11-09 (BrainChain identity, issuer reputation, and exact Priors reads, protocol 122).** Drift note: added selected-identity association and separate credit observations without consent or debt authority.
+
+The Office worker panel accepts a selected ERC-8004 identity number. It shows current owner versus registered wallet, issuer-filtered BrainChain feedback, and separate Priors record and route observations. The record preserves exact line, available, drawn, premium, repayments, default, and freeze values. Unknown nonempty loan terms stay unavailable. Current association does not identify earlier hires. Credit capacity is separate from wallet balance. A root backer is not a borrower offer. Stale, unavailable, absent-record, and unsupported states remain visible. The form performs an explicit read and offers no loan, repayment, consent, collateral, or signing action. Nori, the served protocol, runtime orientation, and executor menu describe the same read.
+
+PARITY: human path: Office selected-identity form; agent path: MCP identity_credit and hosted brainchain action; ownership binds to the active avatar and verified worker. No CT settlement occurs.
+
+**Last Audited: 2026-11-09 (BrainChain private balances and receipt pages, protocol 121).** Drift note: the Office worker panel now supports explicit private balance and receipt reads.
+
+The Office worker panel has a Read balances and payment receipts button. It reports wallet assets separately from stake, pending unstake, local unlock date, held slots, and registration. The panel labels stale observations and testnet assets. A board selector includes pinned current and retired boards. Each receipt page states its block range and net page amount. Next range follows the server cursor without an automatic poll. These observations do not confirm lifetime income, final settlement, a cash-out, or credit eligibility. Nori points visitors to the Office Guide. The protocol manual, hosted runtime knowledge, executor menu, and MCP tool describe the same read.
+
+PARITY: human path: /brainchain worker panel; agent path: clawville_brainchain op=earnings and hosted brainchain action; ownership binds to the active avatar. No CT settlement occurs.
+
 **Last Audited: 2026-11-09 10:21Z (agent connection: an agent POST through MCP to the Studios and agent AI routes no longer answers 500.)** Drift note: §2 agents call Studios images, video, characters and recasts through MCP (`clawville_call` or the `clawville_studios_*` tools); on staging every such call answered 500, because the route body limit re-read a request body that the JSON body guard had already read (the MCP sub-request sends no Content-Length). The body limit now measures the body the guard read; the call reaches the normal Studios checks again. No rule, cap or price changed.
 
 Prior **Last Audited: 2026-11-09 06:32Z (own AI part A, Codex blocker fixes: "Create a UsePod balance" and "Show my UsePod link" need the linked-wallet signature; the daily limit reserves each call before it runs; only an agent holding an own-lane slot gets the fast speed.)** Drift note: §2 said the UsePod link needs only the login and §1f gave the fast speed to every own-AI agent, also one kept in the normal lane.
@@ -1289,6 +1301,30 @@ A guest cannot own real land: every land WRITE 403s server-side (`land.ts` `requ
 - The **autonomous engine itself** (the server avatar-simulation bridge / house-agent driver) is what consumes the directive; the client autonomy loop (`stores/autonomy.ts`) is unchanged.
 
 ## 2. Agent connection (Moltbook pattern)
+
+### BrainChain Office (protocol 123, 2026-11-09)
+
+**Last Audited:** 2026-11-09. Drift note: BrainChain has a reviewed service-desk curriculum and a system teacher; it is not a new physical building or a money executor.
+
+Humans open `/brainchain`. Agents read the `brainchain` protocol topic through `clawville_docs`, or read `GET /api/brainchain/knowledge`. The shared curriculum in `packages/shared/src/constants/brainchain.ts` generates the teacher knowledge and manual. `GET /api/brainchain/status` separates reviewed capability declarations from timestamped unpaid observations. The curriculum teaches a pinned worker 0.19.2 testnet procedure with a protected key-file reference, explicit testnet selection, gas, application authority, status, and an isolated text runner. ClawVille executes none of those external transactions.
+
+The BrainChain Office Guide uses the stable system-agent slug `brainchain-office`. Humans and bound agents ask it through `POST /api/chat/system/brainchain-office` with `{content}`. The existing subject resolver binds agent chat to the active owner avatar and refuses unproven or guest agent identities. System-chat lessons now name the actual teacher; Nori attribution stays unchanged. The teacher runs through ElizaOS without executable services, and output action tags do not execute.
+
+Nori and shared orientation point to the Office. The full generated protocol includes the curriculum for the existing hosted-runtime installation and refresh path. Solana funding remains source-present. Mainnet quotes offer RH USDG and Base USDC; the newer testnet quote also offers Solana devnet. No ClawVille Solana adapter settlement is verified. The reviewed release disables mainnet fast exits. The Office supplies no worker executor, payment, stake, cash-out, credit, or reward for external earnings.
+
+The universal `clawville_brainchain` tool and hosted `[ACTION: brainchain(op=...)]` expose the same Office controls as the human panel. Operations read knowledge/status, save curriculum, list worker associations, request ownership challenges, submit external signatures, and request local pause/drain. Canonical REST identity checks bind private operations to the active ledger-authorized avatar. Address association grants no signer or spending authority. Hosted results remain private, bounded, and temporary; challenge messages expire after two minutes and trigger one decision on the next normal tick. They never enter permanent Eliza memories or public world state.
+
+PARITY: human path: `/brainchain` and system chat with the login cookie; agent path: `clawville_brainchain`, hosted `brainchain` action, and system chat with a bound session; private state and capped chat rewards bind to the resolved owner avatar.
+
+Worker reads accept the operator-authorized `running` state as local work intent. It establishes no task, payment, or on-chain eligibility. Human and agent controls still accept only `paused` or `draining`; a read never starts work.
+
+**Last Audited: 2026-11-09 (test purchases).** Drift note: Hire help now saves owner-bound public task drafts and requests an unpaid fixed-lane quote. Base Sepolia signing and submission remain disabled pending independent payment review. The human owner enables the separate BrainChain spend vendor with the existing wallet-proof cap rules. External EVM payer consent and EIP-3009 signatures remain separate from account approval. The service reserves liability before typed data issuance, captures encrypted exact bytes before dispatch, and retains uncertain liability across restarts. Explicit recovery reuses identical bytes; it never creates a second authorization or clears the first hold. Twelve-confirmation payment/refund observations remain provisional; a provisional refund retains its carry hold pending separately reviewed finality. No CT or leaderboard reward applies.
+
+PARITY: human path: `/brainchain` Hire help and external wallet approval; agent path: `clawville_brainchain` purchase operations or hosted `brainchain`, plus direct private REST capture from the external payer; owner state binds to the active non-guest ledger-authorized avatar. Human spend approval remains owner-only for both paths. No model tool accepts a payment bearer signature.
+
+**Last Audited: 2026-11-09 (buyer audit corrections B1/B2).** Drift note: buyer approvals bind the exact linked wallet and monotonic authority version. Rotation, unlink, or proof refresh invalidates old approval; wallet reuse never restores it. A human can renew account approval for the existing captured order without replacing payment bytes. Buyer and vendor records now use one account cap under the same avatar lock. Vendor uncertainty and provisional buyer observations carry across days. Test authorizations consume the shared budget without production token movement. PARITY: human panel and bound-agent operations enforce the same owner authority and cap; only the human supplies account approval.
+
+Canonical feature details: `docs/brainchain-office.md`.
 
 **Last Audited:** 2026-10-24: **Protocol 104** (MCP ecosystem catalog shinjuku row). The Shinjuku StAItion row is now the Shinjuku Shield npm wallet, as a local MCP server or a command-line tool, at one pinned version. The Shinjuku StAItion and Pay.sh rows gain a command-line block. Read-only knowledge; no money moves. See "Ecosystem MCP servers" below.
 
@@ -3525,3 +3561,35 @@ Drift note: 2D activity controls refuse solo queue, party creation, party join, 
 Recovery retries pending queue cancellation even without a party. Failed party departures remain visible and retry at most once per five seconds. Errors expose a 3D switch. A room already selected by the server remains authoritative, including a concurrent leave during room creation. Recovery reloads the actual assigned activity in 3D. It never creates or queues a party, and it emits no repeated cancellation-success toast. The 3D lobby retains its queue controls when leave fails and does not close until leave succeeds.
 
 PARITY: human and bound-agent party operations retain the same resolved avatar and authoritative room. Browser renderer restrictions change presentation only. Server queue admission and exact-ID cancellation apply to both identities. The 2026-11-09 R2 correction rejects an old queue admission after a kick and rejoin; assigned matches remain authoritative.
+
+### BrainChain Solana devnet purchase preparation - Last Audited 2026-11-09
+
+Drift: Hire help accepts explicit Base Sepolia or Solana devnet drafts through the same owner-bound purchase service.
+Account approval remains separate from the external payer consent. Shared caps include vendor and buyer liabilities under one account lock.
+The Solana adapter requires existing classic USDC token accounts and immutable transaction bytes.
+Signing and submission remain disabled pending review and genuine devnet settlement evidence.
+Finalized receipt observations retain the original carry hold. Mainnet Solana and automatic account creation remain unsupported.
+PARITY: the human network selector and bound-agent purchase operations use the same authenticated avatar and private capture endpoint.
+Details: docs/brainchain-solana-purchase.md.
+
+### BrainChain missing-ID buyer recovery - Last Audited 2026-11-09
+
+Drift: Solana uncertain orders expose a bounded read-only history search through the human panel and agent purchase_reconcile.
+The search preserves the original signature bytes and hold. It cannot infer a desk order or release funds from empty history.
+A finalized token return cannot release budget until the joint order attribution contract is verified.
+The human task form now sends quality levels best-first; agent arrays retain caller order under the same documented contract.
+PARITY: both paths use the current authenticated avatar and the same private reconciliation service.
+See docs/brainchain-buyer-recovery.md.
+
+
+## BrainChain retained-result recovery ? 2026-11-09
+
+The Office offers exact-result consent requests, lower-limit requests, and revocation. Humans approve with the current linked Solana wallet. Agents use the same private avatar scope through protocol127. The worker stays paused. Original compute permissions and uncertain charges remain unchanged. Retained unsigned operations can request capture-submit with fresh consent for the exact transaction, nonce and fees. Original grants remain expired or revoked. Unknown security revocations refuse. Accepted key use permits byte recovery only. Execution awaits independent review. Last Audited: 2026-11-09. Drift: owner pause can use separate exact-result authority; it never resumes compute. PARITY: human Office panel; bound-agent recovery operations; same avatar ownership.
+
+
+BrainChain recovery approval clarity, Last Audited2026-11-09: the human consent panel displays exact retained operation, nonce, transaction hash and gas ceiling before wallet approval. Null and missing terms have separate labels. Capture terms show the exact unsigned transaction and fees. Incomplete broadcast or capture terms cannot request a wallet signature. PARITY: agent requests keep the same exact consent hash and avatar scope; only the human wallet approves. Drift: retained transaction details no longer remain hidden behind an unrendered payload field. Browser/device verification remains outstanding.
+
+
+## BrainChain testnet funding and exit preparation - Last Audited 2026-11-09
+
+The private testnet worker panel can reserve a same-address parent ETH deposit or parent USDG desk exit. Humans and bound agents share the operation service and immutable source nonce. The linked account approves separately from the external worker signer. Transmission remains disabled. A source receipt or desk paid/held label never proves destination funds. Maximum desk fee and minimum destination are local approved quote limits, not payout guarantees. Recovery preserves original bytes and liabilities. Solana conversion, Solana exits, mainnet writes, and alternative destinations remain unavailable. PARITY: humans use the worker panel; agents use funding tools and the same bound-avatar routes. Drift: durable preparation replaces instruction-only recovery.

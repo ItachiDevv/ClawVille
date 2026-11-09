@@ -16,6 +16,7 @@ import {
   type SubCall,
   type SubResult,
   type ToolRuntime,
+  type HttpMethod,
 } from '../agent-mcp-tools';
 
 const SRC = join(import.meta.dir, '..', '..');
@@ -356,6 +357,40 @@ describe('clawville_docs', () => {
 });
 
 describe('game tool execution', () => {
+  test('BrainChain operations call the declared subject-bound REST routes and drop authority fields', async () => {
+    const cases: Array<[Record<string, unknown>, HttpMethod, string, Record<string, unknown> | undefined]> = [
+      [{op:'purchase_list'},'GET','/api/brainchain/purchases',undefined],
+      [{op:'purchase_quote',orderId:'purchase-id'},'POST','/api/brainchain/purchases/purchase-id/quote',{}],
+      [{op:'purchase_reconcile',orderId:'purchase-id'},'POST','/api/brainchain/purchases/purchase-id/reconcile',{}],
+      [{ op: 'knowledge' }, 'GET', '/api/brainchain/knowledge', undefined],
+      [{ op: 'status' }, 'GET', '/api/brainchain/status', undefined],
+      [{ op: 'install' }, 'POST', '/api/brainchain/install', {}],
+      [{ op: 'workers' }, 'GET', '/api/brainchain/workers', undefined],
+      [{ op: 'earnings', workerId: 'worker-id', board: '0xabc', fromBlock: '965' }, 'GET', '/api/brainchain/workers/worker-id/earnings?board=0xabc&fromBlock=965', undefined],
+      [{ op: 'identity_credit', workerId: 'worker-id', agentId: '462' }, 'GET', '/api/brainchain/workers/worker-id/identity-credit?agentId=462', undefined],
+      [{ op: 'binding_challenge', environment: 'testnet', address: '0x123' }, 'POST', '/api/brainchain/workers/challenge', { environment: 'testnet', address: '0x123' }],
+      [{ op: 'bind', nonce: 'fresh', signature: '0xproof' }, 'POST', '/api/brainchain/workers/bind', { nonce: 'fresh', signature: '0xproof' }],
+      [{ op: 'control', workerId: 'worker-id', requestedState: 'draining' }, 'POST', '/api/brainchain/workers/worker-id/control', { requestedState: 'draining' }],
+    ];
+    for (const [input, method, path, body] of cases) {
+      const { rt, calls } = stubRuntime();
+      const answer = await runMcpTool('clawville_brainchain', { ...input, avatarId: 'other-avatar', privateKey: 'never-forward-this' }, rt);
+      expect(answer.body.ok).toBe(true);
+      expect(calls).toEqual([{ method, path, ...(body ? { body } : {}) }]);
+      expect(answer.body.next).toContain('Binding is permanent');
+      expect(JSON.stringify(calls)).not.toContain('other-avatar');
+      expect(JSON.stringify(calls)).not.toContain('never-forward-this');
+    }
+  });
+
+  test('BrainChain rejects an absent session and an unsupported money operation', async () => {
+    const disconnected = stubRuntime(undefined, null);
+    expect((await runMcpTool('clawville_brainchain', { op: 'install' }, disconnected.rt)).body.ok).toBe(false);
+    expect(disconnected.calls).toHaveLength(0);
+    const connected = stubRuntime();
+    expect((await runMcpTool('clawville_brainchain', { op: 'cash_out' }, connected.rt)).body.ok).toBe(false);
+    expect(connected.calls).toHaveLength(0);
+  });
   test('without a session a game tool answers not_connected', async () => {
     const { rt, calls } = stubRuntime(undefined, null);
     const body = parse(answerText(await runMcpTool('clawville_get_inventory', {}, rt)));
@@ -542,4 +577,8 @@ describe('answer size cap', () => {
     expect(body.data.truncated).toBe(true);
     expect(body.next).toBe('n');
   });
+});
+
+test('MCP refuses payment bearer capture and owner approval routes',()=>{
+ for(const operation of ['capture','approve','approval-challenge'])expect(validateCallPath(`/api/brainchain/purchases/00000000-0000-4000-8000-000000000001/${operation}`,'POST')).not.toBeNull();
 });

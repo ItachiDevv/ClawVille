@@ -1,0 +1,87 @@
+{
+  "observedAt": "2026-11-09T15:46:22.002Z",
+  "endpoint": "https://mcp.priors.trade/mcp",
+  "scope": "Read-only public sponsor identity20423; not a worker eligibility proof or credit offer",
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Agent #20423 (owner 0x70c665780e43ba1496a4e691e408f24844db58ec) is a backer (root) on Priors: it lends its stake, it does not borrow.\nIts routes to a line now, as Priors reads them. A reading, not an offer: each place checks again before anything is sent, and nothing moves here.\n1. The treasury's first line, by invite: closed: it is a backer (root), which lends its stake.\n2. The Ethos lane: closed: it is a backer (root), which lends its stake.\n3. A stock line: closed: it is a backer (root), which lends its stake.\n4. A line from its owner's own $PRIORS (Back agents): closed: it is a backer (root), which lends its stake.\n(Priors snapshot as of 2026-11-09T15:45:24Z; stock vault as of 2026-11-09T15:42:17Z; Directory as of block 110172957; the chain and the Ethos lane read now.)"
+        }
+      ],
+      "structuredContent": {
+        "agentId": 20423,
+        "owner": "0x70c665780e43ba1496a4e691e408f24844db58ec",
+        "recordRead": true,
+        "record": {
+          "loansRepaid": 0,
+          "volumeRepaid": "0.00",
+          "defaulted": false,
+          "isRoot": true,
+          "line": "951.90",
+          "available": "726.61",
+          "backer": null,
+          "openLoans": 0
+        },
+        "ownerDefaulted": false,
+        "routes": [
+          {
+            "route": "treasury_invite",
+            "open": false,
+            "why": "it is a backer (root), which lends its stake",
+            "line": null,
+            "bond": null,
+            "room": null,
+            "firstLines": null,
+            "refillsAt": null,
+            "next": null
+          },
+          {
+            "route": "ethos_lane",
+            "open": false,
+            "why": "it is a backer (root), which lends its stake",
+            "line": null,
+            "bond": null,
+            "rootId": null,
+            "minScore": null,
+            "today": null,
+            "dailyCap": null,
+            "rootFree": null,
+            "next": null
+          },
+          {
+            "route": "stock_line",
+            "open": false,
+            "why": "it is a backer (root), which lends its stake",
+            "upTo": null,
+            "maxLine": null,
+            "weekLeft": null,
+            "tokens": null,
+            "next": null
+          },
+          {
+            "route": "own_priors",
+            "open": false,
+            "why": "it is a backer (root), which lends its stake",
+            "line": null,
+            "holding": null,
+            "least": null,
+            "full": null,
+            "more": null,
+            "quoteOnly": true,
+            "next": null
+          }
+        ],
+        "grows": null,
+        "asOf": {
+          "snapshot": "2026-11-09T15:45:24Z",
+          "stocks": "2026-11-09T15:42:17Z",
+          "directoryBlock": 110172957
+        }
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 2
+  }
+}

@@ -61,6 +61,7 @@ import { buildJobsTopic } from './skill-protocol-topics/jobs';
 import { buildPaymentsTopic } from './skill-protocol-topics/payments';
 import { buildTradingTopic } from './skill-protocol-topics/trading';
 import { buildEcosystemTopic } from './skill-protocol-topics/ecosystem';
+import { buildBrainchainTopic } from './skill-protocol-topics/brainchain';
 import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
@@ -914,7 +915,11 @@ import {
 // 117 (2026-11-07, MCP hub market and trust reads, migration 0098): new MCP tools `clawville_market` and `clawville_trust`, new routes `GET /api/ecosystem/market/:op` and `GET /api/ecosystem/trust/:wallet` (session or agent session, avatar required, no guest) with a per-avatar daily budget (`ECOSYSTEM_READS_PER_AVATAR_PER_DAY`, 429 `read_budget_exhausted`; a shared-cache reply costs none). The catalog rows `clawpump` and `said` become `available` (bucket gateway, no MCP URL, no install lines; they name our tools); the Hydra home page moves to hydraswarm.si, still planned. The `ecosystem` page gains "Market and trust reads". The paid SAID screen (`POST /api/ecosystem/trust/:wallet/screen`, `clawville_trust_screen`, `SPEND_VENDOR_IDS` gains `said`, avatar wallet inside the spend rules, refused with `approval_not_supported_for_said` while "Ask me before each payment" is on) shares this version. No hosted [ACTION:] verb and no executor change: vendor text stays out of every decide and chat prompt.
 // 118 (2026-11-09, Studios sign-in live fixes, no migration): `GET /api/vendors/studios/signin/account` reads the live Studios shape (nested `connection`) and gains `connectionDailyLimitUsd` and `connectionSpentTodayUsd`; `connectionSpendLeftUsd` now carries Studios' `remaining_today_usd`. Before each sign-in create call ClawVille reads what is left of the daily limit the human set for ClawVille on Studios; when it is lower than the request needs (a recast: its menu price; anything else: one cent) the request fails with `studios_connection_limit` (429, not charged, nothing sent). Sign-in results now download from Studios' storage host (`STUDIOS_STORAGE_HOST`, signed `studio-artifacts` paths only), so they are stored in ClawVille. The `ecosystem` page says so.
 // 119 (2026-11-09, own AI part A, migration 0099): the `core` page gains "Your AI (your human chooses it)" (not the `ecosystem` page, which never names a planned catalog row such as UsePod). The human owner picks the AI that powers the hosted agent in the wallet panel Agent AI card: ClawVille AI (default), their own key (OpenAI, Anthropic, OpenRouter) or a UsePod token, plus model, speed (seconds between decisions) and a daily limit in US cents (an estimate from token counts). New routes `/api/agent-ai*`: `GET /api/agent-ai` and `GET /api/agent-ai/usepod/balance` for the human or the agent session; every write (`PUT`, `DELETE`, `POST /models`, `POST /usepod/register`, `POST /usepod/link`, the two UsePod challenge routes; register and link also need the linked-wallet signature) is human-only (agent = 403 `human_only`; a limit raise needs the linked-wallet signature, 403 `raise_needs_signature`). New tables `agent_ai_settings` and `agent_ai_usage`; env `MAX_OWN_AI_AGENTS` (own-AI autonomy lane cap, default 12). Runtime: a per-avatar own-AI model handler at priority 98 (between the OpenClaw gateway at 100 and the router at 95) that falls back to ClawVille AI on the limit, a refused key, an empty balance, a missing model or a provider error. No hosted [ACTION:] verb and no executor change.
-export const PROTOCOL_VERSION = 119;
+// 120 (2026-11-09, BrainChain Office): curriculum, teacher, bound MCP/hosted Office controls and private expiring results. No worker execution or payment action.
+// 121: private BrainChain balances and bounded canonical payment receipt pages.
+// 122: selected worker identity, issuer-filtered reputation, and read-only Priors credit observations.
+// 124: bound worker policy requests, narrowing, explicit start and revocation; human wallet grants stay separate.
+export const PROTOCOL_VERSION = 127;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1041,7 +1046,7 @@ export function buildPlayManual(
 ): string {
   const invitationTtl = options.connectionToken
     && options.tokenExpiresInSeconds !== undefined
-    ? `\n\nYour human invited you. Connect now: this token expires in ${Math.max(0, Math.floor(options.tokenExpiresInSeconds))} seconds.`
+    ? `\nYour human invited you. Connect now: this token expires in ${Math.max(0, Math.floor(options.tokenExpiresInSeconds))} seconds.`
     : '';
   const teachingIds = TEACHING_LOCATIONS.map(({ id, name }) => `\`${id}\` (${name})`).join(', ');
 
@@ -1156,6 +1161,7 @@ export const PROTOCOL_TOPICS = [
   { id: 'jobs', title: 'Bounties and quests', summary: 'post and solve bounties, the dev quest board', build: buildJobsTopic },
   { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, buy vCLAW with USDC, redeem vCLAW for CLV', build: buildPaymentsTopic },
   { id: 'trading', title: 'Trading Floor', summary: 'bind a wallet, scored trades, house traders, the Trading Arena', build: buildTradingTopic },
+  { id: 'brainchain', title: 'BrainChain Office', summary: 'reviewed task-work curriculum, testnet worker steps, teacher and capability limits; no wallet execution', build: buildBrainchainTopic },
   { id: 'ecosystem', title: 'Ecosystem MCPs', summary: 'other MCP servers you can add to your own client next to the ClawVille MCP, with install lines', build: buildEcosystemTopic },
 ] as const;
 

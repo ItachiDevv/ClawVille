@@ -1,3 +1,4 @@
+import { decodeBrainchainFundingDraft,decodeBrainchainPurchaseDraft,decodeBrainchainRecoveryDraft,decodeBrainchainPolicyDraft } from './brainchain-action';
 /**
  * Hosted MCP tool table (job agent-skill-simple, 2026-10-13).
  *
@@ -465,6 +466,70 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
     },
     next: 'Use a media id only to tell your human which item you mean. 404 studios_signin_missing or 409 studios_signin_broken: ask your human to sign in with Studios.',
   },
+  clawville_brainchain: {
+    sources: [
+      src('brainchain-funding-exit.ts','get','/api/brainchain','/funding-exit'),
+      src('brainchain-funding-exit.ts','post','/api/brainchain','/funding-exit'),
+      src('brainchain-funding-exit.ts','get','/api/brainchain','/funding-exit/:operationId'),
+      ...['intent','submit','recover','reconcile'].map(op=>src('brainchain-funding-exit.ts','post','/api/brainchain',`/funding-exit/:operationId/${op}`)),
+      src('brainchain.ts','get','/api/brainchain','/purchases'),
+      src('brainchain.ts','post','/api/brainchain','/purchases'),
+      src('brainchain.ts','get','/api/brainchain','/purchases/:id'),
+      ...['quote','intent','submit','recover','reconcile','cancel'].map(op=>src('brainchain.ts','post','/api/brainchain',`/purchases/:id/${op}`)),
+      src('brainchain.ts', 'get', '/api/brainchain', '/knowledge'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/status'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/install'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/earnings'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/identity-credit'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/workers/challenge'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/workers/bind'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/workers/:id/control'),
+      src('brainchain-exact-recovery.ts','get','/api/brainchain','/workers/:id/recovery'),
+      src('brainchain-exact-recovery.ts','post','/api/brainchain','/workers/:id/recovery'),
+      ...['narrow','revoke'].map(op=>src('brainchain-exact-recovery.ts','post','/api/brainchain',`/workers/:id/recovery/:consentId/${op}`)),
+      src('brainchain-worker-policy.ts','get','/api/brainchain','/workers/:id/policy'),
+      src('brainchain-worker-policy.ts','post','/api/brainchain','/workers/:id/policy'),
+      src('brainchain-worker-policy.ts','post','/api/brainchain','/workers/:id/policy/control'),
+      src('brainchain-worker-policy.ts','post','/api/brainchain','/workers/:id/policy/narrow'),
+    ],
+    calls: (_c, i) => {
+      switch (i.op) {
+        case 'recovery': return [{method:'GET',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery`}];
+        case 'recovery_request': return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery`,body:decodeBrainchainRecoveryDraft(String(i.op),String(i.draft))}];
+        case 'recovery_narrow': return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery/${seg(i.consentId)}/narrow`,body:decodeBrainchainRecoveryDraft(String(i.op),String(i.draft))}];
+        case 'recovery_revoke': return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery/${seg(i.consentId)}/revoke`,body:{}}];
+        case 'policy': return [{method:'GET',path:`/api/brainchain/workers/${seg(i.workerId)}/policy`}];
+        case 'policy_request': case 'policy_narrow': case 'policy_start': case 'policy_pause': case 'policy_revoke':
+          return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/policy${i.op==='policy_request'?'':i.op==='policy_narrow'?'/narrow':'/control'}`,body:decodeBrainchainPolicyDraft(String(i.op),String(i.draft))}];
+        case 'funding_list': return [{method:'GET',path:'/api/brainchain/funding-exit'}];
+        case 'funding_create': return [{method:'POST',path:'/api/brainchain/funding-exit',body:decodeBrainchainFundingDraft(String(i.draft))}];
+        case 'funding_get': case 'funding_intent': case 'funding_submit': case 'funding_recover': case 'funding_reconcile': return [{method:i.op==='funding_get'?'GET':'POST',path:`/api/brainchain/funding-exit/${seg(i.operationId)}${i.op==='funding_get'?'':`/${String(i.op).slice(8)}`}`,...(i.op==='funding_get'?{}:{body:{}})}];
+        case 'purchase_list': return [{method:'GET',path:'/api/brainchain/purchases'}];
+        case 'purchase_draft': return [{method:'POST',path:'/api/brainchain/purchases',body:decodeBrainchainPurchaseDraft(String(i.draft))}];
+        case 'purchase_get': return [{method:'GET',path:`/api/brainchain/purchases/${seg(i.orderId)}`}];
+        case 'purchase_intent': return [{method:'POST',path:`/api/brainchain/purchases/${seg(i.orderId)}/intent`,body:pick(i,['payer'])}];
+        case 'purchase_quote': case 'purchase_submit': case 'purchase_recover': case 'purchase_reconcile': case 'purchase_cancel':
+          return [{method:'POST',path:`/api/brainchain/purchases/${seg(i.orderId)}/${String(i.op).slice(9)}`,body:{}}];
+        case 'knowledge': return [{ method: 'GET', path: '/api/brainchain/knowledge' }];
+        case 'status': return [{ method: 'GET', path: '/api/brainchain/status' }];
+        case 'workers': return [{ method: 'GET', path: '/api/brainchain/workers' }];
+        case 'earnings': {
+          const query = new URLSearchParams();
+          if (typeof i.board === 'string') query.set('board', i.board);
+          if (typeof i.fromBlock === 'string') query.set('fromBlock', i.fromBlock);
+          return [{ method: 'GET', path: `/api/brainchain/workers/${seg(i.workerId)}/earnings${query.size ? `?${query}` : ''}` }];
+        }
+        case 'identity_credit': return [{ method: 'GET', path: `/api/brainchain/workers/${seg(i.workerId)}/identity-credit?agentId=${seg(i.agentId)}` }];
+        case 'install': return [{ method: 'POST', path: '/api/brainchain/install', body: {} }];
+        case 'binding_challenge': return [{ method: 'POST', path: '/api/brainchain/workers/challenge', body: pick(i, ['environment', 'address']) }];
+        case 'bind': return [{ method: 'POST', path: '/api/brainchain/workers/bind', body: pick(i, ['nonce', 'signature']) }];
+        case 'control': return [{ method: 'POST', path: `/api/brainchain/workers/${seg(i.workerId)}/control`, body: pick(i, ['requestedState']) }];
+        default: throw new Error('Unknown BrainChain operation');
+      }
+    },
+    next: 'Read the brainchain manual topic. Install does not prove knowledge consumption. Sign an ownership challenge only through your external worker signer; provide a signature, never a private key. Binding is permanent. A local pause or drain request does not stop on-chain hires. Testnet purchase drafts and quotes are available. Purchase execution stays disabled until reviewed activation. External Base EVM signatures or Solana devnet exact transaction and task-intent signatures use the direct capture endpoint; never give signed payment bytes to a model. Human spend approval is separate.',
+  },
   clawville_market: {
     sources: [src('ecosystem-reads.ts', 'get', '/api/ecosystem', '/market/:op')],
     calls: (_c, i) => {
@@ -625,6 +690,8 @@ export function validateCallPath(path: unknown, method?: string): string | null 
   if (pathname.includes('//')) return 'path must not contain //';
   if (pathname.split('/').some((part) => part === '.')) return 'path must not contain . segments';
   const canonical = canonicalCallPathname(pathname);
+  if (/^\/api\/brainchain\/funding-exit\/[^/]+\/(capture|approve|challenge)$/.test(canonical)) return 'external signatures and account approval require direct private REST, outside model tools';
+  if (/^\/api\/brainchain\/purchases\/[^/]+\/(capture|approve|approval-challenge)$/.test(canonical)) return 'external payer signatures and human approval require direct private REST, outside model tools';
   if (isMcpEndpointPath(canonical)) return 'the MCP endpoint cannot call itself';
   for (const prefix of BLOCKED_CALL_PREFIXES) {
     if (canonical === prefix || canonical.startsWith(`${prefix}/`)) return `path ${prefix} is not available over MCP`;

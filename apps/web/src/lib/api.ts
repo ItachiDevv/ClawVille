@@ -1134,11 +1134,12 @@ export const api = {
   // Target: Hono API at POST /api/chat/system/:slug. NOTE: backend schema
   // requires { content: string }, NOT { message: string } — different from
   // some sibling chat routes.
-  sendSystemChat: (slug: string, content: string) =>
+  sendSystemChat: (slug: string, content: string, signal?: AbortSignal) =>
     honoRequest<{ message: { role: string; content: string; timestamp: string } }>(
       `/api/chat/system/${slug}`,
       {
         method: 'POST',
+        signal,
         body: JSON.stringify({ content }),
       }
     ),

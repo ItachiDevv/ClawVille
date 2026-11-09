@@ -374,6 +374,8 @@ export async function installBuildingSkillIntoAgent(
     buildingId: string;
     /** Exact live agent proven by the caller, when the subject is an agent. */
     provenAgentId?: string;
+    /** Require a database readback of every hosted section before reporting runtime installation. */
+    requireComplete?: boolean;
   },
   dependencies: BuildingSkillInstallDependencies = defaultDependencies,
 ): Promise<BuildingSkillInstallResult> {
@@ -565,6 +567,14 @@ export async function installBuildingSkillIntoAgent(
             "runtime_unavailable",
             "Hosted agent runtime could not persist any building skill sections",
           );
+        }
+
+        if (input.requireComplete) {
+          const persisted = await store.installedSections({ platformAgentId,
+            buildingId: input.buildingId, contentHash: lockedSkill.contentHash });
+          if (!chunks.every((_, section) => persisted.has(section))) {
+            throw new BuildingSkillInstallError("runtime_unavailable", "Hosted skill section persistence is incomplete; retry missing sections");
+          }
         }
 
         if (confirmedSections.size === chunks.length) {

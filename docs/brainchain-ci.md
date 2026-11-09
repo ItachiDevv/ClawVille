@@ -83,7 +83,7 @@ The retained-history PostgreSQL runner through 0115 passed 21 suites and 137 tes
 This includes owner policy, signer receipts, scheduler flow, exact consent/capture, Base purchases, Solana purchases, and actual isolated cognition.
 The funding suite separately passed four tests and 24 assertions on the real shared pool.
 The current inventory contains 23 PostgreSQL suites, including funding and the separate isolated-cognition suite.
-The combined 23-suite result remains pending after configured-authority consumer and fixture changes.
+The final combined 23-suite result passed after configured-authority consumer and fixture corrections; see the final evidence below.
 The initial run exposed a stale signer receipt fixture; its owner added the required gas evidence before the passing run.
 An empty disposable PostgreSQL 18.6 database passed full-schema migration replay through 0116 twice, with 200 tables.
 Two retained-history bootstrap passes preserved 14 late capture records and four funding records exactly.
@@ -127,3 +127,32 @@ Backend received the full preserved log: .brainchain-work/ci-postgres-failed-own
 The capture suite had not run when this lane stopped. No complete PostgreSQL result is claimed.
 The protected Linux result remains four suites and 12 tests, with five reviewed skips.
 No protected-source correction occurred between that run and this retry.
+## Final local lane evidence
+
+The final PostgreSQL runner exited zero: 23 isolated suites, 151 tests, and zero skips.
+Exact capture passed all ten tests, including the positive case and block/hash mismatch refusal.
+Funding passed seven tests. Configured-authority SQL passed three tests. Actual isolated cognition passed both tests.
+The exact capture source and test hashes match the recorded retry manifest after execution.
+The pure result remains 68 isolated suites, 424 tests, and one expected Docker skip.
+The protected Linux result remains four suites, 12 tests, and five explicitly reviewed skips.
+The PostgreSQL lane executes the Docker case skipped by pure CI. No PostgreSQL test skipped.
+Later fixture corrections changed only PostgreSQL coverage; no protected-source change required another Linux run.
+
+Evidence: .brainchain-work/ci-postgres-results.json and .brainchain-work/ci-postgres-final-0117-retry2.log.
+Pure and Linux evidence remain in .brainchain-work/ci-pure-results.json and .brainchain-work/ci-linux-results.json.
+The first failure logs remain preserved. The earlier incomplete attempts do not override these final local results.
+These are local fixture results. Remote branch protection, remote CI, staging parity, and live activation remain separate requirements.
+## Protocol coverage checkpoint
+
+The final source checkpoint found four existing protocol fixtures outside the BrainChain pure inventory, still pinned to version 120.
+The fixture owner updated those version assertions to 127.
+Two existing brand assertions then exposed CT wording in the new served topic.
+The owner changed that reward term to vCLAW and preserved the assertions. No production behavior changed.
+The pure runner now executes agent-paid-surface, skill-protocol-onboarding, floor-arena-knowledge, and trading-floor-constants in separate processes.
+All four require zero skips. Their inclusion prevents the same inventory omission.
+The prior pure report remains preserved as ci-pure-results.before-protocol-expansion.json.
+The expanded pure lane exited zero: 72 isolated suites, 498 tests, and one expected Docker skip.
+The four added protocol suites all executed with zero skips.
+Evidence: .brainchain-work/ci-pure-final-protocol127.log and .brainchain-work/ci-pure-results.json.
+This supersedes the earlier 68-suite pure result. PostgreSQL remains 23 suites/151 tests/zero skips; Linux remains four suites/12 tests/five expected skips.
+No PostgreSQL, protected-source, or production behavior changed in this coverage correction.

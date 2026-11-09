@@ -30,6 +30,7 @@ export const SPEND_POLICY_QUERY_KEY = ['spend-policy'] as const;
 export const STUDIOS_APPROVALS_QUERY_KEY = ['studios-approvals'] as const;
 
 const VENDOR_LABELS: Record<SpendVendorId, string> = {
+  brainchain: 'BrainChain test purchases',
   studios: 'Studios by Claw Hunter (images and video)',
   said: 'SAID Protocol (paid wallet screen, about 1 cent each)',
 };

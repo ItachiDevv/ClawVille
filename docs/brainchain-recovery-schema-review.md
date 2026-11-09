@@ -211,3 +211,19 @@ This evidence covers execution admission only. Other consumer paths need their o
 Verdict: scoped PASS for corrected execution-reader callback liveness.
 Execution SHA-256: 3ebbf3b5a7a3eb09f6ac83ef1cd80bba203437060b32e8439f27e0d2eac46f40.
 Reader SHA-256: 6f4e63ff5e3baf721e254015b03acb39a08266a1e9130f6da2b9efad5320a5b3.
+
+## Final local CI evidence after frozen corrections
+
+The final PostgreSQL lane passed 23 isolated suites and 151 tests, with zero skips.
+It includes ten exact-capture tests and both actual isolated-cognition tests.
+The corrected capture source and regression hashes match the recorded retry manifest after this run.
+Pure CI passed 68 suites and 424 tests, with one Docker test assigned to the PostgreSQL lane.
+Protected Linux passed four suites and 12 tests, with five explicitly expected skips.
+No protected-source change occurred after that Linux run.
+Earlier fixture failures remain preserved and documented in the CI report.
+These results establish local fixture coverage only. They do not establish remote CI, staging parity, deployment, or live activation.
+Evidence: .brainchain-work/ci-postgres-final-0117-retry2.log and the three ci-*-results.json reports.
+Final protocol coverage expansion: pure CI now passes 72 isolated suites and 498 tests, with one expected Docker skip.
+Four previously omitted protocol fixtures now execute individually and require zero skips.
+The observed stale version pins and CT-to-vCLAW wording correction are documented in docs/brainchain-ci.md.
+The PostgreSQL and protected Linux results remain unchanged.

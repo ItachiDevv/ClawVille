@@ -28,6 +28,7 @@ import type { HatcherActionVerb } from '@clawville/shared';
  * change must.
  */
 const HOUSE_REFUSED_VERB_LIST = [
+  'brainchain',
   'chat_nori',
   'update_appearance',
   'trade_token',

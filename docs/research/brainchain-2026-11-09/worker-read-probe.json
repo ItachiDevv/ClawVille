@@ -1,0 +1,110 @@
+{
+  "observedAt": "2026-11-09T14:08:39.760Z",
+  "snapshot": {
+    "environment": "testnet",
+    "chainId": 274630,
+    "address": "0x1111111111111111111111111111111111111111",
+    "observedAt": "2026-11-09T14:08:41.771Z",
+    "blockAgeSeconds": 22788,
+    "block": {
+      "number": "5086",
+      "hash": "0x4f41651be666570ae4dcd27051bbb9bee82d330054c65621873d7dbcbcd61b26",
+      "timestamp": "1794210533"
+    },
+    "manifestHash": "5764737ed52cd9c2b2bac8a1d80c748b45a96e51fef268770d384276afcf2080",
+    "provisional": true,
+    "allowed": false,
+    "stake": {
+      "stakedAtomic": "0",
+      "unstakingAtomic": "0",
+      "unlocksAtUnix": "0",
+      "priceAtomic": "0",
+      "registered": false,
+      "held": "0"
+    },
+    "balances": {
+      "gasWei": "100000000000000",
+      "brainAtomic": "0",
+      "usdgAtomic": "0"
+    },
+    "terms": {
+      "minStakeAtomic": "500000000000000000000",
+      "bondAtomic": "100000000000000000000",
+      "timelockSeconds": "7200"
+    }
+  },
+  "boards": [
+    {
+      "environment": "testnet",
+      "address": "0x7a7cc5d35a642ccc268c7b263ff800bc7ebd52a4",
+      "release": "3.5.0",
+      "block": "0x13de",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "testnet",
+      "address": "0x67e0c5f884e1df61ac585b6d158c6e8175956ad1",
+      "release": "3.4.1",
+      "block": "0x13de",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "testnet",
+      "address": "0x0bea77333e26a257983fcc59b8d857730b5b1d2b",
+      "release": "3.4.0",
+      "block": "0x13de",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "testnet",
+      "address": "0xc74564f100e70f95346a6e399ebf1ce14309c8b6",
+      "release": "3.1.0",
+      "block": "0x13de",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "mainnet",
+      "address": "0x44b8464342bbfb9b565fae494dfdefa37d33a211",
+      "release": "3.5.0",
+      "block": "0x819",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "mainnet",
+      "address": "0x8385bb4b8990411ccdd8e851b2676da1a4c1f3c4",
+      "release": "3.4.0",
+      "block": "0x819",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "mainnet",
+      "address": "0x72c890aa996bf7efca88e3f5063b626560215160",
+      "release": "3.3.0",
+      "block": "0x819",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "mainnet",
+      "address": "0x6fbf25f036f18c7ae3b1b7343ed8d16dc695f6e0",
+      "release": "3.1.0",
+      "block": "0x819",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    },
+    {
+      "environment": "mainnet",
+      "address": "0x33825bc40e43cc7f8a301d6b7ac79edcdb92aca7",
+      "release": "3.0.0",
+      "block": "0x819",
+      "taskZeroStatus": 0,
+      "abiDecoded": true
+    }
+  ]
+}

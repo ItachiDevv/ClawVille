@@ -47,7 +47,8 @@
     "three": "^0.185.0",
     "three-stdlib": "^2.36.1",
     "zod": "^4.3.6",
-    "zustand": "^4.5.4"
+    "zustand": "^4.5.4",
+    "@solana/web3.js": "^1.95.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",

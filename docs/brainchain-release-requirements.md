@@ -18,7 +18,7 @@ A scoped test or source approval does not satisfy a broader release requirement.
 | Budget and credentials | Root ledger with stable job UUID and separate caps; no API spending | Protected signed authority provisioning, reserve-before-dispatch trial and actual usage reconciliation |
 | Independent review | Scoped identity/task/signer/typed-result/earnings/stdio/navigation reports; protected store/trial and read-only credit correction reviews | Purchase and credit transaction reviews; fresh integrated adversarial audit |
 | Release | Strict local web builds, API typechecks and targeted fixture suites | Coherent implementation commits, staging-first push, actual SOURCE_COMMIT/health/manual/browser checks and promotion PR |
-| Durable CI coverage | Pure65 suites/378 passes, retained-history PostgreSQL21 suites/137 passes through0115, Linux4 suites/12 passes; full schema through0116 replayed twice | Combined22-suite PostgreSQL lane after funding correction;0117 inventory, schema and retained-history review; final-source pure/Linux checks and remote workflow evidence |
+| Durable CI coverage | Pure72 suites/498 passes with one expected Docker skip; PostgreSQL23 suites/151 passes without skips; Linux4 suites/12 passes with five expected skips; independent0117 full-schema and retained-history replay | Remote workflow evidence |
 
 ## External and authorization boundaries
 
@@ -142,6 +142,23 @@ The pure run stopped at an expiry fixture with the same missing evidence. Owners
 Protected Linux passed four suites and12tests with five expected skips.
 
 Independent consumer review found a missing exact-capture block/hash comparison and policy enforcement in a read-only reconciliation reader.
-Both corrections have owner tests; their independent review and final combined runs remain pending.
+Both corrections passed independent targeted tests. Exact-capture mismatch1/6, retained-capture positive1/16, reconciliation drift1/5 and read-only evidence4/13 passed.
+The final combined PostgreSQL run passed23 suites/151 tests without skips. Pure68 suites/424 tests and protected Linux4 suites/12 tests passed.
 The runtime probe has scoped independent source approval with18tests/190assertions and a dedicated script typecheck.
 Actual staging consumption and provider cost accounting remain separate requirements.
+
+## Final scheduler propagation check
+
+The scheduler now passes its trusted authority reader into both the issuer and inference proxy.
+Root inspected both constructor calls and independently repeated the controlled scheduler-flow test: one test and25assertions passed.
+Reviewed scheduler SHA-256:68262ccd189343ffd249c7e7bb27aee002eda3c70f1683b9a9612792ce694e58.
+This proves the controlled composition only. It does not prove live provider, signer or testnet behavior.
+The remaining PostgreSQL fixtures now include current policy pairs for newly inserted accepted operations.
+Historical NULL records remain unchanged. No migration guard or admission check was bypassed.
+Final combined PostgreSQL verification passed on the isolated fixture at port55440, process61849exit0.
+Root read all three result files and independently summed their suite, pass and skip counts.
+
+The final source pass found four existing protocol fixtures outside the pure inventory with stale version120 assertions.
+They now assert127. Two preserved brand assertions also found CT in new served copy; the sentence now uses vCLAW.
+The expanded pure lane independently passed72suites498tests with one expected Docker skip, process97350exit0.
+PostgreSQL and protected Linux source did not change. Their recorded results remain applicable.

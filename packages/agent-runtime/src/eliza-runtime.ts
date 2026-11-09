@@ -31,6 +31,8 @@ import {
 import type { InferenceRoute } from './inference/inference-router';
 import { embedText } from './plugins/embed-text';
 import { clawvillePlugin } from './plugins/clawville-plugin';
+import { IsolatedTaskRuntime } from './isolated-task/runtime';
+import type { IsolatedTaskRuntimeConfig } from './isolated-task/types';
 import type { Provider, ProviderResult } from './providers/types';
 import type { Action, ActionResult, ClawvilleActionState } from './actions/types';
 import {
@@ -138,6 +140,7 @@ export function toSupabaseSessionModeUrl(url: string): string {
 }
 
 export interface ElizaRuntimeConfig {
+  executionProfile?: { kind: 'avatar' };
   agentId: string;
   agentType: 'location-agent' | 'avatar-agent' | string;
   /**
@@ -360,6 +363,8 @@ export class ElizaRuntime {
   private lightweightMode = false;
 
   constructor(config: ElizaRuntimeConfig) {
+    if (config.executionProfile !== undefined && (!config.executionProfile || config.executionProfile.kind !== 'avatar'
+      || Reflect.ownKeys(config.executionProfile).length !== 1)) throw new Error('Invalid avatar execution profile');
     this.config = config;
 
     if (config.agentType === 'openclaw-bot') {
@@ -1760,6 +1765,9 @@ export class ElizaRuntime {
   }
 }
 
-export function createElizaRuntime(config: ElizaRuntimeConfig): ElizaRuntime {
-  return new ElizaRuntime(config);
+export function createElizaRuntime(config: IsolatedTaskRuntimeConfig): IsolatedTaskRuntime;
+export function createElizaRuntime(config: ElizaRuntimeConfig): ElizaRuntime;
+export function createElizaRuntime(config: ElizaRuntimeConfig | IsolatedTaskRuntimeConfig): ElizaRuntime | IsolatedTaskRuntime {
+  if (config.executionProfile?.kind === 'isolated-task') return new IsolatedTaskRuntime(config as IsolatedTaskRuntimeConfig);
+  return new ElizaRuntime(config as ElizaRuntimeConfig);
 }

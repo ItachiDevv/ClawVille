@@ -18,6 +18,7 @@ export { eq, and, or, not, sql, desc, asc, lt, gt, lte, gte, isNull, isNotNull, 
 
 // Lazy database connection for Next.js build compatibility
 let _db: PostgresJsDatabase<typeof schema> | null = null;
+let _postgresClient: ReturnType<typeof postgres> | null = null;
 
 function getDb(): PostgresJsDatabase<typeof schema> {
   if (_db) return _db;
@@ -27,8 +28,8 @@ function getDb(): PostgresJsDatabase<typeof schema> {
     throw new Error('DATABASE_URL environment variable is not set');
   }
 
-  // `prepare: false` is REQUIRED for the Supabase transaction pooler (port :6543,
-  // Supavisor transaction mode), which our DATABASE_URL uses on both staging+prod.
+  // Historical Supabase transaction-pooler rationale for `prepare: false` follows.
+  // Staging and production now use their separate self-hosted PostgreSQL servers.
   // postgres.js defaults to NAMED prepared statements cached per backend connection,
   // but the transaction pooler hands a DIFFERENT backend to each transaction, so a
   // cached named statement isn't available on the next one. Over the pooler this
@@ -40,14 +41,14 @@ function getDb(): PostgresJsDatabase<typeof schema> {
   // transaction). `prepare: false` disables named prepared statements — Supabase's
   // documented fix — making transactions durable on the pooler. (node-pg, used by
   // ElizaOS plugin-sql, is unaffected: it uses UNNAMED statements by default.)
-  // Pool sizing: local dev DATABASE_URLs use the Supavisor SESSION pooler (:5432),
+  // Historical pool-sizing rationale: local dev used the Supavisor SESSION pooler (:5432),
   // which hard-caps CLIENT connections at pool_size (15). postgres.js defaults to
-  // max:10 per process with NO idle timeout, and both apps/api AND apps/web open a
+  // max:10 per process with NO idle timeout, and both apps/api AND apps/web opened a
   // pool — so a few concurrent/leaked local dev servers exhaust the whole session
   // pool (EMAXCONNSESSION on every query, 2026-07-18). Cap via DB_POOL_MAX in
   // .env.local (dev boxes set 4) and release idle connections after 30s so stray
-  // processes can't pin slots. Deployed staging/prod (:6543 txn pooler) keep the
-  // default max:10; idle_timeout is safe there (Supabase-recommended).
+  // processes can't pin slots. Staging and production retain the default max:10.
+  // These existing settings also apply to self-hosted PostgreSQL.
   // Fail new connections after 10s, and probe established TCP flows after 30s,
   // so a dead pooler cannot leave the shared postgres.js pool silent forever.
   const poolMax = Number(process.env.DB_POOL_MAX) > 0 ? Number(process.env.DB_POOL_MAX) : 10;
@@ -59,6 +60,7 @@ function getDb(): PostgresJsDatabase<typeof schema> {
     keep_alive: 30,
     max_lifetime: 60 * 60,
   });
+  _postgresClient = client;
   _db = drizzle(client, { schema });
   return _db;
 }
@@ -68,5 +70,12 @@ export const db = new Proxy({} as PostgresJsDatabase<typeof schema>, {
     return (getDb() as any)[prop];
   },
 });
+
+/** The existing lazy pool. Its serializers follow the installed Drizzle adapter contract. */
+export function getPostgresClient(): ReturnType<typeof postgres> {
+  getDb();
+  if (!_postgresClient) throw new Error('Database client is unavailable');
+  return _postgresClient;
+}
 
 export type Database = PostgresJsDatabase<typeof schema>;

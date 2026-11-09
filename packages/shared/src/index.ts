@@ -1,4 +1,5 @@
 export * from './types/avatar';
+export * from './constants/brainchain';
 export * from './types/location';
 export * from './types/agent';
 export * from './constants/avatar-species';
@@ -168,3 +169,5 @@ export * from './constants/land-showroom';
 export * from './constants/land-signage';
 
 export * from './constants/brainchain-office-world';
+
+export * from './constants/brainchain-purchase';

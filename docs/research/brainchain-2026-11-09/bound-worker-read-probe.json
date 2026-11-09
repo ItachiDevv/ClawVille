@@ -1,0 +1,49 @@
+{
+  "observedAt": "2026-11-09T14:10:28.082Z",
+  "fixtureWorkerId": "b8b57cea-50d5-45bb-b546-5609bbe5a6fe",
+  "fixtureAddress": "0x0099cdb9d067679e868175651ad40c801dd24756",
+  "snapshot": {
+    "workerId": "b8b57cea-50d5-45bb-b546-5609bbe5a6fe",
+    "environment": "testnet",
+    "chainId": 274630,
+    "address": "0x0099cdb9d067679e868175651ad40c801dd24756",
+    "observedAt": "2026-11-09T14:10:30.482Z",
+    "blockAgeSeconds": 22897,
+    "block": {
+      "number": "5086",
+      "hash": "0x4f41651be666570ae4dcd27051bbb9bee82d330054c65621873d7dbcbcd61b26",
+      "timestamp": "1794210533"
+    },
+    "manifestHash": "5764737ed52cd9c2b2bac8a1d80c748b45a96e51fef268770d384276afcf2080",
+    "provisional": true,
+    "allowed": false,
+    "stake": {
+      "stakedAtomic": "0",
+      "unstakingAtomic": "0",
+      "unlocksAtUnix": "0",
+      "priceAtomic": "0",
+      "registered": false,
+      "held": "0"
+    },
+    "balances": {
+      "gasWei": "0",
+      "brainAtomic": "0",
+      "usdgAtomic": "0"
+    },
+    "terms": {
+      "minStakeAtomic": "500000000000000000000",
+      "bondAtomic": "100000000000000000000",
+      "timelockSeconds": "7200"
+    }
+  },
+  "sync": {
+    "workerId": "b8b57cea-50d5-45bb-b546-5609bbe5a6fe",
+    "boardAddress": "0x7a7cc5d35a642ccc268c7b263ff800bc7ebd52a4",
+    "state": "observed",
+    "fromBlock": "2288",
+    "throughBlock": "4287",
+    "newHires": 0,
+    "refreshedTasks": 0,
+    "provisional": true
+  }
+}

@@ -8,7 +8,7 @@ let afterReply: (() => void) | undefined;
 let afterModeration: (() => void) | undefined;
 let afterCredit: (() => void) | undefined;
 let afterResolve: (() => void) | undefined;
-const credits: unknown[] = [], lessons: { lesson: string }[] = [], states: Record<string, unknown>[] = [];
+const credits: unknown[] = [], lessons: { lesson: string; teacherName: string; buildingId: string }[] = [], states: Record<string, unknown>[] = [];
 const events: unknown[] = [];
 const columns = { id: 'id', userId: 'userId', isActive: 'isActive' };
 type Predicate = (row: Record<string, unknown>) => boolean;
@@ -50,11 +50,11 @@ mock.module('../agent-orchestrator', () => ({ agentOrchestrator: { ensureAgentRu
   },
 }) } }));
 mock.module('../agent-session-ttl', () => ({ slideAgentSessionTtl: () => {} }));
-mock.module('../system-npc-seeder', () => ({ getSystemAgent: async () => ({ platformAgent: { id: 'nori' }, systemUserId: 'nori-owner' }) }));
+mock.module('../system-npc-seeder', () => ({ getSystemAgent: async (slug: string) => ({ platformAgent: { id: slug, name: slug === 'brainchain-office' ? 'BrainChain Office Guide' : 'Nori' }, systemUserId: 'nori-owner' }) }));
 mock.module('../claw-token-ledger', () => ({ creditClawTokens: async (input: unknown) => { credits.push(input); afterCredit?.(); } }));
 mock.module('../xp-service', () => ({ awardXp: async () => {} }));
 mock.module('../event-logger', () => ({ logEvent: async (input: unknown) => { events.push(input); } }));
-mock.module('../earned-skill-memory', () => ({ recordEarnedSkillLesson: async (input: { lesson: string }) => { lessons.push(input); return 'eliza'; } }));
+mock.module('../earned-skill-memory', () => ({ recordEarnedSkillLesson: async (input: { lesson: string; teacherName: string; buildingId: string }) => { lessons.push(input); return 'eliza'; } }));
 mock.module('../moderation-service', () => ({
   moderateText: async (_text: string, input: { direction: string }) => {
     if (input.direction === 'output') afterModeration?.();
@@ -75,6 +75,26 @@ const turn = (kind: 'human' | 'agent') => conductSystemAgentChat({
   actor: kind === 'human' ? { kind, userId: 'owner' } : { kind, sessionId: 'session' },
   slug: 'town-guide', content: 'Where can I learn?',
 });
+
+test('learned system chat uses the actual teacher and preserves Nori attribution', async () => {
+  await conductSystemAgentChat({ actor: { kind: 'agent', sessionId: 'session' }, slug: 'brainchain-office', content: 'How does testnet work?' });
+  expect(lessons[0]).toMatchObject({ teacherName: 'BrainChain Office Guide', buildingId: 'brainchain-office', lesson: 'BrainChain Office Guide told me: Ask the teacher.' });
+  await turn('agent');
+  expect(lessons[1]).toMatchObject({ teacherName: 'Nori', buildingId: 'town-guide', lesson: 'Nori told me: Ask the teacher.' });
+});
+
+for (const kind of ['human', 'agent'] as const) {
+  test(`${kind} BrainChain chat attributes the same avatar and supplies no execution service`, async () => {
+    await conductSystemAgentChat({
+      actor: kind === 'human' ? { kind, userId: 'owner' } : { kind, sessionId: 'session' },
+      slug: 'brainchain-office', content: 'Teach me the testnet procedure.',
+    });
+    expect(states[0].avatarId).toBe('avatar');
+    expect(states[0].services).toBeUndefined();
+    expect(credits[0]).toMatchObject({ avatarId: 'avatar' });
+    expect(events[0]).toMatchObject({ userId: 'owner', avatarId: 'avatar', payload: { agentSlug: 'brainchain-office' } });
+  });
+}
 
 for (const kind of ['human', 'agent'] as const) {
   test(`${kind} Nori cognition has no executable capability and strips action tags`, async () => {

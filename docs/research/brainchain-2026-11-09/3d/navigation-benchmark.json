@@ -1,0 +1,20 @@
+{
+  "date": "2026-11-09",
+  "machine": "Current Windows desktop; CPU model not recorded; not Iris Xe acceptance",
+  "method": "Bun; full704x704 planner; temporary copy injects an impassable horizontal row;80000 expansion ceiling; five samples",
+  "beforeStringKeysMs": [
+    143.3241,
+    156.918,
+    141.783,
+    142.4431,
+    106.6599
+  ],
+  "afterNumericKeysTypedArraysMs": [
+    53.569,
+    37.8443,
+    44.4522,
+    30.669,
+    31.4889
+  ],
+  "result": "Cold53.569ms remains above50ms; warm samples31-44ms. Browser and Iris Xe measurements remain open."
+}

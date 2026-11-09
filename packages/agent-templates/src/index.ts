@@ -27,6 +27,7 @@ import { appPublishing } from './locations/app-publishing';
 import { agentSecurity } from './locations/agent-security';
 import { deploymentOps } from './locations/deployment-ops';
 import { townGuide } from './locations/town-guide';
+import { brainchainOffice } from './locations/brainchain-office';
 
 // Re-export all location templates
 export { cronAutomation } from './locations/cron-automation';
@@ -40,6 +41,7 @@ export { appPublishing } from './locations/app-publishing';
 export { agentSecurity } from './locations/agent-security';
 export { deploymentOps } from './locations/deployment-ops';
 export { townGuide } from './locations/town-guide';
+export { brainchainOffice } from './locations/brainchain-office';
 
 // System agents are world-scoped NPCs that aren't tied to a building (unlike
 // the 10 LOCATION_TEMPLATES residents). Each gets a `platform_agents` row with
@@ -50,6 +52,7 @@ export { townGuide } from './locations/town-guide';
 // here — the seeder loop handles the rest.
 export const SYSTEM_AGENT_TEMPLATES: Record<string, LocationTemplate> = {
   'town-guide': townGuide,
+  'brainchain-office': brainchainOffice,
 };
 
 // Legacy export name (kept for backwards compatibility)

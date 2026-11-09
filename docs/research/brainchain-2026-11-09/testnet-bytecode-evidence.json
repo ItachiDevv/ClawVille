@@ -1,0 +1,503 @@
+{
+  "observedAt": "2026-11-09T14:24:20.929Z",
+  "sourceCommit": "348cc3726227a9a321d7593fd0e685904901d31e",
+  "openzeppelinCommit": "dbb6104ce834628e473d2173bbc9d47f81a9eec3",
+  "compiler": "0.8.24+commit.e11b9ed9.Emscripten.clang",
+  "chainId": 274630,
+  "block": "0x13ea",
+  "noSigning": true,
+  "results": [
+    {
+      "evmVersion": "shanghai",
+      "contract": "TestBRAIN",
+      "address": "0xc717546497343911750768335b649b86d0a6eCcf",
+      "runtimeBytes": 2097,
+      "compiledBytes": 2097,
+      "codeHash": "0xac04bf6d10bd33a232640b204c7c6169285328522af4e53d8e84e281a8a08dc9",
+      "logicMatchIgnoringMetadataAndImmutables": true,
+      "metadataExact": false,
+      "immutables": []
+    },
+    {
+      "evmVersion": "shanghai",
+      "contract": "WorkerStaking",
+      "address": "0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b",
+      "runtimeBytes": 5322,
+      "compiledBytes": 5322,
+      "codeHash": "0x4b175fed27f964db80591205f354d5c88f9d3f2a63e6a2d1a42fb7d226313ab9",
+      "logicMatchIgnoringMetadataAndImmutables": true,
+      "metadataExact": false,
+      "immutables": [
+        {
+          "astId": "4583",
+          "start": 1206,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        },
+        {
+          "astId": "4583",
+          "start": 1432,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        },
+        {
+          "astId": "4583",
+          "start": 2349,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        },
+        {
+          "astId": "4583",
+          "start": 3528,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        }
+      ]
+    },
+    {
+      "evmVersion": "shanghai",
+      "contract": "ProposalBonds",
+      "address": "0x2f15B42131544e6763dbECC7C954C7823AAa0D47",
+      "runtimeBytes": 5520,
+      "compiledBytes": 5520,
+      "codeHash": "0x1b1f7b254b9ea86a5c800ee0e4cead8ec18d2ff3fb303f2fb2b876cadc837b1d",
+      "logicMatchIgnoringMetadataAndImmutables": true,
+      "metadataExact": false,
+      "immutables": [
+        {
+          "astId": "3956",
+          "start": 711,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        },
+        {
+          "astId": "3956",
+          "start": 1542,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        },
+        {
+          "astId": "3956",
+          "start": 2714,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        },
+        {
+          "astId": "3956",
+          "start": 3413,
+          "length": 32,
+          "value": "000000000000000000000000c717546497343911750768335b649b86d0a6eccf"
+        },
+        {
+          "astId": "3959",
+          "start": 427,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "3959",
+          "start": 2094,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "3959",
+          "start": 2380,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "3959",
+          "start": 2998,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "3959",
+          "start": 3146,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "3962",
+          "start": 653,
+          "length": 32,
+          "value": "000000000000000000000000a3a40a2d46d54dc6e88c08a9d98ec47785cb2366"
+        },
+        {
+          "astId": "3962",
+          "start": 818,
+          "length": 32,
+          "value": "000000000000000000000000a3a40a2d46d54dc6e88c08a9d98ec47785cb2366"
+        },
+        {
+          "astId": "3962",
+          "start": 1166,
+          "length": 32,
+          "value": "000000000000000000000000a3a40a2d46d54dc6e88c08a9d98ec47785cb2366"
+        },
+        {
+          "astId": "3964",
+          "start": 533,
+          "length": 32,
+          "value": "000000000000000000000000a3a40a2d46d54dc6e88c08a9d98ec47785cb2366"
+        },
+        {
+          "astId": "3964",
+          "start": 3531,
+          "length": 32,
+          "value": "000000000000000000000000a3a40a2d46d54dc6e88c08a9d98ec47785cb2366"
+        }
+      ]
+    },
+    {
+      "evmVersion": "shanghai",
+      "contract": "TaskBoard",
+      "address": "0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4",
+      "runtimeBytes": 16760,
+      "compiledBytes": 16760,
+      "codeHash": "0xe2f68f1f91bc5932997a05d92ffe42eee5a4d657a4245303901e892703380580",
+      "logicMatchIgnoringMetadataAndImmutables": true,
+      "metadataExact": false,
+      "immutables": [
+        {
+          "astId": "1486",
+          "start": 1967,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 5853,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 5973,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 6064,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 9609,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 9737,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 9828,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 11111,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 11279,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 11440,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1486",
+          "start": 11935,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "1489",
+          "start": 1291,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "1489",
+          "start": 12095,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "1489",
+          "start": 12339,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "1489",
+          "start": 12646,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "1492",
+          "start": 1797,
+          "length": 32,
+          "value": "0000000000000000000000003e5e23a5ff6548958ab3ddf42c51a59713ce550c"
+        },
+        {
+          "astId": "1492",
+          "start": 13055,
+          "length": 32,
+          "value": "0000000000000000000000003e5e23a5ff6548958ab3ddf42c51a59713ce550c"
+        },
+        {
+          "astId": "1496",
+          "start": 1163,
+          "length": 32,
+          "value": "0000000000000000000000006afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b"
+        },
+        {
+          "astId": "1496",
+          "start": 7286,
+          "length": 32,
+          "value": "0000000000000000000000006afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b"
+        },
+        {
+          "astId": "1496",
+          "start": 10928,
+          "length": 32,
+          "value": "0000000000000000000000006afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b"
+        },
+        {
+          "astId": "1496",
+          "start": 11683,
+          "length": 32,
+          "value": "0000000000000000000000006afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b"
+        },
+        {
+          "astId": "1496",
+          "start": 12866,
+          "length": 32,
+          "value": "0000000000000000000000006afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b"
+        },
+        {
+          "astId": "1496",
+          "start": 13353,
+          "length": 32,
+          "value": "0000000000000000000000006afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b"
+        },
+        {
+          "astId": "1496",
+          "start": 13424,
+          "length": 32,
+          "value": "0000000000000000000000006afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b"
+        }
+      ]
+    },
+    {
+      "evmVersion": "shanghai",
+      "contract": "DecisionExecutor",
+      "address": "0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366",
+      "runtimeBytes": 10011,
+      "compiledBytes": 10011,
+      "codeHash": "0x1c99dc0c88bc25fce3654e3390a07dd6eab159452300711449d95ecf5a2e6bff",
+      "logicMatchIgnoringMetadataAndImmutables": true,
+      "metadataExact": false,
+      "immutables": [
+        {
+          "astId": "163",
+          "start": 736,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "163",
+          "start": 1637,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "163",
+          "start": 1911,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "163",
+          "start": 2526,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "163",
+          "start": 2726,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "163",
+          "start": 3717,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "163",
+          "start": 4255,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "163",
+          "start": 5452,
+          "length": 32,
+          "value": "0000000000000000000000004e4cb48f3802bd519e0eed896df82197b0ecbc09"
+        },
+        {
+          "astId": "166",
+          "start": 1214,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "166",
+          "start": 4812,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "166",
+          "start": 5010,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "166",
+          "start": 5216,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        },
+        {
+          "astId": "166",
+          "start": 5607,
+          "length": 32,
+          "value": "000000000000000000000000c4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2"
+        }
+      ]
+    }
+  ],
+  "immutableChecks": [
+    {
+      "contract": "WorkerStaking",
+      "variable": "token",
+      "sourceAstId": "4583",
+      "expectedContract": "TestBRAIN",
+      "expectedAddress": "0xc717546497343911750768335b649b86d0a6eccf",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "ProposalBonds",
+      "variable": "token",
+      "sourceAstId": "3956",
+      "expectedContract": "TestBRAIN",
+      "expectedAddress": "0xc717546497343911750768335b649b86d0a6eccf",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "ProposalBonds",
+      "variable": "decisions",
+      "sourceAstId": "3959",
+      "expectedContract": "DecisionLog",
+      "expectedAddress": "0x4e4cb48f3802bd519e0eed896df82197b0ecbc09",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "ProposalBonds",
+      "variable": "executor",
+      "sourceAstId": "3962",
+      "expectedContract": "DecisionExecutor",
+      "expectedAddress": "0xa3a40a2d46d54dc6e88c08a9d98ec47785cb2366",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "ProposalBonds",
+      "variable": "owner",
+      "sourceAstId": "3964",
+      "expectedContract": "DecisionExecutor",
+      "expectedAddress": "0xa3a40a2d46d54dc6e88c08a9d98ec47785cb2366",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "TaskBoard",
+      "variable": "token",
+      "sourceAstId": "1486",
+      "expectedContract": "TestUSDG",
+      "expectedAddress": "0xc4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "TaskBoard",
+      "variable": "decisions",
+      "sourceAstId": "1489",
+      "expectedContract": "DecisionLog",
+      "expectedAddress": "0x4e4cb48f3802bd519e0eed896df82197b0ecbc09",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "TaskBoard",
+      "variable": "models",
+      "sourceAstId": "1492",
+      "expectedContract": "ModelRegistry",
+      "expectedAddress": "0x3e5e23a5ff6548958ab3ddf42c51a59713ce550c",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "TaskBoard",
+      "variable": "staking",
+      "sourceAstId": "1496",
+      "expectedContract": "WorkerStaking",
+      "expectedAddress": "0x6afc3efb49cf9b14c2f7c6c4f6c0bb3ef0125e2b",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "DecisionExecutor",
+      "variable": "decisions",
+      "sourceAstId": "163",
+      "expectedContract": "DecisionLog",
+      "expectedAddress": "0x4e4cb48f3802bd519e0eed896df82197b0ecbc09",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    },
+    {
+      "contract": "DecisionExecutor",
+      "variable": "token",
+      "sourceAstId": "166",
+      "expectedContract": "TestUSDG",
+      "expectedAddress": "0xc4ec72794bf3ce9ba1de4b38085464c2eb0cdcf2",
+      "runtimeSlotMatches": true,
+      "getterAtBlockMatches": true
+    }
+  ],
+  "verificationLevel": "Executable runtime matches pinned source after metadata exclusion; all immutable locations match pinned manifest and public getter results. Metadata hashes differ. Full observed runtime hashes are recorded separately.",
+  "authorizesSigning": false
+}

@@ -1,0 +1,39 @@
+{
+  "observedAt": "2026-11-09T16:56:13.063Z",
+  "endpoint": "https://mcp.priors.trade/mcp",
+  "method": "resources/read",
+  "uri": "ui://priors/app.html",
+  "htmlSha256": "584628958aa5186d15addbd5c10728bcb4bcb637df0a20cb881e8a44dba4e91b",
+  "scope": "Official hosted client consumer fields; no request_borrow or request_repay invocation",
+  "consumerFields": {
+    "borrow_request": [
+      "kind",
+      "agentId",
+      "amountUsd",
+      "days",
+      "feeEstimate",
+      "approvalUrl",
+      "builderUrl"
+    ],
+    "repay_request": [
+      "kind",
+      "agentId",
+      "loans",
+      "due",
+      "approvalUrl",
+      "builderUrl"
+    ],
+    "openLoansElement": [
+      "loanId",
+      "due",
+      "dueAt",
+      "pastDue"
+    ]
+  },
+  "limits": [
+    "Consumer property use does not prove response types or mandatory fields",
+    "No URL path/query schema is present",
+    "feeEstimate is an estimate, not a maximum total repayment",
+    "Repay links cover all loans in Go mode; no exact loan set authorization follows"
+  ]
+}

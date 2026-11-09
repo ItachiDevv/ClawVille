@@ -6,6 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./isolated-task": {
+      "types": "./dist/isolated-task/index.d.ts",
+      "import": "./dist/isolated-task/index.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

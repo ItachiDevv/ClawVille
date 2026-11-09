@@ -4,6 +4,8 @@ export {
   toSupabaseSessionModeUrl,
 } from './eliza-runtime';
 export type { ElizaRuntimeConfig, ElizaMessage, ElizaRuntimeState } from './eliza-runtime';
+export { IsolatedTaskRuntime, buildIsolatedTaskPrompt, isolatedTaskPromptHash, IsolatedTaskError } from './isolated-task';
+export type { IsolatedTaskBinding, IsolatedTaskProxy, IsolatedTaskProxyRequest, IsolatedTaskProxyResponse, IsolatedTaskRuntimeConfig, IsolatedTaskResult, IsolatedTaskInventory } from './isolated-task';
 export {
   generateRoomId,
   PROTOCOL_KNOWLEDGE_KEY,

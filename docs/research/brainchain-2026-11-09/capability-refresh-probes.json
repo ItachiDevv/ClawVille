@@ -1,0 +1,1006 @@
+{
+  "observedAt": "2026-11-09T13:18:12.600294+00:00",
+  "noSigning": true,
+  "probes": [
+    {
+      "url": "https://brain.usebrainchain.com/health",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "lastRound": {
+          "at": "2026-11-09T13:17:47.854Z",
+          "decisions": {
+            "hired": 0,
+            "held": 0,
+            "graded": 0,
+            "ruled": 0,
+            "finalized": 0,
+            "failed": 0
+          },
+          "delivered": [
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          ]
+        },
+        "lastSuccessAt": "2026-11-09T13:17:47.854Z"
+      }
+    },
+    {
+      "url": "https://brain.testnet.usebrainchain.com/health",
+      "status": 200,
+      "body": {
+        "ok": true,
+        "lastRound": {
+          "at": "2026-11-09T13:18:05.620Z",
+          "decisions": {
+            "hired": 0,
+            "held": 0,
+            "graded": 0,
+            "ruled": 0,
+            "finalized": 0,
+            "failed": 0
+          },
+          "delivered": [
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            },
+            {
+              "delivered": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          ]
+        },
+        "lastSuccessAt": "2026-11-09T13:18:05.620Z",
+        "stalled": [
+          {
+            "id": "179",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "183",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "184",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "185",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "186",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "188",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "189",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "190",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "191",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "192",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "193",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "194",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "195",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "206",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "207",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "220",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "222",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "224",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "229",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "231",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "232",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "233",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          },
+          {
+            "id": "234",
+            "step": "hire",
+            "reason": "Jev answered with status 403"
+          }
+        ]
+      }
+    },
+    {
+      "url": "https://brain.usebrainchain.com/exits",
+      "status": 404,
+      "body": {
+        "error": "Fast exits are off on this network."
+      }
+    },
+    {
+      "url": "https://brain.testnet.usebrainchain.com/exits",
+      "status": 200,
+      "body": {
+        "desk": "0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1",
+        "token": "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
+        "payoutChainId": 46630,
+        "payoutToken": "0x1eC185467cA2D5d1c24f0EdCB91301Bca4d0a787",
+        "feeBps": 50,
+        "minFeeUnits": "10000",
+        "minUnits": "1000000",
+        "maxUnits": "100000000",
+        "dailyUnits": "200000000",
+        "how": "Send USDG to `desk` on BrainChain from a wallet (not a contract). The same address is paid on Robinhood Chain, less the fee, within a few minutes. Read the state at /exits/<BrainChain tx hash>."
+      }
+    },
+    {
+      "url": "https://brain.usebrainchain.com/workers",
+      "status": 404,
+      "body": {
+        "error": "Not found."
+      }
+    },
+    {
+      "url": "https://brain.usebrainchain.com/tasks",
+      "status": 404,
+      "body": {
+        "error": "Not found."
+      }
+    },
+    {
+      "url": "https://brain.usebrainchain.com/priors",
+      "status": 404,
+      "body": {
+        "error": "Not found."
+      }
+    },
+    {
+      "url": "https://brain.usebrainchain.com/priors/consents",
+      "status": 200,
+      "body": {
+        "rootId": "20423",
+        "consents": []
+      }
+    },
+    {
+      "url": "https://priors.trade/api/check?agent=20423",
+      "status": 200,
+      "body": {
+        "query": {
+          "agent": 20423
+        },
+        "block": 110084625,
+        "timestamp": 1794230153,
+        "verdict": "no repayments yet",
+        "agents": [
+          {
+            "agentId": 20423,
+            "name": "BrainChain",
+            "owner": "0x70c665780e43ba1496a4e691e408f24844db58ec",
+            "matchedAs": [
+              "id"
+            ],
+            "record": {
+              "loansRepaid": 0,
+              "volumeRepaidUsdg": 0,
+              "activeLoans": 0,
+              "defaulted": false,
+              "frozen": false,
+              "isRoot": true,
+              "enrolledAt": 1793694234,
+              "lastRepayAt": null,
+              "onchainScore": 162,
+              "ownerSince": 1793534705,
+              "loansRepaidByOwner": 0
+            },
+            "scoreV2": {
+              "score": 32,
+              "rung": 0,
+              "rungName": "unproven",
+              "version": "2.0.4",
+              "updatedAt": 1794229975,
+              "lateRepayments": 0,
+              "repaidByOthers": 0,
+              "distinctPayers": 4,
+              "receiptsUsdg": 62.8,
+              "receiptPayers": 8,
+              "next": {
+                "rung": 1,
+                "name": "started",
+                "needs": [
+                  {
+                    "key": "backedRepaid",
+                    "have": 0,
+                    "need": 1,
+                    "met": false
+                  }
+                ],
+                "blocked": null
+              }
+            },
+            "attestedScore": {
+              "score": 14,
+              "rung": 0,
+              "version": "2.0.4",
+              "tag2": "rung-0/v2.0.4",
+              "defaulted": false,
+              "feedbackIndex": 2,
+              "postedAt": 1793838862,
+              "block": 106322841,
+              "tx": "0x64b4d110cc8ab0c44c4d4653c447178317f4d1d71b316abc4d043af27b56e49b"
+            },
+            "links": {
+              "badge": "https://priors.trade/api/badge/20423.svg",
+              "page": "https://priors.trade/agent?id=20423"
+            },
+            "x": null,
+            "ownerEthos": {
+              "score": 0,
+              "level": "untrusted",
+              "profile": "https://app.ethos.network/profile/0x70c665780e43ba1496a4e691e408f24844db58ec"
+            }
+          }
+        ],
+        "attestations": {
+          "chain": "eip155:4663",
+          "registry": "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63",
+          "attester": "0x613854463bb854225306b9b18bdb451a78430a73",
+          "how": "read getSummary(agentId, [attester], \"priors-score\", \"\") on the registry; only the attester's entries are Priors'",
+          "attestedAsOf": 1794226762,
+          "creditWriter": "0x03af41aeb1eea4da0572bbb6ab1b4c5331f17ac7",
+          "credit": "the creditWriter's \"credit.statement\" and \"credit.defaulted\" entries on the registry, checkable from the pools' logs (scripts/verify-credit.mjs, docs/ERC-8004-CREDIT.md)"
+        },
+        "about": "https://github.com/priors-agents/priors/blob/main/docs/CHECK-API.md"
+      }
+    },
+    {
+      "url": "https://raw.githubusercontent.com/usebrainchain/brainchain/main/deployments/mainnet.json",
+      "status": 200,
+      "body": {
+        "network": "BrainChain mainnet",
+        "chainId": 274663,
+        "rpc": "https://rpc.usebrainchain.com",
+        "parentChainId": 4663,
+        "rollup": "0x6e116c6E439613e6c223b49D243B31160d074c1B",
+        "fromBlock": 965,
+        "contracts": {
+          "TaskBoard": "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211",
+          "DecisionLog": "0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68",
+          "ModelRegistry": "0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed",
+          "DecisionExecutor": "0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29",
+          "WorkerStaking": "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F",
+          "ProposalBonds": "0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4",
+          "AdminTimelock": "0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e",
+          "USDG": "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
+          "BRAIN": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
+          "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c",
+          "GuardianGate": "0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8",
+          "DcapAttestation": "0x94552cb7C8806fAD00c4EB59182E98C5Ba4bBfcb"
+        },
+        "robinhoodChain": {
+          "FeeSplitter": "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb",
+          "RewardDistributor": "0x686633c82F81b99B1Ae9bAAE458Aa8280F158367",
+          "RollupAdminTimelock": "0xDA308F4CE7c80e52665f6D74590A2c0d61C437c3",
+          "USDG": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+          "ProofsIncome": "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
+          "BrainChainProofs": "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
+          "BRAIN": "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418",
+          "BrainLaunchTreasury": "0x396003b5Ffb940466325622D05f1b59acCF894A2",
+          "ProofIndex": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"
+        },
+        "release": "3.5.0",
+        "aliases": [
+          "v5"
+        ],
+        "retired": [
+          {
+            "release": "3.4.0",
+            "aliases": [
+              "v4"
+            ],
+            "fromBlock": 839,
+            "contracts": {
+              "TaskBoard": "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4",
+              "DecisionLog": "0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7",
+              "ModelRegistry": "0x870B0BFB24aF2C06180FbEe266117305e0B0E00F",
+              "DecisionExecutor": "0x98BEA2E455539dB38b7337d81C673326128EA17F",
+              "WorkerStaking": "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F",
+              "ProposalBonds": "0x1129435A110AB3Ffd3fFEE345A48f648DdE3D52c",
+              "AdminTimelock": "0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e",
+              "USDG": "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
+              "BRAIN": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
+              "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c",
+              "GuardianGate": "0x48c2Ed99Dc786ba667eFcFF721ff4cA92a1f344A"
+            }
+          },
+          {
+            "release": "3.3.0",
+            "fromBlock": 425,
+            "contracts": {
+              "TaskBoard": "0x72C890AA996bF7efcA88e3F5063B626560215160",
+              "DecisionLog": "0x5FfED27750E5Ca990aB60751Fc4B25E39358FcD7",
+              "ModelRegistry": "0x65B71706bE8a92dda39dDfdb6ABA8CEA64A33865",
+              "DecisionExecutor": "0xA03614B09Dcc3813eD665a1693123f2a4f2C2483",
+              "WorkerStaking": "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee",
+              "ProposalBonds": "0x3806b71D46cd74d0Ac4BBC34577f311A0Fd06D14",
+              "AdminTimelock": "0xB23F49390061B1E7Faf0F99B146E491Ee1574B1e",
+              "USDG": "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
+              "BRAIN": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
+              "AdminSafe": "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c"
+            }
+          },
+          {
+            "release": "3.1.0",
+            "fromBlock": 282,
+            "contracts": {
+              "TaskBoard": "0x6fBF25F036F18C7AE3b1B7343ED8d16Dc695f6e0",
+              "DecisionLog": "0xbe8E68EbDEaf2C65bc13D8AD070d17098Be6d335",
+              "ModelRegistry": "0x4E5E2eee7c1CBe1484f3E8218151a567f9144f4F",
+              "DecisionExecutor": "0xC5442fEFDa6B55f48a1FCfc195a8737D7EfB829B"
+            }
+          },
+          {
+            "release": "3.0.0",
+            "fromBlock": 101,
+            "contracts": {
+              "TaskBoard": "0x33825Bc40E43cC7f8A301D6b7aC79eDCDb92ACa7",
+              "DecisionLog": "0x78314f2d6f29E79ADAdbA9ebcd10cAD7Aa3f205f",
+              "ModelRegistry": "0x22AA74E6d3e225e8FBA32d04Fb8e8afE5B859Bc3",
+              "DecisionExecutor": "0xdE2e18fB117832EEefD5895646550E0BDC166d0b"
+            },
+            "feeRecipient": "0x57BF4f61e27d6C2bD7938d49308104f15736Fdf5"
+          }
+        ]
+      }
+    },
+    {
+      "url": "https://raw.githubusercontent.com/usebrainchain/brainchain/main/deployments/testnet.json",
+      "status": 200,
+      "body": {
+        "network": "BrainChain testnet",
+        "chainId": 274630,
+        "rpc": "https://rpc.testnet.usebrainchain.com",
+        "parentChainId": 46630,
+        "rollup": "0xfC97950B5016cB2aa593046729e79d75b69859D1",
+        "contracts": {
+          "TaskBoard": "0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4",
+          "DecisionLog": "0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09",
+          "ModelRegistry": "0x3e5e23a5fF6548958ab3dDf42c51A59713cE550C",
+          "DecisionExecutor": "0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366",
+          "AdminTimelock": "0x2b70BCf8Fe79E75f10a7DbF8D9ab6D63216f2273",
+          "GuardianGate": "0x84d01e0869fbCb07c0141E49c390ffdc064D6882",
+          "WorkerStaking": "0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b",
+          "FeeRouter": "0x235658EE85939e2969E1bcBaE1633769a414bD8a",
+          "ProposalBonds": "0x2f15B42131544e6763dbECC7C954C7823AAa0D47",
+          "TestUSDG": "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
+          "TestBRAIN": "0xc717546497343911750768335b649b86d0a6eCcf",
+          "TestSwap": "0x0EF716C553Ede96aA1DA49ddb5DE8FC6aB3270DE",
+          "DcapAttestation": "0xB364f47E16ea1555835f9593f409c39d3509f4C5"
+        },
+        "fromBlock": 2288,
+        "release": "3.5.0",
+        "retired": [
+          {
+            "release": "3.4.1",
+            "fromBlock": 2141,
+            "contracts": {
+              "TaskBoard": "0x67e0C5F884E1df61AC585B6d158c6E8175956AD1",
+              "DecisionLog": "0x49019b7ad5B4b688A1bF3c52D9f3a1DF5870F59f",
+              "ModelRegistry": "0x7A10D8361917d4446cAEfBd3F71694A438cC6BF8",
+              "DecisionExecutor": "0x5BFbAf3986E4aFaeb2895535E0bE206F76e5EC63",
+              "AdminTimelock": "0x2b70BCf8Fe79E75f10a7DbF8D9ab6D63216f2273",
+              "GuardianGate": "0xE59A4d0De46d055196FF73AF605aabBe4B94A70F",
+              "WorkerStaking": "0xd2161eE4194Aaec3c2a7Aa83ccDEeafDf94A72c2",
+              "FeeRouter": "0x1f2f8250c0fccd4BAE5bf663a3a8C433403f278c",
+              "ProposalBonds": "0x85Fd1aE9049ae52DeCdd27b833B16b877e1ce662",
+              "TestUSDG": "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
+              "TestBRAIN": "0xc717546497343911750768335b649b86d0a6eCcf",
+              "TestSwap": "0x0EF716C553Ede96aA1DA49ddb5DE8FC6aB3270DE",
+              "DcapAttestation": "0xB364f47E16ea1555835f9593f409c39d3509f4C5"
+            }
+          },
+          {
+            "release": "3.4.0",
+            "fromBlock": 1793,
+            "contracts": {
+              "TaskBoard": "0x0beA77333E26a257983fCc59B8D857730b5B1D2B",
+              "DecisionLog": "0xD7FC002E9FB9ba1D9119cF895936FA720545f6B8",
+              "ModelRegistry": "0xcE777c32824fd5963a9C31C70e9B1c5D9C4ED16e",
+              "DecisionExecutor": "0xFFf56B7B194C190152b17C086c36A2a79f050397",
+              "AdminTimelock": "0x2b70BCf8Fe79E75f10a7DbF8D9ab6D63216f2273",
+              "GuardianGate": "0x27c519399e178F1Ba5E453F6075b0bb9Ef4d1d5E",
+              "WorkerStaking": "0x09468dE253517bD5d91b92115cce45798F300Cf0",
+              "FeeRouter": "0xdb2a8FA9018946438772DCB0756e39b17F81E416",
+              "ProposalBonds": "0x34279448dc42b84B479daeF092749020017F001B",
+              "TestUSDG": "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
+              "TestBRAIN": "0xc717546497343911750768335b649b86d0a6eCcf",
+              "TestSwap": "0x0EF716C553Ede96aA1DA49ddb5DE8FC6aB3270DE",
+              "DcapAttestation": "0xB364f47E16ea1555835f9593f409c39d3509f4C5"
+            }
+          },
+          {
+            "release": "3.1.0",
+            "fromBlock": 898,
+            "contracts": {
+              "TaskBoard": "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6",
+              "DecisionLog": "0xc7C5663c1cBC231596F770acafb88326f248492D",
+              "ModelRegistry": "0x297AA5fb95Ef9785Da6DC0cA00121060606e2C63",
+              "DecisionExecutor": "0x420484B139001ED5B1DA330e689Cc2f4814001Fb",
+              "WorkerStaking": "0xbdC08799D865DA79FE44a469de1FeaE84bb45059",
+              "FeeRouter": "0x7BF28Fe6fF57238FaDfD59F3792B0bf7C0B34402",
+              "ProposalBonds": "0x574060D1A7CA8f3786d2D14fe1A782cc4638CB1e"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "url": "https://registry.npmjs.org/brainchain-worker/latest",
+      "status": 200,
+      "body": {
+        "name": "brainchain-worker",
+        "version": "0.19.2",
+        "repository": {
+          "url": "git+https://github.com/usebrainchain/brainchain-worker.git",
+          "type": "git"
+        },
+        "dist": {
+          "shasum": "de3dfc7f579499d63d558f43ce58533579339910",
+          "tarball": "https://registry.npmjs.org/brainchain-worker/-/brainchain-worker-0.19.2.tgz",
+          "fileCount": 24,
+          "integrity": "sha512-LkGBb9eiPZKJ2/TagzdvMqcQzWZv13DUX9AI7fvfTZds5DuplpZ33EsKMww+QESSl0LelMTekuZhdTXLdh82Wg==",
+          "signatures": [
+            {
+              "sig": "MEMCIHt7UicX3ruYZsTeJ/hwiXAkhHyqNR2dPzXsJyErht8SAh9B6JpgeZjbr40HZ3rG3YcHT+iU3NM5OqPmWHf0o+Ma",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIADA5ET8IGhB4Uy13SIFmPEswkGpK6ZQ1vxXBiBCYErUAiEA9pgotik8AXkZHqzRSCtSxwE3emU7LNPTb66GIXPOxkc=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "unpackedSize": 353966
+        },
+        "engines": {
+          "node": ">=22"
+        }
+      }
+    },
+    {
+      "url": "https://registry.npmjs.org/brainchain-mcp/latest",
+      "status": 200,
+      "body": {
+        "name": "brainchain-mcp",
+        "version": "0.9.1",
+        "repository": {
+          "url": "git+https://github.com/usebrainchain/brainchain-mcp.git",
+          "type": "git"
+        },
+        "dist": {
+          "shasum": "4ff5ce802eabcba6ce94c56660fac8d1c2689b1a",
+          "tarball": "https://registry.npmjs.org/brainchain-mcp/-/brainchain-mcp-0.9.1.tgz",
+          "fileCount": 13,
+          "integrity": "sha512-Gij7EROktg6cmEOSRNgVUMxMAWW2rTNiq5PB+qwHUH/FWHTNkW1layyZVdeH2N7lq3C8+S4WYURvP8Jzl5DUBg==",
+          "signatures": [
+            {
+              "sig": "MEQCIEt4XjYE5O2PEQCEQ/B8mDvoONgzkj23pjbbAaxikWnRAiAnpG/Nx8mBMjgrr2SyqVxFzJuagOENzOk2jPIs6YOpFA==",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            },
+            {
+              "sig": "MEUCIHEYhwUd3Nuv3TSqGXR07M2x3xNT9pn4AvNY26o0l44pAiEAnFT7IZvu2dJaK4Lposs6oPlrnJyB9l1URPReYL1n/98=",
+              "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+            }
+          ],
+          "unpackedSize": 146472
+        },
+        "engines": {
+          "node": ">=22"
+        }
+      }
+    },
+    {
+      "url": "https://brain.usebrainchain.com/x402/tasks",
+      "method": "POST",
+      "request": {},
+      "status": 402,
+      "body": {
+        "error": "Payment required"
+      },
+      "paymentRequired": {
+        "x402Version": 2,
+        "error": "Payment required",
+        "resource": {
+          "url": "https://brain.usebrainchain.com/x402/tasks",
+          "description": "Jev hires a model for your task and grades the result. Rejected work is refunded.",
+          "mimeType": "application/json",
+          "serviceName": "BrainChain",
+          "tags": [
+            "ai",
+            "tasks",
+            "grading",
+            "llm"
+          ],
+          "iconUrl": "https://usebrainchain.com/apple-touch-icon.png"
+        },
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:4663",
+            "amount": "1000000",
+            "asset": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+            "payTo": "0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "assetTransferMethod": "permit2"
+            }
+          },
+          {
+            "scheme": "exact",
+            "network": "eip155:4663",
+            "amount": "1000000",
+            "asset": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+            "payTo": "0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "name": "Global Dollar",
+              "version": "1"
+            }
+          },
+          {
+            "scheme": "exact",
+            "network": "eip155:8453",
+            "amount": "1000000",
+            "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "payTo": "0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "name": "USD Coin",
+              "version": "2"
+            }
+          }
+        ],
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": {
+                "type": "http",
+                "bodyType": "json",
+                "body": {
+                  "title": "Summarise a release note",
+                  "brief": "Summarise the release note below for a developer in three bullet points.\n\nRelease note: ...",
+                  "levels": [
+                    "Accurate, three bullets, covers every change",
+                    "Accurate with one change missing",
+                    "Inaccurate or not three bullets"
+                  ]
+                },
+                "method": "POST"
+              },
+              "output": {
+                "type": "json",
+                "example": {
+                  "order": "0x6d9a\u202641c2",
+                  "status": "/x402/tasks/0x6d9a\u202641c2"
+                }
+              }
+            },
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "http"
+                    },
+                    "method": {
+                      "type": "string",
+                      "enum": [
+                        "POST"
+                      ]
+                    },
+                    "bodyType": {
+                      "type": "string",
+                      "enum": [
+                        "json",
+                        "form-data",
+                        "text"
+                      ]
+                    },
+                    "body": {
+                      "properties": {
+                        "title": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120,
+                          "description": "One line naming the deliverable."
+                        },
+                        "brief": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 32000,
+                          "description": "What to produce. Include every fact the model needs; models cannot browse. Lengths are in UTF-16 code units, so an emoji counts as two, and the whole brief as JSON can be at most 64,000 bytes."
+                        },
+                        "levels": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 3,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "description": "Quality levels, best first. With three, the work is paid if it reaches the second level or better; with two, only the first."
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "brief",
+                        "levels"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "method",
+                    "bodyType",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                "output": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string"
+                    },
+                    "example": {
+                      "type": "object",
+                      "properties": {
+                        "order": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "paying",
+                            "unconfirmed",
+                            "failed",
+                            "paid",
+                            "posted",
+                            "paid-out",
+                            "refunding",
+                            "refunded",
+                            "refund-failed"
+                          ],
+                          "description": "The order's state, when the same signed payment is sent again."
+                        }
+                      },
+                      "required": [
+                        "order",
+                        "status"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                }
+              },
+              "required": [
+                "input"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "url": "https://brain.testnet.usebrainchain.com/x402/tasks",
+      "method": "POST",
+      "request": {},
+      "status": 402,
+      "body": {
+        "error": "Payment required"
+      },
+      "paymentRequired": {
+        "x402Version": 2,
+        "error": "Payment required",
+        "resource": {
+          "url": "https://brain.testnet.usebrainchain.com/x402/tasks",
+          "description": "Jev hires a model for your task and grades the result. Rejected work is refunded.",
+          "mimeType": "application/json",
+          "serviceName": "BrainChain",
+          "tags": [
+            "ai",
+            "tasks",
+            "grading",
+            "llm"
+          ],
+          "iconUrl": "https://usebrainchain.com/apple-touch-icon.png"
+        },
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "eip155:46630",
+            "amount": "1000000",
+            "asset": "0x1eC185467cA2D5d1c24f0EdCB91301Bca4d0a787",
+            "payTo": "0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "assetTransferMethod": "permit2"
+            }
+          },
+          {
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "amount": "1000000",
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "payTo": "0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          },
+          {
+            "scheme": "exact",
+            "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            "amount": "1000000",
+            "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "payTo": "AeRePM6UDB8onv5Mt9crXSaxfH8ivd7L7X71iqRaZ3Qi",
+            "maxTimeoutSeconds": 300,
+            "extra": {
+              "feePayer": "BENrLoUbndxoNMUS5JXApGMtNykLjFXXixMtpDwDR9SP"
+            }
+          }
+        ],
+        "extensions": {
+          "bazaar": {
+            "info": {
+              "input": {
+                "type": "http",
+                "bodyType": "json",
+                "body": {
+                  "title": "Summarise a release note",
+                  "brief": "Summarise the release note below for a developer in three bullet points.\n\nRelease note: ...",
+                  "levels": [
+                    "Accurate, three bullets, covers every change",
+                    "Accurate with one change missing",
+                    "Inaccurate or not three bullets"
+                  ]
+                },
+                "method": "POST"
+              },
+              "output": {
+                "type": "json",
+                "example": {
+                  "order": "0x6d9a\u202641c2",
+                  "status": "/x402/tasks/0x6d9a\u202641c2"
+                }
+              }
+            },
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "http"
+                    },
+                    "method": {
+                      "type": "string",
+                      "enum": [
+                        "POST"
+                      ]
+                    },
+                    "bodyType": {
+                      "type": "string",
+                      "enum": [
+                        "json",
+                        "form-data",
+                        "text"
+                      ]
+                    },
+                    "body": {
+                      "properties": {
+                        "title": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120,
+                          "description": "One line naming the deliverable."
+                        },
+                        "brief": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 32000,
+                          "description": "What to produce. Include every fact the model needs; models cannot browse. Lengths are in UTF-16 code units, so an emoji counts as two, and the whole brief as JSON can be at most 64,000 bytes."
+                        },
+                        "levels": {
+                          "type": "array",
+                          "minItems": 2,
+                          "maxItems": 3,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "description": "Quality levels, best first. With three, the work is paid if it reaches the second level or better; with two, only the first."
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "brief",
+                        "levels"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "method",
+                    "bodyType",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                "output": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string"
+                    },
+                    "example": {
+                      "type": "object",
+                      "properties": {
+                        "order": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "paying",
+                            "unconfirmed",
+                            "failed",
+                            "paid",
+                            "posted",
+                            "paid-out",
+                            "refunding",
+                            "refunded",
+                            "refund-failed"
+                          ],
+                          "description": "The order's state, when the same signed payment is sent again."
+                        }
+                      },
+                      "required": [
+                        "order",
+                        "status"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                }
+              },
+              "required": [
+                "input"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

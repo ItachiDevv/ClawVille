@@ -95,6 +95,7 @@ import {
   type ResolvedAutonomousCoveAgent,
 } from './autonomous-cove-agent-binding';
 import { HOUSE_REFUSED_AUTONOMY_VERBS } from './house-refused-verbs';
+import { parseBrainchainActionParams, validateBrainchainAction, runBrainchainHostedAction, type BrainchainActionInput, type BrainchainActionResult } from './brainchain-action';
 // Value import is safe: this module imports only @clawville/database and
 // cosmetic-signup-bonus, so it cannot cycle back into npc-simulation.
 import {
@@ -1320,6 +1321,13 @@ class NpcSimulation {
     return resolved?.agentId === expectedAgentId ? resolved : null;
   };
   private noriChatsInFlight = new Set<string>();
+  /** Same subject-bound REST handlers as the human and MCP paths. */
+  autonomousBrainchainOperation: typeof runBrainchainHostedAction = runBrainchainHostedAction;
+  autonomousBrainchainResult: (agentId: string, avatarId: string, result: BrainchainActionResult) => Promise<void> = async (agentId, avatarId, result) => {
+    const { agentAutonomyDriver } = await import('./agent-autonomy-driver');
+    agentAutonomyDriver.rememberBrainchainResult(agentId, avatarId, result);
+  };
+  private brainchainActionsInFlight = new Set<string>();
   /** Same canonical write path as the authenticated appearance route. */
   autonomousAppearanceUpdate: (input: {
     actor: { kind: 'agent'; sessionId: string; expectedAgentId: string; expectedAvatarId: string };
@@ -3080,6 +3088,10 @@ class NpcSimulation {
           : 'Wardrobe: that equip_cosmetic tag was not valid, so nothing changed. Copy skuId=<id> exactly from the cosmetics you own.');
         continue;
       }
+      if (name === 'brainchain' && !parseBrainchainActionParams(paramStr)) {
+        noteDrop('BrainChain: invalid operation fields. Read the brainchain manual; no Office action ran.');
+        continue;
+      }
       // generate_image takes exactly one quoted prompt. Its free text may hold
       // commas or `message=`, so it never goes through the generic split.
       let imagePrompt: string | null = null;
@@ -4108,6 +4120,26 @@ class NpcSimulation {
     } finally { this.noriChatsInFlight.delete(attribution.avatarId); }
   }
 
+  private async useBrainchainOffice(npcId: string, npc: NpcRuntimeState, attribution: AgentActionAttribution, operation: BrainchainActionInput): Promise<void> {
+    const isCurrent = () => this.npcs.get(npcId) === npc && this.npcOverrides.get(npcId) === attribution.sessionId
+      && this.agentBotSessions.get(attribution.sessionId)?.config.avatarId === attribution.avatarId
+      && this.agentBotSessions.get(attribution.sessionId)?.config.agentId === attribution.agentId;
+    if (!isCurrent() || this.brainchainActionsInFlight.has(attribution.avatarId)) return;
+    this.brainchainActionsInFlight.add(attribution.avatarId);
+    try {
+      if (await this.refusedForHouseActor('brainchain', attribution.agentId)) return;
+      const result = await this.autonomousBrainchainOperation({
+        actor: { sessionId: attribution.sessionId, expectedAgentId: attribution.agentId, expectedAvatarId: attribution.avatarId },
+        operation, isCurrent,
+      });
+      const current = await this.autonomousNoriAgentResolve(attribution.sessionId, attribution.agentId);
+      if (!isCurrent() || !current?.ledgerCapable || !current.userId || current.agentId !== attribution.agentId || current.avatarId !== attribution.avatarId) return;
+      this.agentBotSessions.get(attribution.sessionId)?.client?.rememberBrainchainResult(attribution.avatarId, result);
+      await this.autonomousBrainchainResult(attribution.agentId, attribution.avatarId, result);
+    } catch { console.warn('[Autonomy] BrainChain Office action refused or unavailable'); }
+    finally { this.brainchainActionsInFlight.delete(attribution.avatarId); }
+  }
+
   /**
    * Hydra answers an agent's `talk_to_npc(npcId=hydra-analyst)`. The executor
    * already passed the target + proximity checks. The reply is a public bubble
@@ -4244,6 +4276,11 @@ class NpcSimulation {
         const message = (params.message ?? '').trim();
         if (!attribution || !message || message.length > HATCHER_TALK_MESSAGE_MAX) return;
         void this.chatWithNori(npcId, npc, attribution, message);
+        return;
+      }
+      case 'brainchain': {
+        const operation = validateBrainchainAction(params);
+        if (attribution && operation) void this.useBrainchainOffice(npcId, npc, attribution, operation);
         return;
       }
       case 'move': {

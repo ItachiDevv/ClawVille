@@ -2,6 +2,9 @@ import { relations } from 'drizzle-orm';
 
 export * from './users';
 export * from './avatars';
+export * from './brainchain';
+export * from './brainchain-compute';
+export * from './brainchain-delivery';
 export * from './locations';
 export * from './location-agents';
 export * from './agents';
@@ -11,20 +14,20 @@ export * from './memories';
 export * from './research';
 export * from './token-launch';
 export * from './treasury';
-// Tokenomics T0 (2026-07-07) — CLV price-oracle snapshot history (durable TWAP
+// Tokenomics T0 (2026-07-07) â€” CLV price-oracle snapshot history (durable TWAP
 // seed + admin read). READ-ONLY price feed; never a ClawToken balance table.
 export * from './token-market';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
 export * from './bounty-usdc-holds';
-// Covenant action-record stream (2026-07-13) — append-only hash-chained record
+// Covenant action-record stream (2026-07-13) â€” append-only hash-chained record
 // of every economic agent action; sealed by covenant-chain-sealer, served on the
 // partner-covenant read surface. See covenant-action-records.ts header.
 export * from './covenant-action-records';
 export * from './building-skills';
 export * from './building-chat-reward-claims';
-// Security pass 2026-10-04 — durable per-avatar daily faucet counters
+// Security pass 2026-10-04 â€” durable per-avatar daily faucet counters
 // (building visits / Nori chat / activity vCLAW). Migration 0077.
 export * from './daily-reward-caps';
 export * from './user-spend-policies';
@@ -34,22 +37,22 @@ export * from './ecosystem-read-usage';
 export * from './agent-ai';
 export * from './avatar-media';
 export * from './vendor-oauth';
-// Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
+// Partner #2 (Hatcher) Phase C â€” scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
 export * from './partner-api-keys';
 export * from './wallets';
-// Custodial wallet WITHDRAW (2026-07-08, DARK behind WALLET_WITHDRAW_ENABLED) —
+// Custodial wallet WITHDRAW (2026-07-08, DARK behind WALLET_WITHDRAW_ENABLED) â€”
 // exactly-once on-chain withdrawal ledger (SOL/USDC/CLV out of the custodial
 // avatar wallet). Migration 0021. NEVER a ClawToken table.
 export * from './withdrawals';
 export * from './agent-session-tickets';
 // Email-driven auth (password reset + soft email verification). One row per
-// issued token; raw token never stored — only sha256(token).
+// issued token; raw token never stored â€” only sha256(token).
 export * from './auth-tokens';
 export * from './events';
 export * from './event-write-failures';
 export * from './pending-account-links';
-// Q2 Activity Portals — schemas ship ahead of backend routes. Migration
+// Q2 Activity Portals â€” schemas ship ahead of backend routes. Migration
 // (db:push) is a founder-review step; files compile today so downstream
 // packages can type-check against them.
 export * from './activities';
@@ -60,36 +63,36 @@ export * from './activity-queue-entries';
 export * from './activity-parties';
 export * from './activity-replays';
 export * from './activity-seasons';
-// Reef Race Phase 4 — per-avatar personal-best lap + ghost replay.
+// Reef Race Phase 4 â€” per-avatar personal-best lap + ghost replay.
 export * from './reef-race-personal-bests';
 export * from './support-tickets';
-// Q3 plan §2.6 — idempotency for client-side tutorial quest token credits.
+// Q3 plan Â§2.6 â€” idempotency for client-side tutorial quest token credits.
 export * from './tutorial-quest-claims';
-// Q3 plan §4 — cosmetic engine (cosmetic_skus + cosmetic_variants + avatar_skins).
+// Q3 plan Â§4 â€” cosmetic engine (cosmetic_skus + cosmetic_variants + avatar_skins).
 export * from './cosmetics';
 export * from './cosmetic-bonus';
-// Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
+// Q3 plan Â§gamification dashboard â€” phase status (mutable via dashboard MCP).
 export * from './dashboard-phases';
 // DoorDash Phase 2 order ledger (operator-only). Backs the spend caps and the
 // confirm protocol; see doordash.ts and migrations/0066_doordash_orders.sql.
 export * from './doordash';
-// 2026-05-18 — Exchange: peer items/services board (NEED/OFFER). Needs +
+// 2026-05-18 â€” Exchange: peer items/services board (NEED/OFFER). Needs +
 // one_shot/repeatable offers. Subscriptions deferred.
 export * from './exchange';
 export * from './trading';
 export * from './trading-fleet';
-// Trading Floor Arena (2026-09-30) — paper-contest agents, positions, decision
+// Trading Floor Arena (2026-09-30) â€” paper-contest agents, positions, decision
 // stream, reports, param log, shared discovery queue, x402 add-on spend ledger.
-// Migration 0070 (idempotent, CI migrate gate — NEVER db:push). Paper only.
+// Migration 0070 (idempotent, CI migrate gate â€” NEVER db:push). Paper only.
 export * from './floor-arena';
-// Wager lobbies + escrow — mirrors deployed `clawville_wager` Anchor program.
+// Wager lobbies + escrow â€” mirrors deployed `clawville_wager` Anchor program.
 // On-chain is authoritative for money; these tables back FE discovery / FE
 // polling / event timelines / leaderboard hooks. See `wager.ts` header.
 export * from './wager';
-// Phase 6.1 slice 3 — cove slot sessions + spin audit trail. ClawTokens
+// Phase 6.1 slice 3 â€” cove slot sessions + spin audit trail. ClawTokens
 // fun-money tier today; SOL/USDC route paths return 501 until 6.2 custody.
 export * from './cove';
-// Phase 6.7.0 — unified cross-game history table for Cove casino. Parallel
+// Phase 6.7.0 â€” unified cross-game history table for Cove casino. Parallel
 // write to per-game tables (slot_spins etc.); one row per atomic gameplay
 // unit. Verifier replay surface for slots / blackjack / Hold'em / baccarat.
 export * from './cove-events';
@@ -97,78 +100,78 @@ export * from './cove-events';
 // hash-only run credentials and bounded exposure persist here for restart-safe
 // one-shot consumption.
 export * from './cove-test-fixture';
-// Phase 6.4.1 — cove blackjack shoes + hands. Two-table commit-reveal
+// Phase 6.4.1 â€” cove blackjack shoes + hands. Two-table commit-reveal
 // pattern mirroring cove (slot_sessions/slot_spins). One shoe = one
 // commit-reveal seed pair (75% penetration reshuffle = new shoe row);
 // one hand = one cove_game_events row. ClawTokens tier today; currency
 // seam reserved for the SOL/USDC tier.
 export * from './blackjack';
-// Phase 6.5.1 — cove No-Limit Texas Hold'em tables + hands. Two-table
+// Phase 6.5.1 â€” cove No-Limit Texas Hold'em tables + hands. Two-table
 // commit-reveal pattern mirroring blackjack. Each hand shuffles a FRESH
 // 52-card deck from the HMAC stream (nonce=handIndex), so there is no shared
 // shoe / cursor drift. One hand = one cove_game_events row (gameType='holdem').
 // ClawTokens tier today; currency seam reserved for the SOL/USDC tier.
 export * from './holdem';
-// Special Events (2026-06-16) — the GENERIC, REUSABLE PARENT table for any
+// Special Events (2026-06-16) â€” the GENERIC, REUSABLE PARENT table for any
 // one-time event (special_events + special_event_signups). The poker tournament
 // is a DEPENDENCY SUBTABLE that hangs off it: the FK points UP
-// (poker_tournaments.special_event_id → special_events.id), so special_events
+// (poker_tournaments.special_event_id â†’ special_events.id), so special_events
 // stays reusable across future event types. MUST be exported BEFORE './poker'
 // so poker.ts can import specialEvents. See `special-events.ts`. (The single
 // `export * from './poker'` lives below, after baccarat.)
 export * from './special-events';
-// Phase 6.6.1 — cove Baccarat (Punto Banco) shoes + coups. Two-table
+// Phase 6.6.1 â€” cove Baccarat (Punto Banco) shoes + coups. Two-table
 // commit-reveal pattern mirroring blackjack (8-deck shared no-replacement shoe;
 // ~75% penetration reshuffle = new shoe row). Punto Banco has NO player
-// decisions, so each coup is dealt + resolved atomically — one coup = one
+// decisions, so each coup is dealt + resolved atomically â€” one coup = one
 // cove_game_events row (gameType='baccarat'). ClawTokens tier today; currency
 // seam reserved for the SOL/USDC tier.
 export * from './baccarat';
 // Shared-table (multiplayer) baccarat (2026-10-22, migration 0087): baccarat_tables /
 // _table_seats / _table_bets. Table-owned shoes reuse baccarat_shoes (table_id).
 export * from './baccarat-table';
-// Poker MTT (multi-table Texas Hold'em tournament) — poker_tournaments / _entrants
+// Poker MTT (multi-table Texas Hold'em tournament) â€” poker_tournaments / _entrants
 // / _tables / _blind_schedules / _hands / _tournament_results. Tournament chips are
 // NOT CT (only buy-in debit + prize credit cross the ledger). Distinct from the
 // vs-bots `holdem` tables above. Registered here so drizzle-kit sees the schema.
 export * from './poker';
-// Poker CASH (ring) games (P1, 2026-06-20) — poker_cash_tables / _seats / _hands /
+// Poker CASH (ring) games (P1, 2026-06-20) â€” poker_cash_tables / _seats / _hands /
 // _ledger_events. SEPARATE product from the MTT tournament above: FIXED blinds,
 // chips==CT 1:1, sit-down DEBIT / leave CASH-OUT CREDIT (the ledger crosses on every
 // sit/leave, NOT just buy-in+prize). RAKE=0 in P1 (rake columns reserved). PURELY
-// ADDITIVE — four net-new tables; the migration is idempotent CREATE … IF NOT EXISTS
+// ADDITIVE â€” four net-new tables; the migration is idempotent CREATE â€¦ IF NOT EXISTS
 // (apply by hand, NOT db:push). See `poker-cash.ts` header.
 export * from './poker-cash';
-// Land Economy Phase 0 (2026-06-15) — converged land/property + services +
+// Land Economy Phase 0 (2026-06-15) â€” converged land/property + services +
 // CT-on-ramp tables (land_parcels/structures/upgrades/transactions +
 // service_listings/service_purchases + partner_storefronts + ct_topups).
-// PURELY ADDITIVE — new tables only, db:push is a clean CREATE. Ownership binds
+// PURELY ADDITIVE â€” new tables only, db:push is a clean CREATE. Ownership binds
 // to avatars.id (the human+agent parity seam). See `.claude/plans/land-economy/`.
 export * from './land';
-// Land gamification P4b (2026-08-09) — the material ledger: one pooled,
+// Land gamification P4b (2026-08-09) â€” the material ledger: one pooled,
 // non-cashable build balance per avatar plus the salvage claim receipt. NEVER a
 // ClawToken table; materials have no exit rail. See `land-materials.ts`.
 export * from './land-materials';
-// Land hold-wallet ownership proof — door 2 (2026-08-10). One table:
+// Land hold-wallet ownership proof â€” door 2 (2026-08-10). One table:
 // land_hold_wallet_transfer_challenges, the exact-dust attribution + auto-refund
 // ledger behind the "verify by sending a small refunded amount" door. The users
 // verification columns live on `users` itself. Migration 0060 (idempotent, CI
-// migrate gate — NEVER db:push). See `land-hold-verify.ts` header.
+// migrate gate â€” NEVER db:push). See `land-hold-verify.ts` header.
 export * from './land-hold-verify';
-// Tokenomics C3 (2026-07-07) — CLV buy-queue seam (clv_buy_queue +
+// Tokenomics C3 (2026-07-07) â€” CLV buy-queue seam (clv_buy_queue +
 // clv_buy_status). Records swap INTENT only; the executor is DRY-RUN gated
 // (CLV_SWAP_EXECUTE=true refuses to boot). Migration 0014 (idempotent, by hand).
 export * from './swap';
-// Tokenomics C2 (2026-07-07) — MoonPay TEST-MODE card rail webhook idempotency
+// Tokenomics C2 (2026-07-07) â€” MoonPay TEST-MODE card rail webhook idempotency
 // ledger (moonpay_events; UNIQUE external_tx_id = the replay guard). Records
-// USDC arrivals only — no CT movement, no custodial auto-sign (Codex-gated
+// USDC arrivals only â€” no CT movement, no custodial auto-sign (Codex-gated
 // seam). Migration 0015 (idempotent, by hand).
 export * from './moonpay';
-// Tokenomics C — checkout stage (2026-07-07) — generic x402 checkout ledger
+// Tokenomics C â€” checkout stage (2026-07-07) â€” generic x402 checkout ledger
 // (x402_checkouts + checkout_item_kind/checkout_status). Copies ct_topups'
 // exactly-once shape (partial-UNIQUE tx_signature + (avatar_id, idem_key));
-// price_vclaw is the QUOTE unit only — the buyer pays USDC underneath, no
-// internal vCLAW debit. Migration 0016 (idempotent, by hand — NEVER db:push).
+// price_vclaw is the QUOTE unit only â€” the buyer pays USDC underneath, no
+// internal vCLAW debit. Migration 0016 (idempotent, by hand â€” NEVER db:push).
 export * from './checkout';
 // Global cross-rail x402 signature registry. Every economic effect claims one
 // receipt in the same transaction; migration 0032 backfills legacy rails.
@@ -176,16 +179,16 @@ export * from './x402-settlement-receipts';
 // General custodial avatar-to-avatar USDC payments through PayAI. Durable
 // claim/capture/fulfill machine; migration 0028 (additive + idempotent).
 export * from './agent-payments';
-// Tokenomics E1/E2 — per-mint EARNED backing lots, payer verification,
+// Tokenomics E1/E2 â€” per-mint EARNED backing lots, payer verification,
 // first-funder cluster caps, and durable claw-backs. Migration 0030.
 export * from './tokenomics-earn';
 export * from './tokenomics-redeem';
-// Tokenomics C — marketplace stage / C4 (2026-07-07) — P2P marketplace v1
+// Tokenomics C â€” marketplace stage / C4 (2026-07-07) â€” P2P marketplace v1
 // (market_listings + market_deed_locks + market_settlements). Settlement is
 // FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED); seller CLV payouts + the 4.44%
 // rake + the deed transfer are QUEUED Codex-gated INTENTS, never live sends.
 // LEDGER-ONLY: nothing here touches avatars.clawTokens. Migration 0017
-// (idempotent, by hand — NEVER db:push).
+// (idempotent, by hand â€” NEVER db:push).
 export * from './market';
 // Jev ENTRY SHADOW for the arena paper bots (2026-10-14): measurement only, no trade reader.
 // Migration 0082 (idempotent, by hand - NEVER db:push). Kept by the founder 2026-10-23.
@@ -383,7 +386,7 @@ export const clawTokenTransactionsRelations = relations(clawTokenTransactions, (
   avatar: one(avatars, { fields: [clawTokenTransactions.avatarId], references: [avatars.id] }),
 }));
 
-// ── Land Economy (Phase 0) ──────────────────────────────────────────────────
+// â”€â”€ Land Economy (Phase 0) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const landParcelsRelations = relations(landParcels, ({ one, many }) => ({
   owner: one(avatars, {
@@ -495,3 +498,10 @@ export const ctTopupsRelations = relations(ctTopups, ({ one }) => ({
   }),
 }));
 
+
+export * from './brainchain-buyers';
+export * from './brainchain-worker-policy';
+
+export * from './brainchain-exact-recovery';
+export * from './brainchain-exact-capture';
+export * from './brainchain-funding-exit';

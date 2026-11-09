@@ -6,6 +6,7 @@
  * the API process so both loopback gateway mocks are reachable from that process.
  * It never prints response bodies, prompts, cookies, database URLs, or secrets.
  */
+import {assertBrainchainProbeTarget,deriveBrainchainRuntimeEvidence,assertBrainchainStoredSections,brainchainChatHasEvidence,brainchainDecisionHasEvidence,brainchainWorkerResultReachedDecision,type BrainchainRuntimeEvidence} from '../brainchain/runtime-evidence';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import postgres from 'postgres';
@@ -33,6 +34,7 @@ const DECLARED_GATEWAY_MARKER = 'CV_PROBE_DECLARED_GATEWAY_REPLY';
 
 const cliSchema = z.object({
   api: z.string().url(),
+  brainchain: z.boolean(),
   keep: z.boolean(),
   withEcho: z.boolean(),
   autonomousDecision: z.boolean(),
@@ -69,6 +71,7 @@ class ProbeFailure extends Error {}
 
 interface CliOptions {
   api: string;
+  brainchain: boolean;
   keep: boolean;
   withEcho: boolean;
   autonomousDecision: boolean;
@@ -111,6 +114,7 @@ interface ProtocolEvidence {
 
 let assertionNumber = 0;
 const probeAbortController = new AbortController();
+let strictBrainchain=false;
 
 export function abortProbe(): void { probeAbortController.abort(); }
 function ok(condition: unknown, message: string): asserts condition {
@@ -124,11 +128,12 @@ function throwIfInterrupted(): void {
 }
 
 export function parseCli(args: string[]): CliOptions {
-  const parsed: Record<string, unknown> = { keep: false, withEcho: false, autonomousDecision: false, allowUnmarkedDb: false };
+  const parsed: Record<string, unknown> = { brainchain:false,keep: false, withEcho: false, autonomousDecision: false, allowUnmarkedDb: false };
   const seen = new Set<string>();
   for (let i = 0; i < args.length; i += 1) {
     const item = args[i];
-    if (item === '--keep') {
+    if(item==='--brainchain'){if(seen.has(item))throw new ProbeFailure('usage: duplicate argument');seen.add(item);parsed.brainchain=true;
+    } else if (item === '--keep') {
       if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
       seen.add(item);
       parsed.keep = true;
@@ -160,9 +165,10 @@ export function parseCli(args: string[]): CliOptions {
   const result = cliSchema.safeParse(parsed);
   if (!result.success) {
     throw new ProbeFailure(
-      'usage: bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api <base> [--keep] [--with-echo] [--autonomous-decision] [--allow-unmarked-db]',
+      'usage: bun run apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api <base> [--keep] [--with-echo] [--autonomous-decision] [--allow-unmarked-db] [--brainchain]',
     );
   }
+  if(result.data.brainchain){assertBrainchainProbeTarget({...result.data,environment:process.env.CLAWVILLE_ENV});if(result.data.withEcho)throw new ProbeFailure('BrainChain mode does not run optional legacy echo fixtures');}
   return result.data;
 }
 
@@ -281,7 +287,7 @@ export function assertDatabaseMarker(
 
 async function fetchWithTimeout(
   url: string,
-  init: RequestInit = {},
+  init: RequestInit & {cache?:'no-store'} = {},
   timeoutMs = 120_000,
   respectProbeAbort = true,
 ): Promise<Response> {
@@ -291,7 +297,7 @@ async function fetchWithTimeout(
     const signal = respectProbeAbort
       ? AbortSignal.any([controller.signal, probeAbortController.signal])
       : controller.signal;
-    return await fetch(url, { ...init, signal });
+    return await fetch(url, { ...init,...(strictBrainchain?{redirect:'error' as const}:{}), signal });
   } catch {
     throw new ProbeFailure('API request failed or timed out');
   } finally {
@@ -377,6 +383,7 @@ async function insertFixture(
     runId: string;
     gatewayUrl?: string;
     kind: 'declared-gateway' | 'echo';
+    brainchain?:boolean;
   },
 ): Promise<Fixture> {
   // Resolve the cookie serializer before any mutation so an import failure
@@ -417,6 +424,7 @@ async function insertFixture(
   const agentType = input.kind === 'declared-gateway' ? 'openclaw-bot' : 'avatar-agent';
 
   await client.begin(async (tx) => {
+    if(input.brainchain)await assertStrictBrainchainMarker(tx);
     await tx`
       INSERT INTO users (id, name, identity_fingerprint, identity_pubkey, is_guest)
       VALUES (${userId}, ${name}, ${fingerprint}, ${bs58.encode(identity.publicKey)}, false)
@@ -446,7 +454,7 @@ async function insertFixture(
         ${platformAgentId}, 1000, 1000, 0, 0, 'openclaw', 'lobster', 'milady', true, false
       )
     `;
-    await tx`
+    if(input.brainchain){await tx`INSERT INTO sessions(id,user_id,expires_at,created_via) VALUES(${sessionId},${userId},${new Date(Date.now()+60*60*1000)},'agent_exchange')`;}else await tx`
       INSERT INTO sessions (id, user_id, expires_at)
       VALUES (${sessionId}, ${userId}, ${new Date(Date.now() + 60 * 60 * 1000)})
     `;
@@ -480,15 +488,16 @@ async function insertCanarySkill(
   content: string,
 ): Promise<void> {
   const contentHash = sha256Hex(content);
-  await client`
+  const write=async(sql:postgres.Sql|postgres.TransactionSql)=>{await sql`
     INSERT INTO building_skills (
       building_id, name, description, content, source_article_ids,
       generator_version, content_hash
     ) VALUES (
       ${buildingId}, ${buildingId}, 'Temporary hosted runtime prompt-composition probe.',
-      ${content}, ${client.json([])}, 1, ${contentHash}
+      ${content}, ${sql.json([])}, 1, ${contentHash}
     )
-  `;
+  `;};
+  if(strictBrainchain)await client.begin(async tx=>{await assertStrictBrainchainMarker(tx);await write(tx);});else await write(client);
 }
 
 async function insertAutonomousTradingProbeState(
@@ -496,6 +505,7 @@ async function insertAutonomousTradingProbeState(
   fixture: Fixture,
 ): Promise<void> {
   await client.begin(async (tx) => {
+    if(strictBrainchain)await assertStrictBrainchainMarker(tx);
     await tx`
       INSERT INTO clawpump_agent_links (
         avatar_id, user_id, clawville_agent_id, wallet_pubkey, objective,
@@ -761,11 +771,13 @@ export async function startDeclaredGatewayMock(): Promise<{
   captured: CapturedGatewayRequest[];
   queueNoriQuestion: (directiveMarker: string) => void;
   queueAppearanceChange: (directiveMarker: string) => void;
+  queueBrainchainRead:(directiveMarker:string)=>void;
   noriCounts: () => Record<string, number>;
 }> {
   const captured: CapturedGatewayRequest[] = [];
   let noriDirective: string | null = null;
   let appearanceDirective: string | null = null;
+  let brainchainDirective:string|null=null;
   let noriQueued = 0;
   let noriEmitted = 0;
   let decisionRequests = 0;
@@ -821,6 +833,7 @@ export async function startDeclaredGatewayMock(): Promise<{
         appearanceDirective = null;
         reply = '[ACTION: update_appearance(color=red)]';
       }
+      if(brainchainDirective&&parsed.data.messages.some(message=>message.content.includes(brainchainDirective!)&&message.content.includes('Available actions (choose exactly one'))){brainchainDirective=null;reply='[ACTION: brainchain(op=workers)]';}
       return Response.json({
         id: `probe-${captureCursor(captured)}`,
         object: 'chat.completion',
@@ -834,6 +847,7 @@ export async function startDeclaredGatewayMock(): Promise<{
   });
   return {
     server, captured,
+    queueBrainchainRead:marker=>{brainchainDirective=marker;},
     queueNoriQuestion: (marker) => { noriDirective = marker; noriQueued++; },
     queueAppearanceChange: (marker) => { appearanceDirective = marker; },
     noriCounts: () => ({ noriQueued, noriEmitted, decisionRequests, noriMarkerRequests, noriDecisionRequests, noriDirectiveBlocks, noriBothSameMessage }),
@@ -1176,8 +1190,33 @@ async function runEchoLane(
   }
 }
 
+async function assertStrictBrainchainMarker(client:postgres.Sql|postgres.TransactionSql){
+  const [row]=await client.unsafe<DatabaseEnvMarkerRow[]>(DATABASE_ENV_MARKER_SQL);
+  if(resolveDatabaseEnvMarker(row)!=='staging')throw new ProbeFailure('BrainChain probe requires the staging database marker');
+}
+
+async function verifyBrainchainInstall(client:postgres.Sql,apiBase:string,fixture:Fixture,e:BrainchainRuntimeEvidence,expectedProtocol:string){
+  await assertStrictBrainchainMarker(client);
+  const knowledge=await parseJson(await fetchWithTimeout(`${apiBase}/api/brainchain/knowledge`,{cache:'no-store'},15000),z.object({manual:z.literal(e.manual),contentHash:z.literal(e.contentHash),version:z.number().int()}));
+  ok(knowledge.contentHash===e.contentHash,'BrainChain served curriculum exactly matches source hash and bytes');
+  const protocol=await fetchWithTimeout(`${apiBase}/api/skills/protocol/skill.md`,{cache:'no-store'},15000);
+  if(!protocol.ok)throw new ProbeFailure('BrainChain protocol manual is unavailable');const served=await protocol.text();
+  ok(sha256Hex(served)===sha256Hex(expectedProtocol)&&e.paragraphs.every(p=>served.includes(p))&&e.toolOperations.every(op=>served.includes(op))&&served.includes(`protocol_version: ${e.protocolVersion}`),'BrainChain served protocol carries current curriculum and finite tool operations');
+  console.log(JSON.stringify({brainchainEvidence:{curriculumHash:e.contentHash,protocolHash:sha256Hex(served),protocolVersion:e.protocolVersion}}));
+  const installed=await parseJson(await fetchWithTimeout(`${apiBase}/api/brainchain/install`,{method:'POST',headers:{Cookie:fixture.cookie,'Content-Type':'application/json'},body:'{}'},120000),claimResponseSchema);
+  ok(installed.buildingId==='brainchain-office'&&installed.contentHash===`sha256:${e.contentHash}`&&installed.installed!=='marker','BrainChain fixture install confirms exact runtime persistence rather than marker alone');
+  const {buildingSkillMemoryId}=await import('../../src/services/building-skill-install');
+  const otherAgent=randomUUID();ok(e.sections.every((_,section)=>buildingSkillMemoryId({platformAgentId:fixture.platformAgentId,buildingId:'brainchain-office',contentHash:`sha256:${e.contentHash}`,section})!==buildingSkillMemoryId({platformAgentId:otherAgent,buildingId:'brainchain-office',contentHash:`sha256:${e.contentHash}`,section})),'BrainChain deterministic memory IDs include the specific agent identity');
+  const deadline=Date.now()+90000;let verified=false;
+  while(Date.now()<deadline){throwIfInterrupted();const rows=await client`SELECT id::text,agent_id::text,room_id::text,entity_id::text,metadata->>'section' AS section,metadata->>'contentHash' AS content_hash,content->>'text' AS text FROM memories WHERE agent_id=${fixture.platformAgentId}::uuid AND metadata->>'subtype'='building-skill' AND metadata->>'buildingId'='brainchain-office'`;
+    try{assertBrainchainStoredSections([...rows],e,fixture.platformAgentId,section=>buildingSkillMemoryId({platformAgentId:fixture.platformAgentId,buildingId:'brainchain-office',contentHash:`sha256:${e.contentHash}`,section}));verified=true;break;}catch{await Bun.sleep(250);}
+  }
+  ok(verified,'BrainChain every source curriculum section has exact agent-scoped stored bytes and deterministic identity');
+}
+
 async function main(): Promise<void> {
   const options = parseCli(process.argv.slice(2));
+  strictBrainchain=options.brainchain;
   const apiBase = normalizeAndValidateApiBase(options.api);
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new ProbeFailure('DATABASE_URL is required');
@@ -1218,6 +1257,7 @@ async function main(): Promise<void> {
       if (error instanceof DatabaseEnvMarkerError) throw new ProbeFailure(`DATABASE_URL: ${error.message}`);
       throw error;
     }
+    if(options.brainchain)assertBrainchainProbeTarget({...options,environment:process.env.CLAWVILLE_ENV,marker});
     const accepted = assertDatabaseMarker(marker, applicationDatabase, options.allowUnmarkedDb);
     console.log(accepted === 'staging'
       ? 'database marker is clawville.env=staging'
@@ -1255,6 +1295,7 @@ async function main(): Promise<void> {
       }
       try {
         if (databaseCreated && !options.keep && !stopFailed && !disconnectFailed) {
+          if(options.brainchain)await assertStrictBrainchainMarker(client);
           await cleanupDatabase(client, fixtures, buildingId);
         }
       } catch {
@@ -1282,12 +1323,14 @@ async function main(): Promise<void> {
     ok(health.ok, 'target API health check passed');
 
     declaredMock = await startDeclaredGatewayMock();
+    if(options.brainchain)await assertStrictBrainchainMarker(client);
     await insertCanarySkill(client, buildingId, skillContent);
     databaseCreated = true;
     const fixture = await insertFixture(client, {
       runId,
       gatewayUrl: `http://127.0.0.1:${declaredMock.server.port}`,
       kind: 'declared-gateway',
+      brainchain:options.brainchain,
     });
     fixtures.push(fixture);
     if (options.autonomousDecision) {
@@ -1313,6 +1356,8 @@ async function main(): Promise<void> {
     await waitForKnowledge(client, fixture, buildingId, canary, protocolEvidence.version);
     ok(true, 'current skill and protocol memories are ready for retrieval');
 
+    let brainchainEvidence:BrainchainRuntimeEvidence|undefined;
+    if(options.brainchain){brainchainEvidence=deriveBrainchainRuntimeEvidence({manual:sharedSource.buildBrainchainOfficeManual(),paragraphs:sharedSource.BRAINCHAIN_CURRICULUM_SECTIONS.flatMap(s=>s.paragraphs),chatParagraphs:sharedSource.BRAINCHAIN_CURRICULUM_SECTIONS.find(s=>s.id==='payments')!.paragraphs,protocolVersion:protocolEvidence.version,toolOperations:(sharedSource.CLAWVILLE_GAME_TOOLS.find(t=>t.name==='clawville_brainchain')!.input_schema.properties!.op as {enum:string[]}).enum});await verifyBrainchainInstall(client,apiBase,fixture,brainchainEvidence,protocolSource.buildProtocolManual(apiBase));}
     const query = "What is the hosted runtime probe's unique canary token, and what is the current connection protocol version?";
     const chat = await founderChat(apiBase, fixture, query);
     ok(chat.message.content.includes(DECLARED_GATEWAY_MARKER), 'Lane A founder-chat turn used the declared gateway');
@@ -1325,6 +1370,7 @@ async function main(): Promise<void> {
     ok(Boolean(composedPrompt), 'Lane A current-state context contains canary and source-derived protocol evidence');
     ok(currentStateContext(composedPrompt!).includes('[Current state context]'), 'Lane A proves provider composition rather than history echo');
 
+    if(brainchainEvidence){const start=captureCursor(declaredMock.captured);await founderChat(apiBase,fixture,'Explain the BrainChain payment and cash-out limits, including parent funding, quote limits, refund holds and separate approval.');const prompt=await waitForCapturedPrompt(declaredMock.captured,start,p=>brainchainChatHasEvidence(p,brainchainEvidence!));ok(brainchainChatHasEvidence(prompt,brainchainEvidence),'BrainChain source payment paragraphs reach fresh chat provider context');}
     const hermesCaptured = await runHermesLane(composedPrompt!);
     const hermesPrompts = hermesCaptured.flatMap((entry) => entry.prompts);
     ok(hermesPrompts.length >= 1, 'Lane B transparent proxy captured the Hermes-local request');
@@ -1342,6 +1388,7 @@ async function main(): Promise<void> {
           && prompt.includes('Trading desk:')
           && prompt.includes('TRADING IS HALTED:'),
       );
+      if(brainchainEvidence){ok(brainchainDecisionHasEvidence(haltedPrompt,brainchainEvidence),'BrainChain full source curriculum, manual version and tool operations reach decide wire');const marker=`brainchain-read-${runId}`,cursor=captureCursor(declaredMock.captured);declaredMock.queueBrainchainRead(marker);await postProbeDirective(apiBase,fixture,`${marker}: inspect your BrainChain workers only. Do not install, sign or spend.`);await waitForCapturedPrompt(declaredMock.captured,cursor,p=>brainchainWorkerResultReachedDecision(p),240000);ok(true,'BrainChain private bound-agent workers result reaches a later decide wire');}
       ok(haltedPrompt.includes('Status: armed=false; killed=true'), 'autonomous wire carries fleet arm and kill state');
       ok(haltedPrompt.includes('Objective: conservative-rebalancer'), 'autonomous wire carries the objective brief');
       ok(haltedPrompt.includes('Equity:') && haltedPrompt.includes('Cooldown:'), 'autonomous wire carries equity and cooldown state');

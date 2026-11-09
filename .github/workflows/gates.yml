@@ -457,3 +457,69 @@ jobs:
           for file in "${isolated[@]}"; do
             bun test "$file"
           done
+
+  brainchain-pure:
+    name: BrainChain isolated pure suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bunx turbo run build --filter=@clawville/agent-runtime
+      - run: bun scripts/brainchain/ci-tests.ts pure
+
+  brainchain-postgres-linux:
+    name: BrainChain PostgreSQL and isolated Linux fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bunx turbo run build --filter=@clawville/agent-runtime
+      - name: Install the audited Docker version on this disposable runner
+        id: brainchain-docker
+        uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        with:
+          version: v29.1.3
+      - name: Expose the audited daemon at the production launcher's fixed socket
+        env:
+          FIXTURE_DOCKER_SOCKET: ${{ steps.brainchain-docker.outputs.sock }}
+        run: |
+          set -euo pipefail
+          test -n "$FIXTURE_DOCKER_SOCKET"
+          fixture_socket="${FIXTURE_DOCKER_SOCKET#unix://}"
+          test -S "$fixture_socket"
+          docker_binary="$(command -v docker)"
+          if [ "$docker_binary" != /usr/bin/docker ]; then sudo cp "$docker_binary" /usr/bin/docker; fi
+          sudo systemctl stop docker.service docker.socket
+          sudo ln -sf "$fixture_socket" /var/run/docker.sock
+          test "$(/usr/bin/docker --host unix:///var/run/docker.sock version --format '{{.Client.Version}}')" = 29.1.3
+          /usr/bin/docker --host unix:///var/run/docker.sock pull oven/bun@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
+      - name: Create only the disposable BrainChain PostgreSQL fixture
+        run: |
+          set -euo pipefail
+          /usr/bin/docker --host unix:///var/run/docker.sock run -d --name brainchain-ci-pg -p 127.0.0.1:55439:5432 -e POSTGRES_USER=brainchain_fixture -e POSTGRES_PASSWORD=brainchain-ci-only -e POSTGRES_DB=brainchain_fixture postgres:18.6
+          for attempt in $(seq 1 30); do
+            if /usr/bin/docker --host unix:///var/run/docker.sock exec brainchain-ci-pg pg_isready -U brainchain_fixture -d brainchain_fixture; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Run required PostgreSQL and actual child-process fixtures
+        env:
+          BRAINCHAIN_DB_FIXTURE: '1'
+          BRAINCHAIN_DOCKER_FIXTURE: '1'
+          BRAINCHAIN_TEST_DATABASE_URL: postgres://brainchain_fixture:brainchain-ci-only@127.0.0.1:55439/brainchain_fixture
+        run: bun scripts/brainchain/ci-tests.ts postgres
+      - name: Run protected signer and root-store fixtures without network
+        run: |
+          bun scripts/brainchain/ci-tests.ts prepare-linux
+          bun scripts/brainchain/ci-tests.ts linux
+      - name: Remove only this job's PostgreSQL container
+        if: always()
+        run: /usr/bin/docker --host unix:///var/run/docker.sock rm -f brainchain-ci-pg || true

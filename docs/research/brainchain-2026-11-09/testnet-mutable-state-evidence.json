@@ -1,0 +1,155 @@
+{
+  "observedAt": "2026-11-09T15:11:11.899Z",
+  "chainId": 274630,
+  "block": "0x13ea",
+  "blockHash": "0x34137c8460e34cf2c2cf68c09ba386f59088af9f9c0600478506d0c2cf96b1cb",
+  "blockTimestamp": "2026-11-09T12:30:15.000Z",
+  "headAgeSeconds": 9656,
+  "noSigning": true,
+  "authorizesSigning": false,
+  "values": [
+    {
+      "contract": "DecisionLog",
+      "getter": "attestation",
+      "value": "0xB364f47E16ea1555835f9593f409c39d3509f4C5"
+    },
+    {
+      "contract": "DecisionLog",
+      "getter": "attestations",
+      "value": "0"
+    },
+    {
+      "contract": "DecisionLog",
+      "getter": "brain",
+      "value": "0x4c4EF8b7797667AC553274dDA0c08D777C5231a0"
+    },
+    {
+      "contract": "DecisionLog",
+      "getter": "count",
+      "value": "357"
+    },
+    {
+      "contract": "DecisionLog",
+      "getter": "owner",
+      "value": "0x2b70BCf8Fe79E75f10a7DbF8D9ab6D63216f2273"
+    },
+    {
+      "contract": "DecisionLog",
+      "getter": "pendingOwner",
+      "value": "0x0000000000000000000000000000000000000000"
+    },
+    {
+      "contract": "DecisionLog",
+      "getter": "tcbEvaluationNumber",
+      "value": 0
+    },
+    {
+      "contract": "ModelRegistry",
+      "getter": "owner",
+      "value": "0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366"
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "appealConfig",
+      "value": [
+        "3600",
+        2500
+      ]
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "config",
+      "value": [
+        1500,
+        8000,
+        8000,
+        "1800",
+        "259200",
+        "21600",
+        "3600",
+        "21600",
+        "1000000"
+      ]
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "count",
+      "value": "234"
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "feeBps",
+      "value": 250
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "feeRouter",
+      "value": "0x235658EE85939e2969E1bcBaE1633769a414bD8a"
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "guardian",
+      "value": "0x84d01e0869fbCb07c0141E49c390ffdc064D6882"
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "models",
+      "value": "0x3e5e23a5fF6548958ab3dDf42c51A59713cE550C"
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "owner",
+      "value": "0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366"
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "paused",
+      "value": false
+    },
+    {
+      "contract": "TaskBoard",
+      "getter": "staking",
+      "value": "0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b"
+    },
+    {
+      "contract": "WorkerStaking",
+      "getter": "minStake",
+      "value": "500000000000000000000"
+    },
+    {
+      "contract": "WorkerStaking",
+      "getter": "owner",
+      "value": "0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366"
+    },
+    {
+      "contract": "DecisionExecutor",
+      "getter": "board",
+      "value": "0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4"
+    },
+    {
+      "contract": "DecisionExecutor",
+      "getter": "guardian",
+      "value": "0x84d01e0869fbCb07c0141E49c390ffdc064D6882"
+    },
+    {
+      "contract": "DecisionExecutor",
+      "getter": "models",
+      "value": "0x3e5e23a5fF6548958ab3dDf42c51A59713cE550C"
+    },
+    {
+      "contract": "DecisionExecutor",
+      "getter": "timelock",
+      "value": "7200"
+    },
+    {
+      "contract": "ProposalBonds",
+      "getter": "count",
+      "value": "64"
+    },
+    {
+      "contract": "ProposalBonds",
+      "getter": "owner",
+      "value": "0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366"
+    }
+  ]
+}

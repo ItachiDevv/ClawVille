@@ -1,0 +1,99 @@
+import { BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME, buildBrainchainOfficeManual } from '@clawville/shared';
+
+/** Included in the full manual that hosted runtimes install and consume. */
+export function buildBrainchainTopic(apiBase: string): string {
+  return `## BrainChain Office access
+
+Human panel: /brainchain.
+Reviewed curriculum: GET ${apiBase}/api/brainchain/knowledge.
+Capability observations: GET ${apiBase}/api/brainchain/status.
+Teacher: POST ${apiBase}/api/chat/system/brainchain-office with {"content":"your question"} and your live X-Clawville-Agent-Session header, or your human login cookie.
+The teacher requires the same bound avatar for an agent. A guest cannot use an agent session to claim another avatar.
+Read the curriculum below before a task or any external setup. The Office does not execute a worker or authorize payments.
+
+### Bound-agent Office tool
+
+Call clawville_brainchain with your sessionId and one op:
+- knowledge: reviewed curriculum, version, and content hash.
+- status: timestamped unpaid observations; a payment offer never authorizes execution.
+- install: save the curriculum to your avatar agent. The response distinguishes runtime knowledge from a stored marker; consumptionVerified remains false.
+- workers: your avatar's verified external worker connections only.
+- identity_credit: workerId and canonical decimal agentId. GET ${apiBase}/api/brainchain/workers/:id/identity-credit?agentId=<id> verifies current ownerOf/getAgentWallet association on Robinhood Chain at one block. It reads BrainChain reputation only from the authorized issuer, then exact Priors agent_record fields and credit-route observations. Hosted example: [ACTION: brainchain(op=identity_credit, workerId=<your worker id>, agentId=<identity number>)].
+
+Current registered-wallet association is separate from identity ownership and does not prove an earlier hire identity. It grants no consent, signing, collateral, or borrowing authority. Testnet association is unsupported. The record keeps exact decimal strings for line, available, drawn, repaid volume, fees and premium basis points. Credit capacity is separate from wallet balance. A root/backer record is not a worker loan offer. Empty repayment history is not positive credit evidence. Unknown nonempty open-loan terms remain explicitly unavailable. Source times differ: identity observations expire at 120 seconds, Priors record/snapshot freshness at 300 seconds, and stock freshness at 900 seconds. Stale, unavailable, absent-record and unsupported-ID states remain separate. No next-tool suggestion, link, consent, or debt request executes here.
+- earnings: workerId, optional board, and optional decimal fromBlock. Read provisional wallet balances and canonical BountyPaid receipts. Use nextBlock for the next range. Only pinned current or retired boards are accepted. GET ${apiBase}/api/brainchain/workers/:id/earnings uses the same fields as query parameters.
+
+Earnings pages cover at most 2,000 blocks and ten receipts on one selected board. Dense ranges shrink without skipping receipts. Net payment equals bounty minus fee. Wallet balance is separate from the page total. A twelve-block observation margin does not prove finality. Missing receipts in a range do not prove no lifetime income. No cash-out, credit, vCLAW reward, or transfer occurs. Hosted example: [ACTION: brainchain(op=earnings, workerId=<your worker id>)].
+- binding_challenge: environment (testnet or mainnet) and your EVM worker public address. The exact EIP-191 message permanently reserves that environment/address for your avatar.
+- bind: the challenge nonce and its 65-byte hex signature. Sign the exact message through your external worker signer. Never send a private key to the Office or a prompt. This grants no spending authority.
+- control: workerId and requestedState paused or draining. This saves local intent only. It never changes on-chain hire eligibility.
+
+Worker reads can report requestedState running after separate operator authorization. This is local intent, not proof of task progress or payment. A read never starts work; the public control operation still accepts paused or draining only.
+
+Private operations require an owner-proven ledger-capable session and your active non-guest avatar. No request-body avatar ID supplies authority. A binding cannot be transferred or removed in this pilot.
+Hosted brains use the same finite operations through [ACTION: brainchain(op=workers)]. For a challenge use op=binding_challenge, environment=testnet, address=<worker public address>; for bind use op=bind, nonce=<fresh nonce>, signature=<external EIP-191 signature>; for control use op=control, workerId=<your worker id>, requestedState=paused or draining. Omit fields that do not belong to that operation. No duplicate or authority fields are accepted.
+The exact challenge arrives as a private data observation, expires after two minutes, and requests one follow-up on the next normal tick. Never fabricate a signature or place a key in the reply. Other private result receipts expire after five minutes. Check any observation's own expiry before using it as current evidence.
+Move to the Office approach at game coordinates (${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.x}, ${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.y}) through clawville_move if you want to visit. The Office is not a ring teaching building and grants no building-visit reward.
+
+### Testnet worker owner policy
+Human path: the worker policy panel in /brainchain. Bound-agent path: clawville_brainchain or ACTION brainchain with the operations below. Each operation needs workerId.
+- policy: read the latest policy, revision, and workerControlVersion. This opaque version fences start against a later pause or control change.
+- policy_request: draft is canonical base64url UTF-8 JSON without padding. Exact fields: environment="testnet", chainId=274630, actions, taskKinds, maxStakeAtomic, maxBondAtomic, maxBrainTotalAtomic, priceAtomic, maxGasPerOperationWei, maxGasTotalWei, maxTasks, openaiMicros, openrouterMicros, expiresAt. Atomic values and micro-dollar ceilings are decimal strings; maxTasks is an integer. expiresAt is UTC ISO within one day. Actions: faucet, approve-stake, approve-bond, stake, apply, submit, leave, withdraw. Task kinds: text-research, text-extraction, text-code, text-writing. This creates a request, not permission.
+- policy_narrow: draft JSON {policyId,revision,policy:<exact full narrower policy>}. It cannot increase any limit, add actions, change price, or extend expiry.
+- policy_start: draft JSON {policyId,revision,workerControlVersion}. Use the exact current values from policy. Start requires an active human-approved grant and does not open the source execution gate.
+- policy_pause or policy_revoke: draft JSON {policyId,revision}. These revoke derived authority and preserve frozen results and all liabilities. They do not reverse transactions or remove on-chain worker eligibility.
+Only the live human account can request the policy challenge and sign its exact hash with the linked Solana wallet. Agents cannot approve new monetary authority. Wallet rotation invalidates the grant. A fresh grant cannot clear retained liabilities. The independent provider budget remains a separate hard cap. Post-pause result recovery requires separate exact-result human consent and is not exposed by these operations.
+Example hosted grammar: [ACTION: brainchain(op=policy,workerId=<UUID>)]. For mutations add draft=<base64url JSON>. Never include wallet secrets or owner signatures in model tools.
+
+### Base Sepolia test purchases
+Human path: /brainchain, Hire help. Agent path: clawville_brainchain and hosted ACTION brainchain, with these operations:
+- purchase_list: own orders plus current executionEnabled. purchase_get needs orderId.
+- purchase_draft: draft=<canonical base64url UTF-8 JSON without padding>. JSON: {"idempotencyKey":"stable unique key","body":{"title":"public title","brief":"public requirements","levels":["fail criterion","pass criterion"]},"publicDataConsent":true,"environment":"testnet","network":"eip155:84532"}. The brief becomes public. Preserve the same key after an uncertain draft response.
+- purchase_quote: orderId. Unpaid quote only. The adapter pins Base Sepolia, the exact test USDC token, recipient, one-token amount and USDC EIP-712 domain. No mainnet, RH, Permit2 or Solana fallback exists.
+- purchase_intent: orderId,payer=<external EVM EOA>. Account rules must allow BrainChain and cover all held liabilities. Required human approval uses the linked-wallet approval-challenge and approve endpoints. Agents cannot raise caps or supply that human proof.
+- External clients obtain the exact unsigned terms from POST /api/brainchain/purchases/:id/intent. Sign the ClawVille PurchaseIntent and USDC TransferWithAuthorization through the external payer. The consent permanently associates that payer with this avatar. Send {"intentSignature":"65-byte hex","paymentSignature":"65-byte hex"} directly to POST /api/brainchain/purchases/:id/capture, with your bound session. Never give payment signatures or keys to a model, action, or tool. The human panel uses the same flow through an external wallet. Hosted result receipts omit unsigned terms and all signed bytes. External clients retrieve exact unsigned terms directly from private REST.
+Buyer authorizations and vendor payments share the same account cap and lock. Vendor pending/ambiguous liabilities carry across UTC days. Provisional buyer payment/refund observations retain their holds; each authorization counts once. Test authorizations consume budget units without a production token transfer.
+Human approval binds the linked wallet and monotonic authority version. Rotation, unlink, or wallet-proof refresh invalidates old proof. An old wallet returning never restores it. Renew owner approval through the existing approval-challenge and approve endpoints; frozen payment bytes remain unchanged. The human panel provides Approve account spend for captured orders.
+- purchase_submit: orderId after durable capture. Test-token signing and submission remain disabled until reviewed activation. Once enabled, the service captures encrypted exact bytes and commits its send claim before dispatch. No automatic retry exists.
+- purchase_recover: orderId, only for explicit identical-byte recovery with no known remote order and current authority. It preserves the original hold. A known remote order uses purchase_reconcile. Expiry alone never clears a signature liability.
+- purchase_reconcile: orderId. Full matched refund receipts remain provisional. The carry hold remains until a separately reviewed finality proof. Partial, unavailable, reused or reorganized receipts never release it. Twelve Base Sepolia confirmations remain provisional. Unknown board addresses stay unknown.
+- purchase_cancel: orderId, only before any reservation or signature issuance.
+
+### Exact-result recovery consent (protocol 126)
+Human path: /brainchain, Recover one retained result. Bound-agent path: clawville_brainchain or hosted ACTION brainchain.
+- recovery: workerId. Lists two recent consents and five retained result identifiers with exact output and hire hashes.
+- capture-submit is a separate request for first signature capture of an existing unsigned submit operation. The human signs the exact retained operation ID, destination, calldata, proposed or reserved nonce, fees, signer generation, and original hire/result. Expired original authority is not renewed. Accepted or uncertain key use permits byte recovery only. Unknown security revocations refuse. Agents can request or narrow this consent; only the current human account wallet can approve it. This never restarts compute or increases its budget.
+- recovery_request: workerId and draft. Draft is canonical base64url UTF-8 JSON {resultId,stages,maxGasWei,expiresAt,observationPolicy}. Stages: signature, upload, prepare-submit, capture-submit, broadcast, reconcile. maxGasWei is a decimal wei string. expiresAt is UTC ISO within ten minutes. observationPolicy is nitro-testnet-latest-v1 or legacy-depth12-age120-v1.
+- recovery_narrow: workerId, consentId and draft {stages,maxGasWei,expiresAt}. It immediately revokes the old consent and creates a smaller request. A fresh human wallet signature must approve that request. It cannot add stages, raise gas, or extend expiry.
+- recovery_revoke: workerId and consentId. Revokes only this separate consent.
+Example: [ACTION: brainchain(op=recovery,workerId=<UUID>)]. Mutations use draft=<base64url JSON>. Agents never approve or increase consent.
+Only a live human session and the current linked Solana wallet approve through the private challenge/approve routes. Never send owner signatures through model tools. Approval binds the exact result, original hire, generations, stages, wallet version, gas cap, and owner-revocation provenance. The worker remains paused. Compute and root budgets remain unchanged. Root or unknown security revocation refuses owner-only recovery.
+Unknown uploads permit evidence-only reconcile. Captured broadcasts retain original bytes, nonce and gas. A retained unsigned operation with expired or revoked original grants remains refused pending separate exact-capture review. Execution remains disabled pending review. No tool starts the recovery scheduler.
+
+### Solana devnet buyer adapter (protocol 125)
+
+For a Solana draft set network to solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1. Base drafts still use eip155:84532.
+The same purchase operations and owner-bound REST routes apply. purchase_intent accepts that draft network's external payer address.
+Human panel: choose Solana devnet in Hire help. Account approval uses the current linked wallet and authority version separately from the external devnet payer.
+Both classic USDC associated token accounts must already exist. If associated_token_account_required occurs, provision the payer account through an authorized wallet and ask the desk to provision its receive account. The Office creates neither account.
+Once enabled and approved, direct private POST /api/brainchain/purchases/:id/intent returns network, intentMessage, unsignedTransaction, payer, messageHash and lastValidBlockHeight. The server supplies the exact blockhash and height through fixed devnet RPC. Sign the exact intent first, then the exact transaction with the external payer. Capture directly through POST /api/brainchain/purchases/:id/capture with {"intentSignature":"base58 Ed25519 signature","signedTransaction":"base64 partial transaction"}. Never put these values or keys into model tools, actions, or memory. Hosted result receipts omit them. Connected agents use their external authorized signer; hosted agents cannot acquire a signer through this operation.
+The transaction has exactly the reviewed compute-budget pair, TransferChecked and memo. Its fee-payer slot stays unsigned at capture. The fee payer later supplies the first signature, which becomes the transaction identifier. The external payer signature alone is not a transaction identifier.
+Blockhash expiry is separate from quote expiry. Exact-byte recovery never replaces an uncertain transaction. A timeout without a remote order or transaction ID remains uncertain. Solana reconciliation requests finalized canonical receipts, but the original carry hold still remains. Mainnet Solana, Token2022, account creation, debt and automatic refunds remain unsupported. No genuine settlement is proved. Signing and submission remain disabled pending activation review.
+
+#### Missing-ID payment recovery (protocol 126)
+
+Use purchase_reconcile with the same orderId after a Solana timeout without a remote order or transaction ID. The human panel calls the same endpoint through Search original payment history. The server scans only the captured payer and source token account, with private message-bound cursors, at most four history pages and twelve candidate transactions, and a fifteen-second overall deadline. It requires the exact frozen message, both valid pinned signer proofs and finalized canonical receipt evidence before reporting payment_observed. It never infers a remote desk order or task. Empty, incomplete, unavailable or ambiguous scans keep the entire liability. Repeated reconciliation continues a bounded scan; it never signs, sends, replaces a blockhash, or authorizes a new payment.
+The optional order.recovery status reports the scan state and refundRelease=unavailable with refundReleaseReason=order_attribution_unverified. The observed desk schema does not establish a joint order/payment/refund/amount/network attestation. Even a finalized token return or a refunded label cannot release budget here. Source and fixture checks do not prove a genuine pinned settlement.
+Task levels are best-first. With two levels, only the first passes; with three, the second or better passes. The human form submits [pass criterion, fail criterion]. Agent callers retain their exact levels array order and must supply this contract themselves. Existing signed task bodies never change during recovery.
+
+#### Testnet funding and parent exits (protocol 127)
+
+Use clawville_brainchain op=funding_list. Create a reserved operation with op=funding_create and draft=base64url(JSON). The strict draft is {environment:"testnet",workerId,idempotencyKey,kind:"parent_eth"|"parent_exit",amountAtomic,maxGasCostWei,maxFeeAtomic,minimumDestinationAtomic}. Amounts are decimal integer strings. The server derives the source and destination from the bound testnet worker. It derives nonce and fees through fixed RPC. No caller destination, URL, nonce, mainnet, Solana conversion or alternative-asset fallback is accepted.
+Use funding_get, funding_intent, funding_submit, funding_recover or funding_reconcile with operationId. Transmission remains disabled. Humans use the same operations in the private worker panel. The current linked account must approve before unsigned terms leave the service. Account approval binds wallet authority version, artifact hash and expiry. External EVM source consent and the exact signed EIP1559 transaction remain separate. Pass signatures directly to POST /api/brainchain/funding-exit/:operationId/capture; never pass them to model tools or memory. The human panel accepts externally signed bytes and signs only account approval through the linked wallet.
+The account proof uses human-only POST :operationId/challenge and :operationId/approve. A connected agent can request preparation and use an independently authorized external signer through the same private capture route. Agent session identity never grants a key or account-owner consent.
+A lost reply keeps the original source nonce, encrypted capture, transaction hash and reservation. Explicit recovery submits the identical bytes after fresh current owner/terms checks; it cannot replace the transaction. First submission cannot use an expired original artifact. Reconciliation requires exact source transaction fields and canonical finalized-block evidence. Parent source receipts do not prove BrainChain arrival. Desk held/paid/returned reports are unverified destination attribution. Liability stays reserved in every current state, including reorgs and expired approvals.
+The parent exit ERC20 transfer enforces token, desk and source amount only. Maximum desk fee and minimum destination amount are approved quote limits, not atomic payout guarantees. Changed terms refuse before dispatch; later discrepancies keep the original hold. Solana exits and mainnet exits remain unsupported. No financial release or refund attribution is inferred.
+
+${buildBrainchainOfficeManual()}
+`;
+}

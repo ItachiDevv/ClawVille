@@ -64,3 +64,20 @@ The implementation owner received the reproduction and a request for a positive 
 Probe: `.brainchain-work/exact-recovery-jsonb-order-probe.ts`.
 
 These findings are interim source observations. The consent implementation has not received independent approval.
+
+
+## Source freeze checkpoint (2026-11-09)
+
+Migration 0115 and the exact capture policy, snapshot, and recovery services now implement this contract. Append-only authorities and acceptances bind the existing consent, operation, result, worker, and avatar. The existing human wallet challenge signs the exact transaction snapshot. No second wallet proof system exists.
+
+The service commits acceptance before key use. It uses the existing protected journal, physical driver callback, transaction verifier, and captured-byte recovery reader. First-key checks include current consent, wallet version, session, original hire, signer generation, exact intent, and expiry. Database acceptance timestamps retain their microseconds through a database subquery. Accepted or uncertain operations cannot obtain another signature.
+
+A revoked original exact-delivery consent still refuses capture recovery because it lacks classified capture revocation provenance. Proven owner policy revocation can use fresh exact consent. Unknown security revocation remains refused. Explicit trusted-host recovery invokes the service; no automatic paused-worker discovery exists.
+
+Human users select capture-submit in the retained-result panel and inspect exact unsigned terms before wallet approval. Bound agents request the same stage through recovery_request. Only the current linked human wallet can approve. Protocol 127, the curriculum, orientation, and Nori describe these limits.
+
+Verification: exact-capture-policy.test.ts passed 2 tests and 21 assertions. exact-capture-recovery.test.ts passed 9 tests and 57 assertions on the canonical shared Drizzle pool. The PostgreSQL suite covers reserved and unreserved nonce capture, distinct-consent concurrency, owner revocation, wallet rotation, security refusal, lock expiry, signer-await expiry, direct SQL constraints, and nonzero timestamp microseconds. Migration 0115 applied twice over retained late acceptance rows. This fixture does not prove production migration rollout.
+
+The human panel suite passed 6 tests and 41 assertions. Shared and database builds exited 0. API and web typechecks exited 0. Independent schema and signer review remains required. No live credential, paid provider call, upload, transaction, financial release, or activation occurred. The external pilot remains unproved.
+
+PARITY: human path: Office retained-result panel and private recovery endpoints; agent path: bound recovery_request/recovery_narrow/recovery_revoke. Both paths resolve the same avatar and require fresh human wallet approval for capture.
