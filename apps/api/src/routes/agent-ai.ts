@@ -58,7 +58,7 @@
  */
 
 import { Hono, type Context } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
+import { safeBodyLimit } from '../middleware/safe-body-limit';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import {
@@ -125,7 +125,7 @@ export function resetAgentAiRateLimits(): void {
   keyTestsInFlight.clear();
 }
 
-const smallBody = bodyLimit({
+const smallBody = safeBodyLimit({
   maxSize: 16 * 1024,
   onError: (c) => c.json({ error: 'payload_too_large', code: 'payload_too_large' }, 413),
 });
