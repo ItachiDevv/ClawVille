@@ -76,3 +76,11 @@ Evidence: .brainchain-work/activity-queue-root-aba-original-layout.test.ts prese
 Run it from the activity __tests__ directory with --test-name-pattern 'ROOT R2'.
 Root removed its temporary duplicate test after reproduction; the owner owns the canonical regression.
 The earlier relocated probe failed module mocks before executing; only the original-layout run establishes R2.
+
+## R2 correction evidence
+
+The owner added the departure-version fence before kick removes membership.
+The existing prune helper retains that version until the old admission finishes.
+Root read the correction and reran the canonical targeted regression plus the existing rejoin test:2passed,6assertions,0failures.
+Owner reports the full queue suite42passed,106assertions.
+No await or assigned-room mutation was added. Root approves this narrow source correction; actual-Claude R2 re-review and browser evidence remain pending.

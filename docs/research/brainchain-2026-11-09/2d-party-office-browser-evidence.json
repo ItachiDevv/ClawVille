@@ -1,0 +1,277 @@
+{
+  "scope": "Actual browser transition with synthetic intercepted identity/party/room; no server authentication or room proof",
+  "passed": true,
+  "heldDepartures": 2,
+  "calls": [
+    {
+      "path": "/api/auth/me",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/avatars/me",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/research/stream",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/world/join",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/world/join",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/party/me",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/leave-queue",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/exchange/trades/feed",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/auth/me/agent-session",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/wallet/spend-policy",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/vendors/studios/approvals",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/claims",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/claims",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/queue-status",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/style-statement/claim",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/style-statement/claim",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/party/party-fixture/leave",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/big-spender/claim",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/big-spender/claim",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/on-the-board/claim",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/on-the-board/claim",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/wallet-aware/claim",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/wallet-aware/claim",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/crossover/claim",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/crossover/claim",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/homesteader/claim",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/quests/tutorial/homesteader/claim",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/avatars/me/heartbeat",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/avatars/me/heartbeat",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/exchange/trades/feed",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/leave-queue",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/queue-status",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/world/join",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/leave-queue",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/queue-status",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/research/stream",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/avatars/me/heartbeat",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/avatars/me/heartbeat",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/party/me",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/leave-queue",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/queue-status",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/party/party-fixture/leave",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/leave-queue",
+      "method": "POST",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/activities/bumper-shells/queue-status",
+      "method": "GET",
+      "at": "http://localhost:3000/game?view=2d"
+    },
+    {
+      "path": "/api/brainchain/knowledge",
+      "method": "GET",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/brainchain/status",
+      "method": "GET",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/avatars/me/heartbeat",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/avatars/me/heartbeat",
+      "method": "POST",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/world/join",
+      "method": "OPTIONS",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/world/join",
+      "method": "POST",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/activities/party/me",
+      "method": "GET",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/activities/bumper-shells/leave-queue",
+      "method": "POST",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    },
+    {
+      "path": "/api/activities/bumper-shells/queue-status",
+      "method": "GET",
+      "at": "http://localhost:3000/brainchain?__wsnav=0de54a4c-bc80-4100-9752-35dfbc5a18b0.1"
+    }
+  ],
+  "destinations": [
+    "http://localhost:3000/activity/reef-race/assigned-room?shortCode=ABC123&view=3d"
+  ],
+  "errors": [],
+  "url": "http://localhost:3000/activity/reef-race/assigned-room?shortCode=ABC123&view=3d"
+}

@@ -60,3 +60,29 @@ The scoped approval covers the five original blockers and R1. It does not close 
 Root independently reproduced kick/rejoin ABA while this review ran. The review statement that kick or join always aborts the batch is insufficient for that combined sequence.
 The old admission succeeded after kick followed by rejoin. See docs/brainchain-2d-party-root-review.md and its retained probe.
 World owner now corrects R2; the changed scope requires fresh review.
+
+## R2 independent correction review
+
+Session: 1c33a254-fecc-487f-8e51-bf07152a5dcd
+
+**R2 verdict: APPROVED.** I only read the code. I ran no commands. I did not run the test again. Your evidence (root 2 tests and 6 assertions, owner 42 tests and 106 assertions) stays the test result.
+
+**`kickMember`** (`activity-queue.ts:540-545`)
+- Kick adds 1 to `partyDepartureVersions` before `party.members.delete`. Thus, from the first synchronous point, `valid()` cannot see "member present, old version".
+- Kick calls `pruneDepartureVersion` right after the removal. During an admission, the prune returns early because `inFlightEnqueues.has(avatarId)` is true. Thus the new version stays. Kick does not wait for the admission.
+- When a leave is still in progress, kick adds 1 again. This has no bad effect: `pendingPartyLeaves` already makes `valid()` fail, and the prune keeps the entry until `leaveParty` clears it.
+
+**Version capture in `enqueueBatch`** (`:158-170`)
+- Each reservation reads `version` and sets `inFlightEnqueues` in the same synchronous step. No `await` comes between them. Thus no prune can delete the key between the read and the check.
+- `assertBatchValid` runs before each insert, after the insert or transaction, and before publication. In R2, the old insert returns, then `valid()` compares the captured value with the new value and throws. The rejoin calls `members.add` but does not reset the version.
+
+**Prune and `finally` lifetime** (`:226-231`, `:968-971`)
+- The version lives from the capture to the `finally`. The `finally` deletes the in-flight token and then prunes the key. The prune runs after the `catch` cleanup, so the cleanup cannot let a new version of that member slip through.
+- While the old admission runs, a second enqueue for the rejoined member fails at `:156` with "already in progress". After the old admission ends, the key is gone. A new admission then reads 0 and is valid. The two admissions never overlap.
+
+**Test** (`activity-queue.test.ts:774-785`)
+- The order is correct: the insert waits, the member is kicked, the member joins again, then the insert continues. There is no `await` before `db.transaction`, so the transaction gets the blocked `dbMock.insert`.
+- The test checks two results: the old request fails, and `getQueuedEntry(pid(1))` is null. The leader stays, so the party does not disband.
+- Optional improvement, not a blocker: line 782 accepts any `Error`. Check for `'Party membership changed during queue admission'`, so that a fault in the mock or in the cleanup cannot pass the test.
+
+I found no new blocker in the R2 change.
