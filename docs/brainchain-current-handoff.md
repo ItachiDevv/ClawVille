@@ -611,3 +611,22 @@ Root read the actual report and summed its counts. Prior68/424report remains arc
 PostgreSQL23/151/0skips and Linux4/12/5expectedskips remain unchanged. No finance or protected source changed.
 All helpers are terminal. Root now restages the exact corrected files, documentation and CI runner for the application source checkpoint.
 The next release work includes staging lineage merge, release authentication, bounded runtime probe provider transport and actual staging/testnet evidence.
+
+## Application checkpoint and staging lineage recorded
+
+Application commitbab9e66f8b3841ee7dae4857d87db204c5c3d0b8 contains361files and the required PARITY note.
+Commit process29312exited0 without bypassing hooks. Root verified the exact commit and an empty index/worktree.
+Fresh origin/staging remains9fd879bea. Local mergeccc224f05d8402a2d09fad3f87411d1d445cc393 incorporates that lineage.
+The merge changed only FOUNDER-REVIEW.md, removing32approved historical lines and retaining both BrainChain review entries.
+No source changed in that merge. The final local test results remain applicable.
+ActualClaude world checkpoint984f9f28f and assetcheckpoint26e5814f remain ancestors.
+No application source remains untracked. Ignored local evidence and owned fixtures remain available.
+Root asked an asynchronous clarification for the existing release credential profile/location, never token contents.
+The user has not answered yet. Do not infer authority to use ItachiDevv or the itachi-memory deploy key.
+All helpers and root test processes are terminal. No paid reservation, protected root provisioning, transaction, push or deployment occurred.
+
+Next independent work: implement the smallest reviewed cost boundary for the BrainChain-only runtime probe, then its independent tests.
+The cost-plan document proposes changes; root has not yet accepted its database design or started implementation.
+Do not fabricate task IDs to pass the worker compute fence. Reuse cumulative provider authority; never create another independent10USDpool.
+Root owns the index again. A future3Drelease push still belongs to actualClaude after approved GitHub identity verification.
+Keep unsupported credit/refund/finality requirements visible. Do not retry the rejectedC1review task or the rejectedChrome launch.
