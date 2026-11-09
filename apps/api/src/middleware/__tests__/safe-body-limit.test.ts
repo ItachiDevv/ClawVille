@@ -60,6 +60,13 @@ describe('safeBodyLimit after jsonBodyGuard', () => {
     expect((await app().fetch(low)).status).toBe(413);
   });
 
+  test('boundary: a body 3 bytes under the limit passes; 2 bytes under is refused (BOM allowance)', async () => {
+    const at = (n: number) => JSON.stringify({ a: 'x'.repeat(n - 8) }); // n bytes
+    expect(new TextEncoder().encode(at(61)).byteLength).toBe(61);
+    expect((await app().fetch(noLength(JSON.parse(at(61))))).status).toBe(200);
+    expect((await app().fetch(noLength(JSON.parse(at(62))))).status).toBe(413);
+  });
+
   test('Content-Length requests behave as before', async () => {
     expect((await app().fetch(withLength({ a: 1 }))).status).toBe(200);
     expect((await app().fetch(withLength({ a: 'x'.repeat(100) }))).status).toBe(413);
