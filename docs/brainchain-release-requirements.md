@@ -7,7 +7,7 @@ A scoped test or source approval does not satisfy a broader release requirement.
 | --- | --- | --- |
 | Office building and teacher | Generated model, Float32/mipmap WebGPU captures, scoped Claude and Codex navigation reviews, local door/guide/E/world-map/minimap paths, Shift sprint and eight-size touch movement, existing teacher entry and eight collider approach regressions | B3a/R2 source has scoped Claude/root approval; queue42/106 and mounted React8/20 pass; actual-browser synthetic party/Office recovery passed; foreground performance comparison; final integrated staging scene. B1/B2/B4 and visible footprints have scoped Claude approval; actual pointer fallback passed. Local2D entry/100 transitions/eight-size touch evidence exists |
 | Human and bound-agent access | Shared route identity checks, human panel, MCP and hosted action adapters, scoped tests | Actual authenticated human and connected/hosted sessions against final staging service; no guest substitution |
-| Knowledge installation and consumption | Versioned code-generated curriculum, hosted wire tests, protocol126 consent/buyer source | Final served hashes and staging onboarding/runtime probes after all remaining integration changes |
+| Knowledge installation and consumption | Versioned code-generated curriculum, hosted wire tests, protocol127 capture-recovery source | Final served hashes and staging onboarding/runtime probes after all remaining integration changes |
 | External identity and worker ownership | Wallet challenge and durable binding tests | Authenticated UI flow and final agent identity audit |
 | Worker application and lifecycle | Typed signer intents, durable capture/recovery, chain indexer, isolated synthetic Linux signer evidence; independent scheduler deadline correction15/192 and owner automatic-flow1/25, independently repeated by CI | Exact consent C1 correction review, retained unsigned capture recovery and actual testnet lifecycle remain |
 | Task execution | Actual Eliza child, fixed container policy, realPG proxy/admission/receipt fixture | Protected root authority provisioning, paid trial and coordinator output lifecycle; parent/provider/verifier scoped audits passed |
@@ -70,7 +70,11 @@ See `docs/brainchain-scheduler-liveness-independent-review.md`.
 Exact-result consent now compares canonical JSON objects after the root reproduced PostgreSQL key reordering.
 Independent review found C1: exact-issued authority IDs can omit delivery proof and reach the signer after consent revocation.
 The original probe reached one synthetic key callback. The standard consent suite independently passed11tests/42assertions but missed this case.
-The owner now corrects authority-ID linkage at the final signer boundary. Independent correction review remains required.
+The owner corrected persisted authority-ID linkage at the final signer boundary.
+The independent reviewer reported refusal before preparation and zero operations for the original probe, plus consent13/64 and ordinary signer9/68 passes.
+The review service then rejected its final report. These partial observations do not constitute full correction approval.
+The human recovery panel received scoped source/component approval with5tests/38assertions before its newer capture-stage extension.
+That extension needs a fresh review; neither panel result proves authenticated browser behavior.
 Expired unsigned-operation capture remains a separate requirement in `docs/brainchain-exact-capture-recovery-design.md`.
 
 Solana history discovery now has scoped independent review:18tests/153assertions across pure, human-panel and actual shared-pool PostgreSQL probes.
@@ -82,9 +86,21 @@ Refund liability release remains unavailable because the observed protocol lacks
 The expanded CI inventory includes the missing PostgreSQL suites, both web wallet suites and ordered fixture migrations through0114.
 Local evidence:60pure suites/350passes,19PostgreSQL suites/125passes plus one additional scheduler-flow pass, and4protected Linux suites/12passes.
 PostgreSQL has zero skips. Other lanes retain only the explicitly reviewed platform/Docker split skips.
-The empty isolated PostgreSQL bootstrap passed. Independent updated-bootstrap review and remote CI evidence remain required.
+The empty isolated PostgreSQL bootstrap passed. Root independently repeated bootstrap twice and restored the0112 wrappers.
+Migrations0115/0116 need fresh inventory, schema, retained-history replay and independent review. Remote CI evidence remains required.
 
 The combined production web build exited0 in session16265 after the consent and buyer source freeze.
 The local Office returned HTTP200. New consent and discovery browser checks remain unverified.
 Automatic approval review rejected the separate Chrome launch without a specific reason.
 The browser tool then reported its access host unavailable. Earlier screenshots do not verify the new consent controls.
+
+## Local asset checkpoint
+
+Actual Claude created commit26e5814f40ae03b1dc26839ef17006e6a408243f with seven asset, provenance, constant and documentation paths.
+Root verified the committed path list, empty index and the963764-byte asset hash.
+SHA256:9b5e625433ef97fcf5bb65143ed117da53794282471458dccce12339154ae752.
+The checkpoint excludes application integration source and staging evidence. It does not satisfy the release or authenticated parity gates.
+The remaining application documentation references untracked source files; rerun the path guard after coherent source staging.
+
+Funding recovery source remains under owner tests. The desk transfer does not atomically enforce a minimum destination payout or maximum desk fee.
+Approved quote limits therefore need fresh terms before any enabled send. Uncertainty or a later discrepancy must retain the original liability.
