@@ -71,8 +71,67 @@ bun apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api <verified
 
 DATABASE_URL is required. If ELIZA_DATABASE_URL exists, it must resolve to the same database.
 Retain host/database-marker checks and automatic fixture cleanup. Do not use --keep or --allow-unmarked-db for staging verification.
-The current fixture session omits created_via, so the existing probe cannot prove human wallet approval.
-BrainChain-specific curriculum, manual, tool and decision-wire assertions require a separate scoped extension before this gate proves the integration.
+The legacy fixture session omits created_via. It cannot prove human wallet approval.
+
+### BrainChain-specific hosted runtime gate
+
+Source and controlled tests exist. No actual staging run is claimed.
+Run this mode from the staging API process/container namespace. Its loopback mock must be reachable from that API process.
+Use the exact public staging API origin, rather than the legacy on-box origin:
+
+```text
+CLAWVILLE_ENV=staging bun apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api https://api-staging.clawville.world --autonomous-decision --brainchain
+```
+
+DATABASE_URL must identify the staging database. The catalog environment marker must equal staging.
+The guard rejects production, loopback targets, aliases, paths, query strings, and a missing staging environment.
+It rejects --keep, --allow-unmarked-db, and optional legacy --with-echo in this mode.
+It rechecks the staging marker before fixture writes and cleanup. It rejects redirects.
+Every fixture has unique account, avatar, platform-agent, session, and canary identifiers.
+The fixture session explicitly uses created_via=agent_exchange. This proves no real password login or human wallet approval.
+The separate human sequence above remains required.
+
+Before an actual run, root must reserve installation and runtime costs under the existing cumulative OpenAI 10USD cap.
+Potential paid paths in the entire mode include initial protocol and world-scope installation, the legacy canary installation, and BrainChain curriculum installation.
+Each missing stored section can invoke the fixed OpenAI embedding path.
+Fresh founder chat, BrainChain chat, autonomous decisions, directives, and later decision turns can invoke semantic retrieval query embeddings.
+Runtime initialization, memory persistence, summarization, or extraction can invoke the runtime model or embedding providers if configured.
+The inherited Nori question uses the separate system-agent Eliza runtime. Its query retrieval, model answer, and memory persistence can cost money.
+The inherited appearance action is a state change. Its preceding and later decisions can still incur retrieval or inference costs.
+The declared gateway mock controls fixture chat and decision generation. The Hermes lane uses its repository mock through a loopback proxy.
+Those mocks do not control every embedding, teacher, or auxiliary runtime provider.
+Legacy optional echo fixtures are refused in this mode. There is no claim that all provider costs already pass through the isolated-task budget proxy.
+Root must inventory actual provider configuration and reserve all applicable OpenAI and OpenRouter costs under their existing separate 10USD caps.
+Stop before an actual run if any provider path lacks that accounting boundary.
+A loopback chat gateway does not prove zero total provider spend.
+Do not execute this mode before the root budget mechanism and reservation exist.
+Current verification uses pure assertions and controlled loopback HTTP only. It creates no staging account and performs no provider request.
+
+The gate checks the exact source-derived curriculum hash and served bytes.
+It checks the served protocol version, curriculum paragraphs, and finite BrainChain tool operations.
+It installs BrainChain knowledge and refuses a marker-only response.
+It checks every stored section's exact text, current hash, agent/room/entity scope, and deterministic agent-specific memory ID.
+It checks fresh chat provider context separately from history and user-message echoes.
+It checks the full curriculum and operation inventory in an actual autonomous decision request at the loopback gateway.
+The gateway emits one safe workers read. It emits no payment, signature, funding, exit, or approval action.
+A later decision request must contain its exact unexpired private workers receipt with HTTP200 and an empty fixture-owned workers array.
+The receipt check permits up to 240 seconds for the ordinary autonomous decision interval. It does not change production scheduling.
+
+The finalizer stops the runtime, disconnects its body, and verifies registry removal before deleting fixture-owned rows.
+The BrainChain curriculum row is canonical shared source, so cleanup never deletes it.
+A failed cleanup fails the gate. No retention flag bypass exists for this mode.
+Reports must contain counts, hashes, statuses, and outcomes only. Never print prompts, cookies, keys, database URLs, or response bodies.
+
+Controlled tests:
+
+```text
+cd apps/api
+bun test ./scripts/brainchain/runtime-evidence.test.ts ./scripts/agent-connect/hosted-skill-runtime-probe.test.ts
+```
+
+Last Audited: 2026-11-09: these controlled tests passed 18 tests and 190 assertions.
+Drift: the probe now has a strict BrainChain mode with stored-knowledge, chat-wire, decide-wire, and private action-result assertions.
+A successful controlled test does not prove staging runtime consumption, human wallet consent, settlement, or leaderboard credit.
 
 ## Evidence and remaining boundaries
 
