@@ -203,3 +203,75 @@ Existing expiry, reorg, exact-byte submission, and ambiguous-send tests also pas
 The transport suite replaces activation and hashes only inside its isolated test process. It sends no network request and uses no key.
 This approval does not approve mutable-authority implementation, activation, custody, a paid call, or a live testnet lifecycle.
 The bounded mutable-authority policy above remains the next implementation task.
+
+## Configured-policy implementation pre-read
+
+Reviewed the full implementation design and the initial configured-authority.ts draft. The draft is not frozen or approved.
+The fourteen getter targets and expected values match the independently refreshed policy table. The policy digest includes the eight runtime hashes.
+The reader already uses the selected block, a bounded acquisition window, and a final sequential anchor check.
+
+Early constraints sent to the backend owner:
+
+1. Snapshot the caller's observation timestamp before awaits. Return a new Date so caller mutation cannot refresh the returned evidence.
+2. Each getter returns exactly one ABI word. Reject wrong lengths, trailing bytes, and noncanonical padding before admitting the result.
+3. A version/digest pair identifies expectations only. It cannot substitute for fresh getter evidence at an effect boundary.
+4. Ordinary historical NULL grants must fail new effects. Never replace their NULL policy with the current pair automatically.
+5. A persisted fresh exact-recovery authority can permit the documented historical-byte broadcast path. It cannot rewrite original evidence, bytes, nonce, or ceilings.
+6. Read-only journal inspection and receipt reconciliation remain available during drift. They cannot invoke another key or provider.
+
+The baseline source confirms distinct effect boundaries that need explicit coverage:
+
+| Boundary | Required policy check |
+|---|---|
+| Owner authority issuance | Current version/digest plus fresh matching observation |
+| Execution admission | Stored authority pair and fresh evidence before consumption, after row locks |
+| Compute reservation and dispatch | Mandatory trusted policy fence for owner-issued workers, including calls outside the scheduler |
+| Result signature and transaction capture | Current pair and evidence at the final key callback |
+| Delivery and exact-capture recovery | Persisted authority pair; fresh observation; original immutable operation remains unchanged |
+| Broadcast | Fresh transport getter checks plus current durable authority callback before send |
+| Journal/receipt/status reconciliation | No new effect; preserve access and unresolved liabilities |
+
+The baseline proxy accepts an optional workerFence. Its comment distinguishes root-only trials from autonomous worker composition.
+The implementation must identify owner-issued worker authority from durable records. Omitting a constructor callback must not bypass that worker policy.
+Root budget verification remains independent. A valid policy cannot create budget, and a valid root budget cannot replace worker authority.
+
+The baseline signer service exposes recoverCapturedOperation separately from broadcastCapturedOperation. Preserve that separation.
+The capture helper checks artifact admission before its accepted-operation branch. Do not accidentally make it the only path to historical read-only recovery.
+The final broadcast callback runs after asynchronous transport checks. Current database time and policy evidence must still pass at that point.
+
+These are source pre-read constraints, not findings against a frozen implementation. No draft tests ran during this pre-read.
+Final approval requires frozen source, independent negative tests, and the separate database review for migration 0117.
+
+## Frozen reader review: two final-response blockers
+
+The independent owner-suite run passed 25 tests and 565 assertions. Source review confirmed fourteen exact pins, canonical ABI words, and timestamp snapshots.
+However, the independent final-response probe failed both required refusal cases:
+
+- A final RPC advances the controlled clock beyond the caller's 100-millisecond deadline, but remains inside the global 30-second window.
+- A final RPC aborts the caller's signal synchronously and then returns the expected anchor.
+
+Both cases returned authority evidence. The probe expected refusal: zero passed, two failed.
+Probe: .brainchain-work/artifact-readiness-final-boundary.test.ts. Run with bun test ./.brainchain-work/artifact-readiness-final-boundary.test.ts.
+The probe uses controlled RPC responses and clock state. It invokes no public endpoint, key, provider, or transaction.
+
+The bounded helper checks the deadline before the await but lacks a post-await check. Final evidence validation checks only global freshness.
+The helper also invokes rpc before installing its local abort rejection listener. A synchronous caller abort can occur before that listener exists.
+Install cancellation handling before invocation. Recheck caller abort, local abort, and the exact absolute deadline after each awaited result.
+Repeat those checks before returning final evidence. Preserve the original acquisition timestamp and the tighter caller deadline.
+
+Verdict: reader approval withheld until both probes refuse. The backend owner received these findings and the exact probe path.
+This finding concerns the frozen reader only. Consumer integration and migration 0117 remain outside this review.
+
+## Independent reader correction verdict
+
+Reviewed source SHA-256: 598bb935848fc574a8209fa1d8ff8c324ffc5889b34f8327394b41d4704650e6.
+Verdict: approved within the frozen configured-authority reader and pure-policy scope. Both final-response blockers now refuse in the original independent probe.
+The unchanged independent probe passed two tests and two assertions. The separate owner suite passed 27 tests and 653 assertions.
+
+The correction installs cancellation handling before deferred RPC invocation. After each await, it checks local abort, caller abort, and the absolute deadline.
+The final return repeats caller cancellation and deadline checks. The original acquisition timestamp remains unchanged.
+Late completion cannot restore evidence after the returned promise rejects. The existing delayed-read test also confirms no final anchor follows the timeout.
+Strict single-word ABI checks, canonical re-encoding, fourteen exact pins, and the final sequential anchor remain present.
+
+This verdict covers no consumer integration, migration 0117, operation-policy propagation, activation, or live testnet lifecycle.
+No network request, key, provider charge, database change, or application-source edit occurred during this correction review.
