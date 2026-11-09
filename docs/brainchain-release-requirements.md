@@ -62,17 +62,29 @@ The independent scheduler review found unbounded trusted callbacks that retain P
 The shared deadline, cancellation propagation and transaction unwind passed independent correction review.
 The original two callback probes now reject and release locks before callback resolution.
 The independent PostgreSQL run passed15tests/192assertions without skips.
-Full automatic lifecycle coverage remains required beyond the added preparation, drain, rejected-operation and multiple-hire cases.
+The automatic scheduler fixture also passed one test with25assertions on the canonical shared PostgreSQL pool.
+It covers preparation, captured-byte recovery, broadcast, indexing, compute, frozen output, signature, upload and submit.
+Its controlled boundaries do not prove a live testnet lifecycle.
 See `docs/brainchain-scheduler-liveness-independent-review.md`.
 
 Exact-result consent now compares canonical JSON objects after the root reproduced PostgreSQL key reordering.
-The paused-worker signer callback, current consent enforcement and human approval flow still require integrated independent review.
+Independent review found C1: exact-issued authority IDs can omit delivery proof and reach the signer after consent revocation.
+The original probe reached one synthetic key callback. The standard consent suite independently passed11tests/42assertions but missed this case.
+The owner now corrects authority-ID linkage at the final signer boundary. Independent correction review remains required.
 Expired unsigned-operation capture remains a separate requirement in `docs/brainchain-exact-capture-recovery-design.md`.
 
-Solana history discovery has local pure tests; database recovery and independent review remain pending.
+Solana history discovery now has scoped independent review:18tests/153assertions across pure, human-panel and actual shared-pool PostgreSQL probes.
+Concurrent cursor scans serialize; ownership changes during network reads refuse persistence. Captured bytes and liabilities remain unchanged.
 The human task form now places passing criteria first, with a submitted-request regression.
 Neither change proves a genuine payment or task settlement.
 Refund liability release remains unavailable because the observed protocol lacks verified order-to-payment/refund attribution.
 
-The final CI inventory must include six additional PostgreSQL suites, the two web wallet suites and ordered migration setup through0114.
-The inventory scan does not prove CI execution. Source changes remain active.
+The expanded CI inventory includes the missing PostgreSQL suites, both web wallet suites and ordered fixture migrations through0114.
+Local evidence:60pure suites/350passes,19PostgreSQL suites/125passes plus one additional scheduler-flow pass, and4protected Linux suites/12passes.
+PostgreSQL has zero skips. Other lanes retain only the explicitly reviewed platform/Docker split skips.
+The empty isolated PostgreSQL bootstrap passed. Independent updated-bootstrap review and remote CI evidence remain required.
+
+The combined production web build exited0 in session16265 after the consent and buyer source freeze.
+The local Office returned HTTP200. New consent and discovery browser checks remain unverified.
+Automatic approval review rejected the separate Chrome launch without a specific reason.
+The browser tool then reported its access host unavailable. Earlier screenshots do not verify the new consent controls.
