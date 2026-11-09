@@ -18,7 +18,7 @@ A scoped test or source approval does not satisfy a broader release requirement.
 | Budget and credentials | Root ledger with stable job UUID and separate caps; no API spending | Protected signed authority provisioning, reserve-before-dispatch trial and actual usage reconciliation |
 | Independent review | Scoped identity/task/signer/typed-result/earnings/stdio/navigation reports; protected store/trial and read-only credit correction reviews | Purchase and credit transaction reviews; fresh integrated adversarial audit |
 | Release | Strict local web builds, API typechecks and targeted fixture suites | Coherent implementation commits, staging-first push, actual SOURCE_COMMIT/health/manual/browser checks and promotion PR |
-| Durable CI coverage | Expanded source review, independent parser1/4 and two bootstrap replays; owner pure60/350, PG19/125 plus scheduler-flow1, Linux4/12 | Future0115/0116 inventory/bootstrap updates and remote workflow evidence |
+| Durable CI coverage | Pure65 suites/378 passes, retained-history PostgreSQL21 suites/137 passes through0115, Linux4 suites/12 passes; full schema through0116 replayed twice | Combined22-suite PostgreSQL lane after funding correction;0117 inventory, schema and retained-history review; final-source pure/Linux checks and remote workflow evidence |
 
 ## External and authorization boundaries
 
@@ -73,9 +73,10 @@ The original probe reached one synthetic key callback. The standard consent suit
 The owner corrected persisted authority-ID linkage at the final signer boundary.
 The independent reviewer reported refusal before preparation and zero operations for the original probe, plus consent13/64 and ordinary signer9/68 passes.
 The review service then rejected its final report. These partial observations do not constitute full correction approval.
-The human recovery panel received scoped source/component approval with5tests/38assertions before its newer capture-stage extension.
-That extension needs a fresh review; neither panel result proves authenticated browser behavior.
-Expired unsigned-operation capture remains a separate requirement in `docs/brainchain-exact-capture-recovery-design.md`.
+The capture-stage panel extension passed independent6tests/41assertions; its action suites passed19tests/77assertions after a strict fixture correction.
+These scoped approvals do not prove authenticated browser behavior.
+Expired unsigned-operation capture has independent schema, callback and retained-history evidence in `docs/brainchain-recovery-schema-review.md`.
+Actual testnet capture recovery remains unverified.
 
 Solana history discovery now has scoped independent review:18tests/153assertions across pure, human-panel and actual shared-pool PostgreSQL probes.
 Concurrent cursor scans serialize; ownership changes during network reads refuse persistence. Captured bytes and liabilities remain unchanged.
@@ -83,11 +84,12 @@ The human task form now places passing criteria first, with a submitted-request 
 Neither change proves a genuine payment or task settlement.
 Refund liability release remains unavailable because the observed protocol lacks verified order-to-payment/refund attribution.
 
-The expanded CI inventory includes the missing PostgreSQL suites, both web wallet suites and ordered fixture migrations through0114.
-Local evidence:60pure suites/350passes,19PostgreSQL suites/125passes plus one additional scheduler-flow pass, and4protected Linux suites/12passes.
+The expanded CI inventory includes22 PostgreSQL suites, both web wallet suites and ordered fixture migrations through0116.
+Local evidence:65pure suites/378passes,21PostgreSQL suites/137passes through0115, and4protected Linux suites/12passes.
 PostgreSQL has zero skips. Other lanes retain only the explicitly reviewed platform/Docker split skips.
 The empty isolated PostgreSQL bootstrap passed. Root independently repeated bootstrap twice and restored the0112 wrappers.
-Migrations0115/0116 need fresh inventory, schema, retained-history replay and independent review. Remote CI evidence remains required.
+Migrations0115/0116 have independent schema and retained-history review. Funding correction separately passed7tests/42assertions.
+Combined22-suite execution and0117 schema/bootstrap review remain required. Remote CI evidence remains absent.
 
 The combined production web build exited0 in session16265 after the consent and buyer source freeze.
 The local Office returned HTTP200. New consent and discovery browser checks remain unverified.
@@ -102,7 +104,7 @@ SHA256:9b5e625433ef97fcf5bb65143ed117da53794282471458dccce12339154ae752.
 The checkpoint excludes application integration source and staging evidence. It does not satisfy the release or authenticated parity gates.
 The remaining application documentation references untracked source files; rerun the path guard after coherent source staging.
 
-Funding recovery source remains under owner tests. The desk transfer does not atomically enforce a minimum destination payout or maximum desk fee.
+Funding recovery has scoped independent schema and callback-deadline approval. The desk transfer does not atomically enforce a minimum destination payout or maximum desk fee.
 Approved quote limits therefore need fresh terms before any enabled send. Uncertainty or a later discrepancy must retain the original liability.
 
 ## Combined capture and funding checkpoint
@@ -118,5 +120,11 @@ Captured bytes, nonce and uncertain liability remain intact. Independent funding
 This is scoped liveness approval. The combined build does not replace combined CI, authenticated staging or actual transaction evidence.
 
 Independent artifact review found three dependency runtimes absent from the shared admission map.
-The backend owner adds DecisionLog, ModelRegistry and TestUSDG checks with explicit negative regressions.
-Both activation flags remain false. Mutable authority policy remains a separate requirement.
+The eight-contract map correction passed independent26tests/515assertions, including explicit missing and mismatched dependency checks.
+Both activation flags remain false. Mutable authority consumers and migration0117 remain under implementation.
+
+The configured-authority reader passed independent27tests/653assertions and the original two deadline/abort refusal probes.
+Its reviewed hash is598bb935848fc574a8209fa1d8ff8c324ffc5889b34f8327394b41d4704650e6.
+This reader verdict does not approve consumer propagation, migration0117, activation or a live transaction.
+The staging parity runbook exists; its BrainChain-specific runtime probe extension remains under implementation.
+No dedicated staging account, provider call or live probe ran for that extension.
