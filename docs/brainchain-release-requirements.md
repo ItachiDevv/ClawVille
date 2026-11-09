@@ -128,3 +128,20 @@ Its reviewed hash is598bb935848fc574a8209fa1d8ff8c324ffc5889b34f8327394b41d47046
 This reader verdict does not approve consumer propagation, migration0117, activation or a live transaction.
 The staging parity runbook exists; its BrainChain-specific runtime probe extension remains under implementation.
 No dedicated staging account, provider call or live probe ran for that extension.
+
+## Configured-policy combined verification
+
+The final web-only production build exited0; evidence is .brainchain-work/web-build-configured-authority.log.
+Next.js skipped type validation, so root separately ran the web TypeScript check. It exited0 in session62128.
+Backend reports final API TypeScript check15410 exited0. These results do not prove staging behavior.
+
+Migration0117 passed independent schema checks and two full-schema replays, retaining historical capture and funding records.
+The caller-owned policy timeout passed an independent execution lock-release probe and pure reader tests.
+The first combined PostgreSQL run stopped after nine suites at a coordinator fixture without policy evidence.
+The pure run stopped at an expiry fixture with the same missing evidence. Owners correct fixtures without weakening admission checks.
+Protected Linux passed four suites and12tests with five expected skips.
+
+Independent consumer review found a missing exact-capture block/hash comparison and policy enforcement in a read-only reconciliation reader.
+Both corrections have owner tests; their independent review and final combined runs remain pending.
+The runtime probe has scoped independent source approval with18tests/190assertions and a dedicated script typecheck.
+Actual staging consumption and provider cost accounting remain separate requirements.

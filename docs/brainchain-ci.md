@@ -109,3 +109,12 @@ That controlled loopback suite independently passed five tests and 35 assertions
 Fresh full-schema replay through 0117 passed twice with 200 tables.
 Two retained-history bootstrap passes preserved 14 late capture records and 11 funding records.
 These targeted results do not replace the pending combined lane result or a remote workflow result.
+## First combined 0117 attempt
+
+The PostgreSQL lane passed nine suites before worker-coordinator.test.ts refused a fixture observation without configured-policy evidence.
+The pure lane stopped at result-signing-expiry.test.ts because its mock grant lacked the same evidence.
+Backend owns both fixture corrections. Production checks remain intact.
+The failed logs and reports remain under .brainchain-work with failed-coordinator-0117 and failed-expiry-0117 suffixes.
+The protected Linux lane passed four suites and 12 tests, with exactly five reviewed skips.
+It used the pinned image, isolated UID, disabled network, read-only root, and five-file verified mount.
+These failures prevent a combined-lane approval. No remote CI or staging result is claimed.
