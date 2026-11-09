@@ -55,3 +55,24 @@ Keep required PostgreSQL and protected Linux lanes distinct from tests that legi
 5. Run the integrated audit, stage the implementation and inspect the actual release.
 
 No row currently proves the full goal achieved. Do not mark the persistent goal complete from this matrix alone.
+
+## Latest implementation review gates
+
+The independent scheduler review found unbounded trusted callbacks that retain PostgreSQL row locks beyond two seconds.
+The shared deadline, cancellation propagation and transaction unwind passed independent correction review.
+The original two callback probes now reject and release locks before callback resolution.
+The independent PostgreSQL run passed15tests/192assertions without skips.
+Full automatic lifecycle coverage remains required beyond the added preparation, drain, rejected-operation and multiple-hire cases.
+See `docs/brainchain-scheduler-liveness-independent-review.md`.
+
+Exact-result consent now compares canonical JSON objects after the root reproduced PostgreSQL key reordering.
+The paused-worker signer callback, current consent enforcement and human approval flow still require integrated independent review.
+Expired unsigned-operation capture remains a separate requirement in `docs/brainchain-exact-capture-recovery-design.md`.
+
+Solana history discovery has local pure tests; database recovery and independent review remain pending.
+The human task form now places passing criteria first, with a submitted-request regression.
+Neither change proves a genuine payment or task settlement.
+Refund liability release remains unavailable because the observed protocol lacks verified order-to-payment/refund attribution.
+
+The final CI inventory must include six additional PostgreSQL suites, the two web wallet suites and ordered migration setup through0114.
+The inventory scan does not prove CI execution. Source changes remain active.

@@ -2,9 +2,33 @@
 
 Last audited: 2026-11-09. Team: brainchain-office. Reviewer: durable_audit.
 
-Verdict: BLOCKED on S1. Activation remains closed. Exact-result consent remains outside this review.
+Verdict: S1 passes independent correction review. Activation remains closed. Exact-result consent remains outside this review.
 
-## S1: unbounded worker authority callbacks retain database locks
+## S1 correction review
+
+The issuer now races each trusted callback against an internal deadline and aborts its signal when the read ends.
+Both compute-fence callbacks share the same two-second deadline. The second read cannot reset that allowance.
+An earlier call deadline caps the host deadline directly, including when host and database clocks differ.
+Database expiry bounds include the execution authority, attempt, policy, job, envelope, assignment, and retained compute call.
+The initial assignment read also has a bound and uses an earlier job expiry when supplied.
+The issuer rechecks policy and job after successful callback reads. Root verification remains mandatory.
+
+The original independent probe now handles expected rejection. It retains the original two callback cases and separate physical lock connection.
+For both callbacks, rejection and signal abortion occurred while the callback remained unresolved.
+At the 2600 ms checkpoint, the policy row accepted FOR UPDATE NOWAIT. No callback cooperation released those locks.
+Manual late resolution did not reverse rejection or authorize the transaction.
+
+Independent guarded PostgreSQL rerun: 15 tests passed with 192 assertions, without skips.
+The suite checks the shared deadline, earlier lease, and a 350 ms call deadline while the host clock leads database time.
+It also checks pre-dispatch retained reservations, post-dispatch full uncertainty, zero provider calls after late resolution, and replay refusal.
+The added scheduler case covers automatic lifecycle preparation, unsigned drain refusal, rejected-operation exclusion, and multiple-hire refusal.
+These tests use concrete durable services and controlled effects. They do not prove a full automatic lifecycle.
+
+S1 is closed for the inspected correction scope. The original failure and its evidence remain below.
+The integrated API typecheck is not asserted here; the lead reported a separate consent-test Hex annotation failure.
+The fixture window was released after the suite's 0109 replay. The consent owner must restore its 0112 wrapper.
+
+## Original S1: unbounded worker authority callbacks retain database locks
 
 WorkerAuthorityIssuer.computeFence directly awaits trusted.root.verifyReservation and trusted.current inside the proxy transaction.
 Neither call has a deadline or cancellation boundary. The proxy's bounded verifyDispatchRoot does not cover these additional reads.
@@ -61,7 +85,7 @@ No observation policy authorizes financial release.
 The brief reader pins the current board, code hash, canonical Posted event, exact UTF-8 bytes, and structured task schema.
 It refuses external brief URLs and scans beyond its bounded history range.
 The CLI requires an explicit absolute trusted module and bounded tick count and interval.
-It has no API boot hook. S1 prevents a claim that each configured tick has a bounded duration.
+It has no API boot hook. Callback bounds do not establish an overall tick deadline across every database and transport operation.
 
 Independent test runs:
 
@@ -82,7 +106,7 @@ Automatic stage selection lacks full admission-to-result and lifecycle-to-hire c
 The concrete scheduler test proves receipt crash/restart. The coordinator suite does not prove every automatic scheduler branch.
 Add stage-selection tests for lifecycle preparation, capture, broadcast, hire indexing, admission, compute, freeze, signature, upload, and submit.
 Each external-effect boundary needs restart, drain, revocation, and retained-evidence cases where applicable.
-Include a rejected-operation selector case and multiple-hire refusal through the real scheduler.
+The correction suite now covers rejected-operation selection and multiple-hire refusal through the real scheduler.
 
 Exact-result consent 0112 remains under active implementation and has no approval here.
 Existing expired unsigned operations still refuse capture. The scheduler does not infer new capture authority from preparation consent.
