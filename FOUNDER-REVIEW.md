@@ -19,28 +19,6 @@
 - **FEEDBACK WANTED:** (1) The UsePod dashboard link holds the UsePod token: anyone with the link can USE the balance (send AI calls that spend it), and losing the link means losing access. "Create a UsePod balance" and "Show my UsePod link" now each ask your linked wallet to sign first (a magic link passes through the agent); without a linked wallet the card says to link one or paste a token from your own UsePod account. Is that extra wallet step acceptable? A withdrawal is possible only where UsePod itself offers one; ClawVille does not claim it. Is the warning in the card strong enough? (2) Own-AI agents have their own cap, `MAX_OWN_AI_AGENTS`, default 12 at one time. Is 12 right? (3) Is the per-day estimate clear, and is "estimated" visible enough? (4) Are the privacy lines (UsePod GPU operators can read prompts; OpenRouter sends prompts to the model's host) clear? (5) Phone and iPad: does the card fit, scroll and keep 44 px targets?
 - **Session claw2.0, 2026-11-09.**
 
-### Studios in the wallet panel: every feature for humans (session mcp-step3-signin, 2026-11-06, STAGING after the lead pushes)
-
-- **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in, with a linked wallet. Open the wallet panel (wallet chip or sidebar Wallet) and scroll to the Studios card. Each part is a section; tap its title to open it.
-- **STEPS:**
-  1. Open "How Studios is paid". Read the three choices and what each can do. Pick one and press "Save who pays". Your linked wallet signs.
-  2. In the same section, press "Sign in with Studios". Your linked wallet signs, then this tab opens Studios. Allow ClawVille there. Studios sends you back to /game, the wallet panel opens, and a green line says you are signed in. Check the balance, the free use left and "ClawVille may still spend today". Choose "My Studios sign-in" and save it if you want it to pay.
-  3. Open "Image" and make ONE cheap image (in wallet mode about half a cent; with the key or the sign-in it uses your Studios credits). It shows in "Your media".
-  4. Make a video ONLY after you set the cap you want: in wallet mode the per-call cap in Spending limits it (the card shows the cap; the wallet never pays more than $3.00 for one video). The cheapest model is about $0.20 for 5 seconds. Do not make a recast unless you want to spend $1 to $19 of Studios credits; the price shows before the button.
-  5. In "Your media", press Delete on one item. Your linked wallet signs. Open "My Studios media" (sign-in only) and press "Show my Studios media".
-  6. Press "Sign out of Studios" if you want to end the sign-in.
-- **ALSO NEW:** the Spending card sets videos, character-shot calls and recasts per day (a raise is signed). In wallet mode the Character shots and Recast sections say why the wallet cannot pay.
-- **FEEDBACK WANTED:** is the order of the sections right? Should "Image" be open by default? Are the pay mode texts clear? Is the video price line ("per unit", from the Studios menu) clear enough, or should it show a price for the chosen length? Does the return message after the Studios sign-in read well? Phone and iPad: does the wallet panel scroll well with the forms open?
-- **Session mcp-step3-signin, 2026-11-06.**
-
-### "Ask me before each payment" (session spend-approval, 2026-11-06, STAGING after the lead pushes)
-
-- **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in. Wallet panel (wallet chip or sidebar Wallet): the Spending card has a new checkbox "Ask me before each payment"; a new Approvals card sits under Spending. While a request waits, a small amber pill on /game ("1 payment waits for your approval") opens the wallet panel.
-- **LOOK AT:** (1) turn the checkbox on and save (no wallet signature, but a linked wallet must exist); turn it off and save (your linked wallet signs). (2) With it on, have your agent ask for a Studios image (MCP `clawville_studios_image` or the hosted `generate_image`): the agent gets "waits for your human", nothing is paid, and the request shows in Approvals with the prompt as plain text, who pays ("your Studios key" or "your agent wallet, at most $X") and the minutes left. (3) Approve: your linked wallet asks you to sign a message for that one request (who pays, at most how much, the request id); then the image appears in the Studios images card. Decline: nothing is made or paid. Leave one for 15 minutes: it expires. (4) Images you make yourself from the Studios images card wait in Approvals too, while the setting is on.
-- **COST:** with your own Studios key, an approved image uses your Studios credits; in wallet mode, about $0.005 from the avatar wallet, inside your caps. Decline and expiry cost nothing.
-- **FEEDBACK WANTED:** is 15 minutes right? Is 5 waiting requests at a time right? Where should the /game pill sit on your phone (top centre, under the toasts)? Is the wording clear? Is one wallet signature per approval too many clicks? Built (lead decision after the Codex review): a login link passes through the agent, so a cookie alone never approves; every approval needs your linked wallet's signature, and with the setting on even your own images wait.
-- **Session spend-approval, 2026-11-06.**
-
 ### Hydra, the coin-analyst wanderer + chat with every wanderer (session hydra, 2026-10-31, STAGING)
 
 - **WHERE:** https://staging.clawville.world/game, NPC mode, walk to the south side of the town ring (the road toward the Trading Floor). Bench page with every clip and the glow sliders: https://claude.ai/artifact/CogoeEVj8izxGUf28fyc7x
@@ -622,16 +600,6 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - Session selfheal/Fable, 2026-09-14.
 
 ## BOUNTIES / ECONOMY
-
-### Spend rules for paid tools (ON STAGING, MCP hub step 2 phase 1)
-- **What:** a "Set your agent's spend caps" prompt as an early setup step, and a Spending card in the wallet panel: daily cap, per-call cap, and the tools the agent may pay (Studios first). Caps start unset, so the agent cannot pay anything until you set them. Only you can change them; the agent can only read them.
-- **Where:** staging -> `https://staging.clawville.world/game`, signed in as a non-guest user. The prompt shows after the one-time backup modal; the card is in the wallet panel (wallet chip or My Agent settings).
-- **Feedback wanted:** is the prompt early and clear enough; are dollars per day + per call the right two limits; wording.
-- Session claw-2.0, 2026-11-04.
-- **Hotbar layer fix (2026-11-06, staging `abd98eb83`):** on a phone the emote hotbar (slots 1-4) drew on top of every pop-up, and it covered the spend-cap prompt's "Images per day" field. It now sits behind pop-ups. Look at: on your phone and iPad, with an emote equipped, open /game on staging; the spend-cap prompt and the wallet panel show no hotbar on top. Feedback wanted: a real-iPad screenshot of the prompt's bottom ("Set later"), because the emulator has no home-bar inset. Session claw-2.0.
-- **Phase 2b (2026-11-05, staging):** a Studios images card in the wallet panel, below Spending. Look at: making an image with no key (wallet pays inside your caps), the cost line, the recent images row, saving your own Studios key (your linked wallet signs; then the image should also show in your Studios My Media), removing the key (signs too), and the error text when caps are unset. Agents: MCP tool `clawville_studios_image`, hosted action `generate_image`. Limits (your call, 2026-11-05): ClawVille sets no image count; your caps limit the wallet, and the Spending card has "Images per day with your own Studios key" (10 until you change it; raising it signs). Feedback wanted: is the card clear about who pays; is 10 the right starting number. Session claw-2.0.
-- **Phase 2a (2026-11-05, staging):** the first paid call. One live Studios image ($0.005) from the test avatar wallet inside your $1 test cap; the result (image, ledger row, chain transaction) is in deploy-status.md. Feedback wanted: is half a cent per image with your caps the right first experience; the web form comes next.
-- **Phase 1b (2026-11-05, staging):** setting or raising a cap now opens your wallet (Phantom, Solflare or Backpack) to sign; link the wallet first in the wallet panel. Look at: the sign step, the 'link your wallet first' message, and lowering a cap with no signature. Old sessions see 'sign out and sign in again' on the first save. A lost linked wallet needs support (no change button yet).
 
 ### Reconcile ops view (LIVE on prod)
 - **What:** a read-only Reconcile tab shows every frozen payment with its chain
