@@ -80,6 +80,9 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
       // MCP hub step 2 phase 2a: the avatar wallet pays a third-party x402
       // seller under the human's spend rules; decrypts only after admission.
       'services/outbound-x402.ts',
+      // Own AI part A: a human's own AI provider key and the registered UsePod
+      // token, AES-256-GCM via encryptToken/decryptToken; never a wallet key.
+      'services/own-ai.ts',
       'services/trading-signer.ts',
       // MCP hub step 2 phase 2b: a human's own vendor API key, AES-256-GCM
       // via encryptToken/decryptToken; never a wallet key.
