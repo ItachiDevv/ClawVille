@@ -82,8 +82,8 @@ The CI result parser separately passed one test and four assertions, including r
 The retained-history PostgreSQL runner through 0115 passed 21 suites and 137 tests with zero skips.
 This includes owner policy, signer receipts, scheduler flow, exact consent/capture, Base purchases, Solana purchases, and actual isolated cognition.
 The funding suite separately passed four tests and 24 assertions on the real shared pool.
-The current inventory contains 22 PostgreSQL suites, including funding and the separate isolated-cognition suite.
-The combined 22-suite result remains pending after the funding callback-deadline correction.
+The current inventory contains 23 PostgreSQL suites, including funding and the separate isolated-cognition suite.
+The combined 23-suite result remains pending after configured-authority consumer and fixture changes.
 The initial run exposed a stale signer receipt fixture; its owner added the required gas evidence before the passing run.
 An empty disposable PostgreSQL 18.6 database passed full-schema migration replay through 0116 twice, with 200 tables.
 Two retained-history bootstrap passes preserved 14 late capture records and four funding records exactly.
@@ -98,3 +98,14 @@ The required PostgreSQL runner also refused absent opt-in before connection.
 Remote branch-protection requirements and the first remote workflow result remain release evidence requirements.
 
 PARITY: CI covers the human route/UI and bound-agent action/MCP surfaces. It does not replace live staging parity checks.
+
+## Migration 0117 inventory update
+
+The fixture bootstrap includes migrations 0100 through 0117, with 0102 replay guarded for retained signer history.
+Wrapper restoration applies 0112, 0115, then 0117 after each database suite.
+The configured-authority database suite runs after signer prerequisites. It independently passed three tests and 12 assertions.
+The pure lane also runs apps/api/scripts/brainchain/runtime-evidence.test.ts in its own process.
+That controlled loopback suite independently passed five tests and 35 assertions. It makes no live provider request.
+Fresh full-schema replay through 0117 passed twice with 200 tables.
+Two retained-history bootstrap passes preserved 14 late capture records and 11 funding records.
+These targeted results do not replace the pending combined lane result or a remote workflow result.
