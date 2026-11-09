@@ -107,3 +107,19 @@ The updated assertion passed in the independent five-test run.
 This is scoped approval of the C2 panel source and component behavior.
 Happy-DOM tests do not prove browser layout, wallet extension behavior, authenticated staging or0115 capture execution.
 Final device and browser checks remain required.
+
+## Capture-stage panel and action review
+
+Root independently ran the updated panel suite:6tests passed with41assertions.
+Panel SHA256:A6414C1FDEEE744CEDE3303942FDA5E95A5ACF4A037DFEA7BDCA55F2060D537C.
+The request selector exposes capture-submit. The transaction display retains the exact chain, signer, destination, calldata, nonce and fee fields.
+This extends the earlier component evidence; it does not prove database capture or a browser wallet flow.
+
+The combined hosted action run produced18passes and1failure with71assertions.
+The older recovery receipt fixture supplies only a protectedReference field for its captured object.
+The stricter DTO now requires operationId, nonce, transactionHash and gasWei, so that fixture fails before its secret-stripping assertions.
+The owner must supply a valid retained tuple and preserve the secret sentinel and assertions. Do not loosen the DTO.
+The new capture action test passed.
+The owner corrected only the stale fixture, retaining the protectedReference sentinel and strict production projection.
+Root independently reran both action suites:19tests passed with77assertions and zero failures.
+This gives scoped component/action approval for the capture-stage extension, not database capture, wallet, or live staging approval.
