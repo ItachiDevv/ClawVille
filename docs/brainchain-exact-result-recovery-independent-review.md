@@ -2,7 +2,7 @@
 
 Last audited: 2026-11-09. Team: brainchain-office. Reviewer: durable_audit.
 
-Verdict: full approval withheld. C1 correction has partial independent evidence; C2 human approval details remain unresolved.
+Verdict: full approval withheld. C1 correction has partial independent evidence; C2 has scoped source/test approval with browser checks pending.
 No activation or live-key approval follows this review.
 
 ## C1: exact submit authority can lose its consent dependency
@@ -89,3 +89,21 @@ Do not expose signed bytes, credentials or internal key references.
 The separate0115 capture extension must also show its exact destination, calldata, value and fee fields before approval.
 The protocol owner now implements this narrow panel correction and regression tests.
 Browser verification remains absent because the launch was rejected and the browser access host is unavailable.
+
+## C2 correction review by the lead
+
+Root read the frozen panel and independently ran its five tests with38assertions after the final text correction.
+Panel SHA256:B9AA462FF762B30A0E30CC4376F8674BFCE2FEFBB6ECF6451891FA36F87BC44C.
+The retained operation ID, nonce, transaction hash and gas ceiling now precede the approval controls.
+The panel preserves decimal integer strings and distinguishes null reservation/capture from missing data.
+Incomplete broadcast terms prevent the wallet challenge even after the confirmation checkbox changes.
+Optional capture intent exposes destination, signer, chain, nonce, calldata, value and fee fields.
+The capture-submit request selector remains closed pending the separate0115 implementation.
+
+Root found inaccurate text that implied every worker was already paused and every compute grant revoked.
+The owner changed it to state that consent does not resume a paused worker or restore revoked compute permissions.
+The updated assertion passed in the independent five-test run.
+
+This is scoped approval of the C2 panel source and component behavior.
+Happy-DOM tests do not prove browser layout, wallet extension behavior, authenticated staging or0115 capture execution.
+Final device and browser checks remain required.
