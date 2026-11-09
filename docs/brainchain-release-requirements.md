@@ -104,3 +104,18 @@ The remaining application documentation references untracked source files; rerun
 
 Funding recovery source remains under owner tests. The desk transfer does not atomically enforce a minimum destination payout or maximum desk fee.
 Approved quote limits therefore need fresh terms before any enabled send. Uncertainty or a later discrepancy must retain the original liability.
+
+## Combined capture and funding checkpoint
+
+The combined production web build exited0 in session54306 after the capture and funding UI changes.
+Evidence: `.brainchain-work/web-build-capture-funding.log`. Browser and staging checks remain absent.
+The funding panel correction passed independent3tests/21assertions, including retained terms before the mocked wallet call.
+The capture schema review passed independent directSQL, callback visibility, fresh-schema and retained-history replay checks.
+The funding reviewer confirmed F2: a deferred identity callback retains a transaction and avatar lock beyond2300ms.
+A separate NOWAIT query refused with55P03. The probe released its deferred callback and exited cleanly.
+Funding service approval is withheld while its owner adds shared transaction deadlines and lock-release regressions.
+The combined build does not replace that review.
+
+Independent artifact review found three dependency runtimes absent from the shared admission map.
+The backend owner adds DecisionLog, ModelRegistry and TestUSDG checks with explicit negative regressions.
+Both activation flags remain false. Mutable authority policy remains a separate requirement.
