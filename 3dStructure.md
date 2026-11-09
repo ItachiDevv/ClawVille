@@ -1,5 +1,55 @@
 # ClawVille — 3D Structure
 
+**Last Audited: 2026-11-09 (BrainChain Office geometry and navigation).** Drift note: the office adds prop colliders without a teaching-building slot. Client navigation now spans the full 704-tile world and includes actual prop footprints. The previous 360-tile planner could not reach the Office or eastern ring buildings. The renderer now mounts a post-reveal Office prop and a guide that reuses the loaded lobster plush model. Actual-world visual verification remains pending.
+
+### BrainChain Office spatial contract
+
+The prop-class venue stands at world `(760, -3040)` with half-extents `300 x 250` wu and zero yaw.
+The guide stands at `(540, -2640)` with a `40 x 40` wu half-extent collider and a 220 wu talk radius.
+The south door face is at `(760, -2790)`.
+Its prompt spans `|x-760| <= 110` and `z=-2790..-2490`.
+The navigable approach is `(760, -2600)`, game-pixel `(12024, 8664)`.
+The 96 wu autonomous arrival disc fits entirely inside the door prompt.
+Back returns to the retained world position; no exit relocation occurs.
+The door takes priority where the guide talk band overlaps it.
+
+Canonical geometry lives in `packages/shared/src/constants/brainchain-office-world.ts`.
+Both collider tables assert a 200 wu minimum clearance from existing structures.
+Placement tests also check all twelve 400 wu half-width radial lanes and resident prompt bands.
+The office stays outside teaching-building zones and the boot reveal cohort.
+It creates no building-visit CT reward.
+Agent navigation uses the existing move verb and tracks only a successful path to the exact shared place center.
+The arrival gate and deciding-model HERE label use the same 96 wu threshold.
+
+The client grid uses cached byte rows for the full world and all client colliders. Connected-component labels reject disconnected routes before search.
+It merges only collinear A* nodes, so every segment crosses the original cells.
+A blocked target ends at its snapped walkable tile, never at the original point inside a collider.
+A fixed 80,000-expansion ceiling bounds planning, as on the server.
+The Office panel retains the world scene but blocks its movement input, including previously held keys and touch vectors.
+
+Procedural props and merged seaweed exclude the Office footprint, approach, and guide band.
+The new deterministic prop layout uses 50 merged meshes and 141,738 triangles; the limits remain 56 and 150,000.
+Human path: world colliders and the Office approach. Agent path: the same spatial contract and a shared move destination. No settlement occurs.
+
+The Office asset uses 11,311 triangles, one material, and one 1024 UASTC KTX2 texture.
+The 963,764-byte transfer uses a provisional 1 MiB exception because ETC1S and 512 textures introduce atlas seams.
+The complete 11-level mip chain requires an expected 1,398,128 BC7 texture GPU bytes. Actual-world resource measurements remain a release gate.
+The uniformly scaled model measures 588 x 694.58 x 486.40 wu and stays inside the collider.
+The static Office and guide add no physics body, animation loop, or boot cohort entry.
+DOM world labels use the existing overlay; they use no drei Text or Billboard.
+The 3D and 2D Office clicks use the same path and prompt predicates.
+E activates the nearby door or guide; reaching a requested click destination also activates it.
+The guide opens the service panel guide section, where the existing ElizaOS teacher chat remains available.
+The minimap and world map expose the same Office approach.
+Source fidelity and resource evidence: `docs/research/brainchain-2026-11-09/3d/compression-review.md`.
+
+Evidence status (2026-11-09): a separate asset checkpoint commits the GLB, its provenance files, and the canonical dimensions first.
+The navigation, renderer, label, and placement-test notes above describe the Office integration source, which lands in a separate commit.
+The byte, triangle, mip, and GPU-budget values are local measurements and format-derived budgets.
+Final production-bundle visual acceptance on staging, Iris Xe sustained-FPS checks, and authenticated staging navigation for humans and bound agents remain open release gates.
+
+
+
 **Last Audited: 2026-11-01 10:58Z (Hydra face fix + halo shells: founder bench sign-off 2026-11-01. NEW `scripts/hermes-pipeline/hydra-face-fix.mjs` (between glow-map and VRM inject) mirrors the clean +X face half onto the dented -X half (261 vertices, normals + up to 3.6 mm), gives the -X eye mirrored UVs of the clean eye, paints the earpiece cups suit black, adds the chest H strokes and the eyes to the emissive mask, and bakes two halo masks (`/avatars/hydra-halo-suit.webp` 512 px and `/avatars/hydra-halo-hot.webp` 1024 px, lossless, one grey layer per channel). Runtime `lib/three/hydra-halo.ts` (+ `hydra-halo-node.ts` for the WebGPU node path) adds 2 additive skinned shells on the body skeleton: suit 73,966 tris, hot (eyes + H) 3,351 tris, triangles chosen once at attach by a conservative CPU coverage test, no mipmaps, culled with the body's own bounding sphere, alpha = min(1, gain x pulse/2.6), one number write per shell per frame. Perf: Hydra = 3 draws and about 107.9k skinned tris instead of 1 draw and 30.6k (the approved bench drew 6 x 30.6k). VRM path bumped to `/avatars/hydra-w30k.vrm?v=2` (asset changed; 2026-11-02 re-bumped to `?v=3`, halo masks `?v=2`, after a pre-flip prod probe let Cloudflare cache 404s for the old URLs). Founder screenshot of the bench: "dope".) Prior - Last Audited: 2026-10-31 19:30Z (Hydra wandering NPC, Meshy pipeline round 2: owner key-art turnarounds (visible eyes, larger bust, flat boots) -> Meshy-6 mesh + rig + 8 clips -> `fix-rig-tpose.mjs` (about 5 degrees droop) -> NEW `glow-map-from-basecolor.mjs` emissive neon mask -> VRM inject -> optimize -> plain-mode decimation to `/avatars/hydra-w30k.vrm` (30,597 tris, 1.0 MB, validator S3.0 only). Runtime: `lib/three/hydra-glow.ts` pulses ONLY Hydra's material `emissiveIntensity` 0.8-2.6 at 0.55 Hz (one `Math.sin` + one number write per frame per Hydra instance, no allocation, no traversal; a number change does not rebuild the WebGPU pipeline in r185); steady 1.7 under `prefers-reduced-motion`. No bloom in the main world, so the glow is emissive only. Perf: +1 VRM wanderer (1.0 MB, deferred `post-ambient-vrm` lane, same budget as Adinero/Ansem). Chat: `findNearestCharacter` now scans live free-roaming wanderers (zero allocation, reused result object).)** Drift note: the Meshy rig class wires a dim full copy of the base color as `emissiveTexture` at factor 1, which washes out light materials (hair) on every Meshy character; Hydra replaces it with a neon-only mask. Older Meshy characters still carry the full-copy emissive.
 
 **Prior Last Audited: 2026-10-24 07:30Z (Nori town-guide `guide-rigged.glb` repair: inner-breast craters snapped to the pre-rig artist surface + Mixamo face/neck skin weights fixed (jaw tore in clips); surgical patch of the shipped meshopt/quantized GLB, all refs bumped to `/models/guide-rigged.glb?v=2`).** Drift note: `apps/web/public/models/guide-rigged.glb` body mesh (`1.001`, 11,310 verts) had a stray sculpted crater on the INNER curve of each breast (52 verts/breast up to 19.6 mm deep, left over from the nipple-piercing session; the painted areola + `Piercing_L/R` sit on the OUTER side and were correct). Repair = snap the crater verts back onto the pre-rig artist surface (git `17ee594f` `guide.glb` body, un-dented ground truth; BVH nearest point, +2 blend rings) in Blender, then a SURGICAL patch of the shipped meshopt+KHR_mesh_quantization GLB (186 int16 positions + 231 int8 normals rewritten; normals recomputed from the GLB index buffer, area-weighted delta). Every other decoded accessor, all 11 skins/IBMs, 11 animation clips, node tree, WebP textures and materials are hash-identical to the previous file (sha256-per-accessor fingerprint). The repo compress pipeline was NOT re-run: the shipped file came from TWO stacked passes (`5ef20251` then `5a1188d3`) that are not reproducible, so a re-compress would have silently changed joints/normal bits/textures. File 949 KB -> ~1,011 KB (+62 KB: the OCTAHEDRAL/EXPONENTIAL/QUATERNION meshopt filters cannot be re-applied losslessly). SAME DIFF, second defect found by the founder right after: the face mesh (`0.001`, material `face`, 3,689 verts) carried Mixamo auto-weights with 1,049 chin/jaw verts dominated by `mixamorig:Neck` (+5 `Spine2`), asymmetric left/right (left chin Head=0.03, right chin Head=0.26), so any clip that bends the neck tore the lower-left jaw (pre-existing on prod, face bytes were identical). Ground truth = the pre-rig VRM face (`guide.glb` @17ee594f): every face vert on `Head_031`, eye-bone weights fold into Head because the Mixamo rig has no eye bones. Fix = face `JOINTS_0`/`WEIGHTS_0` set to 100% `mixamorig:Head` (skin joint 5) for every vertex, surgically (`patch-face-weights.mjs`); only those two accessors changed. The neck stays on body mesh `1.001` with its Mixamo Neck weights, same split as the original VRM, EXCEPT the top ring of the neck (24 verts, z 1.296-1.309) which takes the artist's pre-rig weights (`Head_031` 0.64-1.0 -> `mixamorig:Head`) so the neck top follows the chin; without it the neck/jaw junction opens when the head tilts (Codex round 3). A full neck-column transplant was tried and REJECTED: it closed the gap too but added a bump at the left trapezius in `wave`. Blender A/B at `wave` f20 / `praying` f30: torn jaw + open neck -> clean. All three `useGLTF`/`preloadKTX2Bytes` references bumped to `/models/guide-rigged.glb?v=2` (Cloudflare 7-day edge cache, rule §6f-9). Posed through every NLA clip in Blender: no deformation artifacts. Codex co-reviewed (rule E3, 3 rounds).

@@ -1,0 +1,51 @@
+{
+  "input": ".brainchain-work/meshy/office-v1/model.glb",
+  "output": "apps/web/public/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb",
+  "compression": {
+    "texture": "UASTC",
+    "resolution": 1024,
+    "quality": 4,
+    "rdoLambda": 2,
+    "zstd": 18,
+    "mipLevels": 11,
+    "meshopt": "high",
+    "positionBits": 14,
+    "texcoordBits": 16
+  },
+  "sourceSha256": "7cbc9950491f5a63ac66f1b1772b1f6d16750ad14af1dbdd1069282d892962d8",
+  "sha256": "9b5e625433ef97fcf5bb65143ed117da53794282471458dccce12339154ae752",
+  "bytes": 963764,
+  "triangles": 11311,
+  "materials": 1,
+  "textures": [
+    {
+      "mime": "image/ktx2",
+      "size": [
+        1024,
+        1024
+      ],
+      "bytes": 824759
+    }
+  ],
+  "bounds": {
+    "min": [
+      -0.8047816407723442,
+      -0.9518030285835266,
+      -0.667351869500567
+    ],
+    "max": [
+      0.8054086220307365,
+      0.9502519965171814,
+      0.6646148838171259
+    ]
+  },
+  "previewGpuTextureBytes": null,
+  "expectedBc7MipGpuBytes": 1398128,
+  "provisionalTransferCapBytes": 1048576,
+  "runtimeGeometry": "Office-only clone converts normalized POSITION/NORMAL/UV to Float32 before first upload; shared cache stays unchanged",
+  "actualWorldAcceptance": "pending new-bundle WebGPU/WebGL capture and actual Claude review",
+  "float32VertexGpuBytes": 398304,
+  "expectedWebgpuIndexGpuBytes": 135732,
+  "expectedGeometryGpuBytes": 534036,
+  "expectedOfficeGeometryAndTextureGpuBytes": 1932164
+}

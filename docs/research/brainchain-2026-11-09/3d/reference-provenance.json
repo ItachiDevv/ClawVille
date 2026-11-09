@@ -1,0 +1,25 @@
+{
+    "geometryNote":  "Illustrations are visual references. Tested world footprint and optimized GLB measurements are authoritative.",
+    "provider":  "Codex built-in image generation",
+    "design":  "Chunky sand-cream civic workshop, stepped lagoon roof, charcoal trim, pink three-loop check beacon; no text; ground-level entrance; source views front, rear and front-left three-quarter",
+    "generatedAt":  "2026-11-09",
+    "apiKeyUsage":  false,
+    "references":  [
+                       {
+                           "sha256":  "B27229C9CC260B88D5FEFA9E8C5D2B4D8023156875A0AF3524E1A7F6693A2666",
+                           "file":  "3q.png",
+                           "bytes":  1504020
+                       },
+                       {
+                           "sha256":  "2E14DC4640CF9927C7A0463ADF11F35F37543C9236F985145C7DDB23F9150873",
+                           "file":  "back.png",
+                           "bytes":  1590543
+                       },
+                       {
+                           "sha256":  "2E01FCB28659164A6E27D9ACA2EA1E28154ABD6B1376C2F77CA95A666118BA4C",
+                           "file":  "front.png",
+                           "bytes":  1424199
+                       }
+                   ],
+    "review":  "Lead viewed all three images; coherent silhouette and facade; final mesh requires visual review"
+}
