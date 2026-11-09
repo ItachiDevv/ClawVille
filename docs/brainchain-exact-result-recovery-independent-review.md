@@ -2,7 +2,8 @@
 
 Last audited: 2026-11-09. Team: brainchain-office. Reviewer: durable_audit.
 
-Verdict: BLOCKED on C1. No activation or live-key approval follows this review.
+Verdict: full approval withheld. C1 correction has partial independent evidence; C2 human approval details remain unresolved.
+No activation or live-key approval follows this review.
 
 ## C1: exact submit authority can lose its consent dependency
 
@@ -59,3 +60,32 @@ The corrected source must receive a fresh independent probe and regression pass 
 
 PARITY: the reviewed route resolves the same avatar for humans and bound agents; human wallet approval remains separate.
 No full feature-parity or automatic recovery-lifecycle approval follows the partial source review.
+
+## Correction checkpoint recorded by the lead
+
+The owner froze the C1 correction with persisted authority-ID checks at preparation and later signer boundaries.
+The result-signature method also checks exact issuance before it accepts the optional delivery lease.
+Root inspected these source changes and the immutable issuance trigger.
+
+The independent reviewer reported that the original omission case now refuses preparation and creates zero operations.
+The reviewer also reported consent13/64, ordinary signer/receipts9/68, auth/hosted/MCP112/945 and panel1/9 passes.
+These are the reviewer's reported test results, not additional root test runs.
+
+The review service then rejected the final report for possible cybersecurity risk.
+The final independent report and complete boundary verdict therefore remain unfinished.
+The lead preserves the earlier observations and does not retry or rephrase that rejected review task.
+Do not treat this checkpoint as full C1 or feature release approval.
+
+## C2: approval panel omits retained transaction details
+
+The consent payload contains captured operationId, nonce, transactionHash and gasWei.
+OfficeWorkerRecovery types captured as unknown and does not render these fields.
+The displayed maximum gas does not identify the retained transaction or its exact nonce.
+The reviewer reported this gap; root independently confirmed the service payload and panel source.
+
+Show retained transaction fields before the human confirms and invokes the linked wallet.
+Use explicit unknown or unreserved labels for null values. Do not substitute zero or an empty hash.
+Do not expose signed bytes, credentials or internal key references.
+The separate0115 capture extension must also show its exact destination, calldata, value and fee fields before approval.
+The protocol owner now implements this narrow panel correction and regression tests.
+Browser verification remains absent because the launch was rejected and the browser access host is unavailable.
