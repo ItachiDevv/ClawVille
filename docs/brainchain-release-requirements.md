@@ -175,3 +175,15 @@ Migration0118 and durable probe accounting are under implementation. Runtime inj
 The runtime review identified initialization hooks, hosted knowledge embedding and provider fallback as paths requiring explicit coverage.
 No paid provider request, reservation, credential provisioning or live probe occurred.
 Earlier checkpoint sections describe historical states; this section and the opening matrix define current release gaps.
+
+## Probe ledger review gate
+
+Migration0118 and ledger source now have an independent review. FindingP1 passed scoped correction review.
+The original source returned fresh or replayed vectors after caller cancellation following PostgreSQL commit.
+Corrected source refuses cancellation and expiry after commit while preserving charges and preventing a second provider request.
+Fresh schema and migration replay passed twice with203tables. Standard ledger tests passed8tests39assertions.
+A separate ownership, cleanup and cross-instance check passed1test6assertions. These results do not override P1.
+Rebuilt protected Linux passed4suites12tests with5expectedskips. Runtime integration and the final combined lanes remain pending.
+Corrected ledger suite passed9tests59assertions. Independent cancellation1/1,expiry1/7and hostdeadline lock1/2passed.
+Root repeated the original cancellation probe:both paths refused vectors with one provider call each.
+Trusted bootstrap construction, credential-free registration and exact preallocated-envelope support remain under implementation review.
