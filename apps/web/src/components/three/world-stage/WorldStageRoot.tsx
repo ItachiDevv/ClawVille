@@ -20,6 +20,7 @@ import {
   WorldStageCanvas,
   type WorldStageScene,
 } from './WorldStageCanvas';
+import { getWorldRendererMode, useWorldRendererMode, selectWorldRendererMode, reloadWorldRenderer, isStageSceneAvailable } from '@/lib/world-renderer-mode';
 import { StageTransition } from './StageTransition';
 import {
   requestStageScene,
@@ -98,6 +99,8 @@ import {
   settleIssue,
 } from './stage-navigation-lineage-store';
 
+const LazyWorldStage2DHost = lazy(() => import('@/components/pixi/WorldStage2DHost'));
+
 const OUTGOING_OVERLAY_COMMIT_TIMEOUT_MS = 10_000;
 interface StageCommitOptions {
   readonly history?: 'auto' | 'push' | 'replace';
@@ -138,6 +141,10 @@ const LazyStageActivityRouteHost = lazy(
 
 export function WorldStageRoot({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const rendererMode = useWorldRendererMode();
+  const [rendererHandoff, setRendererHandoff] = useState(false);
+  const [pixiFailed, setPixiFailed] = useState(false);
+  const unsupported2D = rendererMode === '2d' && sceneIdForPathname(pathname) !== WORLD_SCENE_ID;
   const router = useRouter();
   const searchParams = useSearchParams();
   const [stageReady, setStageReady] = useState(false);
@@ -224,6 +231,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   useEffect(() => {
+    getWorldRendererMode();
     resetStageStore();
     resetStageFrameDiagnostics();
     setStageReady(true);
@@ -297,8 +305,13 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       settleIssue(landing.issue.id);
     }
 
+    if (pixiFailed) {
+      displayedPathRef.current = pathname;
+      setDisplayedChildren(children); setDisplayedPathname(pathname);
+      return;
+    }
     const sceneId = sceneIdForPathname(pathname);
-    if (!sceneId) return;
+    if (!sceneId || !isStageSceneAvailable(sceneId)) return;
     const destinationKey = stageDestinationKey(pathname);
     if (!destinationKey) return;
     const state = useStageStore.getState();
@@ -356,6 +369,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     repairUrlToCurrentIntent,
     searchParams,
     stageReady,
+    pixiFailed,
   ]);
 
   useEffect(() => {
@@ -406,7 +420,8 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       const targetPathname = stagePathnameFromHref(navigation.to);
       const sceneId = sceneIdForPathname(targetPathname);
       const targetDestinationKey = stageDestinationKey(targetPathname);
-      if (!sceneId || !targetDestinationKey) return false;
+      if (!sceneId || !targetDestinationKey || !isStageSceneAvailable(sceneId)) return false;
+      if (pixiFailed) { commitStageNavigation(navigation); return true; }
       const state = useStageStore.getState();
       if (sceneId === ACTIVITY_SCENE_ID) {
         const roomKey = roomKeyFromPathname(targetPathname);
@@ -448,7 +463,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       };
       return true;
     });
-  }, [commitStageNavigation, stageReady]);
+  }, [commitStageNavigation, stageReady, pixiFailed]);
 
   useEffect(() => {
     const parked = navigationRef.current;
@@ -554,7 +569,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           listenerUnderflowCount: state.listenerUnderflowCount,
           recoveryCount: state.recovery.count,
           lastRecoveryReason: state.recovery.lastReason,
-          backend: readStageBackend(),
+          backend: getWorldRendererMode() === '2d' ? '2d' : readStageBackend(),
           renderer: readStageRendererCounters(),
           coldInit:
             (
@@ -794,8 +809,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
 
   return (
     <div className="world-stage-root relative h-screen w-full overflow-hidden">
-      {stageReady && (
+      {stageReady && !rendererHandoff && (
         <div className="absolute inset-0 z-0">
+          {rendererMode === '2d' ? <Suspense fallback={null}><LazyWorldStage2DHost onFailure={() => setPixiFailed(true)} /></Suspense> : (
           <StageCanvasErrorBoundary>
             <WorldStageCanvas
               scenes={scenes}
@@ -805,10 +821,11 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
               onTransitionOpaque={handleTransitionOpaque}
             />
           </StageCanvasErrorBoundary>
+          )}
         </div>
       )}
       <div className="world-stage-page-layer pointer-events-none absolute inset-0 z-10">
-        {stageReady &&
+        {unsupported2D || (pixiFailed && pathname === '/game') ? null : stageReady &&
         sceneIdForPathname(displayedPathname) === ACTIVITY_SCENE_ID ? (
           <Suspense fallback={null}>
             <LazyStageActivityRouteHost pathname={displayedPathname} />
@@ -824,7 +841,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
-      {rendererFailure && (
+      {rendererFailure && rendererMode === '3d' && (
         <div
           role="alert"
           className="absolute inset-0 z-50 flex items-center justify-center bg-[#07131d] p-6"
@@ -841,9 +858,19 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
             >
               Reload
             </button>
+            <button type="button" className="ml-3 min-h-12 rounded-lg border px-5 py-3" onClick={() => {
+              // Commit the unmount first. Two frames let Canvas cleanup dispose resources.
+              setRendererHandoff(true);
+              requestAnimationFrame(() => requestAnimationFrame(() => { selectWorldRendererMode('2d'); requestStageScene(WORLD_SCENE_ID); setRendererHandoff(false); }));
+            }}>Continue in 2D</button>
           </div>
         </div>
       )}
+      {unsupported2D && <div role="alert" className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950 p-6 text-white">
+        <p>This venue needs the 3D view.</p>
+        <a href="/game?view=2d" className="min-h-12 rounded border p-3">Back to town</a>
+        <button className="min-h-12 rounded border p-3" onClick={() => reloadWorldRenderer('3d')}>Switch to 3D</button>
+      </div>}
       {kelpRuntimeCrashKey === kelpResetKey && (
         <div
           role="alert"
@@ -883,10 +910,10 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
-      <StageTransition
+      {!unsupported2D && !pixiFailed && !(rendererFailure && rendererMode === '3d') && <StageTransition
         timeoutMs={45_000}
         onOpaque={handleTransitionOpaque}
-      />
+      />}
     </div>
   );
 }

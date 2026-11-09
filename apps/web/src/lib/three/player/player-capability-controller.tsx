@@ -1,5 +1,7 @@
 'use client';
 
+import { createNavigationStep, stepNavigationPath, type NavigationPoint } from '../navigation-path-step';
+import { isWorldInputBlocked, isWorldFrameBlocked } from '../world-input-guard';
 import { useEffect, useRef } from 'react';
 import type { RootState } from '@react-three/fiber';
 import {
@@ -27,9 +29,11 @@ import type {
 } from './player-motion-policy';
 
 export interface AreaFrameResult {
+  readonly navigationPath?: { points: readonly NavigationPoint[]; index: number; originX?: number; originZ?: number; arrivalTolerance?: number; onProgress: (index: number) => void; onComplete: () => void };
   readonly moveOverride?: {
     readonly worldVx: number;
     readonly worldVz: number;
+    readonly maxDistance?: number;
   };
   readonly consumeFrame?: boolean;
 }
@@ -109,6 +113,9 @@ export interface PlayerControllerTestRuntime {
 
 export const DEFAULT_PLAYER_FRAME_PRIORITY = -100;
 
+const navigationStep = createNavigationStep();
+const navigationPoint = { x: 0, y: 0 };
+const noJoystick = Object.freeze({ x: 0, y: 0 });
 const frameStartPosition = { x: 0, z: 0 };
 const committedPosition = { x: 0, z: 0 };
 const moveResult: PlayerMoveResult = { x: 0, z: 0, groundY: 0 };
@@ -136,6 +143,8 @@ function runPlayerControllerFrame(
   state: RootState,
   rawDelta: number,
 ): void {
+  if (isWorldInputBlocked()) { resetPlayerKeys(); resetPlayerTouch(); }
+  if (isWorldFrameBlocked()) { config.onDirection?.('idle'); return; }
   config.space.readPosition(frameStartPosition);
   config.onFrameStart?.(frameStartPosition);
 
@@ -195,7 +204,7 @@ function runPlayerControllerFrame(
     }
   }
 
-  const storeJoystick = useGameStore.getState().joystickVelocity;
+  const storeJoystick = isWorldInputBlocked() ? noJoystick : useGameStore.getState().joystickVelocity;
   const intent = derivePlayerFrameIntent(
     {
       camera: state.camera,
@@ -226,10 +235,14 @@ function runPlayerControllerFrame(
     move.speedMultiplier = 1;
   }
 
+  let navigationPath: AreaFrameResult['navigationPath'];
+  let navigationDistance = Number.POSITIVE_INFINITY;
   if (config.capabilities.clickPath) {
     const override = config.onNavigationOverride?.(intent);
     if (override?.consumeFrame) return;
+    navigationPath = override?.navigationPath;
     if (override?.moveOverride) {
+      navigationDistance = override.moveOverride.maxDistance ?? Number.POSITIVE_INFINITY;
       const overrideLength = Math.hypot(
         override.moveOverride.worldVx,
         override.moveOverride.worldVz,
@@ -268,8 +281,7 @@ function runPlayerControllerFrame(
     vz /= length;
   }
 
-  const direction = directionFor(vx, vz);
-  config.onDirection?.(direction);
+  if (!navigationPath) config.onDirection?.(directionFor(vx, vz));
 
   if (config.capabilities.jump && config.motion.chargeDiscrimination) {
     const charging = jumpState.phase === 'charging';
@@ -289,13 +301,28 @@ function runPlayerControllerFrame(
     config.motion.maxDeltaSeconds === undefined
       ? rawDelta
       : Math.min(rawDelta, config.motion.maxDeltaSeconds);
-  if (vx !== 0 || vz !== 0) {
-    const desiredX =
-      frameStartPosition.x +
-      vx * config.space.speedPerSec * intent.move.speedMultiplier * integrationDelta;
-    const desiredZ =
-      frameStartPosition.z +
-      vz * config.space.speedPerSec * intent.move.speedMultiplier * integrationDelta;
+  let completeNavigation: (() => void) | undefined;
+  if (navigationPath) {
+    const originX = navigationPath.originX ?? 0, originZ = navigationPath.originZ ?? 0;
+    const budget = (vx !== 0 || vz !== 0) ? config.space.speedPerSec * intent.move.speedMultiplier * integrationDelta : 0;
+    const step = stepNavigationPath(navigationPath.points, navigationPath.index, frameStartPosition.x + originX, frameStartPosition.z + originZ, budget, (x, z, nextX, nextZ) => {
+      config.space.clampMovement(x - originX, z - originZ, nextX - originX, nextZ - originZ, moveResult);
+      navigationPoint.x = moveResult.x + originX; navigationPoint.y = moveResult.z + originZ;
+      return navigationPoint;
+    }, navigationStep, navigationPath.arrivalTolerance);
+    moveResult.x = step.x - originX; moveResult.z = step.y - originZ;
+    config.space.commitPosition(moveResult);
+    if (step.index !== navigationPath.index) navigationPath.onProgress(step.index);
+    const move = intent.move as { worldVx: number; worldVz: number; moving: boolean; running: boolean };
+    move.moving = step.traveled > 0;
+    move.worldVx = move.moving ? step.vx : 0; move.worldVz = move.moving ? step.vy : 0;
+    if (!move.moving) move.running = false;
+    config.onDirection?.(directionFor(move.worldVx, move.worldVz));
+    if (step.complete) completeNavigation = navigationPath.onComplete;
+  } else if (vx !== 0 || vz !== 0) {
+    const step = Math.min(config.space.speedPerSec * intent.move.speedMultiplier * integrationDelta, navigationDistance);
+    const desiredX = frameStartPosition.x + vx * step;
+    const desiredZ = frameStartPosition.z + vz * step;
     config.space.clampMovement(
       frameStartPosition.x,
       frameStartPosition.z,
@@ -350,6 +377,7 @@ function runPlayerControllerFrame(
     rawDelta,
     state.clock.elapsedTime,
   );
+  completeNavigation?.();
 }
 
 export function createPlayerControllerTestRuntime(

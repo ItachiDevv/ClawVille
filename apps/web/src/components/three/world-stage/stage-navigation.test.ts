@@ -65,6 +65,14 @@ afterEach(() => {
 });
 
 describe('world stage navigation bridge', () => {
+  test('the Office retains the world navigation bridge on return to town', async () => {
+    advanceWorldStageRoute('/brainchain');
+    const received: string[] = [];
+    expect(requestWorldStageNavigation({ to: '/game' })).toBe(true);
+    installWorldStageNavigationHandler((request) => { received.push(request.to); return true; });
+    await Promise.resolve();
+    expect(received).toEqual(['/game']);
+  });
   test('buffers while the handler is null and flushes after install', async () => {
     const received: string[] = [];
     expect(requestWorldStageNavigation({ to: '/cove' })).toBe(true);

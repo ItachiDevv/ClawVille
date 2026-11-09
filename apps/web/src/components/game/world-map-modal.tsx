@@ -43,7 +43,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
-import { MAP_LOCATIONS } from '@clawville/shared';
+import { MAP_LOCATIONS, BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME } from '@clawville/shared';
 import { CHARACTER_POSITIONS } from '@/lib/three/character-positions';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
@@ -92,7 +92,7 @@ interface BuildingMarker {
 /** Build the building marker list ONCE — buildingZones + MAP_LOCATIONS are frozen. */
 function useBuildingMarkers(): BuildingMarker[] {
   return useMemo(() => {
-    return buildingZones.map((zone) => {
+    const markers = buildingZones.map((zone) => {
       const loc = MAP_LOCATIONS.find((l) => l.id === zone.id);
       // Zone center in game-px.
       const centerPxX = (zone.x + zone.width / 2) * TILE_SIZE;
@@ -113,6 +113,8 @@ function useBuildingMarkers(): BuildingMarker[] {
         warpY,
       };
     });
+    markers.push({ id: 'brainchain-office', name: 'BrainChain Office', icon: 'BC', accent: '#f581b4', vx: BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.x * SCALE, vy: BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.y * SCALE, warpX: BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.x, warpY: BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.y });
+    return markers;
   }, []);
 }
 

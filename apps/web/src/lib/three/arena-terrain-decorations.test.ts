@@ -6,6 +6,8 @@ import {
   KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
   KELP_FOREST_PORTAL_WORLD_CENTER,
   LAND_PARCELS,
+  BRAINCHAIN_OFFICE_APPROACH_WORLD,
+  BRAINCHAIN_OFFICE_GUIDE_WORLD,
   SPAWN_PX,
   WORLD_CENTER_PX,
   getServerColliders,
@@ -138,6 +140,8 @@ describe('seabed decoration scatter', () => {
 
   it('keeps the entrance prompt bands clear', () => {
     const entrances = [
+      { id: 'office-door', ...BRAINCHAIN_OFFICE_APPROACH_WORLD, r: 160 },
+      { id: 'office-guide', ...BRAINCHAIN_OFFICE_GUIDE_WORLD, r: 220 },
       { id: 'kelp-portal', ...KELP_FOREST_PORTAL_WORLD_CENTER, r: KELP_FOREST_PORTAL_PROMPT_RADIUS_WU },
       { id: 'trading-floor-door', ...TRADING_FLOOR_DOOR_WORLD, r: TRADING_FLOOR_PROMPT_RADIUS_WU },
       // Cove tunnel prompt band x -3640..-3180, |z| <= 150, exit at x -3150.

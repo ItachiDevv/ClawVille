@@ -1,3 +1,4 @@
+import { BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME } from './brainchain-office-world';
 import type { MapLocation } from '../types/location';
 import { KELP_FOREST_PORTAL_APPROACH_GAME } from './kelp-realm';
 import { KELP_FOREST_PORTAL_ID } from './world-colliders-data';
@@ -219,6 +220,15 @@ export type AutonomyEnterablePlace = Readonly<{
 )>;
 
 export const AUTONOMY_ENTERABLE_PLACES: readonly AutonomyEnterablePlace[] = [
+  {
+    placeId: 'brainchain-office',
+    center: BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME,
+    label: 'BrainChain Office',
+    description: 'External task-work curriculum and the BrainChain Office Guide; no visit reward.',
+    actionVerb: 'move',
+    actionSyntax: `move(x=${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.x}, y=${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.y})`,
+    destinationId: 'brainchain-office',
+  },
   {
     placeId: 'cove',
     mapLocationId: 'cove',

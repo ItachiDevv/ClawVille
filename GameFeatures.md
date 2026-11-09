@@ -3500,3 +3500,28 @@ Older history: `git log apps/web/src/ apps/api/src/`.
 ---
 
 - 2026-07-15 — **Supply-reward idempotency.** Building-teacher chat now pays one shared 1-vCLAW reward per avatar/building/UTC day across human, connected-agent, and autonomous-agent play; the human path's 5 XP follows the same fresh claim. Activity placement pays once per room/avatar; baccarat's banker commission stays withheld inside the reduced engine payout instead of being minted again; public event status GETs are read-only, linked tournament completion automatically settles a `live` parent event, and a bounded boot/periodic worker retries transient callback failures without reviving draft/signup/cancelled parents (the idempotent admin settle command remains recovery-only); book reads atomically consume one copy + merge persisted knowledge before post-commit best-effort ElizaOS refresh. Agent reward-eligibility semantics changed; matching orientation/protocol copy and the consolidated `PROTOCOL_VERSION` bump are deferred to the orchestrator.
+
+
+## 2D town access - 2026-11-09
+
+Last Audited: 2026-11-09. Drift note: the 2D fallback now has a persistent world-stage mount.
+
+Choose Switch to 2D in the sidebar, or open /game?view=2d. The selector reloads the page. Switch to 3D restores the default renderer. Both views use the same account, avatar, presence, chat routes, map, and BrainChain Office. A terminal 3D initialization failure also offers Continue in 2D.
+
+Walk to the Office door or guide and press E. A click follows a path to the selected target. Existing resident targets also use proximity before entry. The minimap walk and World Map warp keep their existing game coordinates. Explore moves only the camera. NPC mode controls the possessed NPC. Autonomous mode follows the streamed agent without manual movement.
+
+Cove, Trading Floor, Kelp, and activity scenes require the 3D view. Their 2D markers state that limitation. A direct unsupported route offers Back to town and Switch to 3D. If neither renderer starts, the BrainChain Office DOM page remains accessible; the device has no world movement.
+
+PARITY: human path: town renderer selector and existing Office page; agent path: unchanged hosted/MCP routes; settlement binds through unchanged avatar resolvers. This renderer change adds no agent action or protocol verb.
+
+
+2D review correction, Last Audited 2026-11-09: solid footprints now show all shared collision bounds, including town props. Building art fits those bounds. Autonomous mode updates the shared position from the agent body before Player resumes. Explore moves only the camera; its minimap dot continues to mark the retained body. Activity queue buttons refuse 2D before joining a queue. Switch to 3D before entering an activity. Terminal 3D failure dismisses the loader so Continue in 2D is reachable.
+
+
+### 2D party recovery correction - Last Audited 2026-11-09
+
+Drift note: 2D activity controls refuse solo queue, party creation, party join, and party queue before mutations. Persistent recovery lives in WorldPresence on /game and /brainchain, outside the modal lifecycle. It retains the same controller across Office navigation. It stops on unrelated routes, confirmed logout, avatar change, or session reset. Guests can recover assigned solo matches; party operations retain their existing non-guest restriction.
+
+Recovery retries pending queue cancellation even without a party. Failed party departures remain visible and retry at most once per five seconds. Errors expose a 3D switch. A room already selected by the server remains authoritative, including a concurrent leave during room creation. Recovery reloads the actual assigned activity in 3D. It never creates or queues a party, and it emits no repeated cancellation-success toast. The 3D lobby retains its queue controls when leave fails and does not close until leave succeeds.
+
+PARITY: human and bound-agent party operations retain the same resolved avatar and authoritative room. Browser renderer restrictions change presentation only. Server queue admission and exact-ID cancellation apply to both identities. The 2026-11-09 R2 correction rejects an old queue admission after a kick and rejoin; assigned matches remain authoritative.

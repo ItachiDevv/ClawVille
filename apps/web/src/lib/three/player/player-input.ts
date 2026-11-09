@@ -1,3 +1,4 @@
+import { isWorldInputBlocked } from '../world-input-guard';
 import * as THREE from 'three';
 import {
   addStageEventListener,
@@ -83,6 +84,7 @@ export function attachHeldKeyListeners(
       ? event.code
       : event.key.toLowerCase();
   const onKeyDown = (event: KeyboardEvent) => {
+    if (isWorldInputBlocked()) { config.onReset(); return; }
     if (
       config.keyTargetGuard === 'isEditable' &&
       isEditable(event.target)

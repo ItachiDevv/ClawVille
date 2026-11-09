@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
@@ -12,6 +12,8 @@ import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
 import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
+import { getWorldRendererMode, useWorldRendererMode, usePixiFirstFrame, shouldReleaseWorldLoader } from '@/lib/world-renderer-mode';
+import { subscribeStageRendererFailure, getStageRendererFailure, getStageRendererFailureServerSnapshot } from '@/components/three/world-stage/stage-renderer-status';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
 import { armDecorativeDeadline } from '@/lib/three/decorative-release';
@@ -335,6 +337,9 @@ function NanoClawBanner({
 }
 
 export default function GamePage() {
+  const rendererMode = useWorldRendererMode();
+  const pixiFrame = usePixiFirstFrame();
+  const rendererFailure = useSyncExternalStore(subscribeStageRendererFailure, getStageRendererFailure, getStageRendererFailureServerSnapshot);
   // Rung-4 slice A: first client render of the page component (render-phase
   // stamp; the module latch + "once" contract keep the cold-boot value and
   // make every subsequent render free).
@@ -375,7 +380,7 @@ export default function GamePage() {
   // subtree survives to its passive effect — a renderer-init failure before
   // that would strand release-gated consumer subtrees with no 45s ceiling.
   // Arming here guarantees the ceiling exists the moment the loading screen can.
-  useEffect(() => { armDecorativeDeadline(); preloadWorldAssets(); }, []);
+  useEffect(() => { if (getWorldRendererMode() === '3d') { armDecorativeDeadline(); preloadWorldAssets(); } }, []);
 
   const { data: avatar, isLoading, isError: avatarQueryError } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
@@ -650,7 +655,7 @@ export default function GamePage() {
   return (
     <div className="game-container" suppressHydrationWarning>
       {/* Sea loading overlay — renders immediately, fades out once window.__W3D is set */}
-      {!worldHadActivatedOnMount.current && <SeaLoadingScreen />}
+      {!worldHadActivatedOnMount.current && <SeaLoadingScreen forceReady={shouldReleaseWorldLoader(rendererMode, pixiFrame, rendererFailure !== null)} />}
       <BuildingTooltip />
       <NanoClawBanner
         hasAvatar={hasAvatar}
@@ -844,8 +849,8 @@ export default function GamePage() {
           These components render nothing; they only schedule useGLTF.preload()
           calls for assets that aren't needed on the first frame (decorations,
           location NPCs, underwater-decorations.glb). */}
-      <DeferredTerrainPreloads />
-      <DeferredNpcPreloads />
+      {rendererMode === '3d' && <DeferredTerrainPreloads />}
+      {rendererMode === '3d' && <DeferredNpcPreloads />}
     </div>
   );
 }

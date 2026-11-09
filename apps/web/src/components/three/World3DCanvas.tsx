@@ -75,6 +75,7 @@ import NpcController from '@/lib/three/npc-controller';
 import { WorldGroundCover } from '@/lib/three/world-ground-cover';
 import { KelpForestPortal } from '@/lib/three/kelp-forest-portal';
 import QuestNpc from '@/lib/three/quest-npc';
+import BrainchainOfficeWorld from '@/lib/three/brainchain-office';
 import TownGuide from '@/lib/three/town-guide';
 import { DeclareGuideRevealRequired } from '@/lib/three/boot-streamed-content';
 import BazaarStall from '@/lib/three/bazaar-stall';
@@ -2990,6 +2991,10 @@ export const WorldSceneContents = memo(function WorldSceneContents({
         kelpEligible={showWaterFogParticles && CURRENT_WORLD_DEVICE_PROFILE.ambientGroundCover}
         forceWebGL={FORCE_WEBGL}
       />
+
+      <group name="perf:brainchain-office" userData={{ perfChunk: 'brainchain-office' }}>
+        <BrainchainOfficeWorld showGuide={showNpcs} />
+      </group>
 
       {/* Realm entrance stays mounted when the adaptive governor hides ground cover. */}
       <group name="perf:kelp-forest-portal" userData={{ perfChunk: 'kelp-forest-portal' }}>

@@ -1,3 +1,4 @@
+import { isStageSceneAvailable } from '@/lib/world-renderer-mode';
 import { useTransitionStore } from '@/components/transitions/SceneTransition';
 import {
   readWorldStageNavigationSnapshot,
@@ -15,6 +16,7 @@ export function resetKelpForestWalkInLatch(): void {
 }
 
 export function triggerKelpForestWalkIn(): void {
+  if (!isStageSceneAvailable('kelp')) { useGameStore.getState().addToast('3D', 'This venue needs the 3D view. Use the view selector to switch.'); return; }
   const transition = useTransitionStore.getState();
   const stage = useStageStore.getState();
   const decision = decideKelpWalkIn({

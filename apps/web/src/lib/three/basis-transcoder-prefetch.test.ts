@@ -112,7 +112,8 @@ describe('basis transcoder boot prefetch', () => {
 
   test('boot chain: /game mount effect -> preloadWorldAssets -> prefetchBasisTranscoder', () => {
     const page = readFileSync(join(WEB_ROOT, 'src/app/(world)/game/page.tsx'), 'utf8');
-    expect(page).toMatch(/useEffect\(\(\) => \{[^}]*preloadWorldAssets\(\);[^}]*\}, \[\]\);/);
+    // The 3D renderer keeps the mount-time preload; the 2D renderer skips world GLB preloads.
+    expect(page).toMatch(/useEffect\(\(\) => \{ if \(getWorldRendererMode\(\) === '3d'\) \{[^}]*preloadWorldAssets\(\);[^}]*\} \}, \[\]\);/);
 
     const manifest = readFileSync(join(WEB_ROOT, 'src/lib/three/asset-preload-manifest.ts'), 'utf8');
     const body = manifest.match(/export function preloadWorldAssets\(\): void \{([\s\S]*?)\n\}/);

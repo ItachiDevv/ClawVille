@@ -21,6 +21,7 @@
 //   AABB entry here (and in world-colliders.ts). Skip = ghost structure.
 // ---------------------------------------------------------------------------
 
+import { BRAINCHAIN_OFFICE_WORLD_CENTER, BRAINCHAIN_OFFICE_HALF_X_WU, BRAINCHAIN_OFFICE_HALF_Z_WU, BRAINCHAIN_OFFICE_GUIDE_WORLD, BRAINCHAIN_OFFICE_GUIDE_HALF_WU, BRAINCHAIN_OFFICE_GUIDE_ID, assertBrainchainOfficePlacement } from './brainchain-office-world';
 import { BUILDING_TILE_ZONES } from './npc-definitions';
 import { SPAWN_PX, WORLD_CENTER_PX } from './world-dimensions';
 
@@ -279,6 +280,8 @@ function buildServerCollidersWithoutKelpPortal(): ServerCollider2D[] {
   const SHISHA_SERVER_CENTER_Z = -240;
 
   const PROP_COLLIDERS: ServerCollider2D[] = [
+    { id: 'brainchain-office', centerX: BRAINCHAIN_OFFICE_WORLD_CENTER.x, centerZ: BRAINCHAIN_OFFICE_WORLD_CENTER.z, halfX: BRAINCHAIN_OFFICE_HALF_X_WU, halfZ: BRAINCHAIN_OFFICE_HALF_Z_WU },
+    { id: BRAINCHAIN_OFFICE_GUIDE_ID, centerX: BRAINCHAIN_OFFICE_GUIDE_WORLD.x, centerZ: BRAINCHAIN_OFFICE_GUIDE_WORLD.z, halfX: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, halfZ: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, pathfindingRaster: { mode: 'cell-center-expanded-aabb', paddingWu: 50 } },
     { id: 'town-directory-sign',   centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40 },
     { id: 'bazaar-stall',          centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140 },
     // Shisha-oasis — solid blocker covering the visible structure footprint.
@@ -354,6 +357,8 @@ const SERVER_COLLIDERS: readonly ServerCollider2D[] = Object.freeze([
     halfZ: KELP_FOREST_PORTAL_HALF_Z_WU,
   }),
 ]);
+
+assertBrainchainOfficePlacement(SERVER_COLLIDERS);
 
 export function getServerColliders(): readonly ServerCollider2D[] {
   return SERVER_COLLIDERS;

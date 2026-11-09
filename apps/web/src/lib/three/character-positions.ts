@@ -419,3 +419,6 @@ export function findNearestCharacter(
   _nearest.distance = Math.sqrt(bestDistSq);
   return _nearest;
 }
+
+// Shared zero-allocation Office proximity contract, separate from ring residents.
+export { isBrainchainOfficeDoorWorld as isBrainchainOfficeDoorProximate, isBrainchainOfficeGuideWorld as isBrainchainOfficeGuideProximate } from '@clawville/shared';

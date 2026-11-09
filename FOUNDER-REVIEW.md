@@ -992,3 +992,20 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Try:** search a token, open its price, read top movers and the macro row; paste a wallet for the free trust check.
 - **Feedback wanted:** is the card useful where it is? Is 300 vendor calls per avatar per day right?
 - **Paid screen:** needs your dollar cap before a live test. Until then it has only mock tests, and SAID's reply shape is not verified.
+
+
+## BrainChain 2D town - local review pending - 2026-11-09
+
+Session: brainchain-office, worktree brainchain-plan. No staging push yet.
+
+Review /game?view=2d after the production build. Check the Office door and guide, resident entry, map navigation, return to town, and mobile joystick. Check that Explore moves only the camera and NPC mode shows one controlled body. Confirm the sidebar switch returns to 3D. Confirm unsupported venues explain the 3D requirement.
+
+Browser verification, actual Claude review, Iris Xe sampling, and a real-iPad safe-area check remain open. Unit tests do not establish visual acceptance.
+
+
+BrainChain 2D review additions, 2026-11-09: inspect the visible marketplace footprint at game position 12099,11484 and the MCP-tool-use footprint near 14213,8681. Those were invisible stopping boundaries in the previous local bundle. Check a real pointer click on Continue in 2D after forced renderer failure. Check Autonomous-to-Player position continuity and both activity queue refusal notices. New source needs a new production build and browser evidence.
+
+
+### BrainChain 2D party recovery - 2026-11-09
+
+Environment: local production build, /game?view=2d. Session: brainchain-office world reconciler. Check that party create/join/queue controls refuse in 2D. Start with an existing party, close its lobby, then select 2D. Persistent recovery must leave pending queue participation even after entry into the Office. If the server already assigned a match, it must open that actual activity in 3D. Report any repeated notices, hidden errors, or missing match navigation. Mounted React and queue tests do not replace two-client browser review. Also test a guest solo match, a failed leave, and logout during a pending assignment request.

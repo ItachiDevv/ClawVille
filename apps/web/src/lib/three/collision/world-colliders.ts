@@ -1,3 +1,4 @@
+import { BRAINCHAIN_OFFICE_WORLD_CENTER, BRAINCHAIN_OFFICE_HALF_X_WU, BRAINCHAIN_OFFICE_HALF_Z_WU, BRAINCHAIN_OFFICE_GUIDE_WORLD, BRAINCHAIN_OFFICE_GUIDE_HALF_WU, BRAINCHAIN_OFFICE_GUIDE_ID, assertBrainchainOfficePlacement } from '@clawville/shared';
 // ---------------------------------------------------------------------------
 // world-colliders.ts
 // XZ-plane AABB collision for the ClawVille open world.
@@ -60,6 +61,7 @@ export interface Collider2D {
   halfX: number;
   halfZ: number;
   kind: 'building' | 'prop';
+  pathfindingRaster?: { readonly mode: 'cell-center-expanded-aabb'; readonly paddingWu: number };
   /** If true this zone lifts entity Y instead of blocking XZ movement. */
   walkable?: boolean;
   /**
@@ -300,6 +302,8 @@ function buildColliders(): Collider2D[] {
   //    extents read tighter (less invisible-wall feel along the narrow axis).
   // ---------------------------------------------------------------------------
   const PROPS: Collider2D[] = [
+    { id: 'brainchain-office', centerX: BRAINCHAIN_OFFICE_WORLD_CENTER.x, centerZ: BRAINCHAIN_OFFICE_WORLD_CENTER.z, halfX: BRAINCHAIN_OFFICE_HALF_X_WU, halfZ: BRAINCHAIN_OFFICE_HALF_Z_WU, kind: 'prop' },
+    { id: BRAINCHAIN_OFFICE_GUIDE_ID, centerX: BRAINCHAIN_OFFICE_GUIDE_WORLD.x, centerZ: BRAINCHAIN_OFFICE_GUIDE_WORLD.z, halfX: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, halfZ: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, kind: 'prop', pathfindingRaster: { mode: 'cell-center-expanded-aabb', paddingWu: 50 } },
     { id: 'town-directory-sign',  centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40, kind: 'prop' },
     { id: 'bazaar-stall',         centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140, kind: 'prop' },
     // -----------------------------------------------------------------------
@@ -340,6 +344,7 @@ function buildColliders(): Collider2D[] {
   ];
   colliders.push(...PROPS);
 
+  assertBrainchainOfficePlacement(colliders);
   return colliders;
 }
 

@@ -3,51 +3,71 @@
  * Ported from apps/api/src/services/pathfinding.ts for instant responsiveness.
  */
 
-import { BUILDING_TILE_ZONES } from '@clawville/shared';
+import { WORLD_PX_WIDTH, WORLD_PX_HEIGHT, WORLD_CENTER_PX } from '@clawville/shared';
+import { getAllColliders } from '@/lib/three/collision/world-colliders';
 
-const COLS = 360;
-const ROWS = 360;
 const TILE = 32;
+const COLS = WORLD_PX_WIDTH / TILE;
+const ROWS = WORLD_PX_HEIGHT / TILE;
+const COLLIDER_SAFETY_TILES = 4;
 
 export interface PathNode {
   x: number;
   y: number;
 }
 
-/** Rendered buildings can reach MAX_FOOTPRINT = 1000 wu = 31.25 tiles wide,
- *  while BUILDING_TILE_ZONES entries are only 14×14. Expand the blocked
- *  region by BUILDING_EXCLUSION_PAD so click-to-move and wander avoid the
- *  visual footprint, not just the authoring zone. Must match the server-side
- *  value in apps/api/src/services/pathfinding.ts. */
-const BUILDING_EXCLUSION_PAD = 9;
-
-function buildWalkabilityGrid(): boolean[][] {
-  const grid: boolean[][] = [];
-  for (let r = 0; r < ROWS; r++) {
-    grid[r] = [];
-    for (let c = 0; c < COLS; c++) {
-      grid[r][c] = true;
-    }
-  }
-  for (const zone of Object.values(BUILDING_TILE_ZONES)) {
-    const r0 = zone.y - BUILDING_EXCLUSION_PAD;
-    const r1 = zone.y + zone.h + BUILDING_EXCLUSION_PAD;
-    const c0 = zone.x - BUILDING_EXCLUSION_PAD;
-    const c1 = zone.x + zone.w + BUILDING_EXCLUSION_PAD;
-    for (let r = r0; r < r1; r++) {
-      for (let c = c0; c < c1; c++) {
-        if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
-          grid[r][c] = false;
-        }
+/** Full-world grid built once. Includes real building and prop footprints. */
+function buildWalkabilityGrid(): Uint8Array[] {
+  const grid = Array.from({ length: ROWS }, () => new Uint8Array(COLS).fill(1));
+  for (const collider of getAllColliders()) {
+    if (collider.walkable) continue;
+    if (collider.pathfindingRaster?.mode === 'cell-center-expanded-aabb') {
+      const pad = collider.pathfindingRaster.paddingWu;
+      const minX = Math.ceil((collider.centerX - collider.halfX - pad + WORLD_CENTER_PX.x - TILE / 2) / TILE);
+      const maxX = Math.floor((collider.centerX + collider.halfX + pad + WORLD_CENTER_PX.x - TILE / 2) / TILE);
+      const minY = Math.ceil((collider.centerZ - collider.halfZ - pad + WORLD_CENTER_PX.y - TILE / 2) / TILE);
+      const maxY = Math.floor((collider.centerZ + collider.halfZ + pad + WORLD_CENTER_PX.y - TILE / 2) / TILE);
+      for (let row = Math.max(0, minY); row <= Math.min(ROWS - 1, maxY); row++) {
+        grid[row].fill(0, Math.max(0, minX), Math.min(COLS, maxX + 1));
       }
+      continue;
+    }
+    const cx = Math.floor((collider.centerX + WORLD_CENTER_PX.x) / TILE);
+    const cy = Math.floor((collider.centerZ + WORLD_CENTER_PX.y) / TILE);
+    const hx = Math.ceil(collider.halfX / TILE) + COLLIDER_SAFETY_TILES;
+    const hy = Math.ceil(collider.halfZ / TILE) + COLLIDER_SAFETY_TILES;
+    for (let row = Math.max(0, cy - hy); row <= Math.min(ROWS - 1, cy + hy); row++) {
+      grid[row].fill(0, Math.max(0, cx - hx), Math.min(COLS, cx + hx + 1));
     }
   }
   return grid;
 }
 
-let cachedGrid: boolean[][] | null = null;
-function getGrid(): boolean[][] {
-  if (!cachedGrid) cachedGrid = buildWalkabilityGrid();
+let cachedGrid: Uint8Array[] | null = null;
+let components: Uint32Array | null = null;
+let search: { closed: Uint32Array; seen: Uint32Array; scores: Float64Array; generation: number } | null = null;
+function labelComponents(grid: Uint8Array[]): Uint32Array {
+  const labels = new Uint32Array(COLS * ROWS), queue = new Uint32Array(COLS * ROWS);
+  let component = 0;
+  for (let row = 0; row < ROWS; row++) for (let col = 0; col < COLS; col++) {
+    const cell = row * COLS + col;
+    if (!grid[row][col] || labels[cell]) continue;
+    let head = 0, tail = 0; labels[cell] = ++component; queue[tail++] = cell;
+    while (head < tail) {
+      const current = queue[head++], r = Math.floor(current / COLS), c = current % COLS;
+      for (let direction = 0; direction < 4; direction++) {
+        const nc = c + (direction === 0 ? -1 : direction === 1 ? 1 : 0);
+        const nr = r + (direction === 2 ? -1 : direction === 3 ? 1 : 0);
+        if (nc < 0 || nr < 0 || nc >= COLS || nr >= ROWS || !grid[nr][nc]) continue;
+        const next = nr * COLS + nc;
+        if (!labels[next]) { labels[next] = component; queue[tail++] = next; }
+      }
+    }
+  }
+  return labels;
+}
+function getGrid(): Uint8Array[] {
+  if (!cachedGrid) { cachedGrid = buildWalkabilityGrid(); components = labelComponents(cachedGrid); }
   return cachedGrid;
 }
 
@@ -121,25 +141,40 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
   const ec = Math.floor(endX / TILE);
   const er = Math.floor(endY / TILE);
 
-  const startCol = Math.max(0, Math.min(COLS - 1, sc));
-  const startRow = Math.max(0, Math.min(ROWS - 1, sr));
+  let startCol = Math.max(0, Math.min(COLS - 1, sc));
+  let startRow = Math.max(0, Math.min(ROWS - 1, sr));
   let endCol = Math.max(0, Math.min(COLS - 1, ec));
   let endRow = Math.max(0, Math.min(ROWS - 1, er));
 
+  if (!grid[startRow][startCol]) {
+    const nearest = findNearestWalkable(startCol, startRow, grid);
+    if (!nearest) return [];
+    startCol = nearest.col;
+    startRow = nearest.row;
+  }
+
+  // A snapped endpoint must never append the original point inside a collider.
+  let targetX = Math.max(TILE / 2, Math.min(WORLD_PX_WIDTH - TILE / 2, endX));
+  let targetY = Math.max(TILE / 2, Math.min(WORLD_PX_HEIGHT - TILE / 2, endY));
   if (!grid[endRow][endCol]) {
     const nearest = findNearestWalkable(endCol, endRow, grid);
     if (!nearest) return [];
     endCol = nearest.col;
     endRow = nearest.row;
+    targetX = endCol * TILE + TILE / 2;
+    targetY = endRow * TILE + TILE / 2;
   }
 
   if (startCol === endCol && startRow === endRow) {
-    return [{ x: endX, y: endY }];
+    return [{ x: targetX, y: targetY }];
   }
 
+  if (components![startRow * COLS + startCol] !== components![endRow * COLS + endCol]) return [];
+  if (!search) search = { closed: new Uint32Array(COLS * ROWS), seen: new Uint32Array(COLS * ROWS), scores: new Float64Array(COLS * ROWS), generation: 0 };
+  if (++search.generation === 0xffffffff) { search.closed.fill(0); search.seen.fill(0); search.generation = 1; }
+  const generation = search.generation, closed = search.closed, seen = search.seen;
   const open = new MinHeap();
-  const closed = new Set<string>();
-  const key = (c: number, r: number) => `${c},${r}`;
+  const key = (c: number, r: number) => r * COLS + c;
 
   const startNode: AStarNode = {
     col: startCol, row: startRow,
@@ -149,11 +184,11 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
   };
   open.push(startNode);
 
-  const gScores = new Map<string, number>();
-  gScores.set(key(startCol, startRow), 0);
+  const gScores = search.scores;
+  gScores[key(startCol, startRow)] = 0; seen[key(startCol, startRow)] = generation;
 
   let iterations = 0;
-  const maxIterations = 6000;
+  const maxIterations = 80_000; // same bounded town-route ceiling as the server planner
 
   while (open.size > 0 && iterations < maxIterations) {
     iterations++;
@@ -161,11 +196,11 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
     const ck = key(current.col, current.row);
 
     if (current.col === endCol && current.row === endRow) {
-      return reconstructPath(current, endX, endY);
+      return reconstructPath(current, targetX, targetY);
     }
 
-    if (closed.has(ck)) continue;
-    closed.add(ck);
+    if (closed[ck] === generation) continue;
+    closed[ck] = generation;
 
     for (const [dc, dr] of DIRS) {
       const nc = current.col + dc;
@@ -173,7 +208,7 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
 
       if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
       if (!grid[nr][nc]) continue;
-      if (closed.has(key(nc, nr))) continue;
+      if (closed[key(nc, nr)] === generation) continue;
 
       if (dc !== 0 && dr !== 0) {
         if (!grid[current.row + dr][current.col] || !grid[current.row][current.col + dc]) continue;
@@ -182,11 +217,11 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
       const moveCost = (dc !== 0 && dr !== 0) ? 1.41 : 1;
       const tentG = current.g + moveCost;
       const nk = key(nc, nr);
-      const existingG = gScores.get(nk);
+      const existingG = seen[nk] === generation ? gScores[nk] : Number.POSITIVE_INFINITY;
 
-      if (existingG !== undefined && tentG >= existingG) continue;
+      if (tentG >= existingG) continue;
 
-      gScores.set(nk, tentG);
+      gScores[nk] = tentG; seen[nk] = generation;
       const h = heuristic(nc, nr, endCol, endRow);
       open.push({
         col: nc, row: nr,
@@ -216,37 +251,19 @@ function reconstructPath(end: AStarNode, targetX: number, targetY: number): Path
     pixelPath[pixelPath.length - 1] = { x: targetX, y: targetY };
   }
 
-  return smoothPath(pixelPath);
+  // Remove collinear nodes only. Every retained segment crosses the original grid cells.
+  return pixelPath.filter((point, index) => {
+    if (index === 0 || index === pixelPath.length - 1) return true;
+    const before = pixelPath[index - 1], after = pixelPath[index + 1];
+    const ax = point.x - before.x, ay = point.y - before.y;
+    const bx = after.x - point.x, by = after.y - point.y;
+    return ax * by !== ay * bx || ax * bx + ay * by <= 0;
+  });
 }
 
-function smoothPath(path: PathNode[]): PathNode[] {
-  if (path.length <= 2) return path;
-
-  const smoothed: PathNode[] = [path[0]];
-  let lastDir = { x: 0, y: 0 };
-
-  for (let i = 1; i < path.length; i++) {
-    const prev = smoothed[smoothed.length - 1];
-    const dx = Math.sign(path[i].x - prev.x);
-    const dy = Math.sign(path[i].y - prev.y);
-
-    if (dx !== lastDir.x || dy !== lastDir.y) {
-      if (i > 1) smoothed.push(path[i - 1]);
-      lastDir = { x: dx, y: dy };
-    }
-  }
-
-  smoothed.push(path[path.length - 1]);
-  return smoothed;
-}
-
-function findNearestWalkable(col: number, row: number, grid: boolean[][]): { col: number; row: number } | null {
-  // A building's center tile is half_w (7) tiles from the zone edge, plus
-  // BUILDING_EXCLUSION_PAD (9) more tiles of blocked margin — so the
-  // minimum Chebyshev distance from center to a walkable tile is 16. The
-  // old ceiling of 10 guaranteed failure on every building target, so
-  // autonomy looped "can't find a path" forever. 20 gives a safe margin.
-  const maxRadius = 20;
+function findNearestWalkable(col: number, row: number, grid: Uint8Array[]): { col: number; row: number } | null {
+  // Real building footprints plus the server safety halo can exceed 30 tiles.
+  const maxRadius = 48;
   for (let radius = 1; radius <= maxRadius; radius++) {
     for (let dr = -radius; dr <= radius; dr++) {
       for (let dc = -radius; dc <= radius; dc++) {

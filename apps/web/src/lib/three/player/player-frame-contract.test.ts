@@ -38,7 +38,7 @@ const originalGlobalDescriptors = new Map<
 >();
 
 beforeAll(() => {
-  dom = new JSDOM('<!doctype html><html><body></body></html>');
+  dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://clawville.world/game' });
   for (const [key, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -358,4 +358,99 @@ describe('ordered player frame contract', () => {
     detach();
     expect(useStageStore.getState().windowListenerCount).toBe(baseline);
   });
+});
+
+
+test('text focus preserves click navigation and frame callbacks', () => {
+  const textarea = document.createElement('textarea');
+  document.body.append(textarea);
+  textarea.focus();
+  let pathIndex = 0;
+  let afterMove = 0;
+  const h = harness({
+    onNavigationOverride: () => { pathIndex++; return { moveOverride: { worldVx: 1, worldVz: 0, maxDistance: 0.25 } }; },
+    onAfterMove: () => { afterMove++; },
+  });
+  try {
+    h.run(0.1);
+    expect(pathIndex).toBe(1);
+    expect(afterMove).toBe(1);
+    expect(h.position.x).toBe(0.25);
+  } finally { textarea.remove(); }
+});
+
+test('click navigation caps movement at the waypoint during a slow sprint frame', () => {
+  const h = harness({ onNavigationOverride: () => ({ moveOverride: { worldVx: 1, worldVz: 0, maxDistance: 0.1 } }) });
+  playerKeyState.shift = true;
+  h.run(0.2);
+  expect(h.position.x).toBe(0.1);
+});
+
+
+test('polyline navigation never emits an idle movement frame before arrival', () => {
+  resetPlayerKeys();
+  const points = [{ x: 0, y: 0 }, { x: 0.1, y: 0 }, { x: 0.1, y: 1 }];
+  let index = 0, complete = false; const movement: boolean[] = [];
+  const h = harness({
+    onNavigationOverride: () => ({ moveOverride: { worldVx: 1, worldVz: 0 }, navigationPath: { points, index, onProgress: next => { index = next; }, onComplete: () => { complete = true; } } }),
+    onAfterMove: frame => { movement.push(frame.moving); },
+  });
+  for (let count = 0; count < 20 && !complete; count++) h.run(0.1);
+  expect(complete).toBe(true);
+  expect(movement.length).toBeGreaterThan(1);
+  expect(movement.every(Boolean)).toBe(true);
+  expect(h.position).toEqual({ x: 0.1, z: 1 });
+});
+
+test('game-pixel navigation converts a nonzero origin and completes after committed proximity', () => {
+  resetPlayerKeys();
+  const originX = 11264, originZ = 11264;
+  const pixel = { x: originX - 500, y: originZ - 1500 };
+  const points = [{ ...pixel }, { x: pixel.x + 1, y: pixel.y }, { x: pixel.x + 1, y: pixel.y + 2 }];
+  let index = 0, near = false, entered = false, complete = false;
+  const events: string[] = [], clampCoordinates: number[] = [];
+  const h = harness({
+    space: {
+      speedPerSec: 10,
+      readPosition(out) { out.x = pixel.x - originX; out.z = pixel.y - originZ; },
+      clampMovement(x, z, tx, tz, out) { clampCoordinates.push(x, z, tx, tz); out.x = tx; out.z = tz; out.groundY = 0; },
+      commitPosition(out) { pixel.x = out.x + originX; pixel.y = out.z + originZ; events.push('commit'); },
+    },
+    onNavigationOverride: () => ({ moveOverride: { worldVx: 1, worldVz: 0 }, navigationPath: {
+      points, index, originX, originZ,
+      onProgress: next => { index = next; },
+      onComplete: () => { entered = near; complete = true; events.push('complete'); },
+    } }),
+    onAfterMove: frame => { near = frame.x === -499 && frame.z === -1498; events.push('proximity'); },
+  });
+  for (let count = 0; count < 10 && !complete; count++) h.run(0.1);
+  expect(pixel).toEqual(points.at(-1)!);
+  expect(complete).toBe(true);
+  expect(entered).toBe(true);
+  expect(clampCoordinates.every(value => value < 0)).toBe(true);
+  expect(events.slice(-2)).toEqual(['proximity', 'complete']);
+});
+
+test('navigation direction uses the last segment and a blocked frame keeps its facing', () => {
+  resetPlayerKeys();
+  let direction = '', vx = 0, vz = 0;
+  const h = harness({
+    onNavigationOverride: () => ({ moveOverride: { worldVx: 1, worldVz: 0 }, navigationPath: {
+      points: [{ x: 0.1, y: 0 }, { x: 0.1, y: 10 }], index: 0, onProgress: () => {}, onComplete: () => {},
+    } }),
+    onDirection: next => { direction = next; },
+    onAfterMove: frame => { vx = frame.intent.move.worldVx; vz = frame.intent.move.worldVz; },
+  });
+  h.run(0.1);
+  expect(direction).toBe('down');
+  expect([vx, vz]).toEqual([0, 1]);
+  const blocked = harness({
+    onNavigationOverride: h.config.onNavigationOverride,
+    onDirection: next => { direction = next; },
+  });
+  blocked.config.space.clampMovement = (x, z, _tx, _tz, out) => { out.x = x; out.z = z; out.groundY = 0; };
+  blocked.runtime.facing = 1.2;
+  blocked.run(0.1);
+  expect(direction).toBe('idle');
+  expect(blocked.runtime.facing).toBe(1.2);
 });

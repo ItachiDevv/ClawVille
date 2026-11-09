@@ -7,6 +7,8 @@ export const NAV_NONCE_PARAM = '__wsnav';
 
 export function sceneIdForPathname(pathname: string): string | null {
   if (pathname === '/game') return WORLD_SCENE_ID;
+  // The Office is a DOM service desk over the retained world, not a new Canvas.
+  if (pathname === '/brainchain') return WORLD_SCENE_ID;
   if (pathname === '/cove') return COVE_SCENE_ID;
   if (pathname === '/kelp') return KELP_SCENE_ID;
   if (pathname === '/trading-floor') return TRADING_FLOOR_SCENE_ID;

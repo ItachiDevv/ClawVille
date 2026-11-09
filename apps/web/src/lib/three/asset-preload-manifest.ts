@@ -215,6 +215,7 @@ export const DECORATION_GLBS: readonly string[] = [
  * 7-day edge cache would keep serving the old 8.7 MB version.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
+  '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1', // post-reveal audit only
   '/models/quest-bounty-pavilion-nonorm-ktx.glb',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
   '/models/shisha-oasis-mo-ktx.glb',

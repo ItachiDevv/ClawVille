@@ -1808,7 +1808,7 @@ Special cases:
 | messaging-channels | sandy-treedome-v3.glb | 2500 | 2000 × 2000 (cap) | 850 × 850 |
 | api-integrations | salty-spitoon.glb | 2500 | 2000 × 2000 (cap) | 850 × 850 |
 | app-publishing | boating-school.glb | 1000 | 1000 × 995 | 425 × 423 |
-| cron-automation | patty-building.glb | 2200 | 2000 × 1173 (X cap) | 850 × 498 |
+| cron-automation | trading-floor-exterior-opt1-mo-ktx.glb?v=2 | 1950 | measured Trading Floor footprint | 823 x 720 |
 | deployment-ops | building-lighthouse.glb | 1400 | 714 × 776 | 303 × 330 |
 | claw-arcade | claw-arcade-exterior.glb | 1100 | 1100 × 1058 | 468 × 450 |
 | cove | cove-exterior.glb | 1300 | 1284 × 1300 | 546 × 553 |
@@ -3494,3 +3494,70 @@ MUST end in `-ktx.glb` — the boot preloader routes on that substring, violatin
 to animation-only (`-clip-ktx`, bind by node name). Cold wire 34.62→22.74MB. Validator:
 `scripts/vrm-pipeline-validate.mjs` (S1-S13; --expect-quantize/--expect-texture-diet modes) gates
 every VRM pipeline pass. Full ledger: docs/perf-cold-load-rung2-census-2026-08-07.md (M2 FREEZE).
+
+BrainChain 3da review corrections (2026-11-09): text focus suppresses manual input but preserves navigation, gravity, and proximity frames.
+Only the service-panel route suspends the retained world frame.
+Click-path movement spends each frame distance across reached waypoints in human, possessed NPC, and 2D paths. Every turn uses a separate collision check.
+The guide-only approach uses world `(390, -2540)` with a tested 12 wu interaction margin.
+The guide reuses the static lobster plush, fits its 80 wu collider, stays at most 96 wu tall, and follows the NPC visibility flag.
+Office prefetch uses its distance-based prop priority.
+The client planner uses integer cell keys and typed search arrays; controlled unreachable searches fell from 106-157 ms to 31-44 ms after warmup on the desktop.
+These timings do not establish Iris Xe performance.
+
+Office WebGPU compatibility: the renderer converts cloned normalized position, normal, and UV attributes to Float32 before first GPU upload.
+The shared GLB cache stays unchanged; teardown disposes only the Office geometry clones.
+The asset now uses a new v2 filename with a full mip chain.
+Verified actual-world PNG and Float32 KTX controls removed the severe quantized-attribute corruption; final new-bundle visual acceptance remains pending.
+
+BrainChain B4/B5 review update (2026-11-09): the three client path followers share a polyline step helper and consume the remaining frame distance without an intermediate idle frame.
+The Office labels stay hidden and noninteractive until the warm attachment reports ready; they fade from800 to4500wu.
+Search arrays persist across calls with generation stamps. Component labels reject disconnected targets before A*.
+A fresh Chrome156 desktop benchmark measured16.4ms cold and0ms warm for six disconnected queries, including first grid/component initialization.
+This is an adversarial grid-copy benchmark, not an Iris Xe measurement.
+The Float32 Office vertex budget is398,304bytes; WebGPU indices add135,732bytes, for534,036bytes of geometry.
+Together with the BC7 mip chain, the expected Office geometry/texture budget is1,932,164bytes before renderer bookkeeping.
+NPC visibility is a local graphics flag. It does not remove authoritative colliders; the Office Guide follows the existing town-guide collider policy.
+
+BrainChain B6/D1 review update (2026-11-09): 3D player navigation carries the game-pixel origin explicitly.
+The helper operates in path coordinates; collision and position commits receive centered world coordinates.
+Completion runs after the committed-position proximity callback, so building entry reads current proximity.
+The last traversed segment sets direction and facing; blocked movement preserves facing and reports idle.
+Only the final waypoint uses the existing six-unit arrival tolerance; intermediate turns retain precise collision checks.
+The demo NPC walk does not verify the real-player path. A new production-bundle real-player capture remains necessary.
+
+
+## BrainChain 2D world adapter - 2026-11-09
+
+Last Audited: 2026-11-09. Drift note: the former Pixi canvas had no application mount and used whole-map scaling. The persistent world stage now selects a renderer before its canvas mounts.
+
+The URL view parameter selects 2d or 3d. Session storage preserves that selection; 3D remains the default. The sidebar selector reloads the page. A terminal 3D initialization failure disposes the failed renderer, unmounts the canvas, then offers the 2D host. No successful 3D scene and Pixi app mount together.
+
+The 2D host retains one Pixi app across town and BrainChain Office routes. Each world generation receives warming, ready, camera, and controlled-frame acknowledgements after a rendered Pixi frame. Non-world scenes receive no false acknowledgement. Cove, Trading Floor, Kelp, and activity scenes require 3D. A direct unsupported route shows a return link and a 3D selector. If WebGL also fails, the DOM Office remains available; world movement is unavailable on that device.
+
+Pixi uses game-pixel coordinates and the existing presence ref. Player mode writes that ref. NPC mode moves the possessed NPC and mirrors its position. Explore mode moves a separate camera target. Autonomous mode ignores manual input and follows the streamed body. The 2D camera consumes the existing warp-focus request.
+
+One tiled ground quad replaces the full-map per-tile graphics construction. The scene reuses existing building art and sprite mappings. It draws resident interaction targets, the Office, its guide, Nori, and explicit 3D venue markers. The dust pool has eight entries. Departed NPCs lose their display objects. Ground, resident, and Office clicks use the existing path or Office transition. Target hit areas are at least 44 CSS pixels. The right orbit joystick and jump control stay hidden in 2D.
+
+The shared world interaction adapter supplies proximity, E dispatch, and path-completion dispatch to both renderers. The 3D avatar keeps its existing motion and collision controller. Venue transition functions now live outside the R3F building module. The 2D game path does not call world asset preload functions or deferred GLB preload components.
+
+Verification: existing navigation and player-frame contracts passed 38 tests with 1,789 assertions. New resolver, scale, proximity, loop, and stage-host tests cover ownership, blocked paths, service panels, and 60 stage generations. The host test uses a Pixi mock; browser evidence must establish actual app lifetime, visual layout, and GPU behavior. Actual Claude review and production-bundle browser verification remain required.
+
+PARITY: human path: existing town controls in 2D or 3D and the Office DOM page; agent path: unchanged hosted/MCP routes; settlement binds through unchanged avatar resolvers. No protocol menu or economy action changed.
+
+
+### 2D review corrections - 2026-11-09
+
+Last Audited: 2026-11-09. Drift note: independent review found a covered renderer-failure button, stale autonomous positions, and activity queues without a usable renderer. Browser checks also found invisible solid collision bounds.
+
+The loader now observes terminal renderer failure and dismisses before a Pixi frame exists. Autonomous mode mirrors its streamed body's position into the shared avatar ref before route or input guards. Explore still writes only its separate camera target; its minimap dot deliberately indicates the retained body position.
+
+Every solid collider now supplies a visible exact rectangle in game coordinates. Legacy building art fits within that rectangle. This includes town props and the measured building bounds. Walkable surfaces do not get solid-blocker rectangles. No authoritative collider changes. The exact marketplace and MCP-tool-use stopping coordinates have regression checks.
+
+Unsupported browser history routes retain the Pixi app behind their explicit notice. The loop takes no movement input on those routes. The app renders at ten frames per second behind service pages and unsupported routes, and returns to sixty in town. Activity queue controls refuse 2D before any queue request or guest mutation. The renderer selector now uses a monitor icon.
+
+Focused tests execute the actual lobby and sidebar handler bodies with mutation spies. Both produce a refusal notice and zero mutations in 2D. Loader tests check failure propagation and the page coupling; a real pointer click after a forced failure remains browser evidence owed. Autonomous-to-Player tests preserve the body position. Renderer, mode, and collision regressions passed 15 tests with 89 assertions before the new browser pass.
+
+
+### 2D activity party review correction - Last Audited 2026-11-09
+
+Drift note: WorldPresence mounts a separate bounded activity recovery component on /game and /brainchain for authenticated 2D avatars, including guest assignment recovery. The activity modal retains its 3D lifecycle and receives no fake activity identifier. The controller survives Office navigation and remounts on identity/session change. Persistent party membership triggers normal party leave; authoritative match assignment triggers a full 3D reload to the actual activity. Errors expose a 3D switch. No second renderer or hidden modal supplies this lifecycle.

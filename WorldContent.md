@@ -1,5 +1,34 @@
 # ClawVille — World Content Manifest
 
+**Last Audited: 2026-11-09 (BrainChain Office geometry).** Drift note: registered the Office footprint, guide, approach, and ground-cover exclusions. Updated stale town-prop coordinates. The 3D renderer, 2D marker, map marker, and explicit Office entrance now use this geometry. Actual-world visual verification remains pending.
+
+### BrainChain Office: additive prop-class venue
+
+The Office footprint centers on `(760, -3040)` with half-extents `300 x 250` wu.
+The Office Guide stands at `(540, -2640)`.
+The door approach is `(760, -2600)` and Back preserves the retained world position.
+The Office has no teaching-building zone, boot cohort entry, or CT visit reward.
+The human and agent paths share geometry from `packages/shared/src/constants/brainchain-office-world.ts`.
+The agent move menu contains the exact game-pixel approach `(12024, 8664)`.
+The geometry and navigation tests do not establish that a visual asset appears in the scene.
+
+The Office asset uses 11,311 triangles, one material, and one 1024 UASTC KTX2 texture.
+The 963,764-byte transfer uses a provisional 1 MiB exception because ETC1S and 512 textures introduce atlas seams.
+The complete 11-level mip chain requires an expected 1,398,128 BC7 texture GPU bytes. Actual-world resource measurements remain a release gate.
+The uniformly scaled model measures 588 x 694.58 x 486.40 wu and stays inside the collider.
+The static Office and guide add no physics body, animation loop, or boot cohort entry.
+DOM world labels use the existing overlay; they use no drei Text or Billboard.
+The 3D and 2D Office clicks use the same path and prompt predicates.
+E activates the nearby door or guide; reaching a requested click destination also activates it.
+The guide opens the service panel guide section, where the existing ElizaOS teacher chat remains available.
+The minimap and world map expose the same Office approach.
+Source fidelity and resource evidence: `docs/research/brainchain-2026-11-09/3d/compression-review.md`.
+
+
+Ground-cover resampling preserves 60 props with 50 merged meshes and 141,738 triangles.
+The Office footprint, door band, and guide remain clear of procedural props and seaweed.
+
+
 > **Strict rule:** every code change that adds, removes, repositions, rescales,
 > recolors, or otherwise changes a rendered thing in the open-world scene MUST
 > update this doc in the same diff. Reverse holds: changes to this doc require
@@ -214,10 +243,10 @@ Phase 6.2 positions (spread from original ≤600wu cluster to 800–1000wu ring)
 | Component | What it renders | World position | Source |
 |---|---|---|---|
 | `<QuestNpc>` | Quest-giver NPC standee | (-110, -2, -60) — near center | `lib/three/quest-npc.tsx` |
-| `<TownGuide>` | Nori the town-guide NPC | (0, -2, 240) — near center | `lib/three/town-guide.tsx` |
+| `<TownGuide>` | Nori the town-guide NPC | (0, -2, 400) — near center | `lib/three/town-guide.tsx` |
 | `<TownDirectorySign>` | Wooden signboard | center (0, y, 0) — currently rendered TWICE in `World3DCanvas.tsx`; L773 diagnostic should be removed | `lib/three/town-directory-sign.tsx` |
-| `<BazaarStall>` | `models/bazaar-fish-stall.glb` (400wu tall) | **(-800, -2, 300)** — west plaza ring | `lib/three/bazaar-stall.tsx` |
-| `<MarketplaceStall>` | `models/marketplace-food-stall.glb` (450wu tall) | **(800, 4, 300)** — east plaza ring | `lib/three/marketplace-stall.tsx` |
+| `<BazaarStall>` | `models/bazaar-fish-stall.glb` (400wu tall) | **(-1273, -2, -120)** — west plaza ring | `lib/three/bazaar-stall.tsx` |
+| `<MarketplaceStall>` | `models/marketplace-food-stall.glb` (450wu tall) | **(1273, 4, -120)** — east plaza ring | `lib/three/marketplace-stall.tsx` |
 | `<AuctionPodium>` | `models/auction-dome.glb` (380wu tall) + floating `jellyfish.glb` | **(0, 200, -1000)** — north plaza anchor | `lib/three/auction-podium.tsx` |
 | `<BountyBoardObject>` | Bounty board (imported but only mounted by some flows) | varies | `lib/three/bounty-board-object.tsx` |
 
@@ -282,3 +311,33 @@ Compact log. Single line per change.
 - 2026-05-13 — Ring 68→72 tiles. Decoration retune: TARGET_COUNT 30→60, DECO_INNER_EXCLUSION_R 2700→1500.
 - 2026-05-12 — Sandy's Treedome swapped to `sandy_tree_final.glb`. Krusty Krab + Chum Bucket restored from original GLBs (renamed -v2 to bust cache).
 - 2026-05-12 — `WorldContent.md` created as new canonical doc (split from 3dStructure.md).
+
+BrainChain 3da review corrections (2026-11-09): text focus suppresses manual input but preserves navigation, gravity, and proximity frames.
+Only the service-panel route suspends the retained world frame.
+Click-path movement spends each frame distance across reached waypoints in human, possessed NPC, and 2D paths. Every turn uses a separate collision check.
+The guide-only approach uses world `(390, -2540)` with a tested 12 wu interaction margin.
+The guide reuses the static lobster plush, fits its 80 wu collider, stays at most 96 wu tall, and follows the NPC visibility flag.
+Office prefetch uses its distance-based prop priority.
+The client planner uses integer cell keys and typed search arrays; controlled unreachable searches fell from 106-157 ms to 31-44 ms after warmup on the desktop.
+These timings do not establish Iris Xe performance.
+
+Office WebGPU compatibility: the renderer converts cloned normalized position, normal, and UV attributes to Float32 before first GPU upload.
+The shared GLB cache stays unchanged; teardown disposes only the Office geometry clones.
+The asset now uses a new v2 filename with a full mip chain.
+Verified actual-world PNG and Float32 KTX controls removed the severe quantized-attribute corruption; final new-bundle visual acceptance remains pending.
+
+BrainChain B4/B5 review update (2026-11-09): the three client path followers share a polyline step helper and consume the remaining frame distance without an intermediate idle frame.
+The Office labels stay hidden and noninteractive until the warm attachment reports ready; they fade from800 to4500wu.
+Search arrays persist across calls with generation stamps. Component labels reject disconnected targets before A*.
+A fresh Chrome156 desktop benchmark measured16.4ms cold and0ms warm for six disconnected queries, including first grid/component initialization.
+This is an adversarial grid-copy benchmark, not an Iris Xe measurement.
+The Float32 Office vertex budget is398,304bytes; WebGPU indices add135,732bytes, for534,036bytes of geometry.
+Together with the BC7 mip chain, the expected Office geometry/texture budget is1,932,164bytes before renderer bookkeeping.
+NPC visibility is a local graphics flag. It does not remove authoritative colliders; the Office Guide follows the existing town-guide collider policy.
+
+BrainChain B6/D1 review update (2026-11-09): 3D player navigation carries the game-pixel origin explicitly.
+The helper operates in path coordinates; collision and position commits receive centered world coordinates.
+Completion runs after the committed-position proximity callback, so building entry reads current proximity.
+The last traversed segment sets direction and facing; blocked movement preserves facing and reports idle.
+Only the final waypoint uses the existing six-unit arrival tolerance; intermediate turns retain precise collision checks.
+The demo NPC walk does not verify the real-player path. A new production-bundle real-player capture remains necessary.

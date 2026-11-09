@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+import { activityRequest } from './activity-request';
 const PARTY_POLL_MS = 5000;
 
 export interface PartyMember {
@@ -25,56 +25,39 @@ interface PartyResponse {
   alreadyInParty?: boolean;
 }
 
-function responseMessage(body: unknown, fallback: string): string {
-  if (!body || typeof body !== 'object') return fallback;
-  const record = body as Record<string, unknown>;
-  if (typeof record.message === 'string') return record.message;
-  if (typeof record.error === 'string') return record.error;
-  return fallback;
-}
-
-async function readPartyResponse(
-  response: Response,
-  fallback: string,
-): Promise<PartyResponse> {
-  const body: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(responseMessage(body, fallback));
-  }
-  return body as PartyResponse;
-}
-
-export function useParty(activityId: string | null) {
+export function useParty(activityId: string | null, options: { enabled?: boolean; isCurrent?: () => boolean } = {}) {
+  const enabled = options.enabled ?? activityId !== null;
+  const isCurrent = options.isCurrent;
   const [party, setParty] = useState<ActivityParty | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const generationRef = useRef(0);
+  const mutationErrorRef = useRef<string | null>(null);
 
   const refresh = useCallback(
     async (signal?: AbortSignal): Promise<ActivityParty | null> => {
-      if (!activityId) {
+      if (!enabled || isCurrent?.() === false) {
         setParty(null);
         setError(null);
         setLoaded(true);
         return null;
       }
-      const response = await fetch(`${API_BASE}/api/activities/party/me`, {
-        credentials: 'include',
-        signal,
-      });
-      const data = await readPartyResponse(response, 'Could not load your party');
+      const generation = generationRef.current;
+      const data = await activityRequest<PartyResponse>('/api/activities/party/me', {}, signal);
+      if (generation !== generationRef.current || signal?.aborted || isCurrent?.() === false) return null;
       setParty(data.party);
-      setError(null);
+      if (!data.party) mutationErrorRef.current = null;
+      setError(mutationErrorRef.current);
       setLoaded(true);
       return data.party;
     },
-    [activityId],
+    [activityId, enabled, isCurrent],
   );
 
   useEffect(() => {
     const generation = ++generationRef.current;
-    if (!activityId) {
+    if (!enabled) {
       setParty(null);
       setError(null);
       setLoaded(true);
@@ -110,10 +93,11 @@ export function useParty(activityId: string | null) {
     void tick();
     return () => {
       stopped = true;
+      ++generationRef.current;
       controller?.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [activityId, refresh]);
+  }, [activityId, enabled, refresh]);
 
   const mutate = useCallback(
     async (
@@ -121,27 +105,26 @@ export function useParty(activityId: string | null) {
       init: RequestInit,
       fallback: string,
     ): Promise<ActivityParty | null> => {
+      if (isCurrent?.() === false) return null;
+      const generation = generationRef.current;
       setBusy(true);
-      setError(null);
       try {
-        const response = await fetch(`${API_BASE}${path}`, {
-          ...init,
-          credentials: 'include',
-        });
-        const data = await readPartyResponse(response, fallback);
+        const data = await activityRequest<PartyResponse>(path, init);
+        if (generation !== generationRef.current || isCurrent?.() === false) return null;
         // Apply the mutation response immediately, then reconcile against the
         // canonical /party/me view so succession/disband state cannot drift.
+        mutationErrorRef.current = null;
         if ('party' in data) setParty(data.party);
         return await refresh();
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : fallback;
-        setError(message);
+        if (generation === generationRef.current) { mutationErrorRef.current = message; setError(message); }
         return null;
       } finally {
-        setBusy(false);
+        if (generation === generationRef.current) setBusy(false);
       }
     },
-    [refresh],
+    [refresh, isCurrent],
   );
 
   const createParty = useCallback(

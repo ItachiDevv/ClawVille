@@ -36,6 +36,7 @@ afterAll(() => {
 describe('stage pathname identity', () => {
   test.each([
     ['/game', 'world'],
+    ['/brainchain', 'world'],
     ['/cove', 'cove'],
     ['/kelp', 'kelp'],
     ['/trading-floor', 'trading-floor'],
@@ -64,6 +65,7 @@ describe('stage pathname identity', () => {
     '/cove/verify',
     '/game/x',
     '/trading-floor/x',
+    '/brainchain/x',
   ])('%s remains outside the stage', (pathname) => {
     expect(sceneIdForPathname(pathname)).toBeNull();
   });
