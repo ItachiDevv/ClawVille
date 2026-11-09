@@ -87,8 +87,10 @@ The combined 22-suite result remains pending after the funding callback-deadline
 The initial run exposed a stale signer receipt fixture; its owner added the required gas evidence before the passing run.
 An empty disposable PostgreSQL 18.6 database passed full-schema migration replay through 0116 twice, with 200 tables.
 Two retained-history bootstrap passes preserved 14 late capture records and four funding records exactly.
-These schema results do not resolve funding F2, whose deferred identity callback retained transaction locks beyond 2300 ms.
-Funding service approval remains withheld pending correction and independent liveness probes.
+The original F2 probe retained transaction locks beyond 2300 ms.
+Independent correction probes now confirm owner and authority callbacks release locks before deferred completion, with zero late sends.
+The corrected funding suite independently passed seven tests and 42 assertions; policy/client tests passed five tests and 32 assertions.
+Combined CI and activation evidence remain separate requirements.
 The protected Linux runner passed four suites and 12 tests under the declared Docker profile.
 These protected fixtures use synthetic keys and local files. They do not contact providers or chains.
 The required PostgreSQL runner also refused absent opt-in before connection.

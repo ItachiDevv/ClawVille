@@ -113,8 +113,9 @@ The funding panel correction passed independent3tests/21assertions, including re
 The capture schema review passed independent directSQL, callback visibility, fresh-schema and retained-history replay checks.
 The funding reviewer confirmed F2: a deferred identity callback retains a transaction and avatar lock beyond2300ms.
 A separate NOWAIT query refused with55P03. The probe released its deferred callback and exited cleanly.
-Funding service approval is withheld while its owner adds shared transaction deadlines and lock-release regressions.
-The combined build does not replace that review.
+The owner added shared transaction deadlines. Independent correction probes now confirm released locks and zero late sends.
+Captured bytes, nonce and uncertain liability remain intact. Independent funding tests passed7/42; policy/client tests passed5/32.
+This is scoped liveness approval. The combined build does not replace combined CI, authenticated staging or actual transaction evidence.
 
 Independent artifact review found three dependency runtimes absent from the shared admission map.
 The backend owner adds DecisionLog, ModelRegistry and TestUSDG checks with explicit negative regressions.
