@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-09 10:45Z (session claw2.0). **STAGING API = `34e7e5352`, WEB = `9a17d75dc` (same web code), live-checked 10:45Z: own AI part A (PROTOCOL 119, migration 0099) and the MCP body-limit fix (agent Studios calls through MCP answered 500).** PROD = `b74f1f942`. SCHEMA: prod-migration-pending: 0099.
+Last Audited: 2026-11-09 12:59Z (session claw2.0). **PROD API + WEB = `7dc9a0001` (promotion #27, PR #339), VERIFIED 12:57Z: own AI part A, Studios sign-in live fixes, MCP body-limit fix; PROTOCOL 119; migration 0099 applied.** STAGING = same code. SCHEMA: synced.
+
+Prior - Last Audited: 2026-11-09 10:45Z (session claw2.0). **STAGING API = `34e7e5352`, WEB = `9a17d75dc` (same web code), live-checked 10:45Z: own AI part A (PROTOCOL 119, migration 0099) and the MCP body-limit fix (agent Studios calls through MCP answered 500).** PROD = `b74f1f942`. SCHEMA: prod-migration-pending: 0099.
 
 Prior - Last Audited: 2026-11-09 05:35Z (session new-ville). **PROD API + WEB = `b74f1f942` (promotion #26, PR #338), VERIFIED 05:29Z: spend approval, Studios phase 3, hub reads, installer; PROTOCOL 117; migrations 0093-0098 applied.** STAGING code = `57db1b911` (same code). SCHEMA: synced.
 
@@ -740,6 +742,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-09 12:59Z (session claw2.0) - Promotion #27 ON PROD (`7dc9a0001`, PR #339, PROTOCOL 119, migration 0099), VERIFIED
+- **What changed:** own AI part A (wallet panel "Agent AI" card, `/api/agent-ai*`, own-AI model plugin and lane), the Studios sign-in live fixes (`f3b2d1963`, PROTOCOL 118) and the MCP body-limit fix (`middleware/safe-body-limit.ts`). Founder go 2026-11-09 ("Yep, go ahead").
+- **What broke + root cause:** nothing in this promotion. The body-limit fix closes an older bug: agent Studios calls through MCP answered 500 (on staging seen live; prod had the same code, never tested there).
+- **Verified:** release gates on staging API `34e7e5352`: agent-onboarding smoke 14/14, hosted-skill runtime probe ALL PASS (16). PR #339 checks green; merge commit carries `[skip-nori-update]` on its own line. Prod run 42619896082: gates, `migrate` and `deploy` success. Prod API and web containers `SOURCE_COMMIT=7dc9a0001` at 12:57Z (old web container gone); `/health` commit `7dc9a0001`; `GET /api/agent-ai` with no session -> 401; prod DB has `agent_ai_settings` (19 columns) and `agent_ai_usage` (8 columns) (read-only query in the prod API container); prod web chunk contains the card copy. Prod `/game` in Chrome: world, Town Center sign, HUD and side panel render; no console errors seen after load.
+- **NOT verified:** prod FPS; the Agent AI card on prod in a signed-in browser, phone or iPad; any agent on a real own key or a funded UsePod balance; agent Studios through MCP on prod (needs a prod agent session).
+- **Who it's for:** every human who wants a stronger AI for their hosted agent; every Studios sign-in user; every agent calling Studios through MCP.
+- **SCHEMA:** synced (0099 applied on prod by the CI migrate job).
 
 ### 2026-11-09 10:45Z (session claw2.0) - Own AI part A + MCP body-limit fix on staging (`a7ab804e6`..`34e7e5352`, PROTOCOL 119, migration 0099), live-checked
 - **What changed:** a human can power their hosted agent with their own AI key (OpenAI, Anthropic, OpenRouter, a pasted UsePod token) or a UsePod token ClawVille registers (funded on UsePod's own dashboard): wallet panel "Agent AI" card, routes `/api/agent-ai*`, per-avatar model plugin at priority 98 (OpenClaw 100 wins, router 95 is the fallback), daily limit with an atomic reservation per call, speed 25/20/15/10 s in an own-AI lane (`MAX_OWN_AI_AGENTS`, default 12), fallback to ClawVille AI on the limit, a rejected key, an empty balance or a missing model. Agent reads its status (`GET /api/agent-ai`); writes are human-only; a limit raise, a UsePod register and the UsePod link need the linked-wallet signature. New `middleware/safe-body-limit.ts` (used by `routes/agent-ai.ts`, `routes/vendor-studios.ts`).
