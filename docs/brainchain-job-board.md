@@ -10,11 +10,11 @@ Baseline: `2dd3bd0f5` merges staging `892514ad2` with the research commits.
 | Owner | Files or responsibility | State |
 | --- | --- | --- |
 | Lead | This board, budget ledger, evidence coordination, source images, release | Active |
-| protocol_review | Exact-result approval panel, tests and documentation; coordinated capture consent fields | C2 retained-transaction display correction active |
-| clawville_fit | Separate funding/exit operations,0116, API/UI/tools and associated knowledge | Verified parent-testnet interface implementation active |
-| backend | Separate retained unsigned capture authority,0115, scheduler integration and tests | Capture-submit consent coordination and real-database tests active |
+| protocol_review | Exact-result approval panel, tests and documentation | Terminal; scoped C2 evidence retained |
+| clawville_fit | Runtime provider integration, canonical probe guards, fixture prepare/attach and cleanup | Terminal; frozen source committed in c025c733a |
+| backend | Durable probe ledger and protected bootstrap | Terminal; frozen source committed in c025c733a |
 | Claude 3da | Required cross-model world review and final3Dcommit/push | Scoped world/queue reviews recorded; final release ownership remains |
-| identity_audit | CI runner, isolated fixture bootstrap and reports | Frozen through0114; new migration inventory follows source freeze |
+| identity_audit | CI runner, isolated fixture bootstrap and reports | Final local lanes passed through0118; read-only release prerequisite analysis |
 | Reconciler | Independent high-stakes review and scoped correction evidence | Consent final report interrupted by review-service rejection; partial evidence retained |
 
 Other shared files require explicit ownership before edits.
@@ -43,10 +43,14 @@ The existing Claude CLI reports a subscription login on itachi222.
 
 ## Next actions
 
-1. Finish exact approval details, retained unsigned capture recovery and supported funding/exit recovery.
-2. Review new schema/service boundaries and update the isolated CI migration inventory.
-3. Rebuild the combined source and verify human, connected-agent and hosted-agent paths.
-4. Complete coherent source commits, staging deployment, live checks and the promotion PR.
+1. Resolve the existing release authentication prerequisite; never substitute the main GitHub identity.
+2. Prepare protected staging authority against the final source and exact fixture identities, before any paid runtime probe.
+3. Execute staging health, manual, authenticated human/agent, browser and testnet checks when prerequisites exist.
+4. Preserve unsupported partner requirements and prepare the promotion PR after staging evidence exists.
+
+Latest application checkpoint: c025c733a. Pure80 suites/609 tests, PostgreSQL26/173 and protected Linux4/12 passed locally.
+Expected skips: pure1, PostgreSQL0, Linux5. No paid provider request or deployment occurred.
+The final runtime and bootstrap source reviews passed their scoped boundaries. Remote workflow and live evidence remain absent.
 
 Current detailed state: docs/brainchain-current-handoff.md and docs/brainchain-release-requirements.md.
 The checkpoints below preserve historical observations. Their process IDs, active roles and incomplete-scope claims are not current.

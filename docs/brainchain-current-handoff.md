@@ -220,3 +220,26 @@ Root staged the reviewed52-path candidate before final CI. The final commit also
 Next: commit the exact reviewed candidate; inspect protected-authority preparation and release prerequisites without paid calls or deployment claims.
 Release authentication and browser access remain absent. Partner credit/settlement contracts remain incomplete.
 All API budgets remain spent0/reserved0. No root genesis or reservation exists.
+
+## Release pickup after source commit
+
+Application commit: c025c733a0ca204ab4ad88a6f40bb8e3de262467.
+Root committed56 exact reviewed paths. The worktree was clean immediately after that commit.
+The CRLF-aware staged whitespace check passed with a command-local setting; no global configuration or hook bypass occurred.
+Identity reviewer refreshed source-only measurement at that commit without a provider, database, signature, reservation or file write.
+Protocol127:46sections,max24257bytes,SHA63147c1474bbea48c1a281edcfca6549c399dddad2c797451f2a13d265da2755.
+Curriculum:11sections,max3719bytes,SHA2a5696a82c6829e712e696ec158bf16be18a44f8bdc10fbe0f45759d7a05f517.
+The135-call/27000microUSD ceiling remains a proposal. Byte counts do not prove token acceptance.
+Existing preparation, publisher, registrar and hydration tools cover the next release flow. External signing is intentional; no product signing helper is missing.
+
+No agent or command remains active after this checkpoint. Root updated the job board and application checkpoint to remove superseded active-task claims.
+Next release execution needs release authentication, staging source deployment and a verified persistent Linux UID/path layout.
+Only then prepare exact staging fixture identities, publish protected authority and register the run against final deployed source hashes.
+Do not publish an eight-minute run against a source commit that is not deployed. Do not provision a dedicated key before those prerequisites.
+Actual browser access, authenticated parity, provider consumption, testnet lifecycle and partner credit/refund contracts remain unresolved.
+The existing release profile-location question remains pending; do not ask for secret contents or repeat failed account paths without new information.
+Do not retry the rejected C1 review or Chrome launch. No workaround may bypass those rejections.
+
+This turn made progress through final CI, independent review, a source commit and fresh offline preflight.
+The goal stays ACTIVE and unfinished. Repeated-impasse status has not been established by this progress turn.
+On continuation, check for new user input or restored release prerequisites; do not rerun unchanged successful local suites.

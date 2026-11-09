@@ -38,8 +38,8 @@ No hook bypass or global Git whitespace change belongs to this checkpoint.
 
 ## Remaining requirements
 
-The live staging runtime probe needs a bounded provider transport before any paid call.
-Its proposed smaller scope and exact missing accounting boundary appear in the runtime probe cost plan.
+The live staging runtime probe now has a reviewed bounded provider transport and durable accounting at checkpoint c025c733a.
+It still needs protected deployment configuration, an exact fixture manifest and a signed reservation before any paid call.
 The protected persistent root store, signed authority, paid trial, and actual testnet lifecycle remain absent.
 Public execution and transmission gates remain closed.
 Exact-consent C1 retains partial independent correction evidence; its rejected final review is not a full approval.
@@ -48,3 +48,15 @@ Release authentication, staging deployment, remote CI, authenticated parity, and
 No mainnet money, live debt, partner message, or production merge occurred.
 
 PARITY: human path: BrainChain Office panel and authenticated REST; agent path: bound-session MCP and hosted actions; settlement binds to the resolved owner avatar, with authenticated staging evidence pending.
+
+## Runtime and ledger checkpoint c025c733a
+
+This later checkpoint adds migration0118, protected bootstrap, scoped runtime providers and authenticated probe guards.
+The final pure lane passed80 suites/609 tests with one expected Docker skip.
+The PostgreSQL lane passed26 suites/173 tests without skips.
+The protected Linux lane passed four suites/12 tests with five expected skips.
+API, runtime and script/test TypeScript checks passed. The documentation path check passed807 references with70 baseline entries.
+Root verified33 runtime hashes, seven bootstrap hashes and four test-fixture hashes after the final lanes.
+Scoped independent bootstrap and runtime reviews passed. Their reports retain explicit live-evidence limits.
+The CRLF-aware staged whitespace check passed without a Git configuration change or hook bypass.
+No paid provider request, persistent root authority, staging deployment or mainnet transaction occurred.
