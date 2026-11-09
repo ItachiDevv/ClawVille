@@ -109,7 +109,13 @@ function makeUpdate() {
   });
 }
 
-mock.module('@clawville/database', () => ({ ...realDatabase, db: dbProxy }));
+// Ordinary identity fixtures have no persistent probe marker; other raw IO refuses.
+mock.module('@clawville/database', () => ({ ...realDatabase, db: dbProxy,
+  getPostgresClient: () => async (query: TemplateStringsArray) => {
+    if (!query.join('').includes('FROM brainchain_probe_markers')) throw new Error('unexpected identity fixture raw database read');
+    return [];
+  },
+}));
 
 const { requireAuthOrAgentSession, AGENT_SESSION_HEADER } = await import('../require-auth-or-agent');
 const { npcSimulation } = await import('../../services/npc-simulation');

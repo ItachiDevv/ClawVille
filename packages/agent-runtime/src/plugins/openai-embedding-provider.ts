@@ -25,6 +25,8 @@ import {
   type IAgentRuntime,
 } from '@elizaos/core';
 
+import type { ProbeRuntimeBoundary } from '../probe-runtime';
+
 const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 
 // HARD-PINNED model + dimension. text-embedding-3-small supports the
@@ -44,6 +46,7 @@ const MODEL = 'text-embedding-3-small';
 const DIMS = 1536;
 
 export interface OpenAIEmbeddingConfig {
+  probe?: ProbeRuntimeBoundary;
   /** Fallback to process.env.OPENAI_API_KEY if omitted. */
   apiKey?: string;
 }
@@ -115,6 +118,7 @@ export function createOpenAIEmbeddingPlugin(
       // probe and the live vectors can never diverge.
       return new Array(DIMS).fill(0);
     }
+    if (config.probe) return config.probe.embed(text, 'memory');
     return embed(text, config);
   };
 

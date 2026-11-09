@@ -19,7 +19,7 @@ CI refuses that fallback even when the flag exists. Credentials never appear in 
 
 The PostgreSQL lane runs fixture DDL sequentially and preserves unrelated databases.
 Before tests, its guarded bootstrap creates minimal owner tables and the canonical sessions shape.
-It applies vendor ledger migration 0090 and BrainChain migrations 0100 through 0117.
+It applies vendor ledger migration 0090 and BrainChain migrations 0100 through 0118.
 Existing signer tables skip legacy migration 0102, whose old constraints exclude retained result signatures.
 Migration 0106 supplies the current signer constraints.
 After every suite, including failures, bootstrap restores migrations 0112, 0115, then 0117 and verifies the exact-consent function wrapper.
@@ -156,3 +156,78 @@ The four added protocol suites all executed with zero skips.
 Evidence: .brainchain-work/ci-pure-final-protocol127.log and .brainchain-work/ci-pure-results.json.
 This supersedes the earlier 68-suite pure result. PostgreSQL remains 23 suites/151 tests/zero skips; Linux remains four suites/12 tests/five expected skips.
 No PostgreSQL, protected-source, or production behavior changed in this coverage correction.
+
+## Migration 0118 CI preparation
+
+Status: inventory preparation only; migration and runtime owners have not frozen all source.
+The proposed probe ledger adds probe-embedding-budget.test.ts to the ordered PostgreSQL lane.
+The provider suite probe-embedding-provider.test.ts already matches pure service discovery.
+Runtime plugin/provider tests require explicit classification because isolated-task discovery does not cover those directories.
+
+Shared close and root reconciliation now read probe tables through compute-accounting.ts.
+Bootstrap must apply 0118 before inference-budget-db, inference-proxy-db, root-compute-store PostgreSQL, and worker-owner-policy execute.
+Applying 0118 only inside the new probe suite is insufficient.
+Preserve the retained-history 0102 guard and exact-consent restoration through 0117.
+The current 0118 draft adds its own functions and triggers; no older wrapper replacement is evident in this pre-read.
+Confirm that property again at migration freeze before deciding whether per-suite restoration also needs 0118.
+
+The protected root-store bundle now includes the shared accounting dependency.
+Rebuild and hash-check the same five-file mount after freeze, then rerun the protected Linux lane.
+Its empty-accounting filesystem fixtures do not prove mixed-ledger PostgreSQL reconciliation.
+The real PostgreSQL suite and new probe ledger tests must provide that evidence separately.
+No combined lane ran during this preparation, and prior passing reports remain unchanged.
+## Frozen 0118 registration and protected lane
+
+Bootstrap now includes 19 migrations, 0100 through 0118, before any accounting suite.
+The PostgreSQL inventory now contains 24 suites, including probe-embedding-budget.test.ts.
+Migration 0118 adds new functions only. Per-suite wrapper restoration remains 0112, 0115, then 0117.
+The historical 0102 guard remains intact.
+The independent database reviewer owns the isolated fixture while fresh-schema and retained-history checks run.
+Scoped CI accounting tests await that exclusive window; no combined runtime lane runs before runtime freeze.
+
+The changed root accounting dependency required fresh protected bundles.
+The five-file manifest and import checks passed, followed by four Linux suites and 12 tests with five expected skips.
+Evidence: .brainchain-work/ci-linux-0118.log and .brainchain-work/ci-linux-results.json.
+Previous protected results and manifest remain under before-0118 filenames.
+These filesystem fixtures retain their declared synthetic-accounting scope; they do not replace mixed-ledger PostgreSQL proof.
+## Runtime suite classification
+
+The ordered PostgreSQL lane includes probe-bootstrap.test.ts after the probe budget suite.
+The cleanup suite now lives at apps/api/scripts/brainchain/probe-runtime-cleanup.test.ts and has an explicit PostgreSQL entry before isolated cognition.
+Its path keeps script imports outside the API source root. The runner restores database wrappers after this suite, including failures.
+Cleanup uses the guarded actual PostgreSQL fixture and requires migration 0118; it cannot run in the pure lane.
+The current PostgreSQL inventory contains 26 suites, including the separate actual isolated-cognition suite.
+probe-runtime-scope.test.ts matches existing service pure discovery and runs in its own process, which isolates its module mocks.
+packages/agent-runtime/src/probe-runtime.test.ts now has an explicit pure-lane entry.
+It exercises the installed Eliza core with controlled embeddings and an in-memory database; it is not PostgreSQL evidence.
+All three suites require zero skips in their assigned lanes.
+No combined lane ran during this classification; runtime source freeze remains required first.
+
+The pure lane now explicitly includes apps/api/scripts/agent-connect/hosted-skill-runtime-probe.test.ts in its own process.
+This closes the scripts-directory discovery gap for prepared attach, phase options, gateway capture, and cleanup-order tests.
+These tests use controlled transports and SQL responses; they do not prove actual PostgreSQL or protected Linux file behavior.
+The actual Hono request tests remain in probe-runtime-scope.test.ts, which service discovery already includes in a separate process.
+The actual PostgreSQL cleanup suite remains in the ordered PostgreSQL lane.
+Independent protected-artifact probes remain separate evidence in docs/brainchain-probe-bootstrap-review.md; this inventory change does not add them to CI.
+No combined test lane ran for this inventory change. Final runtime source freeze remains required.
+
+## Final runtime checkpoint lanes
+
+The frozen runtime checkpoint passed 26 PostgreSQL suites and 173 tests with zero skips on the isolated 55440 fixture.
+This includes prepared bootstrap, actual cleanup, exact capture, and the actual isolated-cognition exchange.
+Fresh protected bundles passed four Linux suites and 12 tests with five declared skips.
+All 33 runtime manifest hashes matched before and after these lanes.
+The prepared artifact wrapper substring and shared root-store hashes also matched their independent Linux evidence.
+Evidence: .brainchain-work/ci-postgres-runtime-final.log, .brainchain-work/ci-linux-runtime-final.log, and the corresponding result JSON files.
+
+The first pure attempt failed three human-cookie cases because old database mocks lacked the new canonical marker lookup.
+The owner corrected only test fixtures and retained rejection of unexpected raw SQL.
+The failed log remains at .brainchain-work/ci-pure-runtime-auth-failure.log.
+The pure inventory now includes four explicit, separate middleware and gateway suites for owner proof, TTL renewal, owner reads, and Hydra chat.
+Their targeted tests passed before the combined pure retry. This evidence does not claim remote CI or staging execution.
+The final pure retry passed 80 isolated suites and 609 tests, with one expected Docker-case skip.
+The PostgreSQL lane executes that Docker case separately; it passed there with zero skips.
+Evidence: .brainchain-work/ci-pure-runtime-final-retry.log and .brainchain-work/ci-pure-results.json.
+All 33 runtime source hashes and all four corrected fixture hashes matched after the final pure run.
+The final local process handles exited zero: PostgreSQL 29418 and pure retry 76658.
+The first pure handle 50850 exited one; its evidence remains preserved and is not a passing result.

@@ -1,3 +1,4 @@
+import {lockComputeAccounting,assertComputeAccounting} from './compute-accounting';
 import {assertConfiguredAuthorityPolicy,assertConfiguredAuthorityEvidence} from './configured-authority';
 import {observeConfiguredAuthority,createConfiguredAuthorityReader,type ConfiguredAuthorityReader} from './configured-authority-reader';
 import {databaseDate} from './database-values';
@@ -67,24 +68,26 @@ export class DurableInferenceProxy {
   }
 
   /** Root only: this records a root ledger reservation that already exists. */
-  async approveEnvelope(raw: z.infer<typeof envelopeSchema>): Promise<{ id: string }> {
+  async approveEnvelope(raw: z.infer<typeof envelopeSchema>, expectedEnvelopeId?: string): Promise<{ id: string }> {
+    if(expectedEnvelopeId!==undefined)uuid.parse(expectedEnvelopeId);
     const input = envelopeSchema.parse(raw);
     if (!this.verifyRoot) throw new BrainchainComputeError('budget_refused');
     try { await this.verifyRoot(Object.freeze({ ...input, expiresAt: new Date(input.expiresAt) })); }
     catch { throw new BrainchainComputeError('budget_refused'); }
     return this.database.begin(async tx => {
+      if(expectedEnvelopeId!==undefined){await tx`SET LOCAL lock_timeout='1000ms'`;await tx`SET LOCAL statement_timeout='2000ms'`;}
       await tx`INSERT INTO brainchain_compute_budgets(job_id,provider,cap_micros) VALUES(${input.jobId},${input.provider},10000000) ON CONFLICT(job_id,provider) DO NOTHING`;
       const [budget] = await tx`SELECT * FROM brainchain_compute_budgets WHERE job_id=${input.jobId} AND provider=${input.provider} FOR UPDATE`;
       const [time] = await tx`SELECT clock_timestamp() AS now`;
       if (!budget || databaseDate(input.expiresAt) <= databaseDate(time!.now) || input.expiresAt.getTime() > databaseDate(time!.now).getTime() + 86_400_000) throw new BrainchainComputeError('expired');
       const [prior] = await tx`SELECT * FROM brainchain_compute_envelopes WHERE root_reservation_id=${input.rootReservationId}`;
       if (prior) {
-        if (prior.budget_id !== budget.id || prior.limit_micros !== input.limitMicros.toString()
+        if ((expectedEnvelopeId!==undefined && prior.id!==expectedEnvelopeId) || prior.budget_id !== budget.id || prior.limit_micros !== input.limitMicros.toString()
           || prior.approval_ref !== input.approvalRef || databaseDate(prior.expires_at).getTime() !== input.expiresAt.getTime()) throw new BrainchainComputeError('budget_refused');
         return { id: String(prior.id) };
       }
       if (BigInt(budget.allocated_micros) + input.limitMicros > COMPUTE_JOB_CAP_MICROS) throw new BrainchainComputeError('budget_refused');
-      const id = randomUUID();
+      const id = expectedEnvelopeId ?? randomUUID();
       await tx`INSERT INTO brainchain_compute_envelopes(id,budget_id,root_reservation_id,approval_ref,limit_micros,expires_at)
         VALUES(${id},${budget.id},${input.rootReservationId},${input.approvalRef},${input.limitMicros.toString()},${tx.typed(input.expiresAt.toISOString(),25)}::timestamptz)`;
       await tx`UPDATE brainchain_compute_budgets SET allocated_micros=allocated_micros+${input.limitMicros.toString()} WHERE id=${budget.id}`;
@@ -337,6 +340,8 @@ export class DurableInferenceProxy {
     uuid.parse(envelopeId);
     return this.database.begin(async tx => {
       const envelope = await this.lockEnvelope(tx, envelopeId);
+      const totals=assertComputeAccounting(envelope,await lockComputeAccounting(tx,[envelopeId]));
+      if(totals.reserved!==0n||totals.uncertain!==0n)throw new BrainchainComputeError('uncertain');
       if (envelope.state === 'closed' && envelope.reconciliation_id) return {
         releasedMicros: (BigInt(envelope.limit_micros) - BigInt(envelope.settled_micros)).toString(), reconciliationId: envelope.reconciliation_id };
       if (envelope.state !== 'open' || BigInt(envelope.reserved_micros) !== 0n || BigInt(envelope.uncertain_micros) !== 0n) throw new BrainchainComputeError('uncertain');

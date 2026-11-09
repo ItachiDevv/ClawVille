@@ -1,3 +1,4 @@
+import { initializeProbeRuntimeDeployment } from './services/brainchain/probe-bootstrap';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
@@ -197,6 +198,9 @@ import {
 } from './services/trading-execution';
 import { startTradingDrawdownPoller, stopTradingDrawdownPoller } from './services/trading-guardrails';
 import type { AppContext } from './types';
+
+// Hydrate trusted probe scope before boot warmup, restore or listeners.
+await initializeProbeRuntimeDeployment();
 
 if (
   process.env.CLAWPUMP_FIXTURE_DIR &&

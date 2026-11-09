@@ -505,3 +505,5 @@ export * from './brainchain-worker-policy';
 export * from './brainchain-exact-recovery';
 export * from './brainchain-exact-capture';
 export * from './brainchain-funding-exit';
+
+export * from './brainchain-probe';

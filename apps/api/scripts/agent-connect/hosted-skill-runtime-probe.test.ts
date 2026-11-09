@@ -300,3 +300,41 @@ test('controlled gateway emits one appearance action only for its requested deci
     expect(await send(prompt)).not.toContain('[ACTION:');
   } finally { mock.server.stop(true); }
 });
+
+test('BrainChain cleanup always disables autonomy before gateway stop and disposes rows last',async()=>{
+ const {runBrainchainProbeCleanup}=await import('./hosted-skill-runtime-probe');const calls:string[]=[];
+ const step=(name:string)=>async()=>{calls.push(name);};
+ await runBrainchainProbeCleanup({stopAdmission:step('admission'),autonomyOff:step('autonomy:false'),stopRuntime:step('runtime'),disconnect:step('disconnect'),stopGateway:()=>{calls.push('gateway');},removeFixtures:step('rows'),closeDatabase:step('database')});
+ expect(calls).toEqual(['admission','autonomy:false','runtime','disconnect','gateway','rows','gateway','database']);
+});
+test('BrainChain cleanup failure still stops autonomy/runtime/gateway and retains rows',async()=>{
+ const {runBrainchainProbeCleanup}=await import('./hosted-skill-runtime-probe');const calls:string[]=[];
+ const step=(name:string)=>async()=>{calls.push(name);};
+ await expect(runBrainchainProbeCleanup({stopAdmission:step('admission'),autonomyOff:step('autonomy:false'),stopRuntime:async()=>{calls.push('runtime');throw new Error('held');},disconnect:step('disconnect'),stopGateway:()=>{calls.push('gateway');},removeFixtures:step('rows'),closeDatabase:step('database')})).rejects.toThrow('cleanup could not verify');
+ expect(calls).toEqual(['admission','autonomy:false','runtime','disconnect','gateway','gateway','database']);
+});
+test('prepared phase options are explicit and cannot combine attach or legacy disposal escapes',()=>{
+ const prior=process.env.CLAWVILLE_ENV;process.env.CLAWVILLE_ENV='staging';const base=['--api','https://api-staging.clawville.world','--brainchain','--autonomous-decision'];
+ try{
+ expect(parseCli([...base,'--prepare-fixture','/protected/probe.json']).prepareFixture).toBe('/protected/probe.json');
+ expect(parseCli([...base,'--attach-fixture','/protected/probe.json']).attachFixture).toBe('/protected/probe.json');
+ expect(()=>parseCli([...base,'--prepare-fixture','/one','--attach-fixture','/two'])).toThrow();expect(()=>parseCli([...base,'--prepare-fixture','/one','--keep'])).toThrow();
+ }finally{if(prior===undefined)delete process.env.CLAWVILLE_ENV;else process.env.CLAWVILLE_ENV=prior;}
+});
+
+test('prepared attach preserves exact identities and rejects changed auth, source and run',async()=>{
+ const {attachPreparedProbe}=await import('./hosted-skill-runtime-probe');const {lucia}=await import('../../src/lib/auth');
+ const key=nacl.sign.keyPair(),sessionId=crypto.randomUUID(),userId=crypto.randomUUID(),avatarId=crypto.randomUUID(),platformAgentId=crypto.randomUUID(),runId=crypto.randomUUID();
+ const manual='source protocol',curriculum='source curriculum';const hash=(text:string)=>new Bun.CryptoHasher('sha256').update(text).digest('hex');
+ const prepared:Parameters<typeof attachPreparedProbe>[1]={version:1,runId,gatewayPort:18745,expiresAtMs:Date.now()+120000,protocolHash:hash(manual),fixture:{userId,avatarId,platformAgentId,sessionId,cookie:lucia.createSessionCookie(sessionId).serialize(),name:'PreparedFixture',identitySecretKey:bs58.encode(key.secretKey)}};
+ const row={identity_pubkey:bs58.encode(key.publicKey),created_via:'agent_exchange',expires_at:new Date(Date.now()+3600000),status:'pending',customization:{gateway:{gatewayUrl:'http://127.0.0.1:18745'}},state:'active',manifest_hash:'a'.repeat(64),manifest:{runId,userId,avatarId,platformAgentId,runtimeAgentId:platformAgentId,apiOrigin:'https://api-staging.clawville.world',protocolHash:hash(manual),curriculumHash:hash(curriculum),expiresAtMs:Date.now()+120000}};
+ const queries:string[]=[];const query=Object.assign(async(strings:TemplateStringsArray)=>{queries.push(strings.join(''));return [row];},{unsafe:async()=>[{database_markers:['clawville.env=staging'],session_marker:'staging'}]});
+ const client=query as unknown as Parameters<typeof attachPreparedProbe>[0];
+ const result=await attachPreparedProbe(client,prepared,'https://api-staging.clawville.world',manual,curriculum);expect(result.userId).toBe(userId);expect(result.platformAgentId).toBe(platformAgentId);expect(result.identitySecretKey.length).toBe(64);
+ await expect(attachPreparedProbe(client,{...prepared,fixture:{...prepared.fixture,cookie:'changed'}},'https://api-staging.clawville.world',manual,curriculum)).rejects.toThrow();
+ await expect(attachPreparedProbe(client,prepared,'https://api-staging.clawville.world','changed source',curriculum)).rejects.toThrow();
+ row.manifest.userId=crypto.randomUUID();await expect(attachPreparedProbe(client,prepared,'https://api-staging.clawville.world',manual,curriculum)).rejects.toThrow();row.manifest.userId=userId;
+ row.created_via='password';await expect(attachPreparedProbe(client,prepared,'https://api-staging.clawville.world',manual,curriculum)).rejects.toThrow();row.created_via='agent_exchange';
+ row.state='stopped';await expect(attachPreparedProbe(client,prepared,'https://api-staging.clawville.world',manual,curriculum)).rejects.toThrow();
+ expect(queries.every(sql=>sql.trimStart().startsWith('SELECT'))).toBe(true);
+});

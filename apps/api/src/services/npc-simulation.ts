@@ -1,3 +1,4 @@
+import { assertProbeOperationAllowed } from './brainchain/probe-runtime-scope';
 import {
   NPC_DEFINITIONS,
   NPC_BUILDING_CENTERS,
@@ -6106,6 +6107,11 @@ class NpcSimulation {
 
       let messages;
       if (isAgentConvo) {
+        for (const body of [initiator, partner]) {
+          const id = this.npcOverrides.get(body.id);
+          const config = id ? this.agentBotSessions.get(id)?.config : undefined;
+          if (config?.avatarId) await assertProbeOperationAllowed({ avatarId: config.avatarId });
+        }
         messages = await generateOpenClawConversation(
           def1,
           def2,

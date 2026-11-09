@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { readRootTrialRecord, writeRootTrialRecord } from '../../src/services/brainchain/root-compute-store';
+import { BRAINCHAIN_PROBE_CHAT_TEXT, brainchainProbeDirective } from '../../../../packages/agent-runtime/src/probe-runtime';
 /**
  * Release gate for hosted skill/manual prompt composition.
  *
@@ -35,6 +37,8 @@ const DECLARED_GATEWAY_MARKER = 'CV_PROBE_DECLARED_GATEWAY_REPLY';
 const cliSchema = z.object({
   api: z.string().url(),
   brainchain: z.boolean(),
+  prepareFixture: z.string().optional(),
+  attachFixture: z.string().optional(),
   keep: z.boolean(),
   withEcho: z.boolean(),
   autonomousDecision: z.boolean(),
@@ -72,6 +76,8 @@ class ProbeFailure extends Error {}
 interface CliOptions {
   api: string;
   brainchain: boolean;
+  prepareFixture?: string;
+  attachFixture?: string;
   keep: boolean;
   withEcho: boolean;
   autonomousDecision: boolean;
@@ -85,8 +91,67 @@ interface Fixture {
   sessionId: string;
   cookie: string;
   name: string;
-  /** Ephemeral probe identity only; never logged or persisted. */
+  probeManifestHash?: string;
+  probeDeadlineMs?: number;
+  /** Ephemeral probe identity only; a prepared run retains it in its protected artifact. */
   identitySecretKey: Uint8Array;
+}
+
+const preparedProbeSchema=z.object({version:z.literal(1),runId:z.string().uuid(),gatewayPort:z.literal(18745),expiresAtMs:z.number().int().positive(),protocolHash:z.string().regex(/^[a-f0-9]{64}$/),fixture:z.object({userId:z.string().uuid(),avatarId:z.string().uuid(),platformAgentId:z.string().uuid(),sessionId:z.string().uuid(),cookie:z.string().min(1).max(4096),name:z.string().min(1).max(30),identitySecretKey:z.string().min(64).max(128)}).strict()}).strict();
+type PreparedProbe=z.infer<typeof preparedProbeSchema>;
+export async function writePreparedProbe(path:string,value:PreparedProbe):Promise<void>{
+ if(process.platform!=='linux'||!process.getuid)throw new ProbeFailure('prepared fixture artifacts require Linux');
+ const parsed=preparedProbeSchema.parse(value);
+ if(parsed.expiresAtMs<=Date.now()||parsed.expiresAtMs>Date.now()+15*60*1000)throw new ProbeFailure('prepared artifact expired');
+ await writeRootTrialRecord(path,process.getuid(),parsed);
+}
+export async function readPreparedProbe(path:string):Promise<PreparedProbe>{
+ if(process.platform!=='linux'||!process.getuid)throw new ProbeFailure('prepared fixture artifacts require Linux');
+ const value=preparedProbeSchema.parse(JSON.parse(await readRootTrialRecord(path,process.getuid())));
+ if(value.expiresAtMs<=Date.now()||value.expiresAtMs>Date.now()+15*60*1000)throw new ProbeFailure('prepared artifact changed or expired');
+ return value;
+}
+export async function attachPreparedProbe(client:postgres.Sql,prepared:PreparedProbe,apiBase:string,manual:string,curriculum:string):Promise<Fixture>{
+  await assertStrictBrainchainMarker(client);
+  if(sha256Hex(manual)!==prepared.protocolHash)throw new ProbeFailure('prepared source mismatch');
+  const f=prepared.fixture,secret=bs58.decode(f.identitySecretKey);
+  if(secret.length!==64)throw new ProbeFailure('prepared identity mismatch');
+  const key=nacl.sign.keyPair.fromSecretKey(secret);
+  if(!nacl.verify(nacl.sign.keyPair.fromSeed(secret.slice(0,32)).publicKey,key.publicKey))throw new ProbeFailure('prepared identity mismatch');
+  const {lucia}=await import('../../src/lib/auth');
+  if(lucia.createSessionCookie(f.sessionId).serialize()!==f.cookie)throw new ProbeFailure('prepared session cookie mismatch');
+  const [row]=await client`SELECT u.identity_pubkey,s.created_via,s.expires_at,p.status,p.customization,r.manifest,r.manifest_hash,r.state FROM users u JOIN avatars v ON v.user_id=u.id JOIN platform_agents p ON p.id=v.platform_agent_id AND p.user_id=u.id JOIN sessions s ON s.user_id=u.id JOIN brainchain_probe_markers m ON m.platform_agent_id=p.id AND m.user_id=u.id AND m.avatar_id=v.id JOIN brainchain_probe_runs r ON r.id=m.run_id WHERE u.id=${f.userId}::uuid AND v.id=${f.avatarId}::uuid AND p.id=${f.platformAgentId}::uuid AND s.id=${f.sessionId} AND r.id=${prepared.runId}::uuid`;
+  const manifest=z.object({runId:z.literal(prepared.runId),userId:z.literal(f.userId),avatarId:z.literal(f.avatarId),platformAgentId:z.literal(f.platformAgentId),runtimeAgentId:z.literal(f.platformAgentId),apiOrigin:z.literal(apiBase),protocolHash:z.literal(prepared.protocolHash),curriculumHash:z.literal(sha256Hex(curriculum)),expiresAtMs:z.number()}).passthrough().safeParse(row?.manifest);
+  if(!row||!manifest.success||row.state!=='active'||manifest.data.expiresAtMs<=Date.now()+30000||row.created_via!=='agent_exchange'||new Date(row.expires_at).getTime()<=Date.now()||row.identity_pubkey!==bs58.encode(key.publicKey)||!['pending','stopped'].includes(row.status)||row.customization?.gateway?.gatewayUrl!==`http://127.0.0.1:${prepared.gatewayPort}`)throw new ProbeFailure('prepared fixture authority mismatch');
+  return {...f,identitySecretKey:secret,probeManifestHash:String(row.manifest_hash),probeDeadlineMs:manifest.data.expiresAtMs};
+}
+
+/** Stop-only cleanup keeps all allocations and unresolved calls unchanged. */
+export async function stopPreparedProbeAdmission(client:postgres.Sql,runId:string,fixture:Pick<Fixture,'userId'|'avatarId'|'platformAgentId'|'probeManifestHash'>):Promise<void>{
+  const manifestHash=fixture.probeManifestHash;
+  if(!manifestHash)throw new ProbeFailure('cleanup manifest unavailable');
+  await client.begin(async tx=>{
+    await tx`SET LOCAL lock_timeout='1000ms'`;
+    await tx`SET LOCAL statement_timeout='2000ms'`;
+    const [owner]=await tx`SELECT r.envelope_id,e.budget_id FROM brainchain_probe_runs r JOIN brainchain_compute_envelopes e ON e.id=r.envelope_id WHERE r.id=${runId}::uuid`;
+    if(!owner)throw new ProbeFailure('cleanup run missing');
+    await tx`SELECT id FROM brainchain_compute_budgets WHERE id=${owner.budget_id} FOR UPDATE`;
+    await tx`SELECT id FROM brainchain_compute_envelopes WHERE id=${owner.envelope_id} FOR UPDATE`;
+    const [run]=await tx`SELECT r.id,r.state,r.manifest_hash,m.user_id,m.avatar_id,m.platform_agent_id FROM brainchain_probe_runs r JOIN brainchain_probe_markers m ON m.run_id=r.id AND m.platform_agent_id=r.platform_agent_id WHERE r.id=${runId}::uuid FOR UPDATE OF r`;
+    if(!run||!['active','stopped'].includes(run.state)||run.manifest_hash!==manifestHash||run.user_id!==fixture.userId||run.avatar_id!==fixture.avatarId||run.platform_agent_id!==fixture.platformAgentId)throw new ProbeFailure('cleanup owner mismatch');
+    const changed=await tx`UPDATE brainchain_probe_runs SET state='stopped' WHERE id=${runId}::uuid AND manifest_hash=${manifestHash} RETURNING id`;
+    if(changed.length!==1)throw new ProbeFailure('cleanup stop refused');
+  });
+}
+
+export async function runBrainchainProbeCleanup(steps:{stopAdmission:()=>Promise<void>;autonomyOff:()=>Promise<void>;stopRuntime:()=>Promise<void>;disconnect:()=>Promise<void>;stopGateway:()=>void;removeFixtures:()=>Promise<void>;closeDatabase:()=>Promise<void>}):Promise<void>{
+ let failed=false;
+ try {
+  for(const step of [steps.stopAdmission,steps.autonomyOff,steps.stopRuntime,steps.disconnect]){try{await step();}catch{failed=true;}}
+  steps.stopGateway();
+  if(!failed)await steps.removeFixtures();
+  if(failed)throw new ProbeFailure('cleanup could not verify complete disposal of probe resources');
+ }finally{try{steps.stopGateway();}finally{await steps.closeDatabase();}}
 }
 
 interface CapturedGatewayRequest {
@@ -133,7 +198,10 @@ export function parseCli(args: string[]): CliOptions {
   const seen = new Set<string>();
   for (let i = 0; i < args.length; i += 1) {
     const item = args[i];
-    if(item==='--brainchain'){if(seen.has(item))throw new ProbeFailure('usage: duplicate argument');seen.add(item);parsed.brainchain=true;
+    if(item==='--prepare-fixture'||item==='--attach-fixture'){
+      if(seen.has(item)||!args[i+1]||args[i+1]!.startsWith('--'))throw new ProbeFailure('invalid fixture artifact argument');
+      seen.add(item);parsed[item==='--prepare-fixture'?'prepareFixture':'attachFixture']=args[++i];
+    } else if(item==='--brainchain'){if(seen.has(item))throw new ProbeFailure('usage: duplicate argument');seen.add(item);parsed.brainchain=true;
     } else if (item === '--keep') {
       if (seen.has(item)) throw new ProbeFailure('usage: duplicate argument');
       seen.add(item);
@@ -170,6 +238,7 @@ export function parseCli(args: string[]): CliOptions {
     );
   }
   if(result.data.brainchain){assertBrainchainProbeTarget({...result.data,environment:process.env.CLAWVILLE_ENV});if(result.data.withEcho)throw new ProbeFailure('BrainChain mode does not run optional legacy echo fixtures');}
+  if ((result.data.prepareFixture || result.data.attachFixture) && (!result.data.brainchain || !!result.data.prepareFixture === !!result.data.attachFixture)) throw new ProbeFailure('fixture artifact mode requires BrainChain and exactly one phase');
   return result.data;
 }
 
@@ -385,17 +454,19 @@ async function insertFixture(
     gatewayUrl?: string;
     kind: 'declared-gateway' | 'echo';
     brainchain?:boolean;
+    allocated?:Fixture;
   },
 ): Promise<Fixture> {
   // Resolve the cookie serializer before any mutation so an import failure
   // cannot strand a committed fixture whose IDs were never returned to cleanup.
   const { lucia } = await import('../../src/lib/auth');
-  const userId = randomUUID();
-  const avatarId = randomUUID();
-  const platformAgentId = randomUUID();
-  const sessionId = randomUUID();
-  const identity = nacl.sign.keyPair();
+  const userId = input.allocated?.userId ?? randomUUID();
+  const avatarId = input.allocated?.avatarId ?? randomUUID();
+  const platformAgentId = input.allocated?.platformAgentId ?? randomUUID();
+  const sessionId = input.allocated?.sessionId ?? randomUUID();
+  const identity = input.allocated ? nacl.sign.keyPair.fromSecretKey(input.allocated.identitySecretKey) : nacl.sign.keyPair();
   const cookie = lucia.createSessionCookie(sessionId).serialize();
+  if(input.allocated && input.allocated.cookie!==cookie)throw new ProbeFailure('prepared cookie mismatch');
   const short = input.runId.slice(0, 8);
   const name = `Probe${input.kind === 'echo' ? 'E' : 'G'}${short}`.slice(0, 20);
   const fingerprint = sha256Hex(`hosted-skill-runtime-probe:${input.runId}:${input.kind}`);
@@ -767,7 +838,7 @@ async function waitForKnowledge(
   throw new ProbeFailure('timed out waiting for current skill and protocol memories');
 }
 
-export async function startDeclaredGatewayMock(): Promise<{
+export async function startDeclaredGatewayMock(port = 0): Promise<{
   server: ReturnType<typeof Bun.serve>;
   captured: CapturedGatewayRequest[];
   queueNoriQuestion: (directiveMarker: string) => void;
@@ -790,7 +861,7 @@ export async function startDeclaredGatewayMock(): Promise<{
   let noriBothSameMessage = 0;
   const server = Bun.serve({
     hostname: '127.0.0.1',
-    port: 0,
+    port,
     async fetch(request) {
       const url = new URL(request.url);
       if (request.method === 'GET' && url.pathname === '/health') {
@@ -1239,7 +1310,8 @@ async function main(): Promise<void> {
   const sharedSource = await import('@clawville/shared');
   ok(true, 'configuration is non-production and required database settings are present');
 
-  const runId = randomUUID();
+  const prepared = options.attachFixture ? await readPreparedProbe(options.attachFixture) : undefined;
+  const runId = prepared?.runId ?? randomUUID();
   const buildingId = `probe-canary-${runId}`.slice(0, 64);
   const canary = `CV-PROBE-CANARY-${runId}`;
   const skillContent = buildCanarySkill(buildingId, canary);
@@ -1273,6 +1345,25 @@ async function main(): Promise<void> {
   }
   const fixtures: Fixture[] = [];
   let declaredMock: Awaited<ReturnType<typeof startDeclaredGatewayMock>> | null = null;
+  if (options.prepareFixture) {
+    const {lucia}=await import('../../src/lib/auth');
+    const sessionId=randomUUID(),identity=nacl.sign.keyPair();
+    const fixture:Fixture={userId:randomUUID(),avatarId:randomUUID(),platformAgentId:randomUUID(),sessionId,cookie:lucia.createSessionCookie(sessionId).serialize(),name:`ProbeG${runId.slice(0,8)}`.slice(0,20),identitySecretKey:identity.secretKey};
+    const artifact:PreparedProbe={version:1,runId,gatewayPort:18745,expiresAtMs:Date.now()+15*60*1000,protocolHash:sha256Hex(protocolSource.buildProtocolManual(apiBase)),fixture:{...fixture,identitySecretKey:bs58.encode(fixture.identitySecretKey)}};
+    try {
+      // Durable owner-only fixture journal precedes every SQL mutation.
+      await writePreparedProbe(options.prepareFixture,artifact);
+      await assertStrictBrainchainMarker(client);
+      await insertCanarySkill(client,buildingId,skillContent);
+      await insertFixture(client,{runId,kind:'declared-gateway',brainchain:true,gatewayUrl:'http://127.0.0.1:18745',allocated:fixture});
+      console.log('Prepared fixture artifact retained; no connect, runtime or provider request occurred.');
+    } catch(error) {
+      await assertStrictBrainchainMarker(client);
+      await cleanupDatabase(client,[fixture],buildingId);
+      throw error;
+    } finally { await client.end({timeout:5}); }
+    return;
+  }
   let cleanupPromise: Promise<void> | null = null;
   let databaseCreated = false;
   let cleanupVerified = false;
@@ -1280,17 +1371,34 @@ async function main(): Promise<void> {
   const cleanup = (): Promise<void> => {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
-      declaredMock?.server.stop(true);
+      if(options.brainchain){
+        await runBrainchainProbeCleanup({
+          stopAdmission:async()=>{await assertStrictBrainchainMarker(client);for(const f of fixtures)await stopPreparedProbeAdmission(client,runId,f);},
+          autonomyOff:async()=>{for(const f of fixtures)await postAutonomy(apiBase,f,false);},
+          stopRuntime:async()=>{for(const f of fixtures)if(!await requestRuntimeStop(client,apiBase,f,runId))throw new ProbeFailure('runtime stop refused');},
+          disconnect:async()=>{for(const f of fixtures){const rows=await client`SELECT agent_id FROM openclaw_bots WHERE agent_id=${f.platformAgentId} AND user_id=${f.userId}::uuid`;if(rows.length)await disconnectProbeBody(apiBase,f);else await assertProbeBodyAbsent(apiBase,f.platformAgentId);}},
+          stopGateway:()=>{declaredMock?.server.stop(true);},
+          removeFixtures:async()=>{if(databaseCreated){await assertStrictBrainchainMarker(client);await cleanupDatabase(client,fixtures,buildingId);}},
+          closeDatabase:async()=>{await client.end({timeout:5});},
+        });
+        cleanupVerified=databaseCreated;return;
+      }
+      try {
       let stopFailed = false;
+      if (options.brainchain && fixtures.length) {
+        try {
+          await assertStrictBrainchainMarker(client);
+          await stopPreparedProbeAdmission(client,runId,fixtures[0]!);
+        } catch {stopFailed=true;}
+      }
       let disconnectFailed = false;
       let cleanupFailed = false;
       if (!options.keep) {
         for (const fixture of fixtures) {
-          if (options.autonomousDecision) {
+          if (options.brainchain || options.autonomousDecision) {
             try { await postAutonomy(apiBase, fixture, false); } catch { stopFailed = true; }
           }
-          const stopped = await requestRuntimeStop(client, apiBase, fixture, runId);
-          if (!stopped) stopFailed = true;
+          try { if (!await requestRuntimeStop(client, apiBase, fixture, runId)) stopFailed = true; } catch { stopFailed = true; }
           try {
             const botRows = await client`SELECT agent_id FROM openclaw_bots WHERE agent_id = ${fixture.platformAgentId} AND user_id = ${fixture.userId}::uuid`;
             if (botRows.length > 0) await disconnectProbeBody(apiBase, fixture);
@@ -1298,6 +1406,7 @@ async function main(): Promise<void> {
           } catch { disconnectFailed = true; }
         }
       }
+      declaredMock?.server.stop(true);
       try {
         if (databaseCreated && !options.keep && !stopFailed && !disconnectFailed) {
           if(options.brainchain)await assertStrictBrainchainMarker(client);
@@ -1306,14 +1415,13 @@ async function main(): Promise<void> {
       } catch {
         cleanupFailed = true;
       }
-      try {
-        await client.end({ timeout: 5 });
-      } catch {
-        cleanupFailed = true;
-      }
       cleanupVerified = !cleanupFailed && (options.keep || (!stopFailed && !disconnectFailed && databaseCreated));
       if (stopFailed || disconnectFailed || cleanupFailed) {
         throw new ProbeFailure('cleanup could not verify complete disposal of probe resources');
+      }
+      } finally {
+        declaredMock?.server.stop(true);
+        await client.end({timeout:5});
       }
     })();
     return cleanupPromise;
@@ -1327,11 +1435,12 @@ async function main(): Promise<void> {
     const health = await fetchWithTimeout(`${apiBase}/health`, {}, 15_000);
     ok(health.ok, 'target API health check passed');
 
-    declaredMock = await startDeclaredGatewayMock();
+    if (options.brainchain && !options.attachFixture) throw new ProbeFailure('BrainChain execution requires a reviewed prepared fixture');
+    declaredMock = await startDeclaredGatewayMock(prepared?.gatewayPort ?? 0);
     if(options.brainchain)await assertStrictBrainchainMarker(client);
-    await insertCanarySkill(client, buildingId, skillContent);
+    if (!prepared) await insertCanarySkill(client, buildingId, skillContent);
     databaseCreated = true;
-    const fixture = await insertFixture(client, {
+    const fixture = prepared ? await attachPreparedProbe(client, prepared, apiBase, protocolSource.buildProtocolManual(apiBase), sharedSource.buildBrainchainOfficeManual()) : await insertFixture(client, {
       runId,
       gatewayUrl: `http://127.0.0.1:${declaredMock.server.port}`,
       kind: 'declared-gateway',
@@ -1360,9 +1469,9 @@ async function main(): Promise<void> {
       const mock=declaredMock;mock.limitBrainchainDecisions();let receiptCursor=0;
       await runBrainchainOnlySequence({
         install:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();await verifyBrainchainInstall(client,apiBase,fixture,evidence,protocolSource.buildProtocolManual(apiBase));},
-        chat:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();const start=captureCursor(mock.captured);await founderChat(apiBase,fixture,'Explain the BrainChain payment and cash-out limits, including parent funding, quote limits, refund holds and separate approval.');await waitForCapturedPrompt(mock.captured,start,p=>brainchainChatHasEvidence(p,evidence));ok(true,'BrainChain source payment paragraphs reach fresh chat provider context');},
+        chat:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();const start=captureCursor(mock.captured);await founderChat(apiBase,fixture,BRAINCHAIN_PROBE_CHAT_TEXT);await waitForCapturedPrompt(mock.captured,start,p=>brainchainChatHasEvidence(p,evidence));ok(true,'BrainChain source payment paragraphs reach fresh chat provider context');},
         decide:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();const start=captureCursor(mock.captured);await postAutonomy(apiBase,fixture,true);await waitForCapturedPrompt(mock.captured,start,p=>brainchainDecisionHasEvidence(p,evidence));ok(true,'BrainChain full source curriculum, version and tools reach the real decide wire');},
-        workers:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();receiptCursor=captureCursor(mock.captured);const marker=`brainchain-read-${runId}`;mock.queueBrainchainRead(marker);await postProbeDirective(apiBase,fixture,`${marker}: inspect your BrainChain workers only. Do not install, sign or spend.`);},
+        workers:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();receiptCursor=captureCursor(mock.captured);const marker=`brainchain-read-${runId}`;mock.queueBrainchainRead(marker);await postProbeDirective(apiBase,fixture,brainchainProbeDirective(runId));},
         receipt:async signal=>{brainchainSequenceSignal=signal;signal.throwIfAborted();await waitForCapturedPrompt(mock.captured,receiptCursor,p=>brainchainWorkerResultReachedDecision(p),240000);ok(true,'BrainChain private workers action result reaches a later decide wire');},
       });
     }else{

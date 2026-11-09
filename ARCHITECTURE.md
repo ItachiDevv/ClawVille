@@ -1960,6 +1960,8 @@ The switch gates the driver's 30-second steady-state tick body and reconcile pas
 
 ### Environment variable reference
 
+BrainChain internal probe: `BRAINCHAIN_PROBE_CONFIG_PATH` is optional and staging-only. When set outside staging, API startup refuses before protected-file reads. The private JSON config pins the existing run, root history paths, manifest digest, loopback gateway and dedicated credential-file path. No config means no probe deployment; permanent fixture markers still refuse ordinary-provider fallback. `SOURCE_COMMIT` must match the manifest. Key file bytes contain no trailing newline. Factory and root registration contract: `docs/brainchain-runtime-probe-budget-design.md`. Last Audited: 2026-11-09. Drift: trusted bootstrap configuration added; no live activation.
+
 > This reference and the table above describe runtime configuration. Update them with each variable addition, removal, or default change.
 
 Configuration variables; optional values use their code defaults:
@@ -2929,3 +2931,25 @@ Migration0117 adds nullable immutable version/digest pairs to signer authorities
 Both activation flags remain false. Controlled fixture migration replay and tests do not establish live activation, full migration rollout, or a testnet lifecycle. Independent reader review passed; consumer and schema review remain separate. Design and trust limits: docs/brainchain-configured-authority-design.md and docs/brainchain-testnet-artifact-readiness-review.md.
 
 PARITY: human and bound-agent worker paths consume the same persisted owner/recovery authorities and policy checks. Fresh human approval remains mandatory for exact recovery. This change adds no public approval shortcut.
+
+
+### BrainChain runtime probe embedding budget
+
+Last Audited: 2026-11-09. Drift: probe embeddings now have a dedicated durable call ledger under the existing provider budget and envelope.
+
+`apps/api/src/services/brainchain/probe-embedding-budget.ts` owns trusted manifest registration, durable start/call quotas, current identity/root fences, single-winner dispatch, stop and conservative uncertainty settlement. Migration `packages/database/migrations/0118_brainchain_probe_embeddings.sql` adds permanent fixture markers and immutable run/call scope. Historical identity IDs have no identity foreign keys, so fixture cleanup retains liabilities. Runtime lookup includes inactive scope and cannot silently select normal providers for a marked identity.
+
+`apps/api/src/services/brainchain/compute-accounting.ts` validates and sums task and probe calls under the same provider/envelope locks. Both envelope closure and protected root publication use that aggregate. The fixed `apps/api/src/services/brainchain/probe-embedding-provider.ts` has no credential discovery or fallback; its constructor accepts the trusted adapter credential. No runtime/provider activation follows from these primitives. Canonical task authority remains unchanged.
+
+The internal interface is lookup/start/assertCurrent/embedExact/stop. The actual staging API must hydrate the trusted scope before runtime initialization. Design and verified boundaries: `docs/brainchain-runtime-probe-budget-design.md`. PARITY: existing human and bound-agent product authority is unchanged; this internal release probe exercises the real agent-bound runtime and private workers receipt.
+
+
+### BrainChain scoped release probe runtime - 2026-11-09
+
+Last Audited: 2026-11-09. Drift note: canonical auth and runtime initialization now enforce the persistent fixture marker boundary.
+
+The API awaits the trusted probe bootstrap before runtime warmup, restoration or listeners. Cookie and bound-agent middleware apply a finite HTTP allowlist after their existing identity resolution. Gateway actions keep their existing live-session proof. Exact probe chat and run-bound directive text bypass external moderation only for active canonical fixture scope. Hono cached JSON supplies body checks after the global JSON guard consumes the request. Unattributed guest requests remain outside fixture containment.
+
+Scoped Eliza instances admit only reviewed initialization hooks, controlled gateway text and durable-budget embeddings. Normal avatar providers stay unchanged. Protocol and installer logical IDs retain run/start/section identity. Embedding refusal awaits durable run stop; explicit local runtime shutdown stays distinct. Stop-only fixture cleanup preserves liabilities and accounting, then disables autonomy, stops runtime, proves body removal and closes the gateway before identity deletion.
+
+PARITY: release verification uses the bound agent and private workers result. The generated agent_exchange session does not prove human password login or wallet consent. Actual staging verification remains a release gate.

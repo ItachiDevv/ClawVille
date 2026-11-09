@@ -189,3 +189,7 @@ export type {
   ActivityEmojis,
   AvatarDbHooks,
 } from './simulation/types';
+
+export { ProbeRuntimeBoundary } from './probe-runtime';
+export type { TrustedProbeRuntimeScope, ProbeEmbeddingSource } from './probe-runtime';
+export { BRAINCHAIN_PROBE_CHAT_TEXT, brainchainProbeDirective } from './probe-runtime';

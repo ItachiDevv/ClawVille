@@ -12,7 +12,7 @@ const pg = ['bindings-db.test.ts', 'tasks-db.test.ts', 'signer-db.test.ts', 'sig
   'inference-budget-db.test.ts', 'execution-db.test.ts', 'inference-proxy-db.test.ts', 'task-delivery-db.test.ts',
   'delivery-recovery.test.ts', 'worker-coordinator.test.ts', 'result-signing-pool.test.ts', 'root-compute-store.test.ts',
   'worker-owner-policy.test.ts', 'signer-receipts-db.test.ts', 'worker-scheduler.test.ts', 'worker-scheduler-flow.test.ts',
-  'exact-result-recovery-consent.test.ts', 'purchases.test.ts', 'purchase-solana.test.ts', 'exact-capture-recovery.test.ts', 'funding-exit-operations.test.ts', 'configured-authority-db.test.ts'];
+  'exact-result-recovery-consent.test.ts', 'purchases.test.ts', 'purchase-solana.test.ts', 'exact-capture-recovery.test.ts', 'funding-exit-operations.test.ts', 'configured-authority-db.test.ts', 'probe-embedding-budget.test.ts', 'probe-bootstrap.test.ts'];
 const protectedFiles = ['signer-linux-fixture.test.ts', 'signer-payload-store.test.ts', 'root-compute-store.test.ts', 'paid-trial.test.ts'];
 export const image = 'oven/bun@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4';
 const bundleDirectory = resolve(root, '.brainchain-work/ci-linux-bundles');
@@ -59,12 +59,18 @@ if (mode === 'pure') {
     for (const file of await files(pattern)) await suite(file);
   }
   await suite('apps/api/src/services/__tests__/agent-mcp-tools.test.ts');
+  for (const file of ['apps/api/src/middleware/__tests__/require-auth-or-agent-owner-proof.test.ts',
+    'apps/api/src/middleware/__tests__/require-auth-or-agent-ttl-slide.test.ts',
+    'apps/api/src/routes/__tests__/agent-gateway-owner-proof-reads.test.ts',
+    'apps/api/src/routes/__tests__/agent-gateway-hydra-chat.test.ts']) await suite(file);
   for (const file of ['apps/api/src/routes/__tests__/agent-paid-surface.test.ts',
     'apps/api/src/services/__tests__/skill-protocol-onboarding.test.ts',
     'apps/api/src/services/__tests__/floor-arena-knowledge.test.ts',
     'apps/api/src/services/__tests__/trading-floor-constants.test.ts']) await suite(file);
   await suite('scripts/brainchain/ci-results.test.ts');
   await suite('apps/api/scripts/brainchain/runtime-evidence.test.ts');
+  await suite('apps/api/scripts/agent-connect/hosted-skill-runtime-probe.test.ts');
+  await suite('packages/agent-runtime/src/probe-runtime.test.ts');
 } else if (mode === 'postgres') {
   await getBrainchainFixtureSettings(); // Refuse disabled or ambiguous targets before any suite can silently skip.
   if (process.env.BRAINCHAIN_DOCKER_FIXTURE !== '1') throw Error('Postgres lane requires the actual isolated Docker exchange');
@@ -75,6 +81,8 @@ if (mode === 'pure') {
     try { await suite(service + name, name === 'root-compute-store.test.ts' ? ['--test-name-pattern', 'actual PostgreSQL reconciliation'] : name === 'funding-exit-operations.test.ts' ? ['--timeout', '15000'] : []); }
     finally { await restoreBrainchainFixtureWrappers(); }
   }
+  try { await suite('apps/api/scripts/brainchain/probe-runtime-cleanup.test.ts'); }
+  finally { await restoreBrainchainFixtureWrappers(); }
   await suite(service + 'isolated-process-coordinator.test.ts');
 } else if (mode === 'prepare-linux') {
   const outputDirectory = bundleDirectory;

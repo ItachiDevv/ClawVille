@@ -1,3 +1,5 @@
+import {lockComputeAccounting,assertComputeAccounting} from './compute-accounting';
+import {databaseDate} from './database-values';
 import { constants } from 'node:fs';
 import { lstat, open, readdir, rename, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
@@ -56,16 +58,13 @@ function sameHead(a: ProtectedRootHead, b: ProtectedRootHead): boolean { return 
 export async function reconcileRootComputeDocument(tx: TransactionSql, document: RootComputeDocument): Promise<void> {
   const budgets = await tx`SELECT * FROM brainchain_compute_budgets WHERE job_id=${document.jobId} ORDER BY provider FOR UPDATE`;
   const envelopes = await tx`SELECT e.*,b.provider FROM brainchain_compute_envelopes e JOIN brainchain_compute_budgets b ON b.id=e.budget_id WHERE b.job_id=${document.jobId} ORDER BY e.id FOR UPDATE OF e`;
-  const calls = await tx`SELECT c.* FROM brainchain_compute_calls c JOIN brainchain_compute_envelopes e ON e.id=c.envelope_id JOIN brainchain_compute_budgets b ON b.id=e.budget_id WHERE b.job_id=${document.jobId} ORDER BY c.id FOR UPDATE OF c`;
+  const calls = await lockComputeAccounting(tx,envelopes.map(e=>String(e.id)));
   for (const envelope of envelopes) {
     const reservation = document.reservations.find(item => item.rootReservationId === envelope.root_reservation_id);
     if (!reservation || reservation.provider !== envelope.provider || reservation.approvalRef !== envelope.approval_ref
-      || reservation.limitMicros !== envelope.limit_micros || reservation.expiresAtMs !== envelope.expires_at.getTime()) throw new RootComputeStoreError('reconciliation_refused');
-    const entries = calls.filter(item => item.envelope_id === envelope.id);
-    const reserved = entries.filter(item => item.state === 'reserved').reduce((sum, item) => sum + BigInt(item.maximum_micros), 0n);
-    const uncertain = entries.filter(item => item.state === 'dispatched' || item.state === 'uncertain').reduce((sum, item) => sum + BigInt(item.maximum_micros), 0n);
-    const settled = entries.filter(item => item.state === 'settled').reduce((sum, item) => sum + BigInt(item.charged_micros), 0n);
-    if (reserved !== BigInt(envelope.reserved_micros) || uncertain !== BigInt(envelope.uncertain_micros) || settled !== BigInt(envelope.settled_micros)) throw new RootComputeStoreError('reconciliation_refused');
+      || reservation.limitMicros !== envelope.limit_micros || reservation.expiresAtMs !== databaseDate(envelope.expires_at).getTime()) throw new RootComputeStoreError('reconciliation_refused');
+    let totals;try{totals=assertComputeAccounting(envelope,calls);}catch{throw new RootComputeStoreError('reconciliation_refused');}
+    const {reserved,uncertain,settled}=totals;
     if (reservation.state === 'settled' || reservation.state === 'released') {
       if (envelope.state !== 'closed' || !envelope.reconciliation_id || reserved !== 0n || uncertain !== 0n
         || reservation.reconciliationRef !== envelope.reconciliation_id || reservation.chargedMicros !== settled.toString()

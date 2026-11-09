@@ -94,6 +94,31 @@ Do not add global session restoration or claim containment for anonymous request
 Root independently repeated expanded runtime probes6/16: init failure, wrapper stop, internal action refusal, unknown model, retained callback and ordinary-core isolation passed.
 CI owner classified bootstrap and cleanup into PostgreSQL, scope through isolated pure discovery, and actual-core runtime through explicit pure entry. PG inventory now26suites.
 No combined lane ran before final source freeze. Runtime review still awaits the attributed HTTP checks and cleanup/attach final evidence.
+Attributed HTTP draft initially cloned a body consumed by jsonBodyGuard; root reproduced500 for autonomy-off disposal.
+Cached-body correction now passes root's actual middleware-order probe3/6:exact disposal,extra-field/arbitrary-write refusal,and ordinary body preservation.
+Identity auditor now tests prepared-artifact readers/writers on actual isolated Linux, coordinating source seams with fit. Final hash recheck remains required.
+Runtime auditor still owns final freeze, attachment and cleanup review. Root updated release requirements with scoped bootstrap/runtime/HTTP evidence.
+Reviewer found design paragraph11 requires durable terminal failure after scoped embedding admission/transport refusal, while current latch only stops one instance.
+Root retained that requirement. Fit owns exact-run durable stop with uncertain/settled liabilities preserved and restart refusal after failure.
+Review must cover boundary timeout/cancellation races, not only provider rejection. Intentional non-failure restart may consume the second start.
+Database failure cannot be reported as a persisted stop. No ordinary-user behavior or provider-budget/schema expansion is authorized.
+Cleanup gateway-failure regression now passes root and reviewer2/17; all stage failures retain rows and close the database.
+Prepared-artifact Linux review passed3/26; exact wrapper/root-store hashes and UID/mutation proof limits are in the bootstrap review. Final freeze recheck remains.
+Root approved one termination path: boundary awaits trusted failRun bound to exact budget.stop; host embedExact has no duplicate catch.
+An explicit intentional-stop reason must differ from failure latch. Failure/start/init catches cannot silently classify genuine admission,transport,deadline or cancellation failure as intentional.
+Only deliberate normal shutdown permits the planned second start; outstanding charges remain. Runtime reviewer verifies all scope consumers before final verdict.
+Root independently repeated terminal boundary3/14. Reviewer real-PG composition1/15 proves failed embedding stops actual run/start while retaining uncertain200microUSD.
+The same PG test proves deliberate pending local stop leaves active run, permits ordinal2 and retains uncertain200microUSD. No real provider was used;55440 released.
+Reviewer inspected SELECT-only attachment and passed controlled-row attach1/9; this is not real-PG attach proof. Final runtime review now awaits owner freeze/hash comparison.
+Eliza-runtime line-ending churn is corrected; semantic diff is42additions/10deletions at this checkpoint.
+CI owner checks explicit hosted-skill-runtime-probe.test.ts coverage and new pure test inventory before combined lanes.
+FINAL runtime freeze: .brainchain-work/runtime-injection-freeze.json contains33owned paths; root verified every hash and diff-check0.
+Owner evidence:runtime12/42,HTTP4/27,probe25/233,ordinary knowledge26/62,PG cleanup/termination5/24.
+Runtime build/strict tsc0;API tsc95963exit0;script/test tsc12437exit0. Earlier67015 failed rootDir; moving cleanup test to apps/api/scripts/brainchain/probe-runtime-cleanup.test.ts resolved it.
+CI now explicitly runs that script in PostgreSQL with wrapper restoration and hosted-skill-runtime-probe.test.ts in pure. PG count remains26.
+Root authorized identity_audit to run fresh combined pure/PostgreSQL/protected Linux lanes and recheck prepared-wrapper hashes. Await actual handles/results.
+Runtime auditor final frozen-source verdict pending; root independently passed its expanded actual-core8/22 including model-inventory refusal.
+Fit is terminal; no owner handles or55439 claim remain. Root retains index; no provider, key or staging action occurred.
 
 ### durable_audit: terminal, available for changed ledger review
 
@@ -171,3 +196,27 @@ AssetURL/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1.
 Prior browser evidence is syntheticAPI/guest/local; no authenticatedstagingproof. ForegroundIrisXe/baselineperformance,eightdevicestagingchecks,real-iPadsafearea remain.
 Finish bootstrap/runtime implementation and independentreviews, combinedCI, protectedroot preparation, releaseauth, stagingpush/livehealth/manual/onboardingsmoke/runtime/browser/testnetproof,andpromotionPR.
 Do not mark goal complete from local tests. Productionmerge/mainnetmoney remain outside authorization.
+
+## Final runtime checkpoint: 2026-11-09
+
+This section supersedes earlier pending runtime review and combined CI statements above.
+Runtime independent review passed the frozen 33-path scope. Bootstrap review passed its seven-path scope.
+Root rechecked all 33 runtime, seven bootstrap and four fixture hashes after CI.
+Pure retry76658 exited0:80 suites,609 tests,one expected Docker skip.
+PostgreSQL29418 exited0:26 suites,173 tests,zero skips.
+Fresh protected Linux lane exited0:four suites,12 tests,five expected skips.
+Reports: .brainchain-work/ci-{pure,postgres,linux}-results.json.
+Logs: ci-pure-runtime-final-retry.log,ci-postgres-runtime-final.log,ci-linux-runtime-final.log under .brainchain-work.
+The first pure run50850 failed because old authentication fixtures lacked the new persistent-marker query stub.
+Four test-only corrections preserve the production guard and reject unrelated raw database calls.
+The original failure log remains ci-pure-runtime-final.log. No process or fixture lock remains.
+API strict typecheck95963 and script/test typecheck12437 exited0; runtime build/strict typecheck also passed.
+Actual Eliza independent8/22,HTTP4/11,cleanup2/17,terminal3/14 and isolated realPG composition1/15 passed.
+Prepared attach1/9 uses controlled rows, not a real PostgreSQL attach flow.
+Protected artifact3/26 uses Linux primitives and the exact wrapper extraction, not the complete CLI import.
+No staging, actual provider, human wallet, live lifecycle or settlement evidence follows from these results.
+
+Root staged the reviewed52-path candidate before final CI. The final commit also includes four fixture corrections and refreshed CI/root documents.
+Next: commit the exact reviewed candidate; inspect protected-authority preparation and release prerequisites without paid calls or deployment claims.
+Release authentication and browser access remain absent. Partner credit/settlement contracts remain incomplete.
+All API budgets remain spent0/reserved0. No root genesis or reservation exists.

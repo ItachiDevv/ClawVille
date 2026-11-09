@@ -1,3 +1,4 @@
+import { assertProbeOperationAllowed } from '../services/brainchain/probe-runtime-scope';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
@@ -270,6 +271,7 @@ const learnSchema = z.object({
 });
 
 itemRoutes.post('/learn', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
+  await assertProbeOperationAllowed({ userId: c.get('identity').userId });
   const identity = c.get('identity');
   const userId = identity.userId;
   const body = await c.req.json();

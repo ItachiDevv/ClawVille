@@ -1,3 +1,4 @@
+import { assertProbeActionAllowed } from './brainchain/probe-runtime-scope';
 /**
  * Agent Autonomy Driver (agent-metaverse P1 slice 3)
  * ──────────────────────────────────────────────────
@@ -2049,6 +2050,7 @@ class AgentAutonomyDriver {
       );
       // The agent's OWN visible bubble — the existing [ACTION:] path (the
       // executor's proximity gate re-checks server-side).
+      await assertProbeActionAllowed({ userId: entry.houseUserId, avatarId: entry.avatarId }, reply);
       npcSimulation.dispatchHatcherActions(entry.bodyId, reply);
       // Slice 4: the REAL conversed turn — teacher reply + settle (CT +
       // leaderboard + memory), ONLY when the model emitted a parseable talk
@@ -2358,6 +2360,7 @@ class AgentAutonomyDriver {
     // "walk" to a building it did not choose this turn. A valid enter_building
     // re-stamps the field via setNpcPath; a re-pick of the same building still
     // works (it is simply re-set).
+    await assertProbeActionAllowed({ userId: entry.houseUserId, avatarId: entry.avatarId }, reply);
     npcSimulation.clearDestinationBuilding(entry.bodyId);
     npcSimulation.dispatchHatcherActions(entry.bodyId, reply, moneyDirective);
     // Learn the CHOSEN destination from the body itself. enter_building stamps a

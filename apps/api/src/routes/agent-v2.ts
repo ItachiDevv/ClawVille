@@ -1,3 +1,6 @@
+import { assertProbeHttpOperation } from '../services/brainchain/probe-runtime-scope';
+import { sessionMiddleware } from '../middleware/auth';
+import { AGENT_SESSION_HEADER, resolveAgentSession } from '../middleware/require-auth-or-agent';
 /**
  * Metered agent services behind the x402 Solana paywall.
  *
@@ -65,6 +68,12 @@ export function getExpertConsultDeliveryStatus(insightCount: number): 200 | 503 
 
 // Rate-limit BEFORE the x402 middleware so an over-limit caller is refused
 // before settlement. A post-payment 429 would charge for a service we withheld.
+agentV2Routes.use('/expert-consult', sessionMiddleware);
+agentV2Routes.use('/expert-consult', async (c,next)=>{
+ const sessionId=c.req.header(AGENT_SESSION_HEADER),subject=!c.get('user')&&sessionId?await resolveAgentSession(sessionId):null;
+ if(subject)await assertProbeHttpOperation({userId:subject.userId,avatarId:subject.avatarId,platformAgentId:subject.agentId},c.req.raw,()=>c.req.json());
+ return next();
+});
 agentV2Routes.use('/expert-consult', async (c, next) => {
   if (!paidServiceLimiter.check(getClientIp(c.req.raw.headers))) {
     return c.json({ error: 'rate_limited', message: 'Too many paid service requests.' }, 429);

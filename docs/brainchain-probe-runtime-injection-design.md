@@ -114,3 +114,21 @@ The existing cleanup HTTP requests intentionally ignore sequence cancellation. T
 The budget owner currently proposes ProbeEmbeddingBudget.lookup(platformAgentId), returning null only when no persistent marker exists. A marker without a run refuses. Otherwise it returns manifest, manifestHash, state and expiresAt across all run states. The service also exposes start(runId, signal), assertCurrent(runId, signal), embedExact(runId, request) and stop(runId). Its trusted identity callback receives the existing transaction, avoiding nested base-pool reads. These files remain under budget-owner review; bind runtime imports only after their source freeze.
 
 The runtime hydrator captures runId in its closure and exposes only the narrow transport. It must not treat lookup success as live admission. It checks the current canonical tuple, state and deadline before initialization, then uses the service's current checks on every admitted operation. Historical marker lookup remains available after identity cleanup.
+
+
+## Implementation checkpoint
+
+The implementation uses the installed core instance boundaries before registerPlugin delegates to init hooks. It captures frozen plugin/model snapshots. Plugin rejection and initialization rejection latch refusal. Scoped runtime initialization does not select the house key, router, or own-AI provider. The instance knowledge provider leaves global provider arrays unchanged.
+
+The exact HTTP allowlist runs after existing cookie or bound-agent resolution. It preserves cookie precedence and guest behavior. The helper reads Hono's cached parsed body, because the global JSON guard consumes the raw request first. Exact body keys prevent a trusted directive exemption from carrying other input. Existing signed disconnect/challenge proofs remain in force after durable stop.
+
+Protocol operation IDs include the run, committed start ordinal, protocol version and section. Installer operation IDs include the run, curriculum content hash and section. Repeated logical calls reuse durable results or refuse uncertainty; they never create replacement payment authority. Query and explicit new memory operations receive distinct trusted IDs, without automatic retry.
+
+The trusted scope exposes failRun(), bound to budget.stop for its captured run. The boundary awaits this termination for embedding admission, deadline or transport refusal, including a timeout before the transport promise rejects. Intentional local stop uses a distinct reason and does not terminate the run. Start failure uses the failure latch. Persistence failure reports probe_runtime_terminal_stop_unavailable; it is not successful termination or permission to restart. Root must inspect unresolved persistence before reuse.
+
+Prepared fixture artifacts reuse the reviewed Linux root-store reader/writer. They retain only generated fixture material under owner-only protection. The journal precedes SQL fixture insertion. Attach validates exact canonical IDs, session cookie, key, session origin, expiry, source hashes and run state. It never creates replacement fixtures. Historical markers and accounting survive disposal.
+
+Owner test paths: packages/agent-runtime/src/probe-runtime.test.ts; apps/api/src/services/brainchain/probe-runtime-scope.test.ts; apps/api/scripts/brainchain/probe-runtime-cleanup.test.ts; apps/api/scripts/agent-connect/hosted-skill-runtime-probe.test.ts. Core/HTTP tests use controlled adapters. Cleanup tests use the explicit isolated PostgreSQL fixture and installed Drizzle composition. Independent Linux artifact evidence belongs to the separate reviewer. No actual staging consumption or provider settlement is claimed.
+
+
+Final owner checkpoint: actual-core/runtime tests12/42; canonical-auth HTTP tests4/27; ordinary installer/hosted-knowledge regression26/62; probe tests25/233; isolated shared-pool cleanup and terminal-failure tests5/24. Runtime build and strict typecheck passed. The post-initialize inventory diagnostic checks actual model-map entries against captured handler references. Per-instance observation of core service promises latches asynchronous service failure without changing the original rejected promise. The hostile inventory test expects a bootstrap service error after refusal; it invokes no provider.

@@ -20,6 +20,20 @@ const adapter: Adapter = {
 };
 const lucia = new Lucia(adapter, { sessionCookie: { attributes: { secure: false } } });
 mock.module('../lib/auth', () => ({ lucia }));
+// The real auth middleware also reads the persistent probe marker. This suite
+// models an ordinary unmarked human; its synthetic identity has no real DB row.
+const markerChecks: string[] = [];
+const database = await import('@clawville/database');
+mock.module('@clawville/database', () => ({
+  ...database,
+  getPostgresClient: () => async (query: TemplateStringsArray, ...values: unknown[]) => {
+    if (!query.join('').includes('FROM brainchain_probe_markers') || !values.includes(user.id)) {
+      throw new Error('unexpected identity fixture database read');
+    }
+    markerChecks.push(user.id);
+    return [];
+  },
+}));
 const resolveIdentity: MiddlewareHandler<ActivityAuthContext> = async (c, next) => {
   const human = c.get('user');
   const bearer = c.req.header('X-Clawville-Agent-Session');
@@ -120,6 +134,7 @@ describe('BrainChain HTTP session composition', () => {
     const cookie = lucia.createSessionCookie(session.id).serialize();
     const response = await createBrainChainRoutes().request('/workers', { headers: { Cookie: cookie } });
     expect(response.status).toBe(200);
+    expect(markerChecks).toContain(user.id);
     expect(await response.json()).toEqual({ workers: [{ id: 'worker', owner: 'owned-avatar' }] });
   });
   test('expired and unknown cookies fail; public knowledge remains accessible', async () => {

@@ -47,6 +47,13 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE !== '1')('durable compute enve
     await expect((async () => { await fixture`UPDATE brainchain_compute_envelopes SET limit_micros=2 WHERE id=${envelope.id}`; })()).rejects.toThrow('immutable');
     await expect((async () => { await fixture`UPDATE brainchain_compute_budgets SET cap_micros=20000000 WHERE job_id=${input.jobId}`; })()).rejects.toThrow('immutable');
   });
+  test('trusted expected envelope ID is exact and collisions never allocate',async()=>{
+    const input={...approval('openai',1n),jobId:randomUUID()},id=randomUUID();
+    expect(await service.approveEnvelope(input,id)).toEqual({id});expect(await service.approveEnvelope(input,id)).toEqual({id});
+    let mismatch=false;try{await service.approveEnvelope(input,randomUUID());}catch{mismatch=true;}expect(mismatch).toBe(true);
+    const other={...approval('openai',1n),jobId:randomUUID()};let collision=false;try{await service.approveEnvelope(other,id);}catch{collision=true;}expect(collision).toBe(true);
+    expect((await fixture`SELECT allocated_micros FROM brainchain_compute_budgets WHERE job_id=${other.jobId}`).length).toBe(0);
+  });
   test('expiry uses database wall time after a budget lock wait', async () => {
     const input = { ...approval('openai', 1n), jobId: randomUUID() };
     await service.approveEnvelope(input);

@@ -21,6 +21,8 @@
  * the only overridable input.
  */
 
+import type { ProbeRuntimeBoundary, ProbeEmbeddingSource } from '../probe-runtime';
+
 const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings';
 // HARD-PINNED — see DIMENSION INVARIANT above. Never read from env/options.
 const MODEL = 'text-embedding-3-small';
@@ -28,6 +30,7 @@ const DIMS = 1536;
 
 export interface EmbedTextOptions {
   apiKey?: string;
+  probe?: { boundary: ProbeRuntimeBoundary; source: ProbeEmbeddingSource };
 }
 
 /**
@@ -38,6 +41,7 @@ export async function embedText(
   text: string,
   options: EmbedTextOptions = {},
 ): Promise<number[]> {
+  if (options.probe) return options.probe.boundary.embed(text, options.probe.source);
   const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error('[embedText] Missing OPENAI_API_KEY');

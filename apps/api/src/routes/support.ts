@@ -1,3 +1,4 @@
+import { assertProbeOperationAllowed } from '../services/brainchain/probe-runtime-scope';
 /**
  * Lean in-product support tickets — POST /api/support/tickets.
  *
@@ -164,6 +165,8 @@ supportRouter.post('/tickets', async (c) => {
       subjectType = 'guest';
     }
   }
+
+  await assertProbeOperationAllowed({ userId, avatarId, platformAgentId: agentId });
 
   // Rate limit on the strongest identity available.
   const rlKey =

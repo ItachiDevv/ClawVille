@@ -30,6 +30,9 @@ import {
 } from './plugins/own-ai-provider';
 import type { InferenceRoute } from './inference/inference-router';
 import { embedText } from './plugins/embed-text';
+import { ProbeRuntimeBoundary, guardProbeCore, type TrustedProbeRuntimeScope } from './probe-runtime';
+import { createKnowledgeProvider } from './providers/knowledge';
+import { createScopedClawvillePlugin } from './plugins/clawville-plugin';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 import { IsolatedTaskRuntime } from './isolated-task/runtime';
 import type { IsolatedTaskRuntimeConfig } from './isolated-task/types';
@@ -140,6 +143,7 @@ export function toSupabaseSessionModeUrl(url: string): string {
 }
 
 export interface ElizaRuntimeConfig {
+  probeScope?: TrustedProbeRuntimeScope;
   executionProfile?: { kind: 'avatar' };
   agentId: string;
   agentType: 'location-agent' | 'avatar-agent' | string;
@@ -355,6 +359,11 @@ function convertToElizaCharacter(
 
 export class ElizaRuntime {
   private config: ElizaRuntimeConfig;
+  private probe?: ProbeRuntimeBoundary;
+  private gamePlugin = clawvillePlugin;
+  private embedScoped(text: string, source: 'protocol' | 'memory' | 'query' = 'memory', logicalKey?: string): Promise<number[]> {
+    return this.probe ? this.probe.embed(text, source, logicalKey) : embedText(text);
+  }
   private runtime: ElizaAgentRuntime | null = null;
   private state: ElizaRuntimeState = 'idle';
   private character: Character;
@@ -366,6 +375,11 @@ export class ElizaRuntime {
     if (config.executionProfile !== undefined && (!config.executionProfile || config.executionProfile.kind !== 'avatar'
       || Reflect.ownKeys(config.executionProfile).length !== 1)) throw new Error('Invalid avatar execution profile');
     this.config = config;
+    if (config.probeScope) {
+      if (config.apiKeys || config.ownAi || !config.openclawGateway || config.agentId !== config.probeScope.runtimeAgentId) throw new Error('probe_runtime_refused');
+      this.probe = new ProbeRuntimeBoundary(config.probeScope);
+      this.gamePlugin = createScopedClawvillePlugin(createKnowledgeProvider(this.probe));
+    }
 
     if (config.agentType === 'openclaw-bot') {
       this.teacherCorpus = config.customization?.knowledge ?? [];
@@ -500,13 +514,14 @@ export class ElizaRuntime {
       acquired = true;
       console.log(`[ElizaRuntime] Agent ${this.config.agentId} acquired init mutex`);
 
-      if (this.config.apiKeys?.openai && !process.env.OPENAI_API_KEY) {
+      if (!this.probe && this.config.apiKeys?.openai && !process.env.OPENAI_API_KEY) {
         process.env.OPENAI_API_KEY = this.config.apiKeys.openai;
       }
-      if (!process.env.PROVIDERS_TOTAL_TIMEOUT_MS) {
+      if (!this.probe && !process.env.PROVIDERS_TOTAL_TIMEOUT_MS) {
         process.env.PROVIDERS_TOTAL_TIMEOUT_MS = '60000';
       }
 
+      if (this.probe) await this.probe.current();
       await this.loadPlugins();
 
       // The OpenAI text + embedding plugins read their API key from their own
@@ -542,6 +557,11 @@ export class ElizaRuntime {
         this.config.agentId as UUID
       );
 
+      if (this.probe) {
+        this.character.id = this.config.probeScope!.runtimeAgentId as UUID;
+        this.character.advancedPlanning = false;
+        this.character.advancedMemory = false;
+      }
       this.runtime = new ElizaAgentRuntime({
         agentId: this.config.agentId as UUID,
         character: this.character,
@@ -552,6 +572,8 @@ export class ElizaRuntime {
         // where state updates with every action"
         actionPlanning: false,
       } as any);
+
+      if (this.probe) await guardProbeCore(this.runtime, this.probe, this.loadedPlugins);
 
       // R1: `runtime.initialize()` can block INDEFINITELY on the plugin-sql
       // pg_advisory_lock. Bound it with an IN-PROCESS rejecting Promise.race (NEVER
@@ -595,6 +617,7 @@ export class ElizaRuntime {
       this.state = 'running';
       console.log(`[ElizaRuntime] Agent ${this.config.agentId} started`);
     } catch (error) {
+      this.probe?.failLocal();
       this.state = 'error';
       console.error(`[ElizaRuntime] Failed to start agent:`, error);
       this.config.onError?.(error as Error);
@@ -636,6 +659,13 @@ export class ElizaRuntime {
       } catch (error) {
         console.error(`[ElizaRuntime] Failed to load plugin ${pluginName}:`, error);
       }
+    }
+
+    if (this.probe) {
+      if (!this.config.openclawGateway) return this.probe.refuse();
+      this.loadedPlugins.unshift(createOpenAIEmbeddingPlugin({ probe: this.probe }));
+      this.loadedPlugins.unshift(createOpenClawProviderPlugin(this.config.openclawGateway, this.probe));
+      return;
     }
 
     // Prepend OpenAI embedding provider (priority 100 — replaces plugin-openai's TEXT_EMBEDDING)
@@ -690,6 +720,7 @@ export class ElizaRuntime {
   }
 
   async stop(): Promise<void> {
+    this.probe?.stop();
     if (this.state === 'stopped') return;
     if (this.runtime) await this.runtime.stop();
     this.state = 'stopped';
@@ -797,7 +828,7 @@ export class ElizaRuntime {
       // and let the caller fall back to the keyword store (never a dead row).
       let embedding: number[];
       try {
-        embedding = await embedText(lesson);
+        embedding = await this.embedScoped(lesson);
       } catch (embErr) {
         console.warn(
           '[ElizaRuntime] recordEarnedSkillMemory embed failed — caller falls back to keyword store:',
@@ -874,7 +905,7 @@ export class ElizaRuntime {
     try {
       let embedding: number[];
       try {
-        embedding = await embedText(input.query && input.query.trim().length > 0 ? input.query : 'recent lessons');
+        embedding = await this.embedScoped(input.query && input.query.trim().length > 0 ? input.query : 'recent lessons', 'query');
       } catch {
         return [];
       }
@@ -926,7 +957,7 @@ export class ElizaRuntime {
     try {
       let embedding: number[];
       try {
-        embedding = await embedText(input.query && input.query.trim().length > 0 ? input.query : 'recent knowledge');
+        embedding = await this.embedScoped(input.query && input.query.trim().length > 0 ? input.query : 'recent knowledge', 'query');
       } catch {
         return [];
       }
@@ -1028,7 +1059,7 @@ export class ElizaRuntime {
           prepared.push({
             index,
             text,
-            embedding: await embedText(text),
+            embedding: await this.embedScoped(text),
             id: uuidv5(
               `teacher-corpus:${this.config.agentId}:${corpusHash}:${index}`,
               ROOM_NAMESPACE,
@@ -1170,7 +1201,7 @@ export class ElizaRuntime {
           // on; the rest of the manual still lands.
           let embedding: number[];
           try {
-            embedding = await embedText(section);
+            embedding = await this.embedScoped(section, 'protocol', `version:${version}:section:${i}`);
           } catch (embErr) {
             console.warn(
               '[ElizaRuntime] injectProtocolKnowledge embed failed (skip section):',
@@ -1323,7 +1354,7 @@ export class ElizaRuntime {
    * position order (lower position = earlier in the prompt).
    */
   private async runProviders(state: Record<string, any>, userMessage?: string): Promise<string> {
-    const providers = clawvillePlugin.providers as Provider[];
+    const providers = this.gamePlugin.providers as Provider[];
     const results: { position: number; text: string }[] = [];
 
     // Inject userMessage into state so KnowledgeProvider can embed it
@@ -1354,7 +1385,7 @@ export class ElizaRuntime {
    * so the LLM knows what it can invoke.
    */
   private buildActionDescriptions(state: Record<string, any>): string {
-    const actions = (clawvillePlugin.actions as Action[]).filter((action) => {
+    const actions = (this.gamePlugin.actions as Action[]).filter((action) => {
       if (!action.available) return true;
       try { return action.available(state); } catch { return false; }
     });
@@ -1458,7 +1489,8 @@ export class ElizaRuntime {
     state: Record<string, any>,
     budget: { total: number; money: number },
   ): Promise<ActionResult | null> {
-    const actions = clawvillePlugin.actions as Action[];
+    if (this.probe) return this.probe.refuse();
+    const actions = this.gamePlugin.actions as Action[];
     const action = actions.find((a) => a.name === actionName);
     if (!action) {
       console.warn(`[ElizaRuntime] Unknown action: ${actionName}`);

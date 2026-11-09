@@ -24,8 +24,8 @@ export async function bootstrapBrainchainFixture() {
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS signed_at timestamptz`;
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS reconcile_attempts integer NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS reconcile_next_at timestamptz`;
-    const names = (await readdir(directory)).filter(name => /^01(?:0\d|1[0-7])_.*\.sql$/.test(name)).sort();
-    if (names.length !== 18) throw Error('Review BrainChain fixture migration inventory');
+    const names = (await readdir(directory)).filter(name => /^01(?:0\d|1[0-8])_.*\.sql$/.test(name)).sort();
+    if (names.length !== 19) throw Error('Review BrainChain fixture migration inventory');
     for (const name of names) {
       // 0106 widens these constraints. Replaying 0102 over retained result signatures would narrow them.
       if (name.startsWith('0102_') && (await sql`SELECT to_regclass('public.brainchain_signer_authorities') AS relation`)[0]?.relation) continue;

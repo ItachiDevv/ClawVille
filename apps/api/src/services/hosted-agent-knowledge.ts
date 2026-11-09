@@ -1,3 +1,4 @@
+import { assertProbeOperationAllowed } from './brainchain/probe-runtime-scope';
 import {
   agents,
   avatars,
@@ -52,6 +53,7 @@ export interface HostedKnowledgeMergeResult extends HostedKnowledgeTarget {
 }
 
 export interface HostedAgentKnowledgeDependencies {
+  assertProbeAllowed?: typeof assertProbeOperationAllowed;
   mergeDatabase: (
     input: Pick<SyncHostedAgentKnowledgeInput, 'userId' | 'avatarId' | 'entries'>,
   ) => Promise<HostedKnowledgeMergeResult | null>;
@@ -175,6 +177,7 @@ export async function mergeHostedAgentKnowledgeAtomically(
 }
 
 const defaultDependencies: HostedAgentKnowledgeDependencies = {
+  assertProbeAllowed: assertProbeOperationAllowed,
   mergeDatabase: (input) => mergeHostedAgentKnowledgeAtomically(db, input),
   ensureRuntime: (platformAgentId, userId) =>
     agentOrchestrator.ensureAgentRuntime(platformAgentId, userId),
@@ -249,6 +252,7 @@ export async function syncHostedAgentKnowledge(
   input: SyncHostedAgentKnowledgeInput,
   dependencies: HostedAgentKnowledgeDependencies = defaultDependencies,
 ): Promise<HostedKnowledgeMergeResult | null> {
+  await dependencies.assertProbeAllowed?.({ userId: input.userId, avatarId: input.avatarId });
   const target = input.databaseAlreadyMerged
     ? {
         userId: input.userId,

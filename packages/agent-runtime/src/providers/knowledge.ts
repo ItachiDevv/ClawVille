@@ -1,4 +1,5 @@
 import type { Provider, ProviderResult } from './types';
+import type { ProbeRuntimeBoundary } from '../probe-runtime';
 import { embedText } from '../plugins/embed-text';
 import {
   protocolKnowledgeEntityId,
@@ -172,7 +173,7 @@ function jsonbFallbackResult(allKnowledge: string[]): ProviderResult {
   };
 }
 
-export const knowledgeProvider: Provider = {
+export function createKnowledgeProvider(probe?: ProbeRuntimeBoundary): Provider { return {
   name: 'knowledge',
   description: 'Relevant learned knowledge retrieved by semantic similarity',
   position: 50,
@@ -186,7 +187,7 @@ export const knowledgeProvider: Provider = {
     // Try vector retrieval first (Phase 2 path)
     if (runtime?.searchMemories && userMessage && agentId) {
       try {
-        const queryEmbedding = await embedText(userMessage);
+        const queryEmbedding = await embedText(userMessage, probe ? { probe: { boundary: probe, source: 'query' } } : {});
         let entries: string[] = [];
         let protocolEntries: string[] = [];
 
@@ -312,3 +313,6 @@ export const knowledgeProvider: Provider = {
     return jsonbFallbackResult(allKnowledge);
   },
 };
+
+}
+export const knowledgeProvider = createKnowledgeProvider();

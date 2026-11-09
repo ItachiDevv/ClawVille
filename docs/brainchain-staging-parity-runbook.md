@@ -80,7 +80,12 @@ Run this mode from the staging API process/container namespace. Its loopback moc
 Use the exact public staging API origin, rather than the legacy on-box origin:
 
 ```text
-CLAWVILLE_ENV=staging bun apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api https://api-staging.clawville.world --autonomous-decision --brainchain
+# Phase 1: fixture preparation only. The directory must satisfy protected Linux file policy.
+CLAWVILLE_ENV=staging bun apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api https://api-staging.clawville.world --autonomous-decision --brainchain --prepare-fixture /protected/probe-fixture.json
+
+# Root registers the reviewed manifest, reservation and envelope, then configures the API.
+# Phase 2 attaches the exact retained fixture. It never creates replacement identifiers.
+CLAWVILLE_ENV=staging bun apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts --api https://api-staging.clawville.world --autonomous-decision --brainchain --attach-fixture /protected/probe-fixture.json
 ```
 
 DATABASE_URL must identify the staging database. The catalog environment marker must equal staging.
@@ -96,14 +101,18 @@ The BrainChain-only branch does not claim the canary skill or run canary cogniti
 It retains the unique canary database row only to check that the API and probe share a database.
 Legacy modes retain those separate checks. Required onboarding verification remains separate.
 Potential provider costs in this branch include protocol installation, BrainChain curriculum installation, query retrieval, and runtime persistence or auxiliary calls.
-The standalone and plugin embedding paths still use OpenAI. The fixture gateway controls text generation only.
-Unexpected paid text or provider paths need a fail-closed transport boundary before actual execution.
-The proposed reserved transport is not implemented by this probe-only change.
+The API hydrates its trusted scope before boot warmup, restore, or listeners through BRAINCHAIN_PROBE_CONFIG_PATH.
+The host retains the dedicated credential. Runtime prompts, tools, and prepared fixture artifacts contain no provider credential.
+Every scoped embedding uses the shared durable ledger. Other model providers and fallback handlers refuse.
+Canonical HTTP guards allow only the exact five-stage requests and disposal operations for attributed marked fixtures.
+Exact source chat and run-bound directive text avoid house moderation only after current canonical scope validation.
+Other attributed fixture chat, expert, support, knowledge, and economy requests refuse. Anonymous requests remain outside this containment boundary.
+Source implementation and controlled evidence do not authorize an actual staging run.
 Root must inventory actual provider configuration and reserve every permitted request under the existing separate provider caps.
 Stop before an actual run if any provider path lacks that accounting boundary.
 The legacy modes still have their canary, Nori teacher, Hermes, appearance, and optional echo cost boundaries described in the cost plan.
 Do not execute this mode before the root budget mechanism and reservation exist.
-Current verification uses pure assertions and controlled loopback HTTP only. It creates no staging account and performs no provider request.
+Current verification includes actual Eliza, controlled loopback HTTP, and isolated PostgreSQL fixtures. It creates no staging account or actual provider request.
 
 The gate checks the exact source-derived curriculum hash and served bytes.
 It checks the served protocol version, curriculum paragraphs, and finite BrainChain tool operations.
@@ -124,7 +133,11 @@ A later trusted budget transport must use the smaller of remaining root authoriz
 Insufficient remaining time is a refusal, not permission to skip an assertion.
 This eight-minute value supersedes the earlier fifteen-minute proposal for the initial lane.
 
-The finalizer stops the runtime, disconnects its body, and verifies registry removal before deleting fixture-owned rows.
+The finalizer stops durable admission before autonomy, runtime disposal, and signed body disconnect.
+It verifies registry removal, closes the gateway, and then removes fixture-owned identity rows.
+Stop-only cleanup retains reserved and uncertain liabilities. Existing budget stop and root reconciliation handle those liabilities separately.
+Accounting and persistent fixture markers survive identity cleanup. Explicit local runtime shutdown permits the reviewed second start.
+A genuine embedding failure waits for durable run stop before reporting failure. A failed stop reports unavailable persistence and never succeeds.
 The BrainChain curriculum row is canonical shared source, so cleanup never deletes it.
 A failed cleanup fails the gate. No retention flag bypass exists for this mode.
 Reports must contain counts, hashes, statuses, and outcomes only. Never print prompts, cookies, keys, database URLs, or response bodies.
@@ -136,7 +149,7 @@ cd apps/api
 bun test ./scripts/brainchain/runtime-evidence.test.ts ./scripts/agent-connect/hosted-skill-runtime-probe.test.ts
 ```
 
-Last Audited: 2026-11-09: these controlled tests passed 21 tests and 217 assertions.
+Last Audited: 2026-11-09: these controlled tests passed 25 tests and 233 assertions.
 Drift: the probe now has a strict BrainChain mode with stored-knowledge, chat-wire, decide-wire, and private action-result assertions.
 A successful controlled test does not prove staging runtime consumption, human wallet consent, settlement, or leaderboard credit.
 
