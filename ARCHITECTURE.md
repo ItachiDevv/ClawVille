@@ -1,6 +1,7 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-11-10 08:51Z (own AI part B fix: first deposit on a token UsePod has not activated).** Drift note: the first live deposit on staging stopped with `provider_error` and paid nothing: the pre-deposit balance read got UsePod's 401 "token not found or not activated" for the fresh registered token, so no deposit could ever activate it.
+**Last Audited: 2026-11-10 15:26Z (own AI save: an existing `agent_ai_settings` row is UPDATED, never upserted).** Drift note: `saveOwnAiSettings` used INSERT ... ON CONFLICT DO UPDATE. Postgres checks `agent_ai_settings_own_complete_check` on the proposed INSERT row before ON CONFLICT, and that row holds no `usepod_token_*` columns, so every save of source `usepod` on a registered token answered 500 (seen on staging 2026-11-10; on prod since part A).
+Prior **Last Audited: 2026-11-10 08:51Z (own AI part B fix: first deposit on a token UsePod has not activated).** Drift note: the first live deposit on staging stopped with `provider_error` and paid nothing: the pre-deposit balance read got UsePod's 401 "token not found or not activated" for the fresh registered token, so no deposit could ever activate it.
 Prior **Last Audited: 2026-11-10 00:58Z (own AI part B, protocol 120, migration 0100).** Drift note: UsePod deposits now share human and agent spend rules, require finalized proof, and report provider credit separately. Route limits and bounded credit retries control repeated requests.
 
 **Last Audited: 2026-11-09 (BrainChain identity, issuer reputation, and exact Priors reads, protocol 122).** Drift note: added selected-identity association and separate credit observations without consent or debt authority.

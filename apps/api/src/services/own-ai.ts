@@ -449,10 +449,17 @@ export async function saveOwnAiSettings(avatarId: string, userId: string, input:
       updatedByUserId: userId,
       updatedAt: new Date(),
     };
-    await tx
-      .insert(agentAiSettings)
-      .values({ avatarId, ...values })
-      .onConflictDoUpdate({ target: agentAiSettings.avatarId, set: values });
+    // An existing row is UPDATED, never upserted: Postgres checks CHECK
+    // constraints on the proposed INSERT row before ON CONFLICT, and that row
+    // has no usepod_token_* columns, so a usepod save on the registered token
+    // failed agent_ai_settings_own_complete_check (500 on staging 2026-11-10).
+    // `stored` was read under the spend-rules lock, which every creator of this
+    // row (save, register) also takes, so no other writer can INSERT it between.
+    if (stored) {
+      await tx.update(agentAiSettings).set(values).where(eq(agentAiSettings.avatarId, avatarId));
+    } else {
+      await tx.insert(agentAiSettings).values({ avatarId, ...values });
+    }
   });
   emitSettingsChanged(avatarId);
   return readOwnAiStatus(avatarId);

@@ -979,18 +979,42 @@ describe('lead follow-up: sticky reasons, active-now read, raise race, registere
     expectCode(() => resolveOwnAiSave({ source: 'usepod', provider: 'usepod', model: 'gpt-oss-120b' }, { ...pasted, hasKey: false }), 'key_required');
   });
 
-  test('a save never writes the registered-token columns', async () => {
+  test('a save on an existing row is an UPDATE (no upsert) and never writes the registered-token columns', async () => {
+    // An upsert's proposed INSERT row has no token columns, and Postgres checks
+    // agent_ai_settings_own_complete_check on it before ON CONFLICT (500 on staging 2026-11-10).
     queue.select.push([{ provider: 'openai', speedSeconds: 25, dailyLimitCents: 100, keyEnc: 'x', usepodRegistered: true }]);
     await saveOwnAiSettings(AVATAR, USER, { source: 'usepod', provider: 'usepod', model: 'gpt-oss-120b' });
-    const values = recorded.find((r) => r.op === 'insert')!.calls.find((c) => c.name === 'values')!.args[0] as Record<string, unknown>;
+    expect(recorded.some((r) => r.op === 'insert')).toBe(false);
+    const upd = recorded.find((r) => r.op === 'update')!;
+    const values = upd.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
     expect(values).toMatchObject({ source: 'usepod', provider: 'usepod', keyEnc: null, keyLast4: null });
-    for (const k of ['usepodRegistered', 'usepodTokenEnc', 'usepodTokenIv', 'usepodTokenTag', 'usepodTokenLast4']) expect(k in values).toBe(false);
+    for (const k of ['usepodRegistered', 'usepodTokenEnc', 'usepodTokenIv', 'usepodTokenTag', 'usepodTokenLast4', 'usepodDepositCode']) expect(k in values).toBe(false);
+    expect(render(upd.calls.find((c) => c.name === 'where')!.args[0]).params).toEqual([AVATAR]);
+    // An existing own-key row saved without a new key: UPDATE that leaves the key columns out.
+    recorded = [];
+    queue.select.push([{ provider: 'openai', speedSeconds: 25, dailyLimitCents: 100, keyEnc: 'x', usepodRegistered: false }]);
+    await saveOwnAiSettings(AVATAR, USER, { source: 'own_key', provider: 'openai', model: 'gpt-4.1', dailyLimitCents: 50 });
+    expect(recorded.some((r) => r.op === 'insert')).toBe(false);
+    const keep = recorded.find((r) => r.op === 'update')!.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
+    expect(keep).toMatchObject({ source: 'own_key', model: 'gpt-4.1', dailyLimitCents: 50 });
+    for (const k of ['keyEnc', 'keyIv', 'keyTag', 'keyLast4']) expect(k in keep).toBe(false);
     recorded = [];
     queue.select.push([{ provider: 'usepod', speedSeconds: 25, dailyLimitCents: 100, keyEnc: null, usepodRegistered: true }]);
     await saveOwnAiSettings(AVATAR, USER, { ...save, key: OPENAI_KEY });
-    const v2 = recorded.find((r) => r.op === 'insert')!.calls.find((c) => c.name === 'values')!.args[0] as Record<string, unknown>;
+    expect(recorded.some((r) => r.op === 'insert')).toBe(false);
+    const v2 = recorded.find((r) => r.op === 'update')!.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
     expect(v2).toMatchObject({ keyEnc: sealed(OPENAI_KEY) });
     for (const k of ['usepodRegistered', 'usepodTokenEnc', 'usepodTokenLast4']) expect(k in v2).toBe(false);
+  });
+
+  test('a first save with no row is a plain INSERT (no upsert)', async () => {
+    queue.select.push([]);
+    queue.select.push([{ source: 'own_key', provider: 'openai', model: 'gpt-4.1', speedSeconds: 25, dailyLimitCents: 100, keyLast4: 'cdef', usepodRegistered: false, fallbackReason: null, fallbackAt: null, updatedAt: new Date() }]);
+    queue.select.push([]);
+    await saveOwnAiSettings(AVATAR, USER, { source: 'own_key', provider: 'openai', model: 'gpt-4.1', dailyLimitCents: 100, key: OPENAI_KEY });
+    const ins = recorded.find((r) => r.op === 'insert')!;
+    expect(ins.calls.some((c) => c.name === 'onConflictDoUpdate')).toBe(false);
+    expect(recorded.some((r) => r.op === 'update')).toBe(false);
   });
 
   test('runtime config: registered token first, pasted token otherwise, null while sticky', async () => {
