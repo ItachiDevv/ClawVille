@@ -747,6 +747,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-10 15:26Z (session claw2.0) - Own AI save fix: switching the agent to a registered UsePod token answered 500
+- **What changed:** `services/own-ai.ts` `saveOwnAiSettings` UPDATEs the existing `agent_ai_settings` row (read under the spend-rules lock) and INSERTs only when no row exists; no upsert. ARCHITECTURE note. No API shape change, no PROTOCOL bump, no migration.
+- **What broke + root cause:** the live AI-call check on staging (landtest1, after the $0.50 deposit was verified: tx `5cn7zHta...` finalized, ledger `317d273e` paid + credit seen, UsePod balance 500000 micro active) saved source `usepod` / model `gpt-oss-120b` / limit 10c. The metered key test reached UsePod and was charged (balance 500000 -> 499995 micro), then the save answered 500: `agent_ai_settings_own_complete_check`. Postgres checks CHECK constraints on the proposed INSERT row of INSERT ... ON CONFLICT before it sees the conflict, and that row has no `usepod_token_*` columns. Proven in a rolled-back transaction on staging: the upsert fails the check, a plain UPDATE passes. Same code on prod since part A (`7dc9a0001`): no human can switch to a registered UsePod token there. landtest1 was put back on ClawVille AI (PUT source clawville, 200).
+- **Verified (local):** own-ai 64, deposit 45, agent-ai route 39 tests pass (147 in one run); api tsc exit 0.
+- **Codex:** APPROVED (two non-blocking notes applied: comment scope; token, deposit-code and keep-key update tests).
+- **NOT verified yet:** the staging flip, and the live save + one model call.
+- **Who it's for:** every human who registered a UsePod token in ClawVille and wants the agent to run on it.
+- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain). This push adds none.
+
 ### 2026-11-10 15:10Z (session brainchain-office) - BrainChain probe boot fix + operator scripts pushed to staging, live check PENDING
 - **What changed:** `initializeProbeRuntimeDeployment` no longer crashes staging boot when `BRAINCHAIN_PROBE_CONFIG_PATH` is set and the config is missing, expired or refused; it logs one fixed line and leaves the probe deployment disabled (outside staging a set value stays fatal). New staging-only operator scripts `apps/api/scripts/brainchain/probe-root-op.ts` (root signer: genesis, reservation revision, status) and `probe-config.ts` (protected probe config from the prepared fixture). Procedure: `docs/brainchain-staging-parity-runbook.md`, "Staging operator procedure".
 - **Staging config (Coolify app 3):** new persistent storage `/var/lib/brainchain-probe` (host dir root 0700). The env var `BRAINCHAIN_PROBE_CONFIG_PATH` was added at 15:01Z, then removed again at 15:02Z, because the deployed code before this fix crashes boot when that config is missing. It is re-added after this fix is live.
