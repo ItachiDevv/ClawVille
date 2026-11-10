@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-10 01:33Z (session claw2.0). **STAGING API + WEB = `d81d5d472` (own AI part B: agent wallet deposit into its UsePod balance; PROTOCOL 120; migration 0100 applied on staging).** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql.
+Last Audited: 2026-11-10 07:05Z (session brainchain-office). **STAGING = BrainChain Office push of `docs/brainchain-plan` (PROTOCOL 128; migrations 0101-0119), deploy and live checks PENDING; see the DEPLOY LOG entry.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
+
+Prior - Last Audited: 2026-11-10 01:33Z (session claw2.0). **STAGING API + WEB = `d81d5d472` (own AI part B: agent wallet deposit into its UsePod balance; PROTOCOL 120; migration 0100 applied on staging).** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql.
 
 Prior - Last Audited: 2026-11-09 12:59Z (session claw2.0). **PROD API + WEB = `7dc9a0001` (promotion #27, PR #339), VERIFIED 12:57Z: own AI part A, Studios sign-in live fixes, MCP body-limit fix; PROTOCOL 119; migration 0099 applied.** STAGING = same code. SCHEMA: synced.
 
@@ -744,6 +746,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-10 07:05Z (session brainchain-office) - BrainChain Office pushed to staging (PROTOCOL 128, migrations 0101-0119), live checks PENDING
+- **What changed:** BrainChain Office: building, guide and 2D entry; code-generated curriculum in the served manual and hosted runtime; owner-bound worker, purchase, earnings, identity/credit and recovery routes with matching MCP and hosted `brainchain` actions; durable signer, task, delivery, funding and probe ledgers. Both activation flags stay false; no worker runs, no payment sends, the probe stays disabled without `BRAINCHAIN_PROBE_CONFIG_PATH`. Detail: `docs/brainchain-office.md`, `docs/brainchain-release-requirements.md`.
+- **Merge with staging:** both lines had used PROTOCOL 120, so the merged manual is 128. Staging owns `0100_usepod_deposit.sql`, so the BrainChain migrations moved to 0101-0119 (content unchanged). The merge exposed two test-fixture defects, both fixed (`docs/brainchain-ci.md`, "Staging merge renumber").
+- **What broke + root cause:** before the push, unpublished BrainChain docs carried a false GitHub identity rule from an earlier session. The founder chose a history rewrite; seven docs changed, no source tree changed (`docs/brainchain-commit-map.md`).
+- **Verified before push (local, itachi222):** pure 80 suites/610 tests; PostgreSQL 26 suites/173 tests, 0 skips; API and web typechecks exit 0; coupling gate and doc path guard pass. No remote CI yet.
+- **NOT verified:** CI, migrate, SOURCE_COMMIT, `/health`, served manual 128, browser scene, authenticated parity, testnet lifecycle. Follow-up entry records them.
+- **Who it's for:** humans and connected/hosted agents that learn BrainChain and prepare testnet worker operations.
+- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain); staging applies them in this deploy.
 
 ### 2026-11-10 01:33Z (session claw2.0) - Own AI part B ON STAGING (`d81d5d472`, PROTOCOL 120, migration 0100)
 - **What changed:** `services/usepod-deposit.ts`: the avatar wallet calls the UsePod program `deposit_usdc` (pinned program, config, ops wallet, USDC mint) with the registered token's deposit code plus a memo with the ledger id. Spend rules (vendor `usepod`, per-call and daily caps, 5 sent deposits per UTC day), ledger row before signing, signed bytes stored before send, never rebuilt. 'paid' only with finalized proof; own reconcile; UsePod credit tracked apart ('seen' / 'unknown'). With "Ask me before each payment" on, every deposit needs a linked-wallet signature and an agent is refused. Routes `POST /api/agent-ai/usepod/deposit` (+ `/challenge`). Agent AI card deposit control; UsePod in the spending card. Manual, Nori, ARCHITECTURE, GameFeatures, inference-router-spec, hatcher-integration-spec drift note, FOUNDER-REVIEW.

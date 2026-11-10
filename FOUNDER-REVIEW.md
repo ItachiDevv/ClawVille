@@ -985,3 +985,11 @@ BrainChain 2D review additions, 2026-11-09: inspect the visible marketplace foot
 ### BrainChain 2D party recovery - 2026-11-09
 
 Environment: local production build, /game?view=2d. Session: brainchain-office world reconciler. Check that party create/join/queue controls refuse in 2D. Start with an existing party, close its lobby, then select 2D. Persistent recovery must leave pending queue participation even after entry into the Office. If the server already assigned a match, it must open that actual activity in 3D. Report any repeated notices, hidden errors, or missing match navigation. Mounted React and queue tests do not replace two-client browser review. Also test a guest solo match, a failed leave, and logout during a pending assignment request.
+
+### BrainChain Office on staging - 2026-11-10
+
+Session: brainchain-office. Environment: https://staging.clawville.world/game and /brainchain after the staging deploy.
+Look at: the Office building and its door, the Office Guide, the /brainchain panel sections (learning, worker setup, status, purchases, earnings, credit, recovery) and their unavailable-state messages.
+Feedback wanted: is the Office easy to find and enter, and do the panel sections read clearly? Real phone/iPad view of the panel and joystick.
+Not ready to judge: worker earnings, task purchases and cash-out stay disabled until the testnet lifecycle passes.
+
