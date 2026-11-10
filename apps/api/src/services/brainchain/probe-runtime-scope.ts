@@ -17,13 +17,17 @@ export function configureProbeRuntimeDeployment(value: TrustedProbeDeployment): 
   deployment = Object.freeze({ ...value });
 }
 type ProbeIdentity = { userId?: string | null; avatarId?: string | null; platformAgentId?: string | null };
+/** True only on staging, the one environment where probe fixture markers can exist. */
+export function probeMarkerChecksEnabled(): boolean {
+  return process.env.CLAWVILLE_ENV === 'staging';
+}
 async function findProbeMarker(identity: ProbeIdentity) {
   // Probe fixtures exist only on staging: preparation requires CLAWVILLE_ENV=staging,
   // probe manifests pin the staging API origin, and resolveProbeRuntimeScope refuses
   // every other environment. Other environments skip this read, which otherwise runs
   // on every authenticated request and every autonomous decision. A marked identity
   // outside staging therefore acts as an ordinary user; it never gains access.
-  if (process.env.CLAWVILLE_ENV !== 'staging') return undefined;
+  if (!probeMarkerChecksEnabled()) return undefined;
   const platformAgentId = identity.platformAgentId && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(identity.platformAgentId) ? identity.platformAgentId : null;
   if (!identity.userId && !identity.avatarId && !platformAgentId) return undefined;
   const [marker] = await getPostgresClient()`SELECT * FROM brainchain_probe_markers WHERE (${identity.userId ?? null}::uuid IS NOT NULL AND user_id=${identity.userId ?? null}::uuid) OR (${identity.avatarId ?? null}::uuid IS NOT NULL AND avatar_id=${identity.avatarId ?? null}::uuid) OR (${platformAgentId}::uuid IS NOT NULL AND platform_agent_id=${platformAgentId}::uuid) LIMIT 1`;

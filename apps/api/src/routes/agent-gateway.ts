@@ -1,4 +1,4 @@
-import { assertProbeHttpOperation } from '../services/brainchain/probe-runtime-scope';
+import { assertProbeHttpOperation, probeMarkerChecksEnabled } from '../services/brainchain/probe-runtime-scope';
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { z } from 'zod';
@@ -2660,7 +2660,8 @@ agentGatewayRoutes.post('/join', async (c) => {
 async function resolveSession(sessionId: string, request:Request, readBody:()=>Promise<unknown>) {
   const live = await validateLiveAgentSession(sessionId);
   if (!live) return null;
-  const probeSubject=await resolveAgentSession(sessionId);
+  // The probe-subject read happens only where probe markers can exist (staging).
+  const probeSubject=probeMarkerChecksEnabled()?await resolveAgentSession(sessionId):null;
   if(probeSubject)await assertProbeHttpOperation({userId:probeSubject.userId,avatarId:probeSubject.avatarId,platformAgentId:probeSubject.agentId},request,readBody);
   const npcId = npcSimulation.getNpcIdForSession(sessionId);
   if (!npcId) return null;

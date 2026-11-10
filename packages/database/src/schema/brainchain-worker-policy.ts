@@ -1,5 +1,5 @@
 import {sql} from 'drizzle-orm';
-import {pgTable,uuid,varchar,jsonb,integer,bigint,numeric,timestamp,foreignKey,uniqueIndex,check,text} from 'drizzle-orm/pg-core';
+import {pgTable,uuid,varchar,jsonb,integer,bigint,numeric,timestamp,foreignKey,uniqueIndex,check,text,unique} from 'drizzle-orm/pg-core';
 import {brainchainWorkerBindings,brainchainSignerAuthorities,brainchainExecutionAuthorities,brainchainSignerOperations} from './brainchain';
 import {brainchainDeliveryAuthorities} from './brainchain-delivery';
 import {avatars} from './avatars';
@@ -19,7 +19,7 @@ export const brainchainWorkerPolicies=pgTable('brainchain_worker_policies',{
   ownerGrantId:varchar('owner_grant_id',{length:64}),approvedAt:timestamp('approved_at',{withTimezone:true}),revokedAt:timestamp('revoked_at',{withTimezone:true}),
   expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
 },t=>({owner:foreignKey({name:'brainchain_worker_policy_owner',columns:[t.bindingId,t.avatarId,t.environment,t.chainId],foreignColumns:[brainchainWorkerBindings.id,brainchainWorkerBindings.avatarId,brainchainWorkerBindings.environment,brainchainWorkerBindings.chainId]}),
-  revision:uniqueIndex('brainchain_worker_policy_revision').on(t.bindingId,t.revision),tuple:uniqueIndex('brainchain_worker_policy_tuple').on(t.id,t.bindingId,t.avatarId),userTuple:uniqueIndex('brainchain_worker_policy_user_tuple').on(t.id,t.bindingId,t.avatarId,t.userId),
+  revision:uniqueIndex('brainchain_worker_policy_revision').on(t.bindingId,t.revision),tuple:unique('brainchain_worker_policy_tuple').on(t.id,t.bindingId,t.avatarId),userTuple:unique('brainchain_worker_policy_user_tuple').on(t.id,t.bindingId,t.avatarId,t.userId),
   active:uniqueIndex('brainchain_worker_policy_one_active').on(t.bindingId).where(sql`${t.state}='active'`),
   bounds:check('brainchain_worker_policy_bounds',sql`${t.environment}='testnet' AND ${t.chainId}=274630 AND ${t.revision}>0 AND ${t.payloadHash}~'^[a-f0-9]{64}$' AND jsonb_typeof(${t.payload})='object' AND ${t.state} IN ('requested','active','paused','revoked') AND ${t.expiresAt}>${t.createdAt} AND ${t.expiresAt}<=${t.createdAt}+interval '1 day' AND (${t.state}<>'active' OR (${t.ownerGrantId} IS NOT NULL AND ${t.approvedAt} IS NOT NULL))`),
 }));

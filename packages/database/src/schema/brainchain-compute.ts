@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, check, integer, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
+import { bigint, check, integer, pgTable, text, timestamp, uniqueIndex, uuid, varchar, unique} from 'drizzle-orm/pg-core';
 import { brainchainTaskAttempts, brainchainWorkerTasks } from './brainchain';
 
 /** Internal budget authority only. No human/agent route can approve an envelope. */
@@ -37,7 +37,7 @@ export const brainchainComputeCalls = pgTable('brainchain_compute_calls', {
   failureCode: varchar('failure_code', { length: 32 }), reconciliationRef: varchar('reconciliation_ref', { length: 128 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => ({ reservation: uniqueIndex('brainchain_compute_call_reservation').on(t.reservationId),
-  deliveryOwner: uniqueIndex('brainchain_compute_call_owner_tuple').on(t.id,t.taskId,t.attemptId,t.avatarId,t.generation,t.leaseOwner,t.promptHash),
+  deliveryOwner: unique('brainchain_compute_call_owner_tuple').on(t.id,t.taskId,t.attemptId,t.avatarId,t.generation,t.leaseOwner,t.promptHash),
   attemptOnce: uniqueIndex('brainchain_compute_attempt_once').on(t.attemptId), capability: uniqueIndex('brainchain_compute_capability_once').on(t.capabilityHash),
   values: check('brainchain_compute_call_values', sql`${t.generation}>0 AND ${t.promptHash} ~ '^[a-f0-9]{64}$' AND ${t.capabilityHash} ~ '^[a-f0-9]{64}$' AND octet_length(${t.prompt}) BETWEEN 1 AND 32768 AND ${t.maxInputTokens} BETWEEN octet_length(${t.prompt}) AND 131072 AND ${t.maxOutputTokens} BETWEEN 1 AND 8192 AND ${t.inputRate}>=0 AND ${t.outputRate}>=0 AND ${t.requestMicros}>=0 AND ${t.maximumMicros}>0 AND ${t.maximumMicros}<=10000000 AND (${t.chargedMicros} IS NULL OR ${t.chargedMicros} BETWEEN 0 AND ${t.maximumMicros}) AND ${t.state} IN ('reserved','dispatched','uncertain','settled','canceled') AND (${t.output} IS NULL OR octet_length(${t.output}) BETWEEN 1 AND 32768)`),
   lifecycle: check('brainchain_compute_call_lifecycle', sql`(${t.state}='reserved' AND ${t.dispatchedAt} IS NULL AND ${t.chargedMicros} IS NULL) OR (${t.state}='canceled' AND ${t.dispatchedAt} IS NULL AND ${t.chargedMicros} IS NOT NULL AND ${t.chargedMicros}=0) OR (${t.state} IN ('dispatched','uncertain') AND ${t.dispatchedAt} IS NOT NULL AND ${t.chargedMicros} IS NULL) OR (${t.state}='settled' AND ${t.dispatchedAt} IS NOT NULL AND ${t.chargedMicros} IS NOT NULL)`),

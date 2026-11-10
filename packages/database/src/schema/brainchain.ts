@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, foreignKey, index, integer, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, foreignKey, index, integer, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid, varchar, unique} from 'drizzle-orm/pg-core';
 import { avatars } from './avatars';
 
 /** Address ownership is permanent in this pilot. There is no cross-avatar transfer or delete API. */
@@ -19,8 +19,8 @@ export const brainchainWorkerBindings = pgTable('brainchain_worker_bindings', {
 }, (t) => ({
   addressOwner: uniqueIndex('brainchain_binding_address_owner').on(t.environment, t.address),
   avatarEnvironment: uniqueIndex('brainchain_binding_avatar_environment').on(t.avatarId, t.environment),
-  ownerTuple: uniqueIndex('brainchain_binding_owner_tuple').on(t.id, t.avatarId, t.environment, t.chainId),
-  signerOwnerTuple: uniqueIndex('brainchain_binding_signer_owner').on(t.id,t.avatarId,t.environment,t.chainId,t.address),
+  ownerTuple: unique('brainchain_binding_owner_tuple').on(t.id, t.avatarId, t.environment, t.chainId),
+  signerOwnerTuple: unique('brainchain_binding_signer_owner').on(t.id,t.avatarId,t.environment,t.chainId,t.address),
   network: check('brainchain_binding_network', sql`(${t.environment} = 'testnet' AND ${t.chainId} = 274630) OR (${t.environment} = 'mainnet' AND ${t.chainId} = 274663)`),
   addressFormat: check('brainchain_binding_address_format', sql`${t.address} ~ '^0x[0-9a-f]{40}$' AND ${t.address} <> '0x0000000000000000000000000000000000000000'`),
   proofFormat: check('brainchain_binding_proof_format', sql`${t.proofHash} ~ '^[0-9a-f]{64}$'`),
@@ -66,7 +66,7 @@ export const brainchainWorkerTasks = pgTable('brainchain_worker_tasks', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   identity: uniqueIndex('brainchain_task_identity').on(t.chainId,t.boardAddress,t.taskId),
-  ownerTuple: uniqueIndex('brainchain_task_owner_tuple').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId),
+  ownerTuple: unique('brainchain_task_owner_tuple').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId),
   owner: foreignKey({ columns: [t.bindingId,t.avatarId,t.environment,t.chainId], foreignColumns: [brainchainWorkerBindings.id,brainchainWorkerBindings.avatarId,brainchainWorkerBindings.environment,brainchainWorkerBindings.chainId], name: 'brainchain_task_binding_owner' }).onDelete('restrict'),
   format: check('brainchain_task_format', sql`${t.boardAddress} ~ '^0x[0-9a-f]{40}$' AND ${t.manifestHash} ~ '^[0-9a-f]{64}$' AND ${t.hireBlockHash} ~ '^0x[0-9a-f]{64}$' AND ${t.hireTxHash} ~ '^0x[0-9a-f]{64}$' AND ${t.observedBlockHash} ~ '^0x[0-9a-f]{64}$' AND ${t.briefHash} ~ '^0x[0-9a-f]{64}$' AND ${t.resultHash} ~ '^0x[0-9a-f]{64}$'`),
   values: check('brainchain_task_values', sql`${t.taskId} BETWEEN 0 AND 115792089237316195423570985008687907853269984665640564039457584007913129639935 AND ${t.bountyAtomic} BETWEEN 0 AND 340282366920938463463374607431768211455 AND ${t.hireBlock} >= 0 AND ${t.observedBlock} >= ${t.hireBlock} AND ${t.hireLogIndex} >= 0 AND ${t.deadlineUnix} >= 0 AND ${t.status} BETWEEN 1 AND 9 AND ${t.leaseGeneration} >= 0`),
@@ -85,8 +85,8 @@ export const brainchainExecutionAuthorities=pgTable('brainchain_execution_author
   configuredPair:check('brainchain_execution_authorities_configured_pair',sql`(${t.authorityPolicyVersion} IS NULL AND ${t.authorityPolicyDigest} IS NULL) OR (${t.authorityPolicyVersion} IS NOT NULL AND ${t.authorityPolicyDigest} IS NOT NULL AND ${t.authorityPolicyVersion}='brainchain-testnet-configured-authority-v1' AND ${t.authorityPolicyDigest}='21dab2c362d854e881f88785a7b3a23b7ac7e159ae179ded0cb22bda521ab9b6')`),
   observation:check('brainchain_execution_authorities_observation_policy',sql`${t.observationPolicy} IN ('legacy-depth12-age120-v1','nitro-testnet-latest-v1')`),
   owner:foreignKey({columns:[t.taskId,t.bindingId,t.avatarId,t.environment,t.chainId],foreignColumns:[brainchainWorkerTasks.id,brainchainWorkerTasks.bindingId,brainchainWorkerTasks.avatarId,brainchainWorkerTasks.environment,brainchainWorkerTasks.chainId],name:'brainchain_execution_task_owner'}).onDelete('restrict'),
-  tuple:uniqueIndex('brainchain_execution_owner_tuple').on(t.id,t.taskId,t.bindingId,t.avatarId,t.environment,t.chainId,t.generation,t.inputHash,t.promptHash),
-  policyOwner:uniqueIndex('brainchain_execution_policy_owner').on(t.id,t.bindingId,t.avatarId),
+  tuple:unique('brainchain_execution_owner_tuple').on(t.id,t.taskId,t.bindingId,t.avatarId,t.environment,t.chainId,t.generation,t.inputHash,t.promptHash),
+  policyOwner:unique('brainchain_execution_policy_owner').on(t.id,t.bindingId,t.avatarId),
   values:check('brainchain_execution_values',sql`${t.environment}='testnet' AND ${t.chainId}=274630 AND ${t.generation}>0 AND ${t.briefHash} ~ '^0x[a-f0-9]{64}$' AND ${t.inputHash} ~ '^[a-f0-9]{64}$' AND ${t.promptHash} ~ '^[a-f0-9]{64}$' AND length(${t.approvedBy})>0 AND ${t.expiresAt}>${t.createdAt} AND ${t.expiresAt}<=${t.createdAt}+interval '10 minutes' AND (${t.consumedAt} IS NULL OR (${t.consumedAt}>=${t.createdAt} AND ${t.consumedAt}<${t.expiresAt}))`),
 }));
 
@@ -104,7 +104,7 @@ export const brainchainTaskAttempts = pgTable('brainchain_task_attempts', {
   generation: uniqueIndex('brainchain_attempt_generation').on(t.taskId,t.generation),
   owner: foreignKey({ columns:[t.taskId,t.bindingId,t.avatarId,t.environment,t.chainId], foreignColumns:[brainchainWorkerTasks.id,brainchainWorkerTasks.bindingId,brainchainWorkerTasks.avatarId,brainchainWorkerTasks.environment,brainchainWorkerTasks.chainId],name:'brainchain_attempt_task_owner' }).onDelete('restrict'),
   authorityOnce:uniqueIndex('brainchain_attempt_authority_once').on(t.authorityId),
-  deliveryOwner:uniqueIndex('brainchain_attempt_delivery_owner').on(t.id,t.taskId,t.bindingId,t.avatarId,t.environment,t.chainId,t.generation,t.leaseOwner,t.promptHash),
+  deliveryOwner:unique('brainchain_attempt_delivery_owner').on(t.id,t.taskId,t.bindingId,t.avatarId,t.environment,t.chainId,t.generation,t.leaseOwner,t.promptHash),
   authority:foreignKey({columns:[t.authorityId,t.taskId,t.bindingId,t.avatarId,t.environment,t.chainId,t.generation,t.inputHash,t.promptHash],foreignColumns:[brainchainExecutionAuthorities.id,brainchainExecutionAuthorities.taskId,brainchainExecutionAuthorities.bindingId,brainchainExecutionAuthorities.avatarId,brainchainExecutionAuthorities.environment,brainchainExecutionAuthorities.chainId,brainchainExecutionAuthorities.generation,brainchainExecutionAuthorities.inputHash,brainchainExecutionAuthorities.promptHash],name:'brainchain_attempt_execution_owner'}).onDelete('restrict'),
   values: check('brainchain_attempt_values',sql`${t.attemptNumber}>0 AND ${t.generation}>0 AND ((${t.purpose}='recovery' AND ${t.state} IN ('inspecting','reconciled','expired','suspended') AND ${t.authorityId} IS NULL AND ${t.inputHash} IS NULL AND ${t.promptHash} IS NULL) OR (${t.purpose}='execution' AND ${t.state} IN ('executing','executed','expired','suspended') AND ${t.authorityId} IS NOT NULL AND ${t.inputHash} IS NOT NULL AND ${t.promptHash} IS NOT NULL)) AND ${t.leaseUntil}>${t.createdAt} AND (${t.outputHash} IS NULL OR ${t.outputHash} ~ '^[0-9a-f]{64}$')`),
 }));
@@ -129,7 +129,7 @@ export const brainchainSignerStreams=pgTable('brainchain_signer_streams',{
   createdAt:timestamp('created_at',{withTimezone:true}).defaultNow().notNull(),
 },t=>({
   owner:foreignKey({columns:[t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress],foreignColumns:[brainchainWorkerBindings.id,brainchainWorkerBindings.avatarId,brainchainWorkerBindings.environment,brainchainWorkerBindings.chainId,brainchainWorkerBindings.address],name:'brainchain_stream_binding_owner'}).onDelete('restrict'),
-  ownerTuple:uniqueIndex('brainchain_stream_owner_tuple').on(t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress),
+  ownerTuple:unique('brainchain_stream_owner_tuple').on(t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress),
   keyReference:uniqueIndex('brainchain_stream_key_reference').on(t.signerRef),
   values:check('brainchain_stream_values',sql`${t.environment}='testnet' AND ${t.chainId}=274630 AND ${t.generation}>0 AND ${t.nextNonce} BETWEEN 0 AND 18446744073709551615 AND ${t.signerRef} ~ '^brainchain-testnet:[a-zA-Z0-9_-]{1,96}$'`),
 }));
@@ -145,9 +145,9 @@ export const brainchainSignerAuthorities=pgTable('brainchain_signer_authorities'
   configuredPair:check('brainchain_signer_authorities_configured_pair',sql`(${t.authorityPolicyVersion} IS NULL AND ${t.authorityPolicyDigest} IS NULL) OR (${t.authorityPolicyVersion} IS NOT NULL AND ${t.authorityPolicyDigest} IS NOT NULL AND ${t.authorityPolicyVersion}='brainchain-testnet-configured-authority-v1' AND ${t.authorityPolicyDigest}='21dab2c362d854e881f88785a7b3a23b7ac7e159ae179ded0cb22bda521ab9b6')`),
   observation:check('brainchain_signer_authorities_observation_policy',sql`${t.observationPolicy} IN ('legacy-depth12-age120-v1','nitro-testnet-latest-v1')`),
   owner:foreignKey({columns:[t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress],foreignColumns:[brainchainSignerStreams.bindingId,brainchainSignerStreams.avatarId,brainchainSignerStreams.environment,brainchainSignerStreams.chainId,brainchainSignerStreams.signerAddress],name:'brainchain_authority_stream_owner'}).onDelete('restrict'),
-  ownerTuple:uniqueIndex('brainchain_authority_owner_tuple').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress),
-  policyOwner:uniqueIndex('brainchain_signer_policy_owner').on(t.id,t.bindingId,t.avatarId),
-  observationOwner:uniqueIndex('brainchain_signer_observation_owner').on(t.id,t.observationPolicy),
+  ownerTuple:unique('brainchain_authority_owner_tuple').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress),
+  policyOwner:unique('brainchain_signer_policy_owner').on(t.id,t.bindingId,t.avatarId),
+  observationOwner:unique('brainchain_signer_observation_owner').on(t.id,t.observationPolicy),
   values:check('brainchain_authority_values',sql`${t.generation}>0 AND ${t.purpose} IN ('result-signature','gas','faucet','approve-stake','approve-bond','stake','apply','leave','withdraw','submit') AND ${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.maxAtomic} BETWEEN 0 AND 115792089237316195423570985008687907853269984665640564039457584007913129639935 AND ${t.expiresAt}>${t.createdAt} AND ${t.expiresAt}<=${t.createdAt}+interval '1 day'`),
 }));
 
@@ -167,8 +167,8 @@ export const brainchainSignerOperations=pgTable('brainchain_signer_operations',{
   authority:foreignKey({columns:[t.authorityId,t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress],foreignColumns:[brainchainSignerAuthorities.id,brainchainSignerAuthorities.bindingId,brainchainSignerAuthorities.avatarId,brainchainSignerAuthorities.environment,brainchainSignerAuthorities.chainId,brainchainSignerAuthorities.signerAddress],name:'brainchain_operation_intent_owner'}).onDelete('restrict'),
   gasAuthority:foreignKey({columns:[t.gasAuthorityId,t.bindingId,t.avatarId,t.environment,t.chainId,t.signerAddress],foreignColumns:[brainchainSignerAuthorities.id,brainchainSignerAuthorities.bindingId,brainchainSignerAuthorities.avatarId,brainchainSignerAuthorities.environment,brainchainSignerAuthorities.chainId,brainchainSignerAuthorities.signerAddress],name:'brainchain_operation_gas_owner'}).onDelete('restrict'),
   idempotency:uniqueIndex('brainchain_operation_idempotency').on(t.bindingId,t.kind,t.idempotencyKey),
-  resultOwner:uniqueIndex('brainchain_operation_result_owner').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId),
-  receiptOwner:uniqueIndex('brainchain_operation_receipt_owner').on(t.id,t.generation,t.transactionHash),
+  resultOwner:unique('brainchain_operation_result_owner').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId),
+  receiptOwner:unique('brainchain_operation_receipt_owner').on(t.id,t.generation,t.transactionHash),
   observationIntent:foreignKey({name:'brainchain_operation_observation_intent',columns:[t.authorityId,t.observationPolicy],foreignColumns:[brainchainSignerAuthorities.id,brainchainSignerAuthorities.observationPolicy]}),
   observationGas:foreignKey({name:'brainchain_operation_observation_gas',columns:[t.gasAuthorityId,t.observationPolicy],foreignColumns:[brainchainSignerAuthorities.id,brainchainSignerAuthorities.observationPolicy]}),
   oneIntent:uniqueIndex('brainchain_operation_intent_once').on(t.authorityId),oneGas:uniqueIndex('brainchain_operation_gas_once').on(t.gasAuthorityId),

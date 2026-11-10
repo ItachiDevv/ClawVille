@@ -1,5 +1,5 @@
 import {sql} from 'drizzle-orm';
-import {pgTable,uuid,varchar,integer,text,timestamp,jsonb,numeric,uniqueIndex,foreignKey,check} from 'drizzle-orm/pg-core';
+import {pgTable,uuid,varchar,integer,text,timestamp,jsonb,numeric,uniqueIndex,foreignKey,check,unique} from 'drizzle-orm/pg-core';
 import {brainchainWorkerTasks,brainchainTaskAttempts,brainchainSignerAuthorities,brainchainSignerOperations} from './brainchain';
 import {brainchainComputeCalls} from './brainchain-compute';
 
@@ -13,7 +13,7 @@ export const brainchainTaskResults=pgTable('brainchain_task_results',{
   state:varchar('state',{length:24}).notNull().default('frozen'),uploadToken:uuid('upload_token'),uploadStartedAt:timestamp('upload_started_at',{withTimezone:true}),
   resultUri:text('result_uri'),submission:jsonb('submission'),createdAt:timestamp('created_at',{withTimezone:true}).defaultNow().notNull(),updatedAt:timestamp('updated_at',{withTimezone:true}).defaultNow().notNull(),
 },t=>({
-  signerOwner:uniqueIndex('brainchain_result_signer_owner').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId),
+  signerOwner:unique('brainchain_result_signer_owner').on(t.id,t.bindingId,t.avatarId,t.environment,t.chainId),
   exactOwner:uniqueIndex('brainchain_result_exact_owner').on(t.id,t.bindingId,t.avatarId),
   snapshot:check('brainchain_result_hire_snapshot',sql`(${t.hireSnapshot} IS NULL AND ${t.hireSnapshotHash} IS NULL) OR (${t.hireSnapshot} IS NOT NULL AND ${t.hireSnapshotHash} IS NOT NULL AND jsonb_typeof(${t.hireSnapshot})='object' AND ${t.hireSnapshotHash} ~ '^[a-f0-9]{64}$')`),
   taskOnce:uniqueIndex('brainchain_result_task_once').on(t.taskId),attemptOnce:uniqueIndex('brainchain_result_attempt_once').on(t.attemptId),callOnce:uniqueIndex('brainchain_result_call_once').on(t.callId),
@@ -39,7 +39,7 @@ export const brainchainResultSignatures=pgTable('brainchain_result_signatures',{
 export const brainchainResultSubmissions=pgTable('brainchain_result_submissions',{
   resultId:uuid('result_id').primaryKey(),operationId:uuid('operation_id').notNull().unique(),bindingId:uuid('binding_id').notNull(),avatarId:uuid('avatar_id').notNull(),environment:varchar('environment',{length:8}).notNull(),chainId:integer('chain_id').notNull(),
 },t=>({
-  operationResult:uniqueIndex('brainchain_submission_operation_result').on(t.operationId,t.resultId),
+  operationResult:unique('brainchain_submission_operation_result').on(t.operationId,t.resultId),
   resultOwner:foreignKey({name:'brainchain_submission_result_owner',columns:[t.resultId,t.bindingId,t.avatarId,t.environment,t.chainId],foreignColumns:[brainchainTaskResults.id,brainchainTaskResults.bindingId,brainchainTaskResults.avatarId,brainchainTaskResults.environment,brainchainTaskResults.chainId]}),
   operationOwner:foreignKey({name:'brainchain_submission_operation_owner',columns:[t.operationId,t.bindingId,t.avatarId,t.environment,t.chainId],foreignColumns:[brainchainSignerOperations.id,brainchainSignerOperations.bindingId,brainchainSignerOperations.avatarId,brainchainSignerOperations.environment,brainchainSignerOperations.chainId]}),
   testnet:check('brainchain_submission_testnet',sql`${t.environment}='testnet' AND ${t.chainId}=274630`),
@@ -55,8 +55,8 @@ export const brainchainDeliveryAuthorities=pgTable('brainchain_delivery_authorit
 },t=>({
   configuredPair:check('brainchain_delivery_authorities_configured_pair',sql`(${t.authorityPolicyVersion} IS NULL AND ${t.authorityPolicyDigest} IS NULL) OR (${t.authorityPolicyVersion} IS NOT NULL AND ${t.authorityPolicyDigest} IS NOT NULL AND ${t.authorityPolicyVersion}='brainchain-testnet-configured-authority-v1' AND ${t.authorityPolicyDigest}='21dab2c362d854e881f88785a7b3a23b7ac7e159ae179ded0cb22bda521ab9b6')`),
   owner:foreignKey({name:'brainchain_delivery_authority_owner',columns:[t.resultId,t.bindingId,t.avatarId,t.environment,t.chainId],foreignColumns:[brainchainTaskResults.id,brainchainTaskResults.bindingId,brainchainTaskResults.avatarId,brainchainTaskResults.environment,brainchainTaskResults.chainId]}),
-  tuple:uniqueIndex('brainchain_delivery_authority_tuple').on(t.id,t.resultId,t.bindingId,t.avatarId,t.environment,t.chainId,t.stage,t.taskGeneration),
-  policyOwner:uniqueIndex('brainchain_delivery_policy_owner').on(t.id,t.bindingId,t.avatarId),
+  tuple:unique('brainchain_delivery_authority_tuple').on(t.id,t.resultId,t.bindingId,t.avatarId,t.environment,t.chainId,t.stage,t.taskGeneration),
+  policyOwner:unique('brainchain_delivery_policy_owner').on(t.id,t.bindingId,t.avatarId),
   numericBounds:check('brainchain_delivery_numeric_bounds',sql`(${t.nonce} IS NULL OR ${t.nonce} BETWEEN 0 AND 18446744073709551615) AND (${t.gasCeiling} IS NULL OR ${t.gasCeiling} BETWEEN 1 AND 115792089237316195423570985008687907853269984665640564039457584007913129639935)`),
   values:check('brainchain_delivery_authority_values',sql`${t.environment}='testnet' AND ${t.chainId}=274630 AND ${t.taskGeneration}>0 AND ${t.stage} IN ('signature','upload','prepare-submit','broadcast','reconcile') AND ${t.hireSnapshotHash} ~ '^[a-f0-9]{64}$' AND ${t.resultHash} ~ '^0x[a-f0-9]{64}$' AND ${t.resultSha256} ~ '^[a-f0-9]{64}$' AND length(${t.approvedBy})>0 AND ${t.expiresAt}>${t.createdAt} AND ${t.expiresAt}<=${t.createdAt}+interval '10 minutes' AND (${t.consumedAt} IS NULL OR (${t.consumedAt}>=${t.createdAt} AND ${t.consumedAt}<${t.expiresAt})) AND ((${t.stage}='broadcast' AND ${t.operationId} IS NOT NULL AND ${t.transactionHash} IS NOT NULL AND ${t.transactionHash} ~ '^0x[a-f0-9]{64}$' AND ${t.nonce} IS NOT NULL AND ${t.nonce} BETWEEN 0 AND 18446744073709551615 AND ${t.gasCeiling} IS NOT NULL AND ${t.gasCeiling} BETWEEN 1 AND 115792089237316195423570985008687907853269984665640564039457584007913129639935) OR (${t.stage}<>'broadcast' AND ${t.operationId} IS NULL AND ${t.transactionHash} IS NULL AND ${t.nonce} IS NULL AND ${t.gasCeiling} IS NULL))`),
 }));
@@ -65,7 +65,7 @@ export const brainchainDeliveryLeases=pgTable('brainchain_delivery_leases',{
   generation:integer('generation').notNull(),leaseOwner:uuid('lease_owner').notNull(),expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),
 },t=>({
   authority:foreignKey({name:'brainchain_delivery_lease_authority',columns:[t.authorityId,t.resultId,t.bindingId,t.avatarId,t.environment,t.chainId,t.stage,t.taskGeneration],foreignColumns:[brainchainDeliveryAuthorities.id,brainchainDeliveryAuthorities.resultId,brainchainDeliveryAuthorities.bindingId,brainchainDeliveryAuthorities.avatarId,brainchainDeliveryAuthorities.environment,brainchainDeliveryAuthorities.chainId,brainchainDeliveryAuthorities.stage,brainchainDeliveryAuthorities.taskGeneration]}),
-  generation:uniqueIndex('brainchain_delivery_lease_generation').on(t.resultId,t.generation),result:uniqueIndex('brainchain_delivery_lease_result').on(t.id,t.resultId),
+  generation:uniqueIndex('brainchain_delivery_lease_generation').on(t.resultId,t.generation),result:unique('brainchain_delivery_lease_result').on(t.id,t.resultId),
   values:check('brainchain_delivery_lease_values',sql`${t.environment}='testnet' AND ${t.chainId}=274630 AND ${t.generation}>0 AND ${t.expiresAt}>${t.createdAt} AND ${t.expiresAt}<=${t.createdAt}+interval '60 seconds'`),
 }));
 export const brainchainDeliveryReconciliations=pgTable('brainchain_delivery_reconciliations',{

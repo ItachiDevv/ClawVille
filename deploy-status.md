@@ -747,6 +747,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-10 08:05Z (session brainchain-office) - BrainChain second CI fix push to staging, live checks PENDING
+- **What changed:** CI readiness over TCP for the BrainChain PostgreSQL fixture; 22 BrainChain Drizzle composite keys declared as `unique()` so the CI base schema applies; the gateway probe-subject read runs only on staging (independent review APPROVED); three route-test mocks updated.
+- **What broke + root cause:** run 42777711290 (push `9d52a7561`) failed in the route job (foreign keys before their unique indexes in the generated base schema) and in the BrainChain PostgreSQL job (readiness race); migrate and deploy SKIPPED, staging unchanged.
+- **Verified before push (local):** full Postgres route lane on a fresh CI-built `clawville_test`, service lane and BrainChain pure lane all pass; counts in `docs/brainchain-ci.md`.
+- **NOT verified:** remote CI, migrate, SOURCE_COMMIT, `/health`, served manual 128, browser scene, authenticated parity, testnet lifecycle.
+- **Who it's for:** humans and connected/hosted agents in the BrainChain Office.
+- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain); staging applies 0101-0119 if CI passes.
+
 ### 2026-11-10 07:45Z (session brainchain-office) - BrainChain CI fix push to staging (PROTOCOL 128, migrations 0101-0119), live checks PENDING
 - **What changed:** fixes for run 42772941386: the probe-marker read runs only on staging (independent review APPROVED; production no longer pays one marker query per authenticated request and per agent decision); BigInt schema defaults use sql`0`/sql`200` so `drizzle-kit generate` works; the Linux pure lane expects one reviewed platform skip; stale verb-count, fast-path and runtime test fixtures updated; dead `stopProbeRuntimeAdmission` removed.
 - **What broke + root cause:** the first push ran only BrainChain inventories locally; general API suites, the drizzle base-schema step and the Linux pure lane had never run on this branch. Detail: `docs/brainchain-ci.md`, "First remote run".

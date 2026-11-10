@@ -269,3 +269,14 @@ API typecheck exit 0; CI drizzle-kit generate exit 0 with unchanged DEFAULT 0/20
 activity, all 25 agent-runtime suites, probe safety, protocol-pin routes and owner-proof middleware passed; BrainChain pure 80 suites/611 passes/1 expected Docker skip.
 The Postgres-backed API route job did not run locally; the next remote run provides it. Evidence: .brainchain-work/cifix2-*.log and cifix3-runtime.log.
 
+## Second remote run, 2026-11-10
+
+Push 9d52a7561 started run 42777711290. Money/cove/poker, BrainChain pure (Linux), web and coupling jobs passed. Migrate and deploy were skipped again.
+6. The BrainChain PostgreSQL job hit `ECONNRESET` on its first query. `pg_isready` over the Unix socket had answered the image's temporary init server. The readiness loop now checks TCP at 127.0.0.1, which only the final server serves.
+7. The route job's Drizzle base schema emitted 22 composite foreign keys before their target unique indexes, so PostgreSQL refused them. Those 22 Drizzle declarations now use `unique()`, which lands inside `CREATE TABLE`. The SQL migrations are unchanged; their `IF NOT EXISTS` forms skip the existing names.
+8. Gateway `resolveSession` added a probe-subject bot-row read on every request. That read now runs only on staging, through the shared `probeMarkerChecksEnabled()`; the reviewer approved it, and the owner-proof read-count tests hold.
+9. Three route-test mocks lacked exports or fields that branch code now reaches: `hydraAmbientLine`, the two probe constants, and the system agent `name` (lesson text now uses the real teacher name).
+Local route lane on itachi222 (scoop PostgreSQL 18, fresh `clawville_test` in UTC, built by generate, bootstrap, migrate-ci and restore-invariants): every step passed.
+That covers invariants, database contracts, land seed and all route suites (shared batch 878 passes/69 skips/0 failures, each isolated file passed). The service-lane repeat and BrainChain pure lane also passed again.
+Evidence: .brainchain-work/route-*.log, cifix2-*.log and final-status.txt.
+

@@ -506,7 +506,8 @@ jobs:
           set -euo pipefail
           /usr/bin/docker --host unix:///var/run/docker.sock run -d --name brainchain-ci-pg -p 127.0.0.1:55439:5432 -e POSTGRES_USER=brainchain_fixture -e POSTGRES_PASSWORD=brainchain-ci-only -e POSTGRES_DB=brainchain_fixture postgres:18.6
           for attempt in $(seq 1 30); do
-            if /usr/bin/docker --host unix:///var/run/docker.sock exec brainchain-ci-pg pg_isready -U brainchain_fixture -d brainchain_fixture; then exit 0; fi
+            # TCP, not the socket: the image's init server listens only on the socket, then restarts.
+            if /usr/bin/docker --host unix:///var/run/docker.sock exec brainchain-ci-pg pg_isready -h 127.0.0.1 -p 5432 -U brainchain_fixture -d brainchain_fixture; then exit 0; fi
             sleep 1
           done
           exit 1

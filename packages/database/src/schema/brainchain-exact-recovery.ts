@@ -1,4 +1,4 @@
-import {pgTable,uuid,varchar,integer,text,timestamp,jsonb,bigint,primaryKey,uniqueIndex} from 'drizzle-orm/pg-core';
+import {pgTable,uuid,varchar,integer,text,timestamp,jsonb,bigint,primaryKey,uniqueIndex,unique} from 'drizzle-orm/pg-core';
 import {brainchainWorkerPolicies} from './brainchain-worker-policy';
 import {brainchainTaskResults,brainchainDeliveryAuthorities} from './brainchain-delivery';
 import {brainchainSignerAuthorities} from './brainchain';
@@ -19,7 +19,7 @@ export const brainchainExactResultConsents=pgTable('brainchain_exact_result_cons
   resultId:uuid('result_id').notNull().references(()=>brainchainTaskResults.id),payload:jsonb('payload').notNull(),payloadHash:varchar('payload_hash',{length:64}).notNull(),
   state:varchar('state',{length:12}).notNull().default('requested'),approvalNonce:varchar('approval_nonce',{length:64}),wallet:varchar('wallet',{length:44}),walletVersion:bigint('wallet_version',{mode:'number'}),
   approvedAt:timestamp('approved_at',{withTimezone:true}),revokedAt:timestamp('revoked_at',{withTimezone:true}),createdAt:timestamp('created_at',{withTimezone:true}).notNull().defaultNow(),expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),
-},t=>({captureOwner:uniqueIndex('brainchain_exact_consent_capture_owner').on(t.id,t.resultId,t.bindingId,t.avatarId)}));
+},t=>({captureOwner:unique('brainchain_exact_consent_capture_owner').on(t.id,t.resultId,t.bindingId,t.avatarId)}));
 export const brainchainExactResultChallenges=pgTable('brainchain_exact_result_challenges',{
   nonceHash:varchar('nonce_hash',{length:64}).primaryKey(),consentId:uuid('consent_id').notNull().references(()=>brainchainExactResultConsents.id),sessionId:varchar('session_id',{length:255}).notNull(),
   wallet:varchar('wallet',{length:44}).notNull(),walletVersion:bigint('wallet_version',{mode:'number'}).notNull(),message:text('message').notNull(),attempts:integer('attempts').notNull().default(0),consumedAt:timestamp('consumed_at',{withTimezone:true}),
