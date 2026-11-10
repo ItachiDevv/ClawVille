@@ -1,6 +1,8 @@
 # BrainChain Office: cloud continuation handoff
 
 Prepared on 2026-11-09 from itachi222. This is a continuation of the ClawVille partnership integration.
+Session clarification: this conversation already runs in a cloud session. Its tools access the desktop filesystem on itachi222.
+The session environment and the filesystem host are different concepts. Do not infer that another session or source transfer is required.
 The full integration is unfinished. No staging deployment, production release, paid provider call, or mainnet transaction occurred.
 Use this document for current state. Older handoffs contain chronological statements that later sections supersede.
 
@@ -17,14 +19,21 @@ That is a release authentication rule. It must not stop independent implementati
 Desktop GitHub CLI authenticated as ItachiDevv. No alternate authentication was established.
 Verify the approved identity before GitHub writes. If the founder changes that rule, use the new explicit instruction.
 
-## 2. Source delivery: essential before any work
+## 2. Existing source access and optional transfer
 
 Repository origin: https://github.com/ItachiDevv/ClawVille.git.
 Local branch: docs/brainchain-plan. Local worktree: C:/Users/itachi/Documents/Crypto/ClawVille/.worktrees/brainchain-plan.
 The application commit is c025c733a0ca204ab4ad88a6f40bb8e3de262467.
 The pre-handoff documentation commit is 75abfaf25ea9e6658b99c29b54afb51b1b6c388b.
-The transfer manifest identifies the later commit containing this handoff and kickoff prompt.
-No branch push occurred. Do not assume a cloud checkout already contains the integration.
+Inspect this registered worktree first. This session already has access to it; no upload or import is required here.
+Continue in the existing worktree when it remains accessible. Do not create a second worktree merely because the session is cloud-hosted.
+No branch push occurred. A separate checkout without desktop access may therefore lack the integration.
+The optional transfer manifest identifies its packaged source commit. Git HEAD is authoritative for the accessible worktree.
+
+### Optional fallback for a different environment without the source
+
+Use the following transfer procedure only after confirming that the existing worktree is inaccessible.
+The transfer package is a portability aid, not a prerequisite for this session.
 
 The transfer package contains an incremental Git bundle, these two documents, a CI summary, and a manifest.
 The bundle requires this existing staging ancestor:
@@ -190,7 +199,7 @@ Read the runtime budget design and staging parity runbook before provisioning or
 
 ## 9. Open requirements: do not claim release
 
-1. Import the real source into cloud and inspect the new environment. Local process IDs and agent sessions do not transfer.
+1. Verify the existing worktree and current tool access. Import the optional bundle only if a different environment lacks the source.
 2. Obtain permitted repository write authentication for release. Continue independent work while access is unresolved.
 3. Refresh staging ancestry and source identities before merge or deployment. Resolve concurrent protocol and migration numbering explicitly.
 4. Verify protected Linux storage, UID, paths and secret delivery before the paid probe. Do not use NTFS permission assumptions.
@@ -256,14 +265,15 @@ Do not claim founder acceptance. Local tests do not establish founder visual app
 
 Desktop credential location: C:/Users/itachi/.itachi-api-keys. This is a location reference, not a file to upload.
 Laptop source machine: hoodie-prometh, C:/Users/newma. Historical access used ssh -n laptop.
-Cloud cannot assume either machine, SSH alias, credential store, Docker daemon, or PostgreSQL fixture is reachable.
+This session has desktop filesystem access. A future session must inspect which machines and services its tools can actually reach.
 Use the cloud's approved secret injection. Never copy keyrings, wallet keys, cookies, .env files, database dumps, or complete ignored evidence directories.
 The transfer package deliberately excludes those items. No new credentials are required merely to read or review the integration.
 
 ## 12. State when this handoff was written
 
 The prior persistent goal was marked blocked after repeated release-access failures. It was not marked complete.
-The founder now requested this handoff and kickoff for another cloud session.
+The founder requested a handoff and kickoff, then clarified that this conversation is already a cloud session.
+Do not ask for an upload or another session when the existing worktree is accessible.
 Do not start deployment merely because this documentation request exists.
 The cloud kickoff below explicitly requests continuation of the original implementation goal.
 Retain its full scope and budgets when starting or resuming the cloud goal. Do not infer a token budget.
