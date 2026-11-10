@@ -130,12 +130,33 @@ describe('BrainChain HTTP session composition', () => {
     expect((await createBrainChainRoutes().request(`/workers/${workerId}/snapshot`,{headers:{'X-Clawville-Agent-Session':'non-ledger'}})).status).toBe(403);
   });
   test('real Lucia cookie hydration reaches the human resolver', async () => {
-    const session = await lucia.createSession(user.id, { createdVia: 'password' });
-    const cookie = lucia.createSessionCookie(session.id).serialize();
-    const response = await createBrainChainRoutes().request('/workers', { headers: { Cookie: cookie } });
-    expect(response.status).toBe(200);
-    expect(markerChecks).toContain(user.id);
-    expect(await response.json()).toEqual({ workers: [{ id: 'worker', owner: 'owned-avatar' }] });
+    const previous = process.env.CLAWVILLE_ENV;
+    process.env.CLAWVILLE_ENV = 'staging';
+    try {
+      markerChecks.length = 0;
+      const session = await lucia.createSession(user.id, { createdVia: 'password' });
+      const cookie = lucia.createSessionCookie(session.id).serialize();
+      const response = await createBrainChainRoutes().request('/workers', { headers: { Cookie: cookie } });
+      expect(response.status).toBe(200);
+      expect(markerChecks).toContain(user.id);
+      expect(await response.json()).toEqual({ workers: [{ id: 'worker', owner: 'owned-avatar' }] });
+    } finally {
+      if (previous === undefined) delete process.env.CLAWVILLE_ENV; else process.env.CLAWVILLE_ENV = previous;
+    }
+  });
+  test('outside staging the human resolver performs no probe marker read', async () => {
+    const previous = process.env.CLAWVILLE_ENV;
+    process.env.CLAWVILLE_ENV = 'production';
+    try {
+      markerChecks.length = 0;
+      const session = await lucia.createSession(user.id, { createdVia: 'password' });
+      const cookie = lucia.createSessionCookie(session.id).serialize();
+      const response = await createBrainChainRoutes().request('/workers', { headers: { Cookie: cookie } });
+      expect(response.status).toBe(200);
+      expect(markerChecks).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.CLAWVILLE_ENV; else process.env.CLAWVILLE_ENV = previous;
+    }
   });
   test('expired and unknown cookies fail; public knowledge remains accessible', async () => {
     const session = await lucia.createSession(user.id, { createdVia: 'password' });

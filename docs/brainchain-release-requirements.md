@@ -6,7 +6,9 @@ A scoped test or source approval does not satisfy a broader release requirement.
 Checkpoint 2026-11-09 23:40 EST: staging merge f42e5e0f6, PROTOCOL 128, BrainChain migrations 0101-0119.
 Merged-tree local lanes pass (pure 80/610, PostgreSQL 26/173). History rewrite done (docs/brainchain-commit-map.md); the push identity awaits founder confirmation.
 See docs/brainchain-cloud-handoff.md §13. No staging, testnet or mainnet evidence was added. Rows below keep their earlier evidence.
-Integrated-review item: `assertProbeHttpOperation` reads `brainchain_probe_markers` on every authenticated human and agent request, with an index only on platform_agent_id. Judge the per-request cost against the containment design before promotion.
+First staging CI run 42772941386 (2026-11-10) failed before migrate and deploy; nothing reached the staging box. Its BrainChain PostgreSQL and protected Linux lanes passed remotely.
+Fixes: the probe-marker read now runs only on staging (independent review APPROVED); BigInt schema defaults now use sql`0`; the Linux pure lane accepts one reviewed platform skip; two verb-count tests and one fast-path test match the `brainchain` verb and the Office move place; two runtime test fakes carry the new embedding helper. Detail: docs/brainchain-ci.md.
+Integrated-review item: `registerProbeRuntime` checks only the process environment. A database `clawville.env` check would enforce the staging-only marker premise in the database too.
 
 | Requirement | Current evidence | Evidence still required |
 | --- | --- | --- |

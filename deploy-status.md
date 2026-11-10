@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-10 07:05Z (session brainchain-office). **STAGING = BrainChain Office push of `docs/brainchain-plan` (PROTOCOL 128; migrations 0101-0119), deploy and live checks PENDING; see the DEPLOY LOG entry.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
+Last Audited: 2026-11-10 07:05Z (session brainchain-office). **STAGING API + WEB still = `d81d5d472`: the BrainChain push `82d54cdc9` failed CI gates, so migrate and deploy were skipped. A fix push follows; see the DEPLOY LOG.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
 
 Prior - Last Audited: 2026-11-10 01:33Z (session claw2.0). **STAGING API + WEB = `d81d5d472` (own AI part B: agent wallet deposit into its UsePod balance; PROTOCOL 120; migration 0100 applied on staging).** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql.
 
@@ -747,12 +747,21 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-10 07:45Z (session brainchain-office) - BrainChain CI fix push to staging (PROTOCOL 128, migrations 0101-0119), live checks PENDING
+- **What changed:** fixes for run 42772941386: the probe-marker read runs only on staging (independent review APPROVED; production no longer pays one marker query per authenticated request and per agent decision); BigInt schema defaults use sql`0`/sql`200` so `drizzle-kit generate` works; the Linux pure lane expects one reviewed platform skip; stale verb-count, fast-path and runtime test fixtures updated; dead `stopProbeRuntimeAdmission` removed.
+- **What broke + root cause:** the first push ran only BrainChain inventories locally; general API suites, the drizzle base-schema step and the Linux pure lane had never run on this branch. Detail: `docs/brainchain-ci.md`, "First remote run".
+- **Verified before push (local):** every failed job's steps except the Postgres-backed route lane pass; counts in `docs/brainchain-ci.md`.
+- **NOT verified:** remote CI, migrate, SOURCE_COMMIT, `/health`, served manual 128, browser scene, authenticated parity, testnet lifecycle.
+- **Who it's for:** humans and connected/hosted agents in the BrainChain Office.
+- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain); staging applies 0101-0119 in this deploy if CI passes.
+
 ### 2026-11-10 07:05Z (session brainchain-office) - BrainChain Office pushed to staging (PROTOCOL 128, migrations 0101-0119), live checks PENDING
 - **What changed:** BrainChain Office: building, guide and 2D entry; code-generated curriculum in the served manual and hosted runtime; owner-bound worker, purchase, earnings, identity/credit and recovery routes with matching MCP and hosted `brainchain` actions; durable signer, task, delivery, funding and probe ledgers. Both activation flags stay false; no worker runs, no payment sends, the probe stays disabled without `BRAINCHAIN_PROBE_CONFIG_PATH`. Detail: `docs/brainchain-office.md`, `docs/brainchain-release-requirements.md`.
 - **Merge with staging:** both lines had used PROTOCOL 120, so the merged manual is 128. Staging owns `0100_usepod_deposit.sql`, so the BrainChain migrations moved to 0101-0119 (content unchanged). The merge exposed two test-fixture defects, both fixed (`docs/brainchain-ci.md`, "Staging merge renumber").
 - **What broke + root cause:** before the push, unpublished BrainChain docs carried a false GitHub identity rule from an earlier session. The founder chose a history rewrite; seven docs changed, no source tree changed (`docs/brainchain-commit-map.md`).
 - **Verified before push (local, itachi222):** pure 80 suites/610 tests; PostgreSQL 26 suites/173 tests, 0 skips; API and web typechecks exit 0; coupling gate and doc path guard pass. No remote CI yet.
-- **NOT verified:** CI, migrate, SOURCE_COMMIT, `/health`, served manual 128, browser scene, authenticated parity, testnet lifecycle. Follow-up entry records them.
+- **CI result:** run 42772941386 FAILED in three gate jobs (BrainChain pure, API route, API money/cove/poker); migrate and deploy SKIPPED, so the staging database and box did not change. BrainChain PostgreSQL/Linux, web and coupling jobs passed. Root causes and fixes: `docs/brainchain-ci.md`, "First remote run".
+- **NOT verified:** migrate, SOURCE_COMMIT, `/health`, served manual 128, browser scene, authenticated parity, testnet lifecycle.
 - **Who it's for:** humans and connected/hosted agents that learn BrainChain and prepare testnet worker operations.
 - **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain); staging applies them in this deploy.
 

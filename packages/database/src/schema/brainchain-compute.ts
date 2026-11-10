@@ -5,7 +5,7 @@ import { brainchainTaskAttempts, brainchainWorkerTasks } from './brainchain';
 /** Internal budget authority only. No human/agent route can approve an envelope. */
 export const brainchainComputeBudgets = pgTable('brainchain_compute_budgets', {
   id: uuid('id').primaryKey().defaultRandom(), jobId: uuid('job_id').notNull(), provider: varchar('provider', { length: 12 }).notNull(),
-  capMicros: bigint('cap_micros', { mode: 'bigint' }).notNull(), allocatedMicros: bigint('allocated_micros', { mode: 'bigint' }).notNull().default(0n),
+  capMicros: bigint('cap_micros', { mode: 'bigint' }).notNull(), allocatedMicros: bigint('allocated_micros', { mode: 'bigint' }).notNull().default(sql`0`),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, t => ({ owner: uniqueIndex('brainchain_compute_budget_owner').on(t.jobId, t.provider),
   values: check('brainchain_compute_budget_values', sql`${t.provider} IN ('openai','openrouter') AND ${t.capMicros}=10000000 AND ${t.allocatedMicros} BETWEEN 0 AND ${t.capMicros}`) }));
@@ -13,8 +13,8 @@ export const brainchainComputeBudgets = pgTable('brainchain_compute_budgets', {
 export const brainchainComputeEnvelopes = pgTable('brainchain_compute_envelopes', {
   id: uuid('id').primaryKey().defaultRandom(), budgetId: uuid('budget_id').notNull().references(() => brainchainComputeBudgets.id, { onDelete: 'restrict' }),
   rootReservationId: varchar('root_reservation_id', { length: 128 }).notNull(), approvalRef: varchar('approval_ref', { length: 128 }).notNull(),
-  limitMicros: bigint('limit_micros', { mode: 'bigint' }).notNull(), reservedMicros: bigint('reserved_micros', { mode: 'bigint' }).notNull().default(0n),
-  uncertainMicros: bigint('uncertain_micros', { mode: 'bigint' }).notNull().default(0n), settledMicros: bigint('settled_micros', { mode: 'bigint' }).notNull().default(0n),
+  limitMicros: bigint('limit_micros', { mode: 'bigint' }).notNull(), reservedMicros: bigint('reserved_micros', { mode: 'bigint' }).notNull().default(sql`0`),
+  uncertainMicros: bigint('uncertain_micros', { mode: 'bigint' }).notNull().default(sql`0`), settledMicros: bigint('settled_micros', { mode: 'bigint' }).notNull().default(sql`0`),
   state: varchar('state', { length: 12 }).notNull().default('open'), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   closedAt: timestamp('closed_at', { withTimezone: true }), reconciliationId: uuid('reconciliation_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

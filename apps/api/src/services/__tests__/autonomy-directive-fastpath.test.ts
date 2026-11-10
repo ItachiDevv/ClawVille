@@ -32,7 +32,8 @@ function destinationCases(): Array<{ name: string; expected: Expected }> {
     for (const name of names) cases.push({ name, expected });
   }
   for (const place of AUTONOMY_ENTERABLE_PLACES) {
-    cases.push({ name: place.label, expected: { verb: place.actionVerb, params: {} } });
+    // A place's own action syntax is the expectation; a move place (BrainChain Office) carries its door coordinates.
+    cases.push({ name: place.label, expected: parseDriverAction(`[ACTION: ${place.actionSyntax}]`)! });
   }
   return cases.filter((c) => !dropped.has(stripThe(lower(c.name))));
 }

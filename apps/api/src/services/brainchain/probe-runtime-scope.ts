@@ -18,6 +18,12 @@ export function configureProbeRuntimeDeployment(value: TrustedProbeDeployment): 
 }
 type ProbeIdentity = { userId?: string | null; avatarId?: string | null; platformAgentId?: string | null };
 async function findProbeMarker(identity: ProbeIdentity) {
+  // Probe fixtures exist only on staging: preparation requires CLAWVILLE_ENV=staging,
+  // probe manifests pin the staging API origin, and resolveProbeRuntimeScope refuses
+  // every other environment. Other environments skip this read, which otherwise runs
+  // on every authenticated request and every autonomous decision. A marked identity
+  // outside staging therefore acts as an ordinary user; it never gains access.
+  if (process.env.CLAWVILLE_ENV !== 'staging') return undefined;
   const platformAgentId = identity.platformAgentId && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(identity.platformAgentId) ? identity.platformAgentId : null;
   if (!identity.userId && !identity.avatarId && !platformAgentId) return undefined;
   const [marker] = await getPostgresClient()`SELECT * FROM brainchain_probe_markers WHERE (${identity.userId ?? null}::uuid IS NOT NULL AND user_id=${identity.userId ?? null}::uuid) OR (${identity.avatarId ?? null}::uuid IS NOT NULL AND avatar_id=${identity.avatarId ?? null}::uuid) OR (${platformAgentId}::uuid IS NOT NULL AND platform_agent_id=${platformAgentId}::uuid) LIMIT 1`;
@@ -26,7 +32,7 @@ async function findProbeMarker(identity: ProbeIdentity) {
 export async function assertProbeOperationAllowed(identity: ProbeIdentity): Promise<void> {
   if (await findProbeMarker(identity)) throw new HTTPException(403,{message:'probe_operation_refused'});
 }
-/** Marker lookup is independent of configuration and includes every run state. */
+/** This runtime-start lookup is independent of configuration and environment and includes every run state. */
 export async function resolveProbeRuntimeScope(platformAgentId: string, userId: string, start = false): Promise<TrustedProbeRuntimeScope | undefined> {
   const db = getPostgresClient();
   const [marker] = await db`SELECT * FROM brainchain_probe_markers WHERE platform_agent_id=${platformAgentId}::uuid`;
@@ -46,12 +52,6 @@ export async function resolveProbeRuntimeScope(platformAgentId: string, userId: 
     failRun:()=>budget.stop(m.runId),
     embeddings:{embedExact:(input:Parameters<TrustedProbeRuntimeScope['embeddings']['embedExact']>[0])=>budget.embedExact(m.runId,input)},
   });
-}
-export async function stopProbeRuntimeAdmission(platformAgentId:string):Promise<void> {
-  const [marker]=await getPostgresClient()`SELECT run_id FROM brainchain_probe_markers WHERE platform_agent_id=${platformAgentId}::uuid`;
-  if (!marker) return;
-  if (!deployment) throw new Error('probe_runtime_refused');
-  await deployment.budget.stop(String(marker.run_id));
 }
 
 export async function assertProbeActionAllowed(identity: ProbeIdentity, reply:string):Promise<void> {

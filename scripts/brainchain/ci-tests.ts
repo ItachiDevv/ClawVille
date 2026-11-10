@@ -32,8 +32,11 @@ async function suite(file: string, args: string[] = [], command?: string[]) {
   const output = await run(command ?? [process.execPath, 'test', web ? './' + file.slice('apps/web/'.length) : './' + file, ...args],
     web && !command ? resolve(root, 'apps/web') : root, file);
   const splitDockerSuite = file === service + 'isolated-process-coordinator.test.ts';
-  const { passed, skipped } = parseSuiteResult(output, mode === 'postgres' || (mode === 'pure' && !splitDockerSuite));
+  // One reviewed test refuses non-Linux use; it skips on Linux runners and runs on Windows hosts.
+  const splitPlatformSuite = file === service + 'signer-linux-driver.test.ts' && process.platform === 'linux';
+  const { passed, skipped } = parseSuiteResult(output, mode === 'postgres' || (mode === 'pure' && !splitDockerSuite && !splitPlatformSuite));
   if (mode === 'pure' && splitDockerSuite && skipped !== 1) throw Error('Review the separate Docker fixture inventory');
+  if (mode === 'pure' && splitPlatformSuite && skipped !== 1) throw Error('Review the Linux platform split inventory');
   results.push({ file, passed, skipped });
   console.log(JSON.stringify(results.at(-1)));
 }

@@ -252,3 +252,20 @@ API and web strict TypeScript checks exited zero. The doc path guard passed 808 
 Protected Linux did not rerun: no protected test or imported service changed. Its result stays 4 suites/12 passes/5 expected skips.
 Evidence: .brainchain-work/merge128-*.log, ci-pure-results.merge128.json, ci-postgres-results.merge128-pg2.json.
 The failed log remains at .brainchain-work/merge128-postgres.failed-vendor-columns.log. No remote CI result exists.
+
+## First remote run, 2026-11-10
+
+Staging push 82d54cdc9 started run 42772941386. Migrate and deploy were skipped, so the staging database and box did not change.
+Remote evidence: BrainChain PostgreSQL and protected Linux job passed. Web Trading Floor and coupling jobs passed.
+Four defects failed the other jobs. None appeared in the local BrainChain lanes, which run only BrainChain inventories.
+1. `findProbeMarker` queried PostgreSQL on every authenticated request and autonomous decision. Database-free suites threw `DATABASE_URL environment variable is not set`. The read now runs only when `CLAWVILLE_ENV=staging`. An independent review approved this change.
+2. `drizzle-kit generate` (drizzle-kit 0.24.2) cannot serialize `0n` defaults. Eight BrainChain bigint defaults now use sql`0` or sql`200`; the generated DDL is unchanged.
+3. On Linux, `signer-linux-driver.test.ts` skips its reviewed Windows-only refusal test. The pure runner now expects exactly that one skip on Linux.
+4. Two verb-count assertions predated the `brainchain` verb (26 verbs, 14 house-refused). The fast-path case for the Office now uses the place's own `move` syntax.
+5. Two agent-runtime suites call `ElizaRuntime.prototype` methods with a hand-built `this`. The branch's private `embedScoped` helper was absent from those fakes, so both returned false. Each fake now carries the real prototype helper.
+The remote pure lane stopped at its first failure. Later Linux-only differences can still appear in the next run.
+Local repeat of the failed jobs on itachi222 (scheduled task, DATABASE_URL and CLAWVILLE_ENV unset, no .env.local):
+API typecheck exit 0; CI drizzle-kit generate exit 0 with unchanged DEFAULT 0/200 DDL; money/cove/poker shared suites 4407 passes/221 skips/0 failures and every isolated suite passed;
+activity, all 25 agent-runtime suites, probe safety, protocol-pin routes and owner-proof middleware passed; BrainChain pure 80 suites/611 passes/1 expected Docker skip.
+The Postgres-backed API route job did not run locally; the next remote run provides it. Evidence: .brainchain-work/cifix2-*.log and cifix3-runtime.log.
+
