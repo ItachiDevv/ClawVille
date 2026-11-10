@@ -1,6 +1,9 @@
 ﻿# BrainChain current execution handoff
 
 Updated 2026-11-09 on itachi222. Read this file fully after resume.
+Cloud continuation: read docs/brainchain-cloud-handoff.md and docs/brainchain-cloud-kickoff.md first.
+They consolidate the final source state and correct the scope of the GitHub authentication blocker.
+The chronology below remains historical evidence; later statements supersede earlier pending claims.
 The complete prior chronology is archived at .brainchain-work/handoff-before-probe-bootstrap.md.
 Archive SHA256:0cf76a4bbb9528fb30eaed41bf100e5cb6e1ea572ac597a8d750170276f2e94e.
 Earlier chronology also remains in Git. This current summary supersedes old active-owner and process claims.

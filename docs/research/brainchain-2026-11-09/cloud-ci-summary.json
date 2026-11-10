@@ -1,0 +1,588 @@
+{
+    "sourceCommit":  "c025c733a0ca204ab4ad88a6f40bb8e3de262467",
+    "host":  "itachi222",
+    "date":  "2026-11-09",
+    "scope":  "Historical local evidence; not cloud, remote CI or staging verification",
+    "lanes":  [
+                  {
+                      "name":  "pure",
+                      "status":  "passed",
+                      "suites":  80,
+                      "passed":  609,
+                      "skipped":  1,
+                      "reportSha256":  "490655ee07c6513a03733c205bf112a3c127155be13e40f5c0df94e4437ca900",
+                      "results":  [
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/binding-proof.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/chain-client.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/configured-authority-reader.test.ts",
+                                          "passed":  10,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/configured-authority.test.ts",
+                                          "passed":  27,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/earnings-reader.test.ts",
+                                          "passed":  7,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/exact-capture-policy.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/funding-exit-client.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/funding-exit-policy.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/identity-credit.test.ts",
+                                          "passed":  10,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/inference-policy.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/install-completeness.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/isolated-process-coordinator.test.ts",
+                                          "passed":  1,
+                                          "skipped":  1
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/openai-provider.test.ts",
+                                          "passed":  8,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/parent-reader.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/priors-reader.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/probe-embedding-provider.test.ts",
+                                          "passed":  19,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/probe-runtime-scope.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/public-client.test.ts",
+                                          "passed":  10,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchase-policy.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchase-receipts.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchase-solana-discovery.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchase-solana-receipts.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchase-solana-rpc.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchase-solana-transaction.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/result-signing-expiry.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/result-signing-policy.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/root-compute-budget.test.ts",
+                                          "passed":  12,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-linux-driver.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-observation.test.ts",
+                                          "passed":  19,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-policy.test.ts",
+                                          "passed":  9,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-rpc-send.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-rpc.test.ts",
+                                          "passed":  8,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-service.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/task-delivery-protocol.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/test-fixtures/database.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-brief-reader.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-delivery-evidence.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-observation-policy.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-policy-action.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/routes/brainchain-auth.test.ts",
+                                          "passed":  8,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/routes/brainchain.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/brainchain-action.test.ts",
+                                          "passed":  17,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/brainchain-autonomy-arrival.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/brainchain-funding-action.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/brainchain-gateway-wire.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/brainchain-purchase-action.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/brainchain-recovery-action.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/brainchain-topic.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/office-account.test.tsx",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/office-api.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/office-funding-exit.test.tsx",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/office-purchases.test.tsx",
+                                          "passed":  7,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/office-worker-identity.test.tsx",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/office-worker-record.test.tsx",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/office-worker-recovery.test.tsx",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/components/brainchain/worker-policy-amounts.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/lib/brainchain-evm-wallet.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/lib/brainchain-solana-wallet.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/lib/pixi/brainchain-navigation.test.ts",
+                                          "passed":  7,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/lib/three/brainchain-office-geometry.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/web/src/lib/three/brainchain-office-labels.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "packages/shared/src/constants/brainchain-office-world.test.ts",
+                                          "passed":  5,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "packages/shared/src/constants/brainchain.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "packages/agent-runtime/src/isolated-task/import.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "packages/agent-runtime/src/isolated-task/parent.test.ts",
+                                          "passed":  7,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "packages/agent-runtime/src/isolated-task/process.test.ts",
+                                          "passed":  5,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "packages/agent-runtime/src/isolated-task/runtime.test.ts",
+                                          "passed":  10,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/agent-mcp-tools.test.ts",
+                                          "passed":  102,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/middleware/__tests__/require-auth-or-agent-owner-proof.test.ts",
+                                          "passed":  13,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/middleware/__tests__/require-auth-or-agent-ttl-slide.test.ts",
+                                          "passed":  17,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/routes/__tests__/agent-gateway-owner-proof-reads.test.ts",
+                                          "passed":  14,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/routes/__tests__/agent-gateway-hydra-chat.test.ts",
+                                          "passed":  12,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/routes/__tests__/agent-paid-surface.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/skill-protocol-onboarding.test.ts",
+                                          "passed":  29,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/floor-arena-knowledge.test.ts",
+                                          "passed":  26,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/__tests__/trading-floor-constants.test.ts",
+                                          "passed":  13,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "scripts/brainchain/ci-results.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/scripts/brainchain/runtime-evidence.test.ts",
+                                          "passed":  8,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/scripts/agent-connect/hosted-skill-runtime-probe.test.ts",
+                                          "passed":  17,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "packages/agent-runtime/src/probe-runtime.test.ts",
+                                          "passed":  12,
+                                          "skipped":  0
+                                      }
+                                  ]
+                  },
+                  {
+                      "name":  "postgres",
+                      "status":  "passed",
+                      "suites":  26,
+                      "passed":  173,
+                      "skipped":  0,
+                      "reportSha256":  "4787040a486aa9bc2f9f7ee62d8ddaa0e9d0b8ec0640039d36daccafd2298fab",
+                      "results":  [
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/bindings-db.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/tasks-db.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-db.test.ts",
+                                          "passed":  7,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-capture-db.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/inference-budget-db.test.ts",
+                                          "passed":  5,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/execution-db.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/inference-proxy-db.test.ts",
+                                          "passed":  15,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/task-delivery-db.test.ts",
+                                          "passed":  9,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/delivery-recovery.test.ts",
+                                          "passed":  9,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-coordinator.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/result-signing-pool.test.ts",
+                                          "passed":  4,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/root-compute-store.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-owner-policy.test.ts",
+                                          "passed":  13,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-receipts-db.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-scheduler.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/worker-scheduler-flow.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/exact-result-recovery-consent.test.ts",
+                                          "passed":  13,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchases.test.ts",
+                                          "passed":  20,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/purchase-solana.test.ts",
+                                          "passed":  8,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/exact-capture-recovery.test.ts",
+                                          "passed":  10,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/funding-exit-operations.test.ts",
+                                          "passed":  7,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/configured-authority-db.test.ts",
+                                          "passed":  3,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/probe-embedding-budget.test.ts",
+                                          "passed":  10,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/probe-bootstrap.test.ts",
+                                          "passed":  6,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/scripts/brainchain/probe-runtime-cleanup.test.ts",
+                                          "passed":  5,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/isolated-process-coordinator.test.ts",
+                                          "passed":  2,
+                                          "skipped":  0
+                                      }
+                                  ]
+                  },
+                  {
+                      "name":  "linux",
+                      "status":  "passed",
+                      "suites":  4,
+                      "passed":  12,
+                      "skipped":  5,
+                      "reportSha256":  "511d89d58bd9f44425422754ca597b37d277098b07d5f6a6637ed7ab7980d308",
+                      "results":  [
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-linux-fixture.test.ts",
+                                          "passed":  1,
+                                          "skipped":  0
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/signer-payload-store.test.ts",
+                                          "passed":  3,
+                                          "skipped":  1
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/root-compute-store.test.ts",
+                                          "passed":  4,
+                                          "skipped":  3
+                                      },
+                                      {
+                                          "file":  "apps/api/src/services/brainchain/paid-trial.test.ts",
+                                          "passed":  4,
+                                          "skipped":  1
+                                      }
+                                  ]
+                  }
+              ]
+}
