@@ -292,7 +292,8 @@ Protected Linux did not rerun; no protected test or imported service changed.
 The section count, manual hash and probe quota in §8 describe protocol 127. Recompute them for 128 before any probe reservation.
 Bun-dependent commands from this session cannot traverse the bun junctions. Run them through a one-shot scheduled task, then disable it.
 
-Release blocker added this session: the unpushed branch history contains account-identity text that must not reach the public repository.
-A later scrub commit cannot remove text from earlier commits. The founder must choose between rewriting the unpushed history and publishing a squashed branch.
+The unpushed history contained account-identity text that must not reach the public repository. The founder chose a history rewrite.
+The rewrite changed only seven handoff/plan documents; every source tree is unchanged. Old-to-new SHAs: docs/brainchain-commit-map.md.
+SHAs elsewhere in these documents are pre-rewrite values. The push identity still needs explicit founder confirmation.
 No push, staging deployment, paid call, testnet transaction or partner message occurred in this session. Budgets remain $0 spent and $0 reserved.
-Next steps after that decision: recompute probe inputs for 128, push to staging, then run the staging parity runbook and onboarding smoke.
+Next steps after the push-identity confirmation: recompute probe inputs for 128, push to staging, then run the staging parity runbook and onboarding smoke.

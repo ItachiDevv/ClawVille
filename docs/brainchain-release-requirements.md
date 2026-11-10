@@ -4,7 +4,7 @@ Updated2026-11-09. This matrix preserves the full implementation goal.
 A scoped test or source approval does not satisfy a broader release requirement.
 
 Checkpoint 2026-11-09 23:40 EST: staging merge f42e5e0f6, PROTOCOL 128, BrainChain migrations 0101-0119.
-Merged-tree local lanes pass (pure 80/610, PostgreSQL 26/173). Push is blocked on a founder decision about unpushed history text.
+Merged-tree local lanes pass (pure 80/610, PostgreSQL 26/173). History rewrite done (docs/brainchain-commit-map.md); the push identity awaits founder confirmation.
 See docs/brainchain-cloud-handoff.md §13. No staging, testnet or mainnet evidence was added. Rows below keep their earlier evidence.
 
 | Requirement | Current evidence | Evidence still required |
@@ -170,7 +170,7 @@ PostgreSQL and protected Linux source did not change. Their recorded results rem
 ## Current probe and release checkpoint
 
 The implementation checkpoints and staging-lineage merge are local commits. No staging deployment or promotion PR exists.
-The required approved GitHub identity remains unavailable. The existing ItachiDevv identity does not satisfy that requirement.
+Superseded 2026-11-10: see docs/brainchain-cloud-handoff.md §13 for the push-identity state.
 A fresh browser inventory again reports the browser access host unavailable. No rejected launch was retried.
 The narrowed probe covers five required stages, with eight minutes and eight mock decisions.
 Root independently passed40tests263assertions across adapter and probe suites, then three separate adversarial tests with15assertions.

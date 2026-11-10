@@ -43,7 +43,7 @@ The existing Claude CLI reports a subscription login on itachi222.
 
 ## Next actions
 
-1. Resolve the existing release authentication prerequisite; never substitute the main GitHub identity.
+1. Confirm the push identity with the founder (docs/brainchain-cloud-handoff.md §13).
 2. Prepare protected staging authority against the final source and exact fixture identities, before any paid runtime probe.
 3. Execute staging health, manual, authenticated human/agent, browser and testnet checks when prerequisites exist.
 4. Preserve unsupported partner requirements and prepare the promotion PR after staging evidence exists.
