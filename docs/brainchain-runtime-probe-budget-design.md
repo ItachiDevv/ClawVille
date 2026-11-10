@@ -1,6 +1,6 @@
 # BrainChain runtime probe budget boundary
 
-Last Audited: 2026-11-09. Status: budget design reviewed; fixed provider adapter implemented and tested. Ledger/runtime integration and activation remain pending.
+Last Audited: 2026-11-10 (staging boot refusal is non-fatal). Status: budget design reviewed; fixed provider adapter implemented and tested. Ledger/runtime integration and activation remain pending.
 
 ## Decision
 
@@ -185,7 +185,7 @@ The independent PostgreSQL probe canceled the caller after transaction commit bu
 
 Proposed owner files: new `probe-bootstrap.ts` and tests beside the budget service; an internal registration CLI under API scripts if required. Runtime owner retains the API early-startup call and fixture prepare/attach flow. No factory implementation occurs before root reviews this contract.
 
-Export `initializeProbeRuntimeDeployment(): Promise<void>`. The only new configuration environment variable is `BRAINCHAIN_PROBE_CONFIG_PATH`. An absent variable leaves probe deployment disabled. Any configured value outside `CLAWVILLE_ENV=staging` fails boot before file or credential reads. The Linux API process must use its own UID for protected-file checks. Windows activation refuses; controlled tests can inject only private dependencies inside the test factory.
+Export `initializeProbeRuntimeDeployment(): Promise<void>`. The only new configuration environment variable is `BRAINCHAIN_PROBE_CONFIG_PATH`. An absent variable leaves probe deployment disabled. Any configured value outside `CLAWVILLE_ENV=staging` fails boot before file or credential reads. On staging, a missing, expired or refused config (2026-11-10) logs one fixed line, names no path, value or error text, and leaves the probe deployment disabled. Boot continues, so later restarts do not crash-loop after the probe window. A marked fixture then refuses at runtime start, because `resolveProbeRuntimeScope` needs an installed deployment. The Linux API process must use its own UID for protected-file checks. Windows activation refuses; controlled tests can inject only private dependencies inside the test factory.
 
 The permission-checked JSON config contains version1, exact runId/manifestHash, root pin/head/history paths, dedicated embedding credential-file path, and loopback mock gateway URL. It contains no credential value. Read it through the existing protected file primitive: absolute canonical paths, private regular files, trusted directory ownership, no symlink/hardlink replacement and bounded bytes. The credential file uses the same checks and contains only the dedicated authorized key. This factory cannot read normal house provider configuration or search keyrings.
 

@@ -4,12 +4,22 @@ import {randomUUID} from 'node:crypto';
 import postgres from 'postgres';
 import {drizzle} from 'drizzle-orm/postgres-js';
 import {getBrainchainFixtureSettings} from './test-fixtures/database';
-import {bootstrapProbeRuntime,registerProbeRuntime,getProbeSourceEvidence,type ProbeBootstrapDependencies,type ProbeBootstrapConfig} from './probe-bootstrap';
+import {bootstrapProbeRuntime,initializeProbeRuntimeDeploymentWith,registerProbeRuntime,getProbeSourceEvidence,type ProbeBootstrapDependencies,type ProbeBootstrapConfig} from './probe-bootstrap';
 import {probeHash,probeManifestHash,type ProbeManifest} from './probe-embedding-budget';
 async function refused(fn:()=>Promise<unknown>){try{await fn();return false;}catch{return true;}}
 test('disabled bootstrap reads nothing; configured nonstaging refuses before reads',async()=>{
  let reads=0;const d={environment:'production',configPath:undefined,readProtected:async()=>{reads++;throw Error('unexpected');}} as unknown as ProbeBootstrapDependencies;
  await bootstrapProbeRuntime(d);expect(reads).toBe(0);expect(await refused(()=>bootstrapProbeRuntime({...d,configPath:'/fixture/config'}))).toBe(true);expect(reads).toBe(0);
+});
+test('boot entry: staging config refusal disables probe without crash; nonstaging config stays fatal',async()=>{
+ let installed=0;const lines:string[]=[];
+ const d={environment:'staging',configPath:'/fixture/config',sourceCommit:'a'.repeat(40),uid:0,platform:'linux',readProtected:async()=>{throw Error('ENOENT /fixture/config secret-like-text');},install:()=>{installed++;}} as unknown as ProbeBootstrapDependencies;
+ await initializeProbeRuntimeDeploymentWith(d,l=>lines.push(l));
+ expect(installed).toBe(0);expect(lines).toEqual(['[brainchain-probe] staging probe config refused; probe deployment disabled']);
+ expect(await refused(()=>initializeProbeRuntimeDeploymentWith({...d,environment:'production'},l=>lines.push(l)))).toBe(true);
+ expect(await refused(()=>initializeProbeRuntimeDeploymentWith({...d,environment:undefined},l=>lines.push(l)))).toBe(true);
+ expect(await refused(()=>initializeProbeRuntimeDeploymentWith({...d,platform:'win32'},l=>lines.push(l)))).toBe(false);
+ await initializeProbeRuntimeDeploymentWith({...d,configPath:undefined},l=>lines.push(l));expect(lines.length).toBe(2);
 });
 describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('trusted probe bootstrap shared pool',()=>{
  let q:ReturnType<typeof postgres>;beforeAll(async()=>{const s=await getBrainchainFixtureSettings();q=postgres({...s.options,max:4,onnotice:()=>{}});drizzle(q);await q`CREATE TABLE IF NOT EXISTS platform_agents(id uuid PRIMARY KEY,user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,name varchar(100) NOT NULL)`;await q`ALTER TABLE avatars ADD COLUMN IF NOT EXISTS platform_agent_id uuid`;});afterAll(async()=>{await q.end();});

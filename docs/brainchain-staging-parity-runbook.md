@@ -1,6 +1,6 @@
 # BrainChain staging parity verification
 
-Last Audited: 2026-11-09. Status: source-derived procedure; no live staging run is claimed.
+Last Audited: 2026-11-10. Status: source-derived procedure plus the staging operator procedure; no live staging run is claimed yet.
 
 ## Preconditions
 
@@ -110,6 +110,23 @@ Other attributed fixture chat, expert, support, knowledge, and economy requests 
 Source implementation and controlled evidence do not authorize an actual staging run.
 Root must inventory actual provider configuration and reserve every permitted request under the existing separate provider caps.
 Stop before an actual run if any provider path lacks that accounting boundary.
+
+#### Staging operator procedure (2026-11-10)
+
+Host layout on the staging box (all root, mode 0700 directories, 0600 files):
+`/var/lib/brainchain-probe/root` holds `pin.json`, `head.json`, `prepared.json`, `config.json` and the dedicated key file `openai-key`.
+`/var/lib/brainchain-probe/history` holds the signed revisions. Coolify mounts `/var/lib/brainchain-probe` into the API container.
+The Ed25519 root signing key lives only in `/root/brainchain-probe-signer`. The API container never mounts it.
+The API app env `BRAINCHAIN_PROBE_CONFIG_PATH=/var/lib/brainchain-probe/root/config.json` stays set. A missing or expired config only logs one line on staging.
+
+1. One-off container from the deployed API image, host network, store and signer mounted, loopback database URL: `bun apps/api/scripts/brainchain/probe-root-op.ts genesis` (once per job; revision 1, no reservation).
+2. API container: the Phase 1 command above with `--prepare-fixture /var/lib/brainchain-probe/root/prepared.json`.
+3. API container: `bun apps/api/scripts/brainchain/probe-config.ts /var/lib/brainchain-probe/root/prepared.json /var/lib/brainchain-probe/root/config.json`. The manifest window starts now and lasts 480 s.
+4. Write the dedicated key file with no trailing newline. Never print it.
+5. One-off container: `probe-root-op.ts reserve /var/lib/brainchain-probe/root/config.json` (signed next revision, reservation limit = maxCalls x 200 micros).
+6. API container: `bun apps/api/scripts/brainchain/register-runtime-probe.ts`. Then `docker restart` the API container so boot hydrates the run.
+7. API container: the Phase 2 command above. It cleans up its fixture.
+8. Delete `config.json`, `prepared.json` and `openai-key`. Keep the pin, head, history and signer key for later revisions.
 The legacy modes still have their canary, Nori teacher, Hermes, appearance, and optional echo cost boundaries described in the cost plan.
 Do not execute this mode before the root budget mechanism and reservation exist.
 Current verification includes actual Eliza, controlled loopback HTTP, and isolated PostgreSQL fixtures. It creates no staging account or actual provider request.

@@ -68,5 +68,12 @@ export async function getProbeSourceEvidence(){
 }
 function dependencies():ProbeBootstrapDependencies{return {environment:process.env.CLAWVILLE_ENV,configPath:process.env.BRAINCHAIN_PROBE_CONFIG_PATH,sourceCommit:process.env.SOURCE_COMMIT,uid:process.getuid?.()??-1,platform:process.platform,
  readProtected:readRootTrialRecord,openStore:async(c,uid)=>ProtectedRootComputeStore.open({pinPath:c.pinPath,headPath:c.headPath,historyDirectory:c.historyDirectory,expectedUid:uid}),database:getPostgresClient,sourceEvidence:getProbeSourceEvidence,install:configureProbeRuntimeDeployment};}
-export async function initializeProbeRuntimeDeployment(){await bootstrapProbeRuntime(dependencies());}
+/** API boot entry. A configured value outside staging stays fatal. On staging, a missing, expired or refused
+ * config leaves probe deployment disabled instead of crash-looping later restarts: a marked fixture then
+ * refuses at runtime start (resolveProbeRuntimeScope needs an installed deployment). The log names no path,
+ * value or error text. */
+export async function initializeProbeRuntimeDeploymentWith(d:ProbeBootstrapDependencies,warn:(line:string)=>void=console.warn){
+ try{await bootstrapProbeRuntime(d);}catch(error){if(!d.configPath||d.environment!=='staging')throw error;warn('[brainchain-probe] staging probe config refused; probe deployment disabled');}
+}
+export async function initializeProbeRuntimeDeployment(){await initializeProbeRuntimeDeploymentWith(dependencies());}
 export async function registerConfiguredProbeRuntime(){return registerProbeRuntime(dependencies());}
