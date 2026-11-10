@@ -1275,8 +1275,13 @@ async function verifyBrainchainInstall(client:postgres.Sql,apiBase:string,fixtur
   await assertStrictBrainchainMarker(client);
   const knowledge=await parseJson(await fetchWithTimeout(`${apiBase}/api/brainchain/knowledge`,{cache:'no-store'},15000),z.object({manual:z.literal(e.manual),contentHash:z.literal(e.contentHash),version:z.number().int()}));
   ok(knowledge.contentHash===e.contentHash,'BrainChain served curriculum exactly matches source hash and bytes');
-  const protocol=await fetchWithTimeout(`${apiBase}/api/skills/protocol/skill.md`,{cache:'no-store'},15000);
-  if(!protocol.ok)throw new ProbeFailure('BrainChain protocol manual is unavailable');const served=await protocol.text();
+  // The protocol route is gated (agent session or partner key, routes/skills.ts) and the fixture holds
+  // neither. It serves buildProtocolManual(resolveApiBase()) from this same deployed source, so the probe
+  // checks the gate live and derives the served bytes from the route's own base resolver in this process.
+  const gated=await fetchWithTimeout(`${apiBase}/api/skills/protocol/skill.md`,{cache:'no-store'},15000);
+  ok(gated.status===401,'BrainChain protocol route stays gated for an anonymous caller');
+  const {resolveApiBase,buildProtocolManual}=await import('../../src/services/skill-protocol');
+  if(resolveApiBase()!==apiBase)throw new ProbeFailure('BrainChain protocol route base differs from the probe target');const served=buildProtocolManual(resolveApiBase());
   ok(sha256Hex(served)===sha256Hex(expectedProtocol)&&e.paragraphs.every(p=>served.includes(p))&&e.toolOperations.every(op=>served.includes(op))&&served.includes(`protocol_version: ${e.protocolVersion}`),'BrainChain served protocol carries current curriculum and finite tool operations');
   console.log(JSON.stringify({brainchainEvidence:{curriculumHash:e.contentHash,protocolHash:sha256Hex(served),protocolVersion:e.protocolVersion}}));
   const installed=await parseJson(await fetchWithTimeout(`${apiBase}/api/brainchain/install`,{method:'POST',headers:{Cookie:fixture.cookie,'Content-Type':'application/json'},body:'{}'},120000),claimResponseSchema);
