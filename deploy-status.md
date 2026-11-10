@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-10 07:05Z (session brainchain-office). **STAGING API + WEB still = `d81d5d472`: the BrainChain push `82d54cdc9` failed CI gates, so migrate and deploy were skipped. A fix push follows; see the DEPLOY LOG.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
+Last Audited: 2026-11-10 08:25Z (session brainchain-office). **STAGING API + WEB = `c571bedba` (BrainChain Office, PROTOCOL 128, migrations 0101-0119 applied on staging): run 42780011947 all jobs success; both containers report SOURCE_COMMIT `c571bedba`; `/health` commit `c571bedba`; public play manual serves 128.0.0; browser shows /game world and the /brainchain panel with no console errors.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
 
 Prior - Last Audited: 2026-11-10 01:33Z (session claw2.0). **STAGING API + WEB = `d81d5d472` (own AI part B: agent wallet deposit into its UsePod balance; PROTOCOL 120; migration 0100 applied on staging).** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql.
 
@@ -747,13 +747,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
-### 2026-11-10 08:05Z (session brainchain-office) - BrainChain second CI fix push to staging, live checks PENDING
+### 2026-11-10 08:05Z (session brainchain-office) - BrainChain second CI fix push to staging (`c571bedba`), ON STAGING 08:21Z
 - **What changed:** CI readiness over TCP for the BrainChain PostgreSQL fixture; 22 BrainChain Drizzle composite keys declared as `unique()` so the CI base schema applies; the gateway probe-subject read runs only on staging (independent review APPROVED); three route-test mocks updated.
 - **What broke + root cause:** run 42777711290 (push `9d52a7561`) failed in the route job (foreign keys before their unique indexes in the generated base schema) and in the BrainChain PostgreSQL job (readiness race); migrate and deploy SKIPPED, staging unchanged.
 - **Verified before push (local):** full Postgres route lane on a fresh CI-built `clawville_test`, service lane and BrainChain pure lane all pass; counts in `docs/brainchain-ci.md`.
-- **NOT verified:** remote CI, migrate, SOURCE_COMMIT, `/health`, served manual 128, browser scene, authenticated parity, testnet lifecycle.
+- **Verified on staging:** run 42780011947 all jobs success (gates, migrate, deploy); SOURCE_COMMIT `c571bedba` in both app containers at 08:21Z; `/health` commit `c571bedba`; `/api/skills/clawville-play/skill.md` serves version 128.0.0 and names BrainChain; Chrome: /game loads the world (guest), /brainchain renders the Office panel; no console errors.
+- **NOT verified:** authenticated human and bound-agent parity, onboarding smoke and hosted runtime probe (paid model calls need an approved cap), in-world Office walk, phone/iPad sizes, FPS, testnet lifecycle.
 - **Who it's for:** humans and connected/hosted agents in the BrainChain Office.
-- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain); staging applies 0101-0119 if CI passes.
+- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain); applied on staging.
 
 ### 2026-11-10 07:45Z (session brainchain-office) - BrainChain CI fix push to staging (PROTOCOL 128, migrations 0101-0119), live checks PENDING
 - **What changed:** fixes for run 42772941386: the probe-marker read runs only on staging (independent review APPROVED; production no longer pays one marker query per authenticated request and per agent decision); BigInt schema defaults use sql`0`/sql`200` so `drizzle-kit generate` works; the Linux pure lane expects one reviewed platform skip; stale verb-count, fast-path and runtime test fixtures updated; dead `stopProbeRuntimeAdmission` removed.
