@@ -153,6 +153,18 @@ Last Audited: 2026-11-09: these controlled tests passed 25 tests and 233 asserti
 Drift: the probe now has a strict BrainChain mode with stored-knowledge, chat-wire, decide-wire, and private action-result assertions.
 A successful controlled test does not prove staging runtime consumption, human wallet consent, settlement, or leaderboard credit.
 
+## Staging results, 2026-11-10
+
+Staging API `37d374de0` (contains the BrainChain commits through `4e9648a08`).
+Onboarding smoke: 14 of 14 checks passed, including identity connect and bind, bound skill claim, chat, and the session-authenticated manual at PROTOCOL 128.
+Parity: `apps/api/scripts/brainchain/staging-parity.ts` passed 13 of 13 checks on a dedicated password-origin job account (email at the reserved guest domain, so no email was sent).
+Human cookie and bound-agent session read status; anonymous and forged agent sessions get 401.
+Human and agent worker challenges name the same avatar. The human bound a testnet worker with a fresh in-memory EVM key (message signature only, no funds); the agent read that exact worker.
+Curriculum install: human path `installed=runtime`, then agent path `installed=already` for the same avatar. The first hosted install took 32 s because it lazy-starts the runtime.
+Job accounts: user 4101df50-79d0-400a-ae93-880724b0b6ed / avatar 02f23c42-d64a-4cfa-a11b-4edf7a70ef34 (complete run); user a2a6bd50-cb48-42dc-b144-d93c6a69bedd (first run, install timed out client-side at 30 s).
+Browser (guest): the in-world BrainChain Office label opens /brainchain; Back to town returns to /game; the 963764-byte Office GLB loads with HTTP 200.
+Not yet shown: a screenshot of the Office building in the scene (a guest in Explore mode does not walk), phone and iPad layouts (devtools emulation unavailable this session), and the BrainChain hosted runtime probe (needs root genesis, protected store and staging secret provisioning).
+
 ## Evidence and remaining boundaries
 
 Record actual authenticated route results, manual hashes, installed per-agent knowledge and outbound gateway evidence.

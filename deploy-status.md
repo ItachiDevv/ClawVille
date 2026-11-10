@@ -747,6 +747,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-10 11:20Z (session brainchain-office) - BrainChain staging checks (no deploy)
+- **What changed:** no code on staging; new script `apps/api/scripts/brainchain/staging-parity.ts`.
+- **Verified:** onboarding smoke 14/14 and BrainChain human/bound-agent parity 13/13 against staging `37d374de0`; in-world Office label opens /brainchain and returns to town; Office GLB loads. Detail: `docs/brainchain-staging-parity-runbook.md`, "Staging results".
+- **NOT verified:** Office building screenshot in scene, phone/iPad layouts, hosted runtime probe (provisioning missing).
+- **Who it's for:** release evidence for the BrainChain promotion.
+- **SCHEMA:** unchanged.
+
 ### 2026-11-10 09:01Z (session claw2.0) - Own AI part B fix: first UsePod deposit on a token UsePod has not activated (pushed to staging on top of BrainChain `4e9648a08`)
 - **What changed:** `services/own-ai.ts` maps ONLY a balance HTTP 401 with UsePod's exact unauthorized / "not activated" body to `usepod_not_activated` (a pasted token keeps `key_rejected`). `services/usepod-deposit.ts` uses credit baseline 0 only when the avatar has no usepod ledger row that may have moved money, and admission rechecks that under the spend lock. `GET /api/agent-ai/usepod/balance` answers `{ usdcMicro: 0, isActive: false }` for that state, `key_rejected` after a prior deposit, 502 when the lookup fails. ARCHITECTURE + GameFeatures notes. No API shape change, no PROTOCOL bump, no migration.
 - **What broke + root cause:** the founder's first live deposit on staging (~08:45Z, landtest1) stopped with `provider_error` and paid nothing (wallet still 0.005 SOL + 0.855 USDC, no outgoing tx; spend rules saved and the UsePod token registered first). UsePod answers balance 401 "token not found or not activated" for a token it issued that never held a balance, and the deposit read that balance as its baseline before sending, so no deposit could ever activate a new token. The card also showed "The provider refused this key" for a new token. Part A shipped the same balance read to prod (`7dc9a0001`).
