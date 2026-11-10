@@ -747,6 +747,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-10 09:01Z (session claw2.0) - Own AI part B fix: first UsePod deposit on a token UsePod has not activated (pushed to staging on top of BrainChain `4e9648a08`)
+- **What changed:** `services/own-ai.ts` maps ONLY a balance HTTP 401 with UsePod's exact unauthorized / "not activated" body to `usepod_not_activated` (a pasted token keeps `key_rejected`). `services/usepod-deposit.ts` uses credit baseline 0 only when the avatar has no usepod ledger row that may have moved money, and admission rechecks that under the spend lock. `GET /api/agent-ai/usepod/balance` answers `{ usdcMicro: 0, isActive: false }` for that state, `key_rejected` after a prior deposit, 502 when the lookup fails. ARCHITECTURE + GameFeatures notes. No API shape change, no PROTOCOL bump, no migration.
+- **What broke + root cause:** the founder's first live deposit on staging (~08:45Z, landtest1) stopped with `provider_error` and paid nothing (wallet still 0.005 SOL + 0.855 USDC, no outgoing tx; spend rules saved and the UsePod token registered first). UsePod answers balance 401 "token not found or not activated" for a token it issued that never held a balance, and the deposit read that balance as its baseline before sending, so no deposit could ever activate a new token. The card also showed "The provider refused this key" for a new token. Part A shipped the same balance read to prod (`7dc9a0001`).
+- **Verified (local):** Codex round 1 BLOCKING (3 findings + test gaps, all fixed), round 2 APPROVED. Deposit 45, own-ai 62, agent-ai route 39 tests pass; api tsc exit 0; doc-path gate and coupling gates pass.
+- **NOT verified yet:** the staging flip and the live deposit (founder re-runs `tmp-usepod-live.ts`; spend rules and register are already done, so it goes straight to the deposit).
+- **Who it's for:** every human or agent that registers a UsePod token in ClawVille and funds it from the agent wallet.
+- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain). This push adds none.
+
 ### 2026-11-10 08:05Z (session brainchain-office) - BrainChain second CI fix push to staging (`c571bedba`), ON STAGING 08:21Z
 - **What changed:** CI readiness over TCP for the BrainChain PostgreSQL fixture; 22 BrainChain Drizzle composite keys declared as `unique()` so the CI base schema applies; the gateway probe-subject read runs only on staging (independent review APPROVED); three route-test mocks updated.
 - **What broke + root cause:** run 42777711290 (push `9d52a7561`) failed in the route job (foreign keys before their unique indexes in the generated base schema) and in the BrainChain PostgreSQL job (readiness race); migrate and deploy SKIPPED, staging unchanged.

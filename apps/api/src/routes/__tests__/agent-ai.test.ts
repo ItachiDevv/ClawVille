@@ -42,6 +42,8 @@ const deposits: realDeposit.DepositInput[] = [];
 let depositApproval = false;
 let depositChallengeCalls = 0;
 let ledgerCapable = true;
+let balanceThrows: string | null = null;
+let priorDepositImpl: () => Promise<boolean> = async () => false;
 const realOwnAiCopy = { ...realOwnAi };
 const realDatabaseCopy = { ...realDatabase };
 const realAgentAuthCopy = { ...realAgentAuth };
@@ -54,6 +56,7 @@ afterAll(() => {
 
 mock.module('../../services/usepod-deposit', () => ({
   ...realDepositCopy,
+  hasPriorUsepodDeposit: () => priorDepositImpl(),
   createUsepodDepositChallenge: async () => {
     depositChallengeCalls++;
     return { ok: true, nonce: 'n'.repeat(44), expiresAt: new Date().toISOString(), messageToSign: 'ClawVille usepod-deposit' };
@@ -211,7 +214,10 @@ mock.module('../../services/own-ai', () => ({
     };
   },
   readUsepodDashboardLink: async (avatarId: string) => usepodLinks.get(avatarId) ?? null,
-  readUsepodBalance: async (avatarId: string) => (usepodLinks.has(avatarId) ? { usdcMicro: 1_500_000, isActive: true } : null),
+  readUsepodBalance: async (avatarId: string) => {
+    if (balanceThrows) throw new realOwnAi.OwnAiError(balanceThrows as realOwnAi.OwnAiErrorCode);
+    return usepodLinks.has(avatarId) ? { usdcMicro: 1_500_000, isActive: true } : null;
+  },
 }));
 
 const { agentAiRoutes, resetAgentAiRateLimits } = await import('../agent-ai');
@@ -816,6 +822,28 @@ describe('DELETE, models, UsePod', () => {
     expect(await agent.json()).toEqual({ usdcMicro: 1_500_000, isActive: true });
     const human = await call('GET', '/usepod/balance', { cookie: 'pw-a' });
     expect(human.status).toBe(200);
+  });
+
+  it('usepod balance: a registered token UsePod has not activated', async () => {
+    try {
+      balanceThrows = 'usepod_not_activated';
+      priorDepositImpl = async () => false;
+      const fresh = await call('GET', '/usepod/balance', { cookie: 'pw-a' });
+      expect(fresh.status).toBe(200);
+      expect(await fresh.json()).toEqual({ usdcMicro: 0, isActive: false });
+      // After a deposit that may have moved money: unavailable, not empty.
+      priorDepositImpl = async () => true;
+      const funded = await call('GET', '/usepod/balance', { agent: 'agent-session-a' });
+      expect(funded.status).toBe(400);
+      expect((await funded.json() as { code: string }).code).toBe('key_rejected');
+      priorDepositImpl = async () => { throw new Error('db down'); };
+      const dbDown = await call('GET', '/usepod/balance', { cookie: 'pw-a' });
+      expect(dbDown.status).toBe(502);
+      expect((await dbDown.json() as { code: string }).code).toBe('provider_error');
+    } finally {
+      balanceThrows = null;
+      priorDepositImpl = async () => false;
+    }
   });
 });
 

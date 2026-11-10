@@ -34,7 +34,7 @@ import {
 } from '@clawville/shared';
 import { decryptWalletRow } from './keypair-vault';
 import { lockSpendRules, toSpendPolicyView } from './spend-policy';
-import { readUsepodBalance } from './own-ai';
+import { OwnAiError, readUsepodBalance } from './own-ai';
 import {
   issueUsepodDepositChallenge,
   verifyUsepodDepositProof,
@@ -241,7 +241,10 @@ export interface UsepodDepositDeps {
   settings(avatarId: string): Promise<DepositSettings | null>;
   precheck(wallet: string, amount: bigint): Promise<string | null>;
   balance(avatarId: string): Promise<Balance | null>;
-  admit(input: DepositInput, settings: DepositSettings): Promise<Admission>;
+  /** True when this avatar has a usepod ledger row that may have moved money (pending, ambiguous or paid). */
+  priorDeposit(avatarId: string): Promise<boolean>;
+  /** firstDeposit: baseline 0 was assumed; admission rechecks hasPriorUsepodDeposit under the lock. */
+  admit(input: DepositInput, settings: DepositSettings, firstDeposit?: boolean): Promise<Admission>;
   blockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   sign(avatarId: string, transaction: Transaction): Promise<{ bytes: Uint8Array; signature: string }>;
   simulate(bytes: Uint8Array): Promise<boolean>;
@@ -294,7 +297,22 @@ export function checkDepositPolicy(
   if (attempts >= USEPOD_DEPOSITS_PER_DAY) return 'deposit_daily_limit';
   return null;
 }
-async function admit(input: DepositInput, settings: DepositSettings): Promise<Admission> {
+/** True when the avatar has a usepod ledger row that may have moved money (pending, ambiguous or paid). */
+export async function hasPriorUsepodDeposit(executor: Pick<typeof db, 'select'>, avatarId: string): Promise<boolean> {
+  const [row] = await executor
+    .select({ id: vendorSpendLedger.id })
+    .from(vendorSpendLedger)
+    .where(
+      and(
+        eq(vendorSpendLedger.avatarId, avatarId),
+        eq(vendorSpendLedger.vendor, 'usepod'),
+        sql`${vendorSpendLedger.status} IN ('pending','ambiguous','paid')`,
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+async function admit(input: DepositInput, settings: DepositSettings, firstDeposit = false): Promise<Admission> {
   return db.transaction(async (tx) => {
     await lockSpendRules(tx, input.avatarId);
     const [existing] = await tx
@@ -305,6 +323,9 @@ async function admit(input: DepositInput, settings: DepositSettings): Promise<Ad
       )
       .limit(1);
     if (existing) return { ok: false, code: 'duplicate_request', ledgerId: existing.id };
+    // Baseline 0 was assumed for a token UsePod has not activated: recheck
+    // under the lock, so two concurrent first deposits cannot both use it.
+    if (firstDeposit && (await hasPriorUsepodDeposit(tx, input.avatarId))) return { ok: false, code: 'provider_error' };
     const [row] = await tx
       .select()
       .from(userSpendPolicies)
@@ -508,6 +529,7 @@ function defaultDeps(): UsepodDepositDeps {
       return null;
     },
     balance: readUsepodBalance,
+    priorDeposit: (avatarId) => hasPriorUsepodDeposit(db, avatarId),
     admit,
     blockhash: () => connection.getLatestBlockhash('finalized'),
     sign: async (avatarId, transaction) => {
@@ -745,6 +767,26 @@ async function credit(
   }
   return { creditStatus: 'unknown', balance };
 }
+/**
+ * The balance before a deposit (credit baseline B0). UsePod answers 401
+ * "token not found or not activated" for a registered token that never held a
+ * balance; the first deposit activates it. So a rejected balance read counts as
+ * B0 = 0 ONLY when this avatar has no usepod row that may have moved money. A
+ * token that was funded before and is now rejected still refuses the deposit.
+ * The deposit code (the money route) comes from the stored register reply.
+ */
+async function firstBalance(
+  deps: UsepodDepositDeps,
+  avatarId: string,
+): Promise<{ balance: Balance | null; assumed: boolean }> {
+  try {
+    return { balance: await deps.balance(avatarId), assumed: false };
+  } catch (err) {
+    if (!(err instanceof OwnAiError) || err.code !== 'usepod_not_activated') throw err;
+    if (await deps.priorDeposit(avatarId)) throw err;
+    return { balance: { usdcMicro: 0, isActive: false }, assumed: true };
+  }
+}
 export async function depositUsepod(
   input: DepositInput,
   overrides: Partial<UsepodDepositDeps> = {},
@@ -757,17 +799,18 @@ export async function depositUsepod(
   if (policyRefusal) return { ok: false, code: policyRefusal };
   let settings: DepositSettings | null;
   let baseline: Balance | null;
+  let assumedBaseline: boolean;
   try {
     settings = await deps.settings(input.avatarId);
     if (!settings) return { ok: false, code: 'usepod_deposit_code_missing' };
     const refusal = await deps.precheck(settings.wallet, BigInt(input.amountCents) * 10000n);
     if (refusal) return { ok: false, code: refusal };
-    baseline = await deps.balance(input.avatarId);
+    ({ balance: baseline, assumed: assumedBaseline } = await firstBalance(deps, input.avatarId));
     if (!baseline) return { ok: false, code: 'provider_error' };
   } catch {
     return { ok: false, code: 'provider_error' };
   }
-  const admitted = await deps.admit(input, settings);
+  const admitted = await deps.admit(input, settings, assumedBaseline);
   if (!admitted.ok) return admitted.code === 'duplicate_request' ? ((await deps.replay(input)) ?? admitted) : admitted;
   const ledgerId = admitted.ledgerId;
   const terms: DepositTerms = {

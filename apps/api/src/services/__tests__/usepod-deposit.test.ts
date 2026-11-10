@@ -751,3 +751,93 @@ test('credit response clears its deadline timer', async () => {
     expect(clear).toHaveBeenCalled();
   } finally { clear.mockRestore(); }
 });
+
+const { OwnAiError } = await import('../own-ai');
+describe('first deposit on a token UsePod has not activated', () => {
+  const notActivatedThenFunded = () => {
+    let reads = 0;
+    return async () => {
+      if (reads++ === 0) throw new OwnAiError('usepod_not_activated');
+      return { usdcMicro: 500000, isActive: true };
+    };
+  };
+  test('no prior deposit: baseline 0, deposit runs, credit seen', async () => {
+    let flag: boolean | undefined;
+    const r = await depositUsepod(
+      input,
+      deps({
+        balance: notActivatedThenFunded(),
+        priorDeposit: async () => false,
+        admit: async (_i, _s, firstDeposit) => {
+          flag = firstDeposit;
+          history.push('admit');
+          return { ok: true, ledgerId: 'ledger' };
+        },
+      }),
+    );
+    expect(r).toMatchObject({ ok: true, status: 'paid', creditStatus: 'seen' });
+    expect(flag).toBe(true);
+    expect(history).toContain('send');
+  });
+  test('a normal balance read passes firstDeposit false to admission', async () => {
+    let flag: boolean | undefined;
+    await depositUsepod(
+      input,
+      deps({ admit: async (_i, _s, firstDeposit) => { flag = firstDeposit; return { ok: true, ledgerId: 'ledger' }; } }),
+    );
+    expect(flag).toBe(false);
+  });
+  test('real admission: a concurrent first deposit already holds a row -> refused under the lock', async () => {
+    selectQueue = [[], [{ id: 'other-ledger' }]];
+    const r = await depositUsepod(input, actualAdmission({ balance: notActivatedThenFunded(), priorDeposit: async () => false }));
+    expect(r).toEqual({ ok: false, code: 'provider_error' });
+    expect(inserts).toEqual([]);
+    expect(history).toEqual([]);
+  });
+  test('real admission: no prior row -> admitted and paid', async () => {
+    admissionFixture();
+    selectQueue.splice(1, 0, []);
+    const r = await depositUsepod(input, actualAdmission({ balance: notActivatedThenFunded(), priorDeposit: async () => false }));
+    expect(r).toMatchObject({ ok: true, status: 'paid', creditStatus: 'seen' });
+    expect(inserts).toHaveLength(1);
+  });
+  test('priorDeposit lookup failure refuses before admission', async () => {
+    const r = await depositUsepod(
+      input,
+      deps({ balance: notActivatedThenFunded(), priorDeposit: async () => { throw new Error('db down'); } }),
+    );
+    expect(r).toEqual({ ok: false, code: 'provider_error' });
+    expect(history).toEqual([]);
+  });
+  test('hasPriorUsepodDeposit filters avatar, vendor usepod and money-moving statuses', async () => {
+    const seen: unknown[] = [];
+    const exec = {
+      select: () => {
+        const p: unknown = new Proxy({}, {
+          get(_t, prop) {
+            if (prop === 'then') return (res: (v: unknown) => void) => res([]);
+            return (...args: unknown[]) => { if (prop === 'where') seen.push(args[0]); return p; };
+          },
+        });
+        return p;
+      },
+    };
+    expect(await service.hasPriorUsepodDeposit(exec as never, 'avatar')).toBe(false);
+    const q = new PgDialect().sqlToQuery(seen[0] as SQL);
+    expect(q.sql).toContain(`IN ('pending','ambiguous','paid')`);
+    expect(q.params).toEqual(['avatar', 'usepod']);
+  });
+  test('a prior deposit exists: refused before admission', async () => {
+    const r = await depositUsepod(input, deps({ balance: notActivatedThenFunded(), priorDeposit: async () => true }));
+    expect(r).toEqual({ ok: false, code: 'provider_error' });
+    expect(history).toEqual([]);
+  });
+  test('a plain key_rejected (pasted token) still refuses', async () => {
+    const r = await depositUsepod(
+      input,
+      deps({ balance: async () => { throw new OwnAiError('key_rejected'); }, priorDeposit: async () => false }),
+    );
+    expect(r).toEqual({ ok: false, code: 'provider_error' });
+    expect(history).toEqual([]);
+  });
+});

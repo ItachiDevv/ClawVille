@@ -107,7 +107,7 @@ import {
   runMeteredOwnAiKeyTest,
   saveOwnAiSettings,
 } from '../services/own-ai';
-import { createUsepodDepositChallenge, depositUsepod } from '../services/usepod-deposit';
+import { createUsepodDepositChallenge, depositUsepod, hasPriorUsepodDeposit } from '../services/usepod-deposit';
 
 export const agentAiRoutes = new Hono<ActivityAuthContext>();
 // Own prefix with no public sibling, so a router-wide no-store is safe here.
@@ -277,6 +277,7 @@ const OWN_AI_ERROR_MESSAGES: Record<string, string> = {
   usepod_token_registered: 'ClawVille registered a UsePod token for this agent. Save without pasting a token.',
   key_required: 'Paste the API key for this provider.',
   key_rejected: 'The provider refused this key.',
+  usepod_not_activated: 'UsePod has not activated this token yet. The first deposit activates it.',
   balance_empty: 'The UsePod balance is empty. Add funds on UsePod.',
   model_unavailable: 'The provider does not offer this model for this key.',
   rate_limited: 'The provider is rate limiting this key. Wait, then try again.',
@@ -544,6 +545,23 @@ agentAiRoutes.get('/usepod/balance', ...readGate, async (c) => {
   try {
     balance = await readUsepodBalance(identity.avatarId);
   } catch (err) {
+    // Registered token that never held a balance: report an empty, inactive
+    // balance. After a deposit that may have moved money, the same reply means
+    // the token is unavailable, not empty.
+    if (err instanceof OwnAiError && err.code === 'usepod_not_activated') {
+      let prior: boolean;
+      try {
+        prior = await hasPriorUsepodDeposit(db, identity.avatarId);
+      } catch (dbErr) {
+        return ownAiFailure(c, dbErr, { code: 'provider_error', message: 'UsePod did not answer. Try again later.', status: 502 });
+      }
+      if (!prior) return c.json({ usdcMicro: 0, isActive: false });
+      return ownAiFailure(c, new OwnAiError('key_rejected'), {
+        code: 'provider_error',
+        message: 'UsePod did not answer. Try again later.',
+        status: 502,
+      });
+    }
     return ownAiFailure(c, err, {
       code: 'provider_error',
       message: 'UsePod did not answer. Try again later.',
