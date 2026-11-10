@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-09 12:59Z (session claw2.0). **PROD API + WEB = `7dc9a0001` (promotion #27, PR #339), VERIFIED 12:57Z: own AI part A, Studios sign-in live fixes, MCP body-limit fix; PROTOCOL 119; migration 0099 applied.** STAGING = same code. SCHEMA: synced.
+Last Audited: 2026-11-10 01:33Z (session claw2.0). **STAGING API + WEB = `d81d5d472` (own AI part B: agent wallet deposit into its UsePod balance; PROTOCOL 120; migration 0100 applied on staging).** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql.
+
+Prior - Last Audited: 2026-11-09 12:59Z (session claw2.0). **PROD API + WEB = `7dc9a0001` (promotion #27, PR #339), VERIFIED 12:57Z: own AI part A, Studios sign-in live fixes, MCP body-limit fix; PROTOCOL 119; migration 0099 applied.** STAGING = same code. SCHEMA: synced.
 
 Prior - Last Audited: 2026-11-09 10:45Z (session claw2.0). **STAGING API = `34e7e5352`, WEB = `9a17d75dc` (same web code), live-checked 10:45Z: own AI part A (PROTOCOL 119, migration 0099) and the MCP body-limit fix (agent Studios calls through MCP answered 500).** PROD = `b74f1f942`. SCHEMA: prod-migration-pending: 0099.
 
@@ -742,6 +744,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-10 01:33Z (session claw2.0) - Own AI part B ON STAGING (`d81d5d472`, PROTOCOL 120, migration 0100)
+- **What changed:** `services/usepod-deposit.ts`: the avatar wallet calls the UsePod program `deposit_usdc` (pinned program, config, ops wallet, USDC mint) with the registered token's deposit code plus a memo with the ledger id. Spend rules (vendor `usepod`, per-call and daily caps, 5 sent deposits per UTC day), ledger row before signing, signed bytes stored before send, never rebuilt. 'paid' only with finalized proof; own reconcile; UsePod credit tracked apart ('seen' / 'unknown'). With "Ask me before each payment" on, every deposit needs a linked-wallet signature and an agent is refused. Routes `POST /api/agent-ai/usepod/deposit` (+ `/challenge`). Agent AI card deposit control; UsePod in the spending card. Manual, Nori, ARCHITECTURE, GameFeatures, inference-router-spec, hatcher-integration-spec drift note, FOUNDER-REVIEW.
+- **What broke + root cause:** nothing on staging. Codex found 6 plan problems (fixed in the plan before code) and 3 diff problems in rounds 1-3 (a finalized transaction with mismatched evidence could be marked 'failed' and leave the cap; fixed with a sticky marker kept atomically in SQL); round 4 APPROVED.
+- **Verified:** CI run 42734739910 all jobs success (gates, coupling, migrate applied `0100_usepod_deposit.sql`, deploy). Staging API and web `SOURCE_COMMIT=d81d5d472`; `/health` commit `d81d5d472`; web bundle holds the deposit route. No-money live check 12/12: no session 401; amount below floor and extra field 400; human with no spend rules `spend_rules_not_set` (no-store, no ledger row); challenge with no token `usepod_deposit_code_missing`; status has no token, code or link; a fresh MCP agent (ledger-capable on its own account) refused `spend_rules_not_set`, nothing admitted; agent challenge 403 `human_only`; served manual has protocol 120 and the deposit route. Staging `/game` in Chrome: world, Town Center sign, HUD and side panel render; no console errors after load.
+- **NOT verified:** a real deposit (landtest1 avatar wallet holds 0.855 USDC and 0 SOL; the network fee needs SOL; the deposit and the UsePod register are founder-run); the card on a phone or iPad; FPS.
+- **Who it's for:** every human who wants their hosted agent on a stronger AI paid from the agent wallet; agents with their human's spend rules.
+- **SCHEMA:** prod-migration-pending: 0100_usepod_deposit.sql (applied on staging).
 
 ### 2026-11-09 12:59Z (session claw2.0) - Promotion #27 ON PROD (`7dc9a0001`, PR #339, PROTOCOL 119, migration 0099), VERIFIED
 - **What changed:** own AI part A (wallet panel "Agent AI" card, `/api/agent-ai*`, own-AI model plugin and lane), the Studios sign-in live fixes (`f3b2d1963`, PROTOCOL 118) and the MCP body-limit fix (`middleware/safe-body-limit.ts`). Founder go 2026-11-09 ("Yep, go ahead").
