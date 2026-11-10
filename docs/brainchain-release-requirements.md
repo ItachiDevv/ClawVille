@@ -6,6 +6,7 @@ A scoped test or source approval does not satisfy a broader release requirement.
 Checkpoint 2026-11-09 23:40 EST: staging merge f42e5e0f6, PROTOCOL 128, BrainChain migrations 0101-0119.
 Merged-tree local lanes pass (pure 80/610, PostgreSQL 26/173). History rewrite done (docs/brainchain-commit-map.md); the push identity awaits founder confirmation.
 See docs/brainchain-cloud-handoff.md §13. No staging, testnet or mainnet evidence was added. Rows below keep their earlier evidence.
+Integrated-review item: `assertProbeHttpOperation` reads `brainchain_probe_markers` on every authenticated human and agent request, with an index only on platform_agent_id. Judge the per-request cost against the containment design before promotion.
 
 | Requirement | Current evidence | Evidence still required |
 | --- | --- | --- |
