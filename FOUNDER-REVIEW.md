@@ -993,3 +993,9 @@ Look at: the Office building and its door, the Office Guide, the /brainchain pan
 Feedback wanted: is the Office easy to find and enter, and do the panel sections read clearly? Real phone/iPad view of the panel and joystick.
 Not ready to judge: worker earnings, task purchases and cash-out stay disabled until the testnet lifecycle passes.
 
+### BrainChain Office in the ring (replaces the Salty Spitoon) - 2026-11-10
+
+Session: brainchain-office. Environment: https://staging.clawville.world/game after the staging deploy; the building is the ESE ring building (where the Salty Spitoon stood).
+Look at: the Office building in the ring (size, door facing the plaza), the new resident "Cortex" (a tinted existing VRM, placeholder name), the "Enter BrainChain Office" button in the building panel, and chat with Cortex (BrainChain plus the old API-integrations lesson).
+Feedback wanted: is "Cortex" the right name and look? Is the tint too strong or too weak? Real phone/iPad view of the building panel button.
+

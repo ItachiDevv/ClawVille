@@ -4,7 +4,7 @@ import { useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import { attribute, positionGeometry, float, sin, cos, vec3, time } from 'three/tsl';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
-import { LAND_PARCELS, isBrainchainOfficeGroundCoverExcluded } from '@clawville/shared';
+import { LAND_PARCELS } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Merged Seaweed / Kelp Ground Cover
@@ -213,7 +213,6 @@ function generateBlades(): BladeData[] {
 
     if (distSq < SEAWEED_INNER_R_SQ) continue;
     if (isNearBuilding(x, z)) continue;
-    if (isBrainchainOfficeGroundCoverExcluded(x, z)) continue;
     if (isNearParcel(x, z)) continue;
     // 2026-05-13: sparse-band acceptance bumped 0.25 → 0.5 so the seaweed
     // ring around the town reads as a forest, not a few stray blades. Still

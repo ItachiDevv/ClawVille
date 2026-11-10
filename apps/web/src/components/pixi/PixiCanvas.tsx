@@ -7,7 +7,7 @@ import { useGameLoop } from '@/lib/pixi/use-game-loop';
 import { pixiWorldScale, pixiHitSize, pixiSolidFootprint } from '@/lib/pixi/pixi-world-scale';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
-import { BRAINCHAIN_OFFICE_WORLD_CENTER, BRAINCHAIN_OFFICE_HALF_X_WU, BRAINCHAIN_OFFICE_HALF_Z_WU, BRAINCHAIN_OFFICE_GUIDE_WORLD, WORLD_CENTER_PX } from '@clawville/shared';
+import { WORLD_CENTER_PX } from '@clawville/shared';
 import type { AvatarSpecies } from '@clawville/shared';
 import { SPECIES_SPRITE_MAP } from '@/lib/pixi/avatar-sprites';
 import { MODEL_KEY_TO_LEGACY_SPECIES, type ModelKey } from '@/lib/three/agent-model-registry';
@@ -20,7 +20,6 @@ import { KELP_FOREST_EXIT_WORLD } from '@/lib/three/kelp-forest-location';
 import { triggerCoveWalkIn, triggerTradingFloorWalkIn } from '@/lib/three/venue-walk-in';
 import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
 import { NORI_WORLD_X, NORI_WORLD_Z } from '@/lib/three/town-guide-position';
-import { approachBrainchainOffice } from '@/lib/three/brainchain-office-transition';
 import { findPath } from '@/lib/pixi/client-pathfinding';
 import { dispatchWorldInteraction, updateWorldProximity } from '@/lib/world-frame-interaction';
 import { isWorldInputBlocked } from '@/lib/three/world-input-guard';
@@ -92,7 +91,7 @@ export default function PixiCanvas({ onFrame, onMount, onFailure }: PixiCanvasPr
         solidGraphics.rect(footprint.x, footprint.y, footprint.width, footprint.height)
           .fill(footprint.kind === 'building' ? 0x456773 : 0x607a72)
           .stroke({ color: 0xe1c68c, width: 6, alignment: 1 });
-        if (footprint.kind === 'prop' && !footprint.id.startsWith('brainchain') && footprint.width > 150) {
+        if (footprint.kind === 'prop' && footprint.width > 150) {
           const label = new Text({ text: footprint.id.replaceAll('-', ' '), style: { fontFamily: 'Arial', fontSize: 28, fill: 0xffffff, wordWrap: true, wordWrapWidth: footprint.width - 20 } });
           label.anchor.set(0.5); label.position.set(footprint.x + footprint.width / 2, footprint.y + footprint.height / 2); world.addChild(label);
         }
@@ -116,11 +115,6 @@ export default function PixiCanvas({ onFrame, onMount, onFailure }: PixiCanvasPr
           marker(resident.characterName, x, y, 0xffc373, () => walkTo(x, y, zone.id));
         }
       }
-      const office = new Container(); office.position.set(WORLD_CENTER_PX.x + BRAINCHAIN_OFFICE_WORLD_CENTER.x, WORLD_CENTER_PX.y + BRAINCHAIN_OFFICE_WORLD_CENTER.z);
-      office.addChild(new Graphics().roundRect(-BRAINCHAIN_OFFICE_HALF_X_WU, -BRAINCHAIN_OFFICE_HALF_Z_WU, BRAINCHAIN_OFFICE_HALF_X_WU * 2, BRAINCHAIN_OFFICE_HALF_Z_WU * 2, 32).fill(0x80c0b8).stroke({ color: 0xf581b4, width: 14 }));
-      const title = new Text({ text: 'BrainChain Office', style: { fontFamily: 'Arial', fontSize: 48, fill: 0x29262b, fontWeight: 'bold' } }); title.anchor.set(0.5); office.addChild(title);
-      office.eventMode = 'static'; office.cursor = 'pointer'; office.on('pointerdown', (e) => { e.stopPropagation(); if (canAct()) approachBrainchainOffice(); }); world.addChild(office);
-      marker('BrainChain guide', WORLD_CENTER_PX.x + BRAINCHAIN_OFFICE_GUIDE_WORLD.x, WORLD_CENTER_PX.y + BRAINCHAIN_OFFICE_GUIDE_WORLD.z, 0xf581b4, () => approachBrainchainOffice(true));
       marker('Cove (3D)', WORLD_CENTER_PX.x + COVE_EXIT_WORLD_X, WORLD_CENTER_PX.y + COVE_EXIT_WORLD_Z, 0xc197fc, triggerCoveWalkIn);
       marker('Trading Floor (3D)', WORLD_CENTER_PX.x + TRADING_FLOOR_DOOR_WORLD.x, WORLD_CENTER_PX.y + TRADING_FLOOR_DOOR_WORLD.z, 0xc197fc, triggerTradingFloorWalkIn);
       marker('Kelp (3D)', WORLD_CENTER_PX.x + KELP_FOREST_EXIT_WORLD.x, WORLD_CENTER_PX.y + KELP_FOREST_EXIT_WORLD.z, 0xc197fc, triggerKelpForestWalkIn);

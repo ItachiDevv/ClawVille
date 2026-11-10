@@ -936,7 +936,7 @@ describe('monitor atlas', () => {
     expect(texts).toEqual([]);
     expect(DECOR_TERMINAL_LABEL).toBe('CLAW TERMINAL');
     expect(DECOR_TERMINAL_ROWS.flat()).toEqual(['CHUM BUCKET', 'KRUSTY KRAB', 'BOATING', 'ARCADE CITY', 'PINEAPPLE',
-      'LIGHTHOUSE', 'SALTY SPITOON', 'TREEDOME', 'PATRICKS ROCK']);
+      'LIGHTHOUSE', 'BRAINCHAIN', 'TREEDOME', 'PATRICKS ROCK']);
     const places = MAP_LOCATIONS.map((place) => place.name.toUpperCase().replace(/'/g, ''));
     for (const place of DECOR_TERMINAL_ROWS.flat()) expect(places.some((name) => name.includes(place))).toBe(true);
     for (const word of [DECOR_TERMINAL_LABEL, ...DECOR_TERMINAL_ROWS.flat()]) {

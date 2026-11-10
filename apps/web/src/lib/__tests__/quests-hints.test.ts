@@ -15,7 +15,7 @@ describe('tutorial quest hints', () => {
 
   test('first-match points at the building portal flow', () => {
     const hint = QUEST_DEFINITIONS_BY_ID['first-match'].hint;
-    expect(hint).toContain('Salty Spitoon');
+    expect(hint).toContain('BrainChain Office');
     expect(hint).toContain('Boating School');
     expect(hint).toContain('Play Now');
     expect(hint).toContain('Queue Solo');

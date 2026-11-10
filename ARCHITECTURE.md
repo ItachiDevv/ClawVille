@@ -1657,6 +1657,10 @@ Out-of-bound rent stays in the native-SOL leg. N8 residual: rent paid by another
 
 ## 4. Service layer (`apps/api/src/services/`)
 
+### BrainChain Office ring building (2026-11-10)
+
+Founder decision 2026-11-10: the Office replaces the Salty Spitoon at ring building `api-integrations`; the location id is unchanged. Migration `packages/database/migrations/0120_brainchain_office_ring_slot.sql` (data only, idempotent) renames the `map_locations` row and rewrites the stored `building_skills` curriculum names (Salty Spitoon -> BrainChain Office, Flying Dutchman -> Cortex) and recomputes its `content_hash`, so manifest clients re-fetch; no model call. The system NPC seeder keys location agents by template name, so it creates a fresh "Cortex" platform agent (clean memory); the old "Flying Dutchman" platform-agent row stays unreferenced. The system-agent slug `brainchain-office` (`POST /api/chat/system/brainchain-office`) answers as Cortex. The separate venue constants (`brainchain-office-world`) and the `pathfindingRaster` collider policy are removed. PROTOCOL_VERSION 129.
+
 ### BrainChain Office public observations (2026-11-09)
 
 `apps/api/src/services/brainchain/public-client.ts` reads fixed official exit endpoints and the unsigned task-payment challenge.

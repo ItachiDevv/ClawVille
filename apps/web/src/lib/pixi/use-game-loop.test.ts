@@ -7,6 +7,7 @@ import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import { useStageStore } from '@/components/three/world-stage/stage-store';
 import { MAP_WIDTH, MAP_HEIGHT } from './tilemap-data';
+import { getServerColliders } from '@clawville/shared';
 let dom: JSDOM, root: Root, tick: (delta: number) => void;
 const saved = new Map<string, PropertyDescriptor | undefined>();
 beforeAll(() => {
@@ -39,7 +40,9 @@ test('NPC input moves one possessed NPC and mirrors that body',()=>{
 });
 
 test('a path blocked by the Office collider stays idle',()=>{
- useGameStore.getState().setAvatarPosition(MAP_WIDTH/2+1085,MAP_HEIGHT/2-3040);
+ // The BrainChain Office is the api-integrations ring building (2026-11-10): stand 25 px east of its collider.
+ const office=getServerColliders().find(c=>c.id==='api-integrations')!;
+ useGameStore.getState().setAvatarPosition(MAP_WIDTH/2+office.centerX+office.halfX+25,MAP_HEIGHT/2+office.centerZ);
  const x=avatarPositionRef.x,y=avatarPositionRef.y;
  useGameStore.getState().setClickPath([{x:x-200,y}],null);
  act(()=>tick(1));

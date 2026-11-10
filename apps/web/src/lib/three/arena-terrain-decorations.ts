@@ -9,7 +9,6 @@ import {
   KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
   KELP_FOREST_PORTAL_WORLD_CENTER,
   LAND_PARCELS,
-  isBrainchainOfficeGroundCoverExcluded,
   SPAWN_PX,
   WORLD_CENTER_PX,
 } from '@clawville/shared';
@@ -241,7 +240,6 @@ function insideBox(
  * land parcels. Pure; runs only at module load.
  */
 export function isDecorationSiteClear(x: number, z: number): boolean {
-  if (isBrainchainOfficeGroundCoverExcluded(x, z)) return false;
   const dcx = x - VILLAGE_CX;
   const dcz = z - VILLAGE_CZ;
   const rSq = dcx * dcx + dcz * dcz;

@@ -100,8 +100,8 @@ const BUILDINGS: BuildingSpec[] = [
   // Until then, spike runs with 11 buildings to measure meshlet path without
   // this single outlier dragging the average.
   // { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1]  },
-  // Slot 4 — ESE — api-integrations (salty-spitoon)
-  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1-ktx.glb?v=3',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
+  // Slot 4 — ESE — api-integrations (BrainChain Office, 2026-11-10)
+  { id: 'api-integrations',   model: '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1', posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
   // Slot 5 — SSE — app-publishing (boating-school)
   { id: 'app-publishing',     model: '/models/boating-school-opt1-ktx.glb?v=3',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1]  },
   // Slot 6 — S — cron-automation (Trading Floor exterior)

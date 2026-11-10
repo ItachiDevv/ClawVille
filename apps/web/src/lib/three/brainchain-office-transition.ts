@@ -1,32 +1,27 @@
 'use client';
 
-import { BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME, BRAINCHAIN_OFFICE_GUIDE_APPROACH_GAME, isBrainchainOfficeDoorWorld, isBrainchainOfficeGuideWorld } from '@clawville/shared';
 import { requestWorldStageNavigation } from '@/components/three/world-stage/stage-navigation';
-import { useGameStore, avatarPositionRef } from '@/stores/game';
-import { findPath } from '@/lib/pixi/client-pathfinding';
-import { useNpcStore } from '@/stores/npc';
-import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { useGameStore } from '@/stores/game';
 
-export const BRAINCHAIN_GUIDE_NEAR_ID = 'brainchain-office-guide';
+/**
+ * Founder decision 2026-11-10: the BrainChain Office is the ring building
+ * `api-integrations` (it replaced the Salty Spitoon). The id stays so quests,
+ * pathfinding and building tools keep working.
+ */
+export const BRAINCHAIN_OFFICE_BUILDING_ID = 'api-integrations';
 
-/** Explicit activation only. Crossing the prompt never enters automatically. */
-export function openBrainchainOffice(guide = false): boolean {
+/**
+ * Explicit activation only (the Office button in the building portal). Opens
+ * the `/brainchain` page when the player is at the Office building: its portal
+ * is open, its resident is in range, or the viewer is in Explore mode.
+ */
+export function openBrainchainOffice(): boolean {
   const store = useGameStore.getState();
-  const npc = store.controlMode === 'npc' ? useNpcStore.getState().npcs.find((candidate) => candidate.id === store.possessedNpcId) : undefined;
-  const wx = (npc?.x ?? avatarPositionRef.x) - MAP_WIDTH / 2;
-  const wz = (npc?.y ?? avatarPositionRef.y) - MAP_HEIGHT / 2;
-  if (store.movementFrozen) return false;
-  if (store.controlMode !== 'explore' && !(guide ? isBrainchainOfficeGuideWorld(wx, wz) : isBrainchainOfficeDoorWorld(wx, wz))) return false;
+  const fromPortal = store.currentPortalBuildingId === BRAINCHAIN_OFFICE_BUILDING_ID;
+  if (!fromPortal && store.movementFrozen) return false;
+  if (!fromPortal && store.controlMode !== 'explore' && store.nearLocation !== BRAINCHAIN_OFFICE_BUILDING_ID) return false;
   store.clearClickPath();
-  return requestWorldStageNavigation({ to: guide ? '/brainchain#office-guide-heading' : '/brainchain' });
-}
-
-export function approachBrainchainOffice(guide = false): void {
-  const store = useGameStore.getState();
-  if (store.movementFrozen) return;
-  if (openBrainchainOffice(guide)) return;
-  const target = guide ? BRAINCHAIN_OFFICE_GUIDE_APPROACH_GAME : BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME;
-  const npc = store.controlMode === 'npc' ? useNpcStore.getState().npcs.find((candidate) => candidate.id === store.possessedNpcId) : undefined;
-  const path = findPath(npc?.x ?? avatarPositionRef.x, npc?.y ?? avatarPositionRef.y, target.x, target.y);
-  if (path.length) store.setClickPath(path, guide ? BRAINCHAIN_GUIDE_NEAR_ID : 'brainchain-office');
+  if (!requestWorldStageNavigation({ to: '/brainchain' })) return false;
+  if (fromPortal) store.closeBuildingPortal();
+  return true;
 }

@@ -27,7 +27,6 @@ import { appPublishing } from './locations/app-publishing';
 import { agentSecurity } from './locations/agent-security';
 import { deploymentOps } from './locations/deployment-ops';
 import { townGuide } from './locations/town-guide';
-import { brainchainOffice } from './locations/brainchain-office';
 
 // Re-export all location templates
 export { cronAutomation } from './locations/cron-automation';
@@ -41,7 +40,6 @@ export { appPublishing } from './locations/app-publishing';
 export { agentSecurity } from './locations/agent-security';
 export { deploymentOps } from './locations/deployment-ops';
 export { townGuide } from './locations/town-guide';
-export { brainchainOffice } from './locations/brainchain-office';
 
 // System agents are world-scoped NPCs that aren't tied to a building (unlike
 // the 10 LOCATION_TEMPLATES residents). Each gets a `platform_agents` row with
@@ -52,7 +50,12 @@ export { brainchainOffice } from './locations/brainchain-office';
 // here — the seeder loop handles the rest.
 export const SYSTEM_AGENT_TEMPLATES: Record<string, LocationTemplate> = {
   'town-guide': townGuide,
-  'brainchain-office': brainchainOffice,
+  // 2026-11-10: the BrainChain Office is the `api-integrations` building and its
+  // resident Cortex replaced the separate Office Guide. This slug stays so the
+  // human /brainchain "Ask" panel and the agent manual's
+  // POST /api/chat/system/brainchain-office keep working from anywhere; it now
+  // answers as Cortex with the same knowledge as the building teacher.
+  'brainchain-office': apiIntegrations,
 };
 
 // Legacy export name (kept for backwards compatibility)

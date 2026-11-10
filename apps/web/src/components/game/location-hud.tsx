@@ -11,7 +11,6 @@ import {
   triggerCoveWalkIn,
   triggerTradingFloorWalkIn,
 } from '@/lib/three/arena-buildings';
-import { BRAINCHAIN_GUIDE_NEAR_ID, openBrainchainOffice } from '@/lib/three/brainchain-office-transition';
 import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
 import { TRADING_FLOOR_NEAR_ID } from '@/lib/three/trading-floor/trading-floor-location';
 import { locationPromptText } from '@/components/game/location-prompt-text';
@@ -63,8 +62,7 @@ export default function LocationHUD() {
   // Venue door bands publish their own nearLocation ids, which are deliberately
   // NOT MAP_LOCATIONS entries — let them through the unknown-building bail.
   const isVenueDoorId =
-    nearLocation === 'kelp-forest-portal' || nearLocation === TRADING_FLOOR_NEAR_ID
-    || nearLocation === 'brainchain-office' || nearLocation === BRAINCHAIN_GUIDE_NEAR_ID;
+    nearLocation === 'kelp-forest-portal' || nearLocation === TRADING_FLOOR_NEAR_ID;
   if (!isGuide && !location && !isVenueDoorId) return null;
 
   const theme = isGuide || !nearLocation ? undefined : BUILDING_OPENCLAW_THEMES[nearLocation];
@@ -88,8 +86,6 @@ export default function LocationHUD() {
   const handleTap = () => {
     if (isGuide) {
       openGuideChat();
-    } else if (nearLocation === 'brainchain-office' || nearLocation === BRAINCHAIN_GUIDE_NEAR_ID) {
-      openBrainchainOffice(nearLocation === BRAINCHAIN_GUIDE_NEAR_ID);
     } else if (isKelpForest) {
       triggerKelpForestWalkIn();
     } else if (isCove) {

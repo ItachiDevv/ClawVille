@@ -54,7 +54,7 @@ const res = await send(
     expression: `JSON.stringify({
       buildingGlbs: performance.getEntriesByType('resource')
         .map((r) => r.name)
-        .filter((n) => /models\\/(pineapple-house|chum-bucket|krusty-krab|salty-spitoon|boating-school|patty-building|building-lighthouse|arcade\\/claw-arcade-exterior|cove\\/cove-exterior|patricks-rock|squidward-house)/.test(n)),
+        .filter((n) => /models\\/(pineapple-house|chum-bucket|krusty-krab|brainchain\\/brainchain-office-exterior|boating-school|patty-building|building-lighthouse|arcade\\/claw-arcade-exterior|cove\\/cove-exterior|patricks-rock|squidward-house)/.test(n)),
       totalResources: performance.getEntriesByType('resource').length,
     })`,
     returnByValue: true,

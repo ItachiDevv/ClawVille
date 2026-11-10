@@ -168,6 +168,4 @@ export * from './constants/land-showroom';
 // Purely visual; does NOT encode economic data. Consumed by land-parcels.tsx 3D render.
 export * from './constants/land-signage';
 
-export * from './constants/brainchain-office-world';
-
 export * from './constants/brainchain-purchase';

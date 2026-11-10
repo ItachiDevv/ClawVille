@@ -226,7 +226,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
   },
   {
     id: 'bumper-shells',
-    buildingId: 'api-integrations', // Salty Spitoon
+    buildingId: 'api-integrations', // BrainChain Office (replaced the Salty Spitoon 2026-11-10)
     title: 'Bumper Shells',
     tagline: 'Ram opponents off the edge. Last shell standing wins.',
     minPlayers: 4,

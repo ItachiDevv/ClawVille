@@ -12,8 +12,6 @@
  * possessed NPC cannot walk into buildings or town props.
  */
 
-import { isBrainchainOfficeDoorWorld, isBrainchainOfficeGuideWorld } from '@clawville/shared';
-import { BRAINCHAIN_GUIDE_NEAR_ID, openBrainchainOffice } from '@/lib/three/brainchain-office-transition';
 import { useEffect, useRef } from 'react';
 import { useThree, type RootState } from '@react-three/fiber';
 import {
@@ -44,13 +42,10 @@ import {
 } from '@/lib/three/kelp-forest-transition';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
-import { createNavigationStep, stepNavigationPath } from './navigation-path-step';
 import { isWorldInputBlocked, isWorldFrameBlocked } from './world-input-guard';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/world-colliders';
 
-const officeNavigationStep = createNavigationStep();
-const officeNavigationPoint = { x: 0, y: 0 };
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
                    // still felt sluggish crossing ~2000-wu visible area; target 3-4s crossing time → 2000/550≈3.6s)
 
@@ -203,8 +198,7 @@ export default function NpcController() {
       if (store.nearLocation) {
         // The Cove, the Trading Floor and the Kelp Forest portal are walk-in
         // venues (stage crossing), not teacher chats.
-        if (store.nearLocation === 'brainchain-office' || store.nearLocation === BRAINCHAIN_GUIDE_NEAR_ID) openBrainchainOffice(store.nearLocation === BRAINCHAIN_GUIDE_NEAR_ID);
-        else if (store.nearLocation === 'cove') triggerCoveWalkIn();
+        if (store.nearLocation === 'cove') triggerCoveWalkIn();
         else if (store.nearLocation === TRADING_FLOOR_NEAR_ID) triggerTradingFloorWalkIn();
         else if (store.nearLocation === 'kelp-forest-portal') triggerKelpForestWalkIn();
         else store.enterBuilding(store.nearLocation);
@@ -240,9 +234,7 @@ export default function NpcController() {
       const wx = npc.x - MAP_WIDTH  / 2;
       const wz = npc.y - MAP_HEIGHT / 2;
       const nearest = findNearestCharacter(wx, wz);
-      const nearId: string | null = isBrainchainOfficeDoorWorld(wx, wz) ? 'brainchain-office'
-        : isBrainchainOfficeGuideWorld(wx, wz) ? BRAINCHAIN_GUIDE_NEAR_ID
-        : nearest
+      const nearId: string | null = nearest
         ? nearest.buildingId
         : isCoveProximate(wx, wz)
           ? 'cove'
@@ -285,26 +277,8 @@ export default function NpcController() {
       inputRight /= len;
     }
 
-    let officeVx = 0, officeVz = 0, officeWalking = false, officeFollowing = false, officeComplete = false;
-    const officeGuide = store.clickPathTarget === BRAINCHAIN_GUIDE_NEAR_ID;
-    if ((store.clickPathTarget === 'brainchain-office' || officeGuide) && store.clickPath?.length) {
-      if (inputFwd !== 0 || inputRight !== 0) store.clearClickPath();
-      else {
-        officeFollowing = true;
-        const speed = SPEED * (_keys.shift ? RUN_SPEED_MULT : 1);
-        const step = stepNavigationPath(store.clickPath, store.clickPathIndex, npc.x, npc.y, speed * delta, (x, y, tx, ty) => {
-          const result = clampMovement2D(x - MAP_WIDTH / 2, y - MAP_HEIGHT / 2, tx - MAP_WIDTH / 2, ty - MAP_HEIGHT / 2, ENTITY_HALF_HUMANOID);
-          officeNavigationPoint.x = result.x + MAP_WIDTH / 2; officeNavigationPoint.y = result.z + MAP_HEIGHT / 2;
-          return officeNavigationPoint;
-        }, officeNavigationStep, 6);
-        if (step.index !== store.clickPathIndex) useGameStore.setState({ clickPathIndex: step.index });
-        officeWalking = step.traveled > 0; officeComplete = step.complete;
-        officeVx = step.vx; officeVz = step.vy;
-      }
-    }
-
     // No input → set idle (keep last facingAngle so model doesn't snap)
-    if (inputFwd === 0 && inputRight === 0 && !officeFollowing) {
+    if (inputFwd === 0 && inputRight === 0) {
       if (
         Math.abs(avatarPositionRef.x - npc.x) > 0.5 ||
         Math.abs(avatarPositionRef.y - npc.y) > 0.5
@@ -321,14 +295,13 @@ export default function NpcController() {
     camera.getWorldDirection(_camForward);
     _camForward.y = 0; // WASD is always flat camera-relative XZ — never couples to camera pitch
     const fwdLen = _camForward.length();
-    if (fwdLen < 0.001 && !officeFollowing) return; // Camera nearly vertical — skip
-    if (fwdLen < 0.001) _camForward.set(0, 0, -1);
-    else _camForward.divideScalar(fwdLen);
+    if (fwdLen < 0.001) return; // Camera nearly vertical — skip
+    _camForward.divideScalar(fwdLen);
 
     _camRight.crossVectors(_camForward, _worldUp).normalize();
 
-    const worldVx = officeWalking ? officeVx : _camForward.x * inputFwd + _camRight.x * inputRight;
-    const worldVz = officeWalking ? officeVz : _camForward.z * inputFwd + _camRight.z * inputRight;
+    const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
+    const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
     const joyMag = Math.hypot(store.joystickVelocity.x, store.joystickVelocity.y);
     const speedMult = _keys.shift || joyMag > RUN_JOYSTICK_THRESHOLD ? RUN_SPEED_MULT : 1;
 
@@ -352,7 +325,7 @@ export default function NpcController() {
 
     // Facing angle for +Z-facing model: atan2(worldVx, worldVz) — EMPIRICALLY VERIFIED 2026-04-16 (late PM, clean side-view screenshot)
     // Prior sessions concluded +X (wrong — camera was orbited in that screenshot). +Z is proven by unambiguous side-view.
-    const facingAngle = officeFollowing && !officeWalking ? npc.facingAngle : Math.atan2(worldVx, worldVz);
+    const facingAngle = Math.atan2(worldVx, worldVz);
 
     // Cardinal direction for sprite system
     const dir = directionFromVelocity(worldVx, worldVz);
@@ -361,7 +334,7 @@ export default function NpcController() {
     // worldX maps to pixelX, worldZ maps to pixelY (same scale, different offset)
     const targetX = Math.max(X_MIN, Math.min(X_MAX, npc.x + worldVx * SPEED * speedMult * delta));
     const targetY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + worldVz * SPEED * speedMult * delta));
-    const clamped = officeFollowing ? { x: officeNavigationStep.x - MAP_WIDTH / 2, z: officeNavigationStep.y - MAP_HEIGHT / 2, groundY: 0 } : clampMovement2D(
+    const clamped = clampMovement2D(
       npc.x - MAP_WIDTH / 2,
       npc.y - MAP_HEIGHT / 2,
       targetX - MAP_WIDTH / 2,
@@ -390,7 +363,6 @@ export default function NpcController() {
     // while standing still still reads as idle).
     npcStore.moveNpc(possessedNpcId, newX, newY, dir, facingAngle, speedMult > 1);
     store.setAvatarPosition(newX, newY);
-    if (officeComplete) { store.clearClickPath(); openBrainchainOffice(officeGuide); }
   }, -100);
 
   return null;

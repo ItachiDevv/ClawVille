@@ -185,14 +185,20 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // component for the messaging building instead of loading the GLB.
   'messaging-channels':  { model: '/models/sandy-treedome-v3-opt1.glb?v=2',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 2500 },
   // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
-  // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  // Phase 6.2.2: targetMaxDim 1300→2500. salty-spitoon.glb is authored at km-scale
-  // (bbox ~655k×340k×655k GLB units — the base Circle.002 flat plane is stripped by
-  // stripGroundPlanes). After strip, max-dim ≈507198. Scale = 2500/507198 = 0.00493.
-  // Height = 340557×0.00493 = 1679wu — hits MAX_FOOTPRINT=2000: cap adjusts to
-  // scale×(2000/XZ_scaled). Final height ≈ 1209wu (≈6.7× avatar). Visible improvement.
-  // rotYOffset -π/2: the spitoon GLB is authored facing +X; rotate to face village center.
-  'api-integrations':    { model: '/models/salty-spitoon-opt1-ktx.glb?v=3',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 2500 },
+  // BRAINCHAIN OFFICE (founder decision 2026-11-10). Replaces salty-spitoon; the
+  // id stays `api-integrations` (quests, books, pathfinding, tools key on it).
+  // The standalone Office venue at world (760, -3040) was removed in the same diff.
+  //
+  // brainchain-office-exterior-v2-mips-mo-ktx.glb: one mesh, one material,
+  // KHR_mesh_quantization (int16 positions, int8 normals, uint16 UVs, all
+  // normalized; makeObject3DWebGPUSafe converts the stride-6/stride-3 attributes).
+  // Scene bbox with the 0.951 node scale: 1.6102 × 1.9021 × 1.3320, centred in
+  // XZ; maxDim = Y. ENTRANCE FACES +Z at rotY 0 (the old venue door sat on its
+  // +Z side) — the ring convention — so NO rotYOffset.
+  //
+  // targetMaxDim 1400 → scale 736.0 → height 1400, footprint 1185 × 980
+  // (no MAX_FOOTPRINT cap). Same landmark tier as Krusty Krab / Chum Bucket.
+  'api-integrations':    { model: '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1', yOffset: 0, rotY: -2.093, targetMaxDim: 1400 },
   // Slot 5 — SSE (cx=245, cy=293): dx=-65, dz=-113 → atan2(-65,-113)≈-2.620 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
   'app-publishing':      { model: '/models/boating-school-opt1-ktx.glb?v=3',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
@@ -474,7 +480,8 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
 //   2000 wu — Phase 6.2.2 fix (2026-05-18). Sandy's Treedome dome is square (aspect ≈ 1.0)
 //             and hits the 1800 cap, rendering at only 738wu (4.1× avatar). R=130 ring arc
 //             spacing is 2178wu so allowing 2000wu footprint keeps a 178wu clearance between
-//             the widest adjacent pair. Only the dome and km-scale Salty Spitoon hit this cap.
+//             the widest adjacent pair. Only the dome and km-scale Salty Spitoon hit this cap
+//             (the Spitoon left the ring 2026-11-10; the BrainChain Office is uncapped).
 const MAX_FOOTPRINT = 2000;
 
 // Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.

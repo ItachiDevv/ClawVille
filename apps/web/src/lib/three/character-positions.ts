@@ -112,7 +112,7 @@ const CHARACTER_NAMES: Record<string, string> = {
   'code-development':       'Plankton',
   'messaging-channels':    'Sandy',
   'agent-security': 'Patrick',
-  'api-integrations':   'Flying Dutchman',
+  'api-integrations':   'Cortex', // BrainChain Office resident (2026-11-10)
   'cron-automation':          'Pearl',
 };
 
@@ -419,6 +419,3 @@ export function findNearestCharacter(
   _nearest.distance = Math.sqrt(bestDistSq);
   return _nearest;
 }
-
-// Shared zero-allocation Office proximity contract, separate from ring residents.
-export { isBrainchainOfficeDoorWorld as isBrainchainOfficeDoorProximate, isBrainchainOfficeGuideWorld as isBrainchainOfficeGuideProximate } from '@clawville/shared';

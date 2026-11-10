@@ -31,7 +31,7 @@ shipping four wrong descriptions.
 | Building ID | Building | Skill Category | What Agents Learn |
 |---|---|---|---|
 | cron-automation | Trading Floor | Automation & Workflows | Cron, task queues, n8n, Zapier, CI/CD pipelines, and the timers a DCA or limit order runs on |
-| api-integrations | Salty Spitoon | APIs & Integrations | REST, GraphQL, webhooks, OAuth, rate limiting |
+| api-integrations | BrainChain Office | APIs & Integrations | REST, GraphQL, webhooks, OAuth, rate limiting |
 | memory-rag | Squidward's House | Memory & Knowledge | RAG, vector DBs, embeddings, context management |
 | code-development | Chum Bucket | Code & Development | Writing code, debugging, testing, git, refactoring |
 | messaging-channels | Sandy's Treedome | Communication | Email, Slack, Discord, Telegram, social media posting |
@@ -51,7 +51,7 @@ Teach agents to schedule tasks, build pipelines, and orchestrate multi-step work
 - CI/CD pipelines (GitHub Actions, GitLab CI)
 - Event-driven automation patterns
 
-### 2. APIs & Integrations (Salty Spitoon)
+### 2. APIs & Integrations (BrainChain Office, resident Cortex)
 Teach agents to consume and build APIs, handle auth, and connect systems.
 - REST API design and consumption
 - GraphQL queries and mutations

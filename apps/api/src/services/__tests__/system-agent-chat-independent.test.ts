@@ -50,7 +50,7 @@ mock.module('../agent-orchestrator', () => ({ agentOrchestrator: { ensureAgentRu
   },
 }) } }));
 mock.module('../agent-session-ttl', () => ({ slideAgentSessionTtl: () => {} }));
-mock.module('../system-npc-seeder', () => ({ getSystemAgent: async (slug: string) => ({ platformAgent: { id: slug, name: slug === 'brainchain-office' ? 'BrainChain Office Guide' : 'Nori' }, systemUserId: 'nori-owner' }) }));
+mock.module('../system-npc-seeder', () => ({ getSystemAgent: async (slug: string) => ({ platformAgent: { id: slug, name: slug === 'brainchain-office' ? 'Cortex' : 'Nori' }, systemUserId: 'nori-owner' }) }));
 mock.module('../claw-token-ledger', () => ({ creditClawTokens: async (input: unknown) => { credits.push(input); afterCredit?.(); } }));
 mock.module('../xp-service', () => ({ awardXp: async () => {} }));
 mock.module('../event-logger', () => ({ logEvent: async (input: unknown) => { events.push(input); } }));
@@ -78,7 +78,7 @@ const turn = (kind: 'human' | 'agent') => conductSystemAgentChat({
 
 test('learned system chat uses the actual teacher and preserves Nori attribution', async () => {
   await conductSystemAgentChat({ actor: { kind: 'agent', sessionId: 'session' }, slug: 'brainchain-office', content: 'How does testnet work?' });
-  expect(lessons[0]).toMatchObject({ teacherName: 'BrainChain Office Guide', buildingId: 'brainchain-office', lesson: 'BrainChain Office Guide told me: Ask the teacher.' });
+  expect(lessons[0]).toMatchObject({ teacherName: 'Cortex', buildingId: 'brainchain-office', lesson: 'Cortex told me: Ask the teacher.' });
   await turn('agent');
   expect(lessons[1]).toMatchObject({ teacherName: 'Nori', buildingId: 'town-guide', lesson: 'Nori told me: Ask the teacher.' });
 });

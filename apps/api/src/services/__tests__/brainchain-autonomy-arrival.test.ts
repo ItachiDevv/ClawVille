@@ -1,27 +1,21 @@
 import { describe, expect, test } from 'bun:test';
-import { BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME as center } from '@clawville/shared';
-import { agentAutonomyDriver, centerPlaceDestinationForMove } from '../agent-autonomy-driver';
+import { AUTONOMY_ENTERABLE_PLACES, BUILDING_INTERACTION_RADIUS, MAP_LOCATIONS } from '@clawville/shared';
+import { agentAutonomyDriver, centerPlaceDestinationForMove, destinationArrivalRadius } from '../agent-autonomy-driver';
 
-describe('Office center-place arrival', () => {
-  test('tracks only a successful exact shared-center move', () => {
-    const action = { verb: 'move', params: { x: String(center.x), y: String(center.y) } };
-    expect(centerPlaceDestinationForMove(action, center)).toBe('brainchain-office');
-    expect(centerPlaceDestinationForMove(action, undefined)).toBeNull();
-    expect(centerPlaceDestinationForMove(action, { x: center.x + 20, y: center.y })).toBeNull();
-    expect(centerPlaceDestinationForMove({ verb: 'emote', params: action.params }, center)).toBeNull();
-    expect(centerPlaceDestinationForMove({ verb: 'move', params: { x: 'NaN', y: String(center.y) } }, center)).toBeNull();
+// 2026-11-10: the BrainChain Office REPLACED the Salty Spitoon. It is the
+// `api-integrations` teaching building, reached through enter_building, so no
+// separate move-center place or venue radius exists any more.
+describe('BrainChain Office arrival', () => {
+  test('the Office is the api-integrations teaching building, not a separate place', () => {
+    expect(MAP_LOCATIONS.find((location) => location.id === 'api-integrations')?.name).toBe('BrainChain Office');
+    expect(AUTONOMY_ENTERABLE_PLACES.some((place) => place.placeId === 'brainchain-office' || place.destinationId === 'brainchain-office')).toBe(false);
+    expect(destinationArrivalRadius('api-integrations')).toBe(BUILDING_INTERACTION_RADIUS);
   });
 
-  test('arrives within 96 wu without using the teaching-building radius', () => {
-    const driver = agentAutonomyDriver as unknown as {
-      hasArrived: (perception: unknown, entry: unknown) => boolean;
-    };
-    const entry = { targetBuildingId: 'brainchain-office' };
-    const perception = (distance: number) => ({ nearbyBuildings: [], places: [{ destinationId: 'brainchain-office', distance }] });
-    expect(driver.hasArrived(perception(96), entry)).toBe(true);
-    expect(driver.hasArrived(perception(97), entry)).toBe(false);
-    expect(driver.hasArrived(perception(900), entry)).toBe(false);
-    expect(driver.hasArrived({ nearbyBuildings: [], places: [] }, entry)).toBe(false);
+  test('a move to the old venue coordinates tracks no place destination', () => {
+    const old = { x: 12024, y: 8664 }; // WORLD_CENTER_PX + the removed venue approach (760, -2600)
+    const action = { verb: 'move', params: { x: String(old.x), y: String(old.y) } };
+    expect(centerPlaceDestinationForMove(action, old)).toBeNull();
   });
 
   test('a place arrival never invokes teaching-building settlement', async () => {
@@ -30,14 +24,16 @@ describe('Office center-place arrival', () => {
       recordDriverAction: (...args: unknown[]) => Promise<unknown>;
       arrivalSettle: (...args: unknown[]) => Promise<unknown>;
     };
+    const kelp = AUTONOMY_ENTERABLE_PLACES.find((place) => place.placeId === 'kelp-forest');
+    expect(kelp).toBeDefined();
     const record = driver.recordDriverAction;
     const settle = driver.arrivalSettle;
     let settlements = 0;
     driver.recordDriverAction = async () => null;
     driver.arrivalSettle = async () => { settlements++; return null; };
-    const entry = { targetBuildingId: 'brainchain-office', phase: 'walking', recentThoughts: [], talkPrefetch: null };
+    const entry = { targetBuildingId: kelp!.destinationId, phase: 'walking', recentThoughts: [], talkPrefetch: null };
     try {
-      await driver.stepWalkingPhase(entry, { nearbyBuildings: [], places: [{ destinationId: 'brainchain-office', distance: 0 }] }, Date.now());
+      await driver.stepWalkingPhase(entry, { nearbyBuildings: [], places: [{ destinationId: kelp!.destinationId, distance: 0 }] }, Date.now());
       expect(entry.phase).toBe('talking');
       expect(settlements).toBe(0);
     } finally {

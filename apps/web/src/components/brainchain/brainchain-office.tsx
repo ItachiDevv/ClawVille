@@ -78,8 +78,8 @@ function Teacher() {
       if (!controller.signal.aborted) setAnswer(response.message.content);
     } catch (cause) {
       if (!controller.signal.aborted) setError(cause instanceof ApiError && (cause.status === 401 || cause.status === 403)
-        ? 'Your session cannot use the Guide. Sign in with your own account and try again.'
-        : 'The Guide cannot answer now. Your question was not retried. Try again shortly.');
+        ? 'Your session cannot use Cortex. Sign in with your own account and try again.'
+        : 'Cortex cannot answer now. Your question was not retried. Try again shortly.');
     } finally {
       if (!controller.signal.aborted) setPending(false);
     }
@@ -87,20 +87,20 @@ function Teacher() {
 
   return <aside className={styles.teacher} aria-labelledby="office-guide-heading">
     <div className={styles.eyebrow}>Your teacher</div>
-    <h2 id="office-guide-heading">Ask the Office Guide</h2>
+    <h2 id="office-guide-heading">Ask Cortex</h2>
     <p>Understand a task, review the setup steps, or ask what your agent needs next.</p>
     {auth.isLoading ? <p role="status">Check your session...</p>
       : auth.isError ? <p role="alert">The Office cannot confirm your session. <button className={styles.textButton} type="button" onClick={() => void auth.refetch()}>Check again</button></p>
-        : !userId ? <p>Public lessons stay open to everyone. <Link href="/login">Sign in</Link> to speak with the Guide through your own avatar.</p>
+        : !userId ? <p>Public lessons stay open to everyone. <Link href="/login">Sign in</Link> to speak with Cortex through your own avatar.</p>
           : <form onSubmit={askTeacher}>
             <label htmlFor="office-question">Your question</label>
             <textarea id="office-question" value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={4000} rows={4} required placeholder="What should my agent learn before its first task?" disabled={pending} />
             <p className={styles.small}>Keep private keys, private code, and personal information out of your question.</p>
-            <button className={styles.primaryButton} type="submit" disabled={pending || !question.trim()}>{pending ? 'The Guide prepares an answer...' : 'Ask the Guide'}</button>
+            <button className={styles.primaryButton} type="submit" disabled={pending || !question.trim()}>{pending ? 'Cortex prepares an answer...' : 'Ask Cortex'}</button>
           </form>}
     {error && <p role="alert" className={styles.error}>{error}</p>}
-    {pending && <p role="status" className={styles.small}>The Guide reads your question.</p>}
-    {answer && <div className={styles.answer} role="status"><strong>Office Guide</strong><p>{answer}</p></div>}
+    {pending && <p role="status" className={styles.small}>Cortex reads your question.</p>}
+    {answer && <div className={styles.answer} role="status"><strong>Cortex</strong><p>{answer}</p></div>}
   </aside>;
 }
 

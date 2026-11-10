@@ -9,7 +9,7 @@
  *     `startPageMs` on request records).
  *
  * Usage: bun cold-load-canary-assert.mjs <report.json> <url-substring>
- *   e.g. bun cold-load-canary-assert.mjs report.json flying-dutchman
+ *   e.g. bun cold-load-canary-assert.mjs report.json squidward-ktx
  *
  * Exit codes: 0 = canary holds · 3 = violation (pre-release fetch or asset
  * missing) · 2 = report unusable for this assertion (no release stamp).

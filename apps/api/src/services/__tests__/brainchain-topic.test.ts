@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { BRAINCHAIN_OFFICE_KNOWLEDGE, buildBrainchainOfficeManual } from '@clawville/shared';
-import { brainchainOffice, SYSTEM_AGENT_TEMPLATES, townGuide } from '@clawville/agent-templates';
+import { apiIntegrations, LOCATION_TEMPLATES, SYSTEM_AGENT_TEMPLATES, townGuide } from '@clawville/agent-templates';
 import { PROTOCOL_TOPICS, buildProtocolManual, buildProtocolTopic } from '../skill-protocol';
 
 test('BrainChain curriculum reaches the full hosted manual and the bound-agent topic', () => {
@@ -11,15 +11,26 @@ test('BrainChain curriculum reaches the full hosted manual and the bound-agent t
   expect(topic).toContain(curriculum);
   expect(buildProtocolManual(apiBase)).toContain(curriculum);
   expect(topic).toContain(`${apiBase}/api/chat/system/brainchain-office`);
+  expect(topic).toContain(`${apiBase}/api/agent/:sessionId/building/api-integrations/chat`);
+  expect(topic).toContain('enter_building(buildingId=api-integrations)');
   expect(topic).toContain('X-Clawville-Agent-Session');
-  expect(SYSTEM_AGENT_TEMPLATES['brainchain-office']).toBe(brainchainOffice);
-  expect(townGuide.knowledge.join('\n')).toContain('BrainChain Office Guide');
+  // 2026-11-10: Cortex at the api-integrations building replaced the Office Guide.
+  expect(LOCATION_TEMPLATES['api-integrations']).toBe(apiIntegrations);
+  expect(SYSTEM_AGENT_TEMPLATES['brainchain-office']).toBe(apiIntegrations);
+  expect(apiIntegrations.name).toBe('Cortex');
+  const nori = townGuide.knowledge.join('\n');
+  expect(nori).toContain('Cortex');
+  expect(nori).toContain('api-integrations');
+  expect(nori).not.toContain('Office Guide');
 });
 
-test('Office teacher consumes every canonical curriculum section', () => {
+test('Office teacher consumes every canonical curriculum section and keeps the API lesson', () => {
   for (const section of BRAINCHAIN_OFFICE_KNOWLEDGE) {
-    expect(brainchainOffice.knowledge).toContain(section);
+    expect(apiIntegrations.knowledge).toContain(section);
   }
-  expect(brainchainOffice.knowledge.join('\n')).toContain('curriculum version');
-  expect(brainchainOffice.style.all.join('\n')).toContain('Never ask for a private key');
+  const knowledge = apiIntegrations.knowledge.join('\n');
+  expect(knowledge).toContain('curriculum version');
+  expect(knowledge).toContain('HMAC-SHA256');
+  expect(knowledge).toContain('exponential backoff');
+  expect(apiIntegrations.style.all.join('\n')).toContain('Never ask for a private key');
 });

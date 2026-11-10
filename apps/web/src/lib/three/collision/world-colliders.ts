@@ -1,4 +1,3 @@
-import { BRAINCHAIN_OFFICE_WORLD_CENTER, BRAINCHAIN_OFFICE_HALF_X_WU, BRAINCHAIN_OFFICE_HALF_Z_WU, BRAINCHAIN_OFFICE_GUIDE_WORLD, BRAINCHAIN_OFFICE_GUIDE_HALF_WU, BRAINCHAIN_OFFICE_GUIDE_ID, assertBrainchainOfficePlacement } from '@clawville/shared';
 // ---------------------------------------------------------------------------
 // world-colliders.ts
 // XZ-plane AABB collision for the ClawVille open world.
@@ -61,7 +60,6 @@ export interface Collider2D {
   halfX: number;
   halfZ: number;
   kind: 'building' | 'prop';
-  pathfindingRaster?: { readonly mode: 'cell-center-expanded-aabb'; readonly paddingWu: number };
   /** If true this zone lifts entity Y instead of blocking XZ movement. */
   walkable?: boolean;
   /**
@@ -115,8 +113,10 @@ export interface Collider2D {
  * Special cases:
  *   - cove: uses box3Recenter=true in arena-buildings.tsx, which re-centers
  *     the geometry to (0,0,0) after load. Center = tile-zone center, no offset.
- *   - messaging-channels (sandy-treedome-v3) and api-integrations (salty-spitoon):
+ *   - messaging-channels (sandy-treedome-v3):
  *     targetMaxDim=2500 exceeds MAX_FOOTPRINT=2000wu, so worldX=worldZ=2000.
+ *   - api-integrations (BrainChain Office exterior): the box is the world AABB
+ *     of the ROTATED footprint (rotY -2.093), not the authored-frame box.
  *   - cron-automation (trading-floor exterior): maxDim is the Y axis (the
  *     rooftop claw sign), not an XZ axis, so neither footprint axis caps.
  *
@@ -140,9 +140,13 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   // Native size: 25.873×25.873, scale≈96.6 → footprint cap → worldX=worldZ=2000 → ×0.85
   'messaging-channels': { halfX: 850, halfZ: 850 },
 
-  // GLB: salty-spitoon.glb, targetMaxDim=2500
-  // footprint cap applied → worldX=worldZ=2000 → ×0.85
-  'api-integrations':   { halfX: 850, halfZ: 850 },
+  // GLB: brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb, targetMaxDim=1400
+  // (2026-11-10 BrainChain Office swap; was salty-spitoon at 850×850).
+  // Scene bbox 1.6102 × 1.9021 × 1.3320 (node scale 0.951 included), maxDim = Y.
+  // scale = 1400/1.9021 = 736.0 → authored footprint 1185 × 980 (no cap).
+  // Rotated by rotY -2.093 (|cos| 0.5, |sin| 0.866): world AABB
+  //   X = 0.5×1185 + 0.866×980 = 1441, Z = 0.866×1185 + 0.5×980 = 1516 → ×0.85 / 2
+  'api-integrations':   { halfX: 613, halfZ: 644 },
 
   // GLB: boating-school.glb, targetMaxDim=1000
   // Approximately square footprint → worldX=1000, worldZ=995 → ×0.85
@@ -302,8 +306,6 @@ function buildColliders(): Collider2D[] {
   //    extents read tighter (less invisible-wall feel along the narrow axis).
   // ---------------------------------------------------------------------------
   const PROPS: Collider2D[] = [
-    { id: 'brainchain-office', centerX: BRAINCHAIN_OFFICE_WORLD_CENTER.x, centerZ: BRAINCHAIN_OFFICE_WORLD_CENTER.z, halfX: BRAINCHAIN_OFFICE_HALF_X_WU, halfZ: BRAINCHAIN_OFFICE_HALF_Z_WU, kind: 'prop' },
-    { id: BRAINCHAIN_OFFICE_GUIDE_ID, centerX: BRAINCHAIN_OFFICE_GUIDE_WORLD.x, centerZ: BRAINCHAIN_OFFICE_GUIDE_WORLD.z, halfX: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, halfZ: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, kind: 'prop', pathfindingRaster: { mode: 'cell-center-expanded-aabb', paddingWu: 50 } },
     { id: 'town-directory-sign',  centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40, kind: 'prop' },
     { id: 'bazaar-stall',         centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140, kind: 'prop' },
     // -----------------------------------------------------------------------
@@ -343,8 +345,6 @@ function buildColliders(): Collider2D[] {
     // OTHER colliders. No client collider exists by design; the arch is passable.
   ];
   colliders.push(...PROPS);
-
-  assertBrainchainOfficePlacement(colliders);
   return colliders;
 }
 

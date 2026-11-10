@@ -15,7 +15,7 @@ import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { getBounds } from '@gltf-transform/functions';
 import { MeshoptDecoder } from 'meshoptimizer';
-import { LAND_PARCELS, BRAINCHAIN_OFFICE_APPROACH_WORLD, BRAINCHAIN_OFFICE_GUIDE_WORLD } from '@clawville/shared';
+import { LAND_PARCELS } from '@clawville/shared';
 import { buildingZones } from '@/lib/pixi/tilemap-data';
 import { getAllColliders } from './collision/world-colliders';
 import { CHARACTER_POSITIONS, COVE_EXIT_WORLD_X, COVE_EXIT_WORLD_Z, TALK_RADIUS_WORLD } from './character-positions';
@@ -209,8 +209,6 @@ describe('placed decorations in world space', () => {
       ...LAND_PARCELS.map((p) => ({ id: p.id, centerX: p.cx, centerZ: p.cz, halfX: p.size / 2, halfZ: p.size / 2 })),
     ];
     const circles = [
-      { id: 'office-door', ...BRAINCHAIN_OFFICE_APPROACH_WORLD, r: 160 },
-      { id: 'office-guide', ...BRAINCHAIN_OFFICE_GUIDE_WORLD, r: 220 },
       ...Object.values(CHARACTER_POSITIONS).map((r) => ({ id: r.characterName, x: r.worldX, z: r.worldZ, r: TALK_RADIUS_WORLD })),
       { id: 'trading-floor-door', x: TRADING_FLOOR_DOOR_WORLD.x, z: TRADING_FLOOR_DOOR_WORLD.z, r: TRADING_FLOOR_PROMPT_RADIUS_WU },
       { id: 'cove-tunnel', x: COVE_EXIT_WORLD_X, z: COVE_EXIT_WORLD_Z, r: 500 },
@@ -244,7 +242,7 @@ describe('placed decorations in world space', () => {
     expect(buckets.size).toBeLessThanOrEqual(56);
     expect(tris).toBeLessThanOrEqual(150_000);
     // Pinned exact values for the seed-12345 layout (update with the docs).
-    expect({ meshes: buckets.size, tris }).toEqual({ meshes: 50, tris: 141_738 });
+    expect({ meshes: buckets.size, tris }).toEqual({ meshes: 50, tris: 130_920 });
   });
 
   it('caps chests and excludes tower2', () => {

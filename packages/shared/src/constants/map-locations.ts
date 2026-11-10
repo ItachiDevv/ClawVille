@@ -1,4 +1,3 @@
-import { BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME } from './brainchain-office-world';
 import type { MapLocation } from '../types/location';
 import { KELP_FOREST_PORTAL_APPROACH_GAME } from './kelp-realm';
 import { KELP_FOREST_PORTAL_ID } from './world-colliders-data';
@@ -84,10 +83,14 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // Slot 4 — ESE (cx=465, cy=417) → zone(458,410) → posX=458*32=14656, posY=410*32=13120
+  // 2026-11-10 founder decision: the BrainChain Office REPLACES the Salty Spitoon
+  // here. The `id` stays `api-integrations` (books, skills, visit events, Bumper
+  // Shells, and skill folders key on it). Cortex teaches BrainChain task work AND
+  // the full APIs and Integrations lesson. The separate Office venue is removed.
   {
     id: 'api-integrations',
-    name: 'Salty Spitoon',
-    description: 'Master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
+    name: 'BrainChain Office',
+    description: 'Learn BrainChain external task work and testnet worker setup, and master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
     icon: '🌊',
     positionX: 14656,
     positionY: 13120,
@@ -220,15 +223,6 @@ export type AutonomyEnterablePlace = Readonly<{
 )>;
 
 export const AUTONOMY_ENTERABLE_PLACES: readonly AutonomyEnterablePlace[] = [
-  {
-    placeId: 'brainchain-office',
-    center: BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME,
-    label: 'BrainChain Office',
-    description: 'External task-work curriculum and the BrainChain Office Guide; no visit reward.',
-    actionVerb: 'move',
-    actionSyntax: `move(x=${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.x}, y=${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.y})`,
-    destinationId: 'brainchain-office',
-  },
   {
     placeId: 'cove',
     mapLocationId: 'cove',

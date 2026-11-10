@@ -3,7 +3,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useGameStore } from '@/stores/game';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
-import { MAP_LOCATIONS, BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME } from '@clawville/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 import { findPath } from '@/lib/pixi/client-pathfinding';
 import {
   JOYSTICK_ZONE_BOTTOM_CSS,
@@ -33,7 +33,7 @@ const CENTER_TILE_PX_Y = (MAP_HEIGHT / 2);
 const BUILDING_ACCENT: Record<string, string> = {
   'visual-creation': '#fde68a',      // pineapple yellow
   'memory-rag': '#a5b4fc',       // squidward indigo
-  'api-integrations': '#fca5a5',    // salty spitoon red
+  'api-integrations': '#f581b4',    // BrainChain Office pink
   'cron-automation': '#93c5fd',           // Trading Floor blue
   'app-publishing': '#d9f99d',        // boating school green
   'deployment-ops': '#fed7aa',     // lighthouse orange
@@ -367,8 +367,6 @@ export default function Minimap() {
               </g>
             );
           })}
-
-          <g><circle cx={BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.x * SCALE_X} cy={BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.y * SCALE_Y} r={3.5} fill="#f581b4" stroke="#fff" strokeWidth={0.6} /><title>BrainChain Office</title></g>
 
           {/* Avatar position — pulsing sonar blip */}
           <circle cx={avatarX} cy={avatarY} r={7} fill="url(#avatar-glow)" />

@@ -21,7 +21,6 @@
 //   AABB entry here (and in world-colliders.ts). Skip = ghost structure.
 // ---------------------------------------------------------------------------
 
-import { BRAINCHAIN_OFFICE_WORLD_CENTER, BRAINCHAIN_OFFICE_HALF_X_WU, BRAINCHAIN_OFFICE_HALF_Z_WU, BRAINCHAIN_OFFICE_GUIDE_WORLD, BRAINCHAIN_OFFICE_GUIDE_HALF_WU, BRAINCHAIN_OFFICE_GUIDE_ID, assertBrainchainOfficePlacement } from './brainchain-office-world';
 import { BUILDING_TILE_ZONES } from './npc-definitions';
 import { SPAWN_PX, WORLD_CENTER_PX } from './world-dimensions';
 
@@ -66,7 +65,8 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   'code-development':   { halfX: 591, halfZ: 595 },
   'mcp-tool-use':       { halfX: 589, halfZ: 595 },
   'messaging-channels': { halfX: 850, halfZ: 850 },
-  'api-integrations':   { halfX: 850, halfZ: 850 },
+  // BrainChain Office exterior (2026-11-10 swap; was salty-spitoon at 850×850).
+  'api-integrations':   { halfX: 613, halfZ: 644 },
   'app-publishing':     { halfX: 425, halfZ: 423 },
   // Trading Floor exterior (2026-09-19 swap; was patty-building at 850×498).
   'cron-automation':    { halfX: 823, halfZ: 720 },
@@ -92,10 +92,6 @@ const BUILDING_COLLISION_BUFFER = 28; // wu
 // Collider type
 // ---------------------------------------------------------------------------
 
-export type PathfindingRasterPolicy =
-  | { readonly mode: 'legacy-safety-tiles' }
-  | { readonly mode: 'cell-center-expanded-aabb'; readonly paddingWu: number };
-
 export interface ServerCollider2D {
   id: string;
   /** Three.js world-space center X (NOT game-pixel X). Conversion: worldX = gameX - MAP_HALF */
@@ -117,12 +113,6 @@ export interface ServerCollider2D {
    * Not currently consumed server-side (NPC Y is set by terrain raycast on the client).
    */
   topY?: number;
-  /**
-   * Optional A* raster policy. Undefined preserves the legacy 4-tile safety
-   * expansion byte-for-byte. Narrow structures may opt into exact tile-center
-   * intersection against the AABB expanded by the moving entity half-width.
-   */
-  pathfindingRaster?: PathfindingRasterPolicy;
 }
 
 export const KELP_FOREST_PORTAL_ID = 'kelp-forest-portal';
@@ -280,8 +270,6 @@ function buildServerCollidersWithoutKelpPortal(): ServerCollider2D[] {
   const SHISHA_SERVER_CENTER_Z = -240;
 
   const PROP_COLLIDERS: ServerCollider2D[] = [
-    { id: 'brainchain-office', centerX: BRAINCHAIN_OFFICE_WORLD_CENTER.x, centerZ: BRAINCHAIN_OFFICE_WORLD_CENTER.z, halfX: BRAINCHAIN_OFFICE_HALF_X_WU, halfZ: BRAINCHAIN_OFFICE_HALF_Z_WU },
-    { id: BRAINCHAIN_OFFICE_GUIDE_ID, centerX: BRAINCHAIN_OFFICE_GUIDE_WORLD.x, centerZ: BRAINCHAIN_OFFICE_GUIDE_WORLD.z, halfX: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, halfZ: BRAINCHAIN_OFFICE_GUIDE_HALF_WU, pathfindingRaster: { mode: 'cell-center-expanded-aabb', paddingWu: 50 } },
     { id: 'town-directory-sign',   centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40 },
     { id: 'bazaar-stall',          centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140 },
     // Shisha-oasis — solid blocker covering the visible structure footprint.
@@ -358,8 +346,6 @@ const SERVER_COLLIDERS: readonly ServerCollider2D[] = Object.freeze([
   }),
 ]);
 
-assertBrainchainOfficePlacement(SERVER_COLLIDERS);
-
 export function getServerColliders(): readonly ServerCollider2D[] {
   return SERVER_COLLIDERS;
 }
@@ -370,8 +356,7 @@ export function getServerColliders(): readonly ServerCollider2D[] {
 // The agent building-interaction gates (visit-building, building/:id/chat,
 // talk_to_npc, the autonomy driver's hasArrived) must measure proximity to a
 // building's actual FOOTPRINT, not its center. The buildings are large
-// (memory-rag 722×723 wu half-extents, messaging-channels / api-integrations
-// 850×850), and their collider (+buffer +the moving entity's half-width +A*
+// (memory-rag 722×723 wu half-extents, messaging-channels 850×850), and their collider (+buffer +the moving entity's half-width +A*
 // padding) pushes the nearest WALKABLE approach well beyond 1000 wu from the
 // center — so a `distToCenter <= BUILDING_INTERACTION_RADIUS(=1000)` gate is
 // geometrically UNSATISFIABLE for the bigger buildings (a latent bug for the

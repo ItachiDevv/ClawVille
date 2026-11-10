@@ -45,7 +45,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === API Integrations (Salty Spitoon) ===
+  // === API Integrations (BrainChain Office; was the Salty Spitoon until 2026-11-10) ===
   {
     id: 'api-integrations-webhooks',
     name: 'Webhook Patterns',

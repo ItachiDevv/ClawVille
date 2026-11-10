@@ -39,10 +39,6 @@ export function locationPromptText(input: LocationPromptInput): LocationPromptTe
       isCove: false, isKelpForest: false, isTradingFloor: false, showTalk: true,
     };
   }
-  if (input.nearLocation === 'brainchain-office' || input.nearLocation === 'brainchain-office-guide') {
-    const guide = input.nearLocation === 'brainchain-office-guide';
-    return { subjectLabel: guide ? 'Office Guide' : 'BrainChain Office', ctaLine: guide ? 'Talk to the Office Guide' : 'Enter BrainChain Office', icon: 'BC', isCove: false, isKelpForest: false, isTradingFloor: false, showTalk: guide };
-  }
   const isKelpForest = input.nearLocation === 'kelp-forest-portal';
   const isCove = input.nearLocation === 'cove';
   // The Trading Floor door band publishes its OWN nearLocation id, not the

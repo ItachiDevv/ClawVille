@@ -380,7 +380,7 @@ describe('computeBreakdown — non-bot Bumper Shells', () => {
     expect(total).toBe(60);
   });
 
-  it('4th place + first play + focus-aligned (Salty Spitoon) = 10 + 15 = 25 base/bonus, +25% = 31', () => {
+  it('4th place + first play + focus-aligned (BrainChain Office) = 10 + 15 = 25 base/bonus, +25% = 31', () => {
     const b = computeBreakdown({
       ...baseInput,
       placement: 4,

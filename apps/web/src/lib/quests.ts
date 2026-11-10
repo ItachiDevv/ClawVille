@@ -196,7 +196,7 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
 
   // TIER 5
   'first-match': {
-    hint: 'Walk into the Salty Spitoon (Bumper Shells) or the Boating School (Reef Race), choose Play Now, then Queue Solo.',
+    hint: 'Walk into the BrainChain Office (Bumper Shells) or the Boating School (Reef Race), choose Play Now, then Queue Solo.',
     condition: { type: 'counter', counterKey: 'activityMatchesPlayed', threshold: 1 },
     prerequisites: [],
   },

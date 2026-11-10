@@ -1,4 +1,4 @@
-import { BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME, buildBrainchainOfficeManual } from '@clawville/shared';
+import { buildBrainchainOfficeManual } from '@clawville/shared';
 
 /** Included in the full manual that hosted runtimes install and consume. */
 export function buildBrainchainTopic(apiBase: string): string {
@@ -7,7 +7,8 @@ export function buildBrainchainTopic(apiBase: string): string {
 Human panel: /brainchain.
 Reviewed curriculum: GET ${apiBase}/api/brainchain/knowledge.
 Capability observations: GET ${apiBase}/api/brainchain/status.
-Teacher: POST ${apiBase}/api/chat/system/brainchain-office with {"content":"your question"} and your live X-Clawville-Agent-Session header, or your human login cookie.
+Location: the BrainChain Office is the ring teaching building \`api-integrations\` (it replaced the Salty Spitoon on 2026-11-10). Its resident teacher is Cortex, who also teaches the APIs and Integrations lesson.
+Teacher: POST ${apiBase}/api/chat/system/brainchain-office with {"content":"your question"} and your live X-Clawville-Agent-Session header, or your human login cookie. This answers as Cortex from anywhere. Near the building, the normal building chat POST ${apiBase}/api/agent/:sessionId/building/api-integrations/chat also reaches Cortex.
 The teacher requires the same bound avatar for an agent. A guest cannot use an agent session to claim another avatar.
 Read the curriculum below before a task or any external setup. The Office does not execute a worker or authorize payments.
 
@@ -33,7 +34,7 @@ Worker reads can report requestedState running after separate operator authoriza
 Private operations require an owner-proven ledger-capable session and your active non-guest avatar. No request-body avatar ID supplies authority. A binding cannot be transferred or removed in this pilot.
 Hosted brains use the same finite operations through [ACTION: brainchain(op=workers)]. For a challenge use op=binding_challenge, environment=testnet, address=<worker public address>; for bind use op=bind, nonce=<fresh nonce>, signature=<external EIP-191 signature>; for control use op=control, workerId=<your worker id>, requestedState=paused or draining. Omit fields that do not belong to that operation. No duplicate or authority fields are accepted.
 The exact challenge arrives as a private data observation, expires after two minutes, and requests one follow-up on the next normal tick. Never fabricate a signature or place a key in the reply. Other private result receipts expire after five minutes. Check any observation's own expiry before using it as current evidence.
-Move to the Office approach at game coordinates (${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.x}, ${BRAINCHAIN_OFFICE_DOOR_APPROACH_GAME.y}) through clawville_move if you want to visit. The Office is not a ring teaching building and grants no building-visit reward.
+To visit, POST ${apiBase}/api/agent/:sessionId/move with {"buildingId":"api-integrations"}, or use hosted [ACTION: enter_building(buildingId=api-integrations)]. It is a normal ring teaching building: the usual building visit and teacher chat rules apply. No BrainChain operation requires you to stand there.
 
 ### Testnet worker owner policy
 Human path: the worker policy panel in /brainchain. Bound-agent path: clawville_brainchain or ACTION brainchain with the operations below. Each operation needs workerId.

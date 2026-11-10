@@ -1,25 +1,16 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-11-09 (BrainChain Office geometry and navigation).** Drift note: the office adds prop colliders without a teaching-building slot. Client navigation now spans the full 704-tile world and includes actual prop footprints. The previous 360-tile planner could not reach the Office or eastern ring buildings. The renderer now mounts a post-reveal Office prop and a guide that reuses the loaded lobster plush model. Actual-world visual verification remains pending.
+**Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; the Office GLB now stands at `api-integrations` with resident Cortex, and the separate venue is removed (section "BrainChain Office spatial contract"). Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry and navigation).** Drift note: the office adds prop colliders without a teaching-building slot. Client navigation now spans the full 704-tile world and includes actual prop footprints. The previous 360-tile planner could not reach the Office or eastern ring buildings. The renderer now mounts a post-reveal Office prop and a guide that reuses the loaded lobster plush model. Actual-world visual verification remains pending.
 
-### BrainChain Office spatial contract
+### BrainChain Office spatial contract (2026-11-10: ring slot 4)
 
-The prop-class venue stands at world `(760, -3040)` with half-extents `300 x 250` wu and zero yaw.
-The guide stands at `(540, -2640)` with a `40 x 40` wu half-extent collider and a 220 wu talk radius.
-The south door face is at `(760, -2790)`.
-Its prompt spans `|x-760| <= 110` and `z=-2790..-2490`.
-The navigable approach is `(760, -2600)`, game-pixel `(12024, 8664)`.
-The 96 wu autonomous arrival disc fits entirely inside the door prompt.
-Back returns to the retained world position; no exit relocation occurs.
-The door takes priority where the guide talk band overlaps it.
-
-Canonical geometry lives in `packages/shared/src/constants/brainchain-office-world.ts`.
-Both collider tables assert a 200 wu minimum clearance from existing structures.
-Placement tests also check all twelve 400 wu half-width radial lanes and resident prompt bands.
-The office stays outside teaching-building zones and the boot reveal cohort.
-It creates no building-visit CT reward.
-Agent navigation uses the existing move verb and tracks only a successful path to the exact shared place center.
-The arrival gate and deciding-model HERE label use the same 96 wu threshold.
+Founder decision 2026-11-10: the Office REPLACES the Salty Spitoon at ring building `api-integrations` (slot 4, ESE). The location id stays, so quests, paths, tools and collider keys keep working.
+Model `/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1` loads through the normal ring-building path (byte warm, boot cohort, merge) with `makeObject3DWebGPUSafe` on its attributes. It replaces the salty-spitoon entry in the boot building list, so the boot preload count is unchanged.
+Transform: rotY -2.093 (faces the village center like its neighbours), no rotYOffset (the door is on +Z), targetMaxDim 1400. Scene bbox 1.6102 x 1.9021 x 1.3320 (node scale 0.951 included), scale 736.0, height 1400, footprint 1185 x 980, under the 2000 wu cap.
+Collider: slot half-extents 613 x 644 (rotated footprint AABB x 0.85) in `packages/shared/src/constants/world-colliders-data.ts` and the web collider table.
+Resident: Cortex, `/avatars/clytemnestra-w30k.vrm` tinted 30% toward #477e73 (color and MToon shade), deferred until the decorative release and warm-read before render. Location slots gained a VRM resident path that mirrors `VRMNpcMesh` (idle animator, stops past 5000 wu, no per-frame allocation).
+Entry: the slot portal shows "Enter BrainChain Office" first; it calls `openBrainchainOffice()` in `apps/web/src/lib/three/brainchain-office-transition.ts` and opens `/brainchain`. Resident chat stays as for other buildings.
+Removed: the prop venue at `(760, -3040)`, its lobster guide, its colliders, ground-cover exclusions, door and guide prompts, and the shared `brainchain-office-world` constants. The 2D fallback, minimap and world map show only the slot marker, named BrainChain Office.
 
 The client grid uses cached byte rows for the full world and all client colliders. Connected-component labels reject disconnected routes before search.
 It merges only collinear A* nodes, so every segment crosses the original cells.
@@ -27,25 +18,9 @@ A blocked target ends at its snapped walkable tile, never at the original point 
 A fixed 80,000-expansion ceiling bounds planning, as on the server.
 The Office panel retains the world scene but blocks its movement input, including previously held keys and touch vectors.
 
-Procedural props and merged seaweed exclude the Office footprint, approach, and guide band.
-The new deterministic prop layout uses 50 merged meshes and 141,738 triangles; the limits remain 56 and 150,000.
-Human path: world colliders and the Office approach. Agent path: the same spatial contract and a shared move destination. No settlement occurs.
-
-The Office asset uses 11,311 triangles, one material, and one 1024 UASTC KTX2 texture.
-The 963,764-byte transfer uses a provisional 1 MiB exception because ETC1S and 512 textures introduce atlas seams.
-The complete 11-level mip chain requires an expected 1,398,128 BC7 texture GPU bytes. Actual-world resource measurements remain a release gate.
-The uniformly scaled model measures 588 x 694.58 x 486.40 wu and stays inside the collider.
-The static Office and guide add no physics body, animation loop, or boot cohort entry.
-DOM world labels use the existing overlay; they use no drei Text or Billboard.
-The 3D and 2D Office clicks use the same path and prompt predicates.
-E activates the nearby door or guide; reaching a requested click destination also activates it.
-The guide opens the service panel guide section, where the existing ElizaOS teacher chat remains available.
-The minimap and world map expose the same Office approach.
-Source fidelity and resource evidence: `docs/research/brainchain-2026-11-09/3d/compression-review.md`.
-
-Evidence status (2026-11-09): a separate asset checkpoint commits the GLB, its provenance files, and the canonical dimensions first.
-The navigation, renderer, label, and placement-test notes above describe the Office integration source, which lands in a separate commit.
-The byte, triangle, mip, and GPU-budget values are local measurements and format-derived budgets.
+The Office asset uses 11,311 triangles, one material, and one 1024 UASTC KTX2 texture (963,764 bytes, provisional 1 MiB exception; evidence `docs/research/brainchain-2026-11-09/3d/compression-review.md`). It is about 210 KB larger than the salty-spitoon GLB it replaces on the boot building fetch; the session total drops about 754 KB because salty-spitoon no longer downloads.
+DOM world labels use the existing overlay; no drei Text or Billboard.
+Evidence status (2026-11-10): source and local measurements only. Staging visual verification (door facing, walk-around, empty old venue ground, 2D sign, landing hero) is pending.
 Final production-bundle visual acceptance on staging, Iris Xe sustained-FPS checks, and authenticated staging navigation for humans and bound agents remain open release gates.
 
 
@@ -1806,7 +1781,7 @@ Special cases:
 | code-development | chum-bucket-v2.glb | 1400 | 1392 × 1400 | 591 × 595 |
 | mcp-tool-use | krusty-krab-v2.glb | 1400 | 1386 × 1400 | 589 × 595 |
 | messaging-channels | sandy-treedome-v3.glb | 2500 | 2000 × 2000 (cap) | 850 × 850 |
-| api-integrations | salty-spitoon.glb | 2500 | 2000 × 2000 (cap) | 850 × 850 |
+| api-integrations | brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb (BrainChain Office since 2026-11-10) | 1400 | 1185 × 980 | 613 × 644 |
 | app-publishing | boating-school.glb | 1000 | 1000 × 995 | 425 × 423 |
 | cron-automation | trading-floor-exterior-opt1-mo-ktx.glb?v=2 | 1950 | measured Trading Floor footprint | 823 x 720 |
 | deployment-ops | building-lighthouse.glb | 1400 | 714 × 776 | 303 × 330 |
@@ -2050,7 +2025,7 @@ Every hot path uses module-scope `THREE.Vector3 / Matrix4 / Raycaster` scratch o
 
 Set during clone for every static object so `updateMatrixWorld` skips them:
 - All 12 buildings + their cloned children (`arena-buildings.tsx` — Phase 6.0.1: was 10)
-- Seabed decorations: 60 props merged into 52 meshes by (3×3 grid cell, material) (`arena-terrain.tsx` renders, `arena-terrain-decorations.ts` places; 2026-10-06 restore: 60 props in the 800–3800 wu band, clear of buildings, approach lanes, residents, entrances, spawn, town props and parcels; the scatter had rendered 0 props since the 2026-06-15 world grow). Budget: 148,444 triangles in total (52 meshes measured live, local build 2026-10-06; the 57 / 145,810 here before was the pre-T2-part-7 count); a view of the whole band draws up to 52. The group attaches last in the deferred warm queue (priority ∞): local prod build, RTX 3080, 2026-10-06 (web-load T8): compile 15.9-18.9 s, visible from 16.5-19.1 s (10-11 s after the loader) and for the rest of the session. The 11 GLBs are warm-read outside React before `MergedDecorationsInner` mounts (T8, see "Seabed decoration warm read"). Mount on first show (web-load T11, `SeabedDecorationsOnFirstShow` in `arena-terrain.tsx`, the `WorldGroundCover` latch): the scatter mounts on the first render where the device profile allows it AND `showGroundCover` is true, then the governor only flips `visible`. A profile that starts at tier 1 (desktop-low) demands none of the 11 GLBs until the governor first reaches tier 0 (staging 4fe13447, desktop-low at CPU 4x: the never-shown decorations cost 10 GLB requests + parse, long tasks 0.89-1.79 s, and a 52-mesh warm compile of 1.07-2.0 s at 4-18 FPS). Sizes: target world max-dim 20–150 wu per prop, scaled by each GLB's native box and grounded (live check: merged min y −2.0, max y 141.2).
+- Seabed decorations (2026-11-10): with the BrainChain venue exclusions removed, the deterministic layout is 50 merged meshes and 130,920 triangles (`arena-terrain-decorations-bounds.test.ts`; limits 56 meshes and 150,000 triangles). Earlier history follows. Seabed decorations: 60 props merged into 52 meshes by (3×3 grid cell, material) (`arena-terrain.tsx` renders, `arena-terrain-decorations.ts` places; 2026-10-06 restore: 60 props in the 800–3800 wu band, clear of buildings, approach lanes, residents, entrances, spawn, town props and parcels; the scatter had rendered 0 props since the 2026-06-15 world grow). Budget: 148,444 triangles in total (52 meshes measured live, local build 2026-10-06; the 57 / 145,810 here before was the pre-T2-part-7 count); a view of the whole band draws up to 52. The group attaches last in the deferred warm queue (priority ∞): local prod build, RTX 3080, 2026-10-06 (web-load T8): compile 15.9-18.9 s, visible from 16.5-19.1 s (10-11 s after the loader) and for the rest of the session. The 11 GLBs are warm-read outside React before `MergedDecorationsInner` mounts (T8, see "Seabed decoration warm read"). Mount on first show (web-load T11, `SeabedDecorationsOnFirstShow` in `arena-terrain.tsx`, the `WorldGroundCover` latch): the scatter mounts on the first render where the device profile allows it AND `showGroundCover` is true, then the governor only flips `visible`. A profile that starts at tier 1 (desktop-low) demands none of the 11 GLBs until the governor first reaches tier 0 (staging 4fe13447, desktop-low at CPU 4x: the never-shown decorations cost 10 GLB requests + parse, long tasks 0.89-1.79 s, and a 52-mesh warm compile of 1.07-2.0 s at 4-18 FPS). Sizes: target world max-dim 20–150 wu per prop, scaled by each GLB's native box and grounded (live check: merged min y −2.0, max y 141.2).
 - 3 underwater atmosphere meshes (when enabled) + 7 light ray cones
 - Quest/bounty pavilion, bazaar fish stall, marketplace stall
 
@@ -3516,7 +3491,7 @@ A fresh Chrome156 desktop benchmark measured16.4ms cold and0ms warm for six disc
 This is an adversarial grid-copy benchmark, not an Iris Xe measurement.
 The Float32 Office vertex budget is398,304bytes; WebGPU indices add135,732bytes, for534,036bytes of geometry.
 Together with the BC7 mip chain, the expected Office geometry/texture budget is1,932,164bytes before renderer bookkeeping.
-NPC visibility is a local graphics flag. It does not remove authoritative colliders; the Office Guide follows the existing town-guide collider policy.
+NPC visibility is a local graphics flag. It does not remove authoritative colliders; the BrainChain Office is a ring building and follows the ring collider policy.
 
 BrainChain B6/D1 review update (2026-11-09): 3D player navigation carries the game-pixel origin explicitly.
 The helper operates in path coordinates; collision and position commits receive centered world coordinates.

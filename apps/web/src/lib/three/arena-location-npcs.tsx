@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useState, type ReactElement } from 'react';
+import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useLayoutEffect, useState, type ReactElement, type RefObject } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
@@ -25,7 +25,16 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terrain-heightfield';
 import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
-import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import {
+  applyFattenedFrustumCulling,
+  disposeVRMInstance,
+  readVRMInstance,
+  retainVRMInstance,
+  useVRMInstance,
+} from '@/lib/three/vrm-loader';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
+import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
+import { getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 import { extendLoaderWithTextureDeviceCap, tagGltfLoadRejection } from '@/lib/three/use-gltf-ktx2';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
@@ -100,10 +109,6 @@ type NpcModelConfig = {
   /** Extra Y-axis rotation (radians) added on top of facingRotY.
    *  Use when a GLB is authored with a non-standard forward axis (+X instead of +Z). */
   rotYOffset?: number;
-  /** When true, apply the procedural ghost-float animation (large Y bob + Z sway
-   *  + slow Y-axis drift). For static-mesh ghost characters like Flying Dutchman
-   *  that have no skeleton/animations. Overrides the default small-bob behavior. */
-  ghostFloat?: boolean;
 };
 
 /** Full config for a location slot. companion is an optional passive NPC that
@@ -116,6 +121,18 @@ type LocationNpcConfig = NpcModelConfig & {
    *  loading screen. Timing-only deferral — the NPC always mounts once
    *  released (atomic, no fade); release is monotonic across canvas remounts. */
   deferUntilDecorativeRelease?: boolean;
+  /** When set, `model` is an in-repo VRM path and the resident renders
+   *  through the per-instance VRM loader (VrmResidentMesh: Mixamo idle via
+   *  VRMCharacterAnimator, bbox auto-fit) instead of drei useGLTF. The
+   *  re-skin is a runtime tint of this instance's own materials — the asset
+   *  file is never mutated. GLB-only fields (color, scaleOverride,
+   *  rotYOffset) do not apply. Companions stay GLB-only. */
+  vrm?: {
+    /** Hex colour the base colour + MToon shade colour lerp toward. */
+    tint: number;
+    /** Lerp factor 0..1 (keep low: re-skin, not repaint). */
+    tintLerp: number;
+  };
   companion?: NpcModelConfig & {
     /** World-unit X offset from primary NPC position (default 80). */
     offsetX?: number;
@@ -146,17 +163,21 @@ export const LOCATION_NPCS: Readonly<Record<string, LocationNpcConfig>> = {
   // Slot 1 — memory-rag — bb-building (interim Squidward's house)
   'memory-rag': { name: 'Squidward', model: '/models/characters/squidward-ktx.glb', deferUntilDecorativeRelease: true },
 
-  // Slot 2 — api-integrations — Salty Spitoon (the tough fish bar)
-  // Flying Dutchman GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — the
-  // canonical "intimidating spectral pirate" who fits the Salty Spitoon vibe
-  // better than any tough-fish patron we could find. Iconic green ghost,
-  // pirate hat, beard, hook hands. ~17.9k tris, 2.2MB.
-  // ghostFloat: static mesh with no skeleton — uses procedural ghost-float
-  // (large Y bob + Z sway) which is more thematic for a ghost than walk anims
-  // anyway. Compare to Pearl in cron-automation which ships with 5 built-in animations.
-  // deferUntilDecorativeRelease: rung-1 canary slot (2026-07-31) — the 0.97MB
-  // GLB is decorative at spawn distance and now loads after world reveal.
-  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-nonorm-ktx.glb', ghostFloat: true, deferUntilDecorativeRelease: true },
+  // Slot 4 — api-integrations — BrainChain Office (founder 2026-11-10: replaces
+  // the Salty Spitoon; the zone id never changes). Resident "Cortex" (name is a
+  // placeholder pending founder review) is a RE-SKIN of an existing in-repo
+  // VRM — no new asset, no paid generation. clytemnestra-w30k.vrm: neutral
+  // (non-partner) humanoid, the smallest decimated VRM in /avatars (589 KB,
+  // ~30k-tri weld), already served at this exact path (registry + Reef Race),
+  // so no ?v= bump. Tint = BrainChain Office sage-teal #477e73
+  // (brainchain-office.module.css `.hero h1 span`), lerp 0.3 = subtle.
+  // Replaced the Flying Dutchman ghost GLB.
+  'api-integrations': {
+    name: 'Cortex',
+    model: '/avatars/clytemnestra-w30k.vrm',
+    vrm: { tint: 0x477e73, tintLerp: 0.3 },
+    deferUntilDecorativeRelease: true,
+  },
 
   // Slot 6 — cron-automation — the Trading Floor (re-themed from "Downtown
   // Building" 2026-09-19; the zone id never changes). Pearl stays as its
@@ -440,39 +461,13 @@ const NpcMesh = memo(function NpcMesh({
   const rescaleAppliedRef = useRef(false);
   // AnimationMixer ref — populated for GLBs that ship with their own animations
   // (Pearl Krabs has 5: Walk / Breathing Idle / Standard Run / Jump / Breakdance).
-  // Null for un-rigged GLBs (most of the canonical SpongeBob cast + Flying Dutchman).
+  // Null for un-rigged GLBs (most of the canonical SpongeBob cast).
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   // Real incrementing frame counter — avoids Math.floor(clock.elapsedTime * 60) which
   // drifts when the tab is backgrounded or the refresh rate varies.
   const npcFrameCountRef = useRef(0);
   const { scene: threeScene } = useThree();
 
-  // WorldLabelsOverlay label — distance-faded wordmark for primary NPCs.
-  // Same style as wandering NPC labels; teacher NPCs are stationary so users
-  // approach them — a near-range cap of 800wu fits the interaction distance.
-  // Occlusion raycasting enabled (teacher can be behind a building at certain
-  // camera angles). id encodes model path + position so companion instances
-  // don't collide with primary.
-  // Location NPCs are SpongeBob-style GLB cartoons — taller than the
-  // sea-floor crustaceans (Patrick, Sandy, Squidward all read ~300-350wu
-  // tall after scale). A 150wu offset sits at the chest; 320wu sits above
-  // the head where the label belongs.
-  const {
-    divRef: locationLabelRef,
-    setVisible: setLocationLabelVisible,
-  } = useWorldLabel({
-    id: `location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`,
-    anchorRef: groupRef,
-    offset: [0, 320, 0],
-    initialVisible: showLabel && attachmentVisible,
-    fadeNear: 15000,
-    fadeFar: 25000,
-    fadeBaseOpacity: 0.95,
-    occlude: true,
-  });
-  useEffect(() => {
-    setLocationLabelVisible(showLabel && attachmentVisible);
-  }, [attachmentVisible, setLocationLabelVisible, showLabel]);
   // extendLoaderWithMeshopt: belt-and-suspenders for location NPC GLBs that are
   // compressed with EXT_meshopt_compression (e.g. sandy.glb). The global
   // MeshoptLoaderSetup component handles most cases, but passing extendLoader
@@ -542,25 +537,10 @@ const NpcMesh = memo(function NpcMesh({
     // pivotOffsetY = localMinY × scale in both paths. For Plankton (override=55,
     // localMinY≈2.3): offset=127 → position.y = terrainY-121 → geometry floor
     // = position + localMinY*s = -121+127 = terrainY+6. Feet on ground.
-    let offset = localMinY * s;
-
-    // GhostFloat patch: computeNormalizedScale's >CLAMP_MAX fallback forces
-    // localMinY=0 to guard against SkinnedMesh bind-pose inflation. That's
-    // correct for rigged characters but WRONG for static unrigged ghosts whose
-    // pivot is at the geometry center (not feet). Without this fix the Flying
-    // Dutchman appeared half-buried — his bbox y range is [-0.71, +0.69]
-    // native, so at scale 96 his geometry extends ~68wu below his transform.
-    // Recompute the real cloned bbox min.y so the ghost's bottom can be
-    // grounded properly (then ghostBob in useFrame lifts him to hover).
-    if (modelCfg.ghostFloat) {
-      const realBox = new THREE.Box3().setFromObject(c);
-      if (!realBox.isEmpty()) {
-        offset = realBox.min.y * s;
-      }
-    }
+    const offset = localMinY * s;
 
     return { cloned: c, npcScale: s, pivotOffsetY: offset };
-  }, [scene, modelCfg.color, modelCfg.scaleOverride, modelCfg.ghostFloat]);
+  }, [scene, modelCfg.color, modelCfg.scaleOverride]);
 
   // Dispose cloned geometry + materials on unmount
   useEffect(() => {
@@ -644,25 +624,8 @@ const NpcMesh = memo(function NpcMesh({
     }
 
     // Position: terrainY + BASE_LIFT + bob - pivotOffsetY.
-    // ghostFloat NPCs (Flying Dutchman) get a much larger Y bob (4 wu vs 0.5)
-    // and a Z-axis sway on the inner anim group — matches the canonical
-    // "ghost slowly drifts in the air" motion better than the small idle bob.
-    const t = clock.elapsedTime;
-    if (modelCfg.ghostFloat) {
-      // Base lift = 35wu so bbox bottom hovers ~35wu above terrain at bob
-      // midpoint, range ~28-42wu above ground with the ±7 sin bob — clearly
-      // floating, not standing. The proper pivotOffsetY (computed from real
-      // bbox.min.y for ghosts, not the >CLAMP_MAX fallback's forced 0) does
-      // the rest of the lifting.
-      const ghostBob = Math.sin(t * 0.8 + seedBase) * 7;
-      groupRef.current.position.set(worldX, terrainY.current + 35 + ghostBob - pivotOffsetY, worldZ);
-      if (animGroupRef.current) {
-        animGroupRef.current.rotation.z = Math.sin(t * 0.5 + seedBase * 0.7) * 0.06;
-      }
-    } else {
-      const bob = Math.sin(t * 1.5 + seedBase) * 0.5;
-      groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
-    }
+    const bob = Math.sin(clock.elapsedTime * 1.5 + seedBase) * 0.5;
+    groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
 
     // Layer 2: one-shot rendered-height hard cap.
     // Runs once after 0.5s so geometry/bones settle before measurement.
@@ -713,10 +676,51 @@ const NpcMesh = memo(function NpcMesh({
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Bio-luminescent NPC label — same rig as GLBNpcMesh / VRMNpcMesh.
-          Only primary NPCs get a label (showLabel=true via initialVisible). */}
+      {/* Only primary NPCs get a label; companions are passive presence. */}
       {showLabel && (
-        <WorldLabel divRef={locationLabelRef}>
+        <ResidentLabel
+          name={modelCfg.name}
+          labelId={`location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`}
+          anchorRef={groupRef}
+          visible={attachmentVisible}
+        />
+      )}
+    </group>
+  );
+});
+
+/** Bio-luminescent resident label — same rig as GLBNpcMesh / VRMNpcMesh.
+ *  WorldLabelsOverlay label, distance-faded, occlusion raycast enabled (a
+ *  teacher can stand behind a building at some camera angles). The id
+ *  encodes model path + position so residents never collide. Offset 320wu
+ *  sits above the head of the ~300-350wu GLB cast and the 270wu VRM. Shared
+ *  by NpcMesh (GLB) and VrmResidentMesh (VRM). */
+function ResidentLabel({
+  name,
+  labelId,
+  anchorRef,
+  visible,
+}: {
+  name: string;
+  labelId: string;
+  anchorRef: RefObject<THREE.Group | null>;
+  visible: boolean;
+}) {
+  const { divRef, setVisible } = useWorldLabel({
+    id: labelId,
+    anchorRef,
+    offset: [0, 320, 0],
+    initialVisible: visible,
+    fadeNear: 15000,
+    fadeFar: 25000,
+    fadeBaseOpacity: 0.95,
+    occlude: true,
+  });
+  useEffect(() => {
+    setVisible(visible);
+  }, [visible, setVisible]);
+  return (
+        <WorldLabel divRef={divRef}>
           <div
             style={{
               display: 'flex',
@@ -724,7 +728,7 @@ const NpcMesh = memo(function NpcMesh({
               alignItems: 'center',
               transform: 'translateY(-50%)',
               ['--label-phase' as string]: String(
-                (modelCfg.name.charCodeAt(0) + modelCfg.name.length) % 10 / 10,
+                (name.charCodeAt(0) + name.length) % 10 / 10,
               ),
             }}
           >
@@ -748,7 +752,7 @@ const NpcMesh = memo(function NpcMesh({
                 animationDelay: 'calc(var(--label-phase, 0) * -5.4s)',
               }}
             >
-              {modelCfg.name}
+              {name}
             </div>
             <div
               style={{
@@ -775,7 +779,151 @@ const NpcMesh = memo(function NpcMesh({
             />
           </div>
         </WorldLabel>
-      )}
+  );
+}
+
+/** Stable per-slot VRM instance id: vrm-loader parses one private VRM per
+ *  (path, instanceId), so the resident never shares a scene, skeleton or
+ *  materials with a wanderer/player wearing the same body. */
+function residentVrmInstanceId(zoneId: string): string {
+  return `location-npc:${zoneId}`;
+}
+
+/** Re-skin: lerp this instance's own base colour (and MToon shade colour)
+ *  toward the slot tint, in place. The materials belong to this parse alone
+ *  (vrm-loader parses per instance and disposes them with it), so nothing is
+ *  cloned and no shared cache is touched. Idempotent per material via a
+ *  userData tag: the instance outlives a stream-out/in remount of the mesh. */
+function applyResidentVrmTint(root: THREE.Object3D, tintHex: number, lerp: number): void {
+  const tint = new THREE.Color(tintHex);
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const mat of mats) {
+      if (mat.userData.residentTint === tintHex) continue;
+      mat.userData.residentTint = tintHex;
+      const m = mat as THREE.Material & { color?: THREE.Color; shadeColorFactor?: THREE.Color };
+      m.color?.lerp(tint, lerp);
+      m.shadeColorFactor?.lerp(tint, lerp);
+    }
+  });
+}
+
+/** First-mount VRM fit per retained resident instance (see VrmResidentMesh). */
+const residentVrmFit = new WeakMap<object, { animatorId: string | undefined; fit: { scale: number; offsetY: number } }>();
+
+/** VrmResidentMesh — a building resident rendered from an in-repo VRM
+ *  (LocationNpcConfig.vrm). Mirrors the VRMNpcMesh path in arena-npcs.tsx:
+ *  per-instance VRM (useVRMInstance), bbox auto-fit (computeVRMAvatarFit),
+ *  VRMCharacterAnimator Mixamo idle, mixer every frame + spring bones at
+ *  ~30Hz, both skipped past 5000wu (same far gate as NpcMesh). Faces the
+ *  village center: VRMs face -Z natively (VRMNpcMesh idle yaw = PI), so the
+ *  +Z-forward facingRotY gets +PI. LocationNpc owns the retain/dispose
+ *  bracket and the warm read, so this render read never suspends. */
+const VrmResidentMesh = memo(function VrmResidentMesh({
+  modelCfg,
+  tint,
+  instanceId,
+  worldX,
+  worldZ,
+  facingRotY,
+  seedBase,
+  attachmentVisible,
+}: {
+  modelCfg: NpcModelConfig;
+  tint: NonNullable<LocationNpcConfig['vrm']>;
+  instanceId: string;
+  worldX: number;
+  worldZ: number;
+  facingRotY: number;
+  seedBase: number;
+  attachmentVisible: boolean;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const animatorRef = useRef<VRMCharacterAnimator | null>(null);
+  const frameCountRef = useRef(0);
+  const springDeltaAccRef = useRef(0);
+  const terrainY = useRef(-2);
+  const placed = useRef(false);
+  const { scene: threeScene } = useThree();
+
+  const vrm = useVRMInstance(modelCfg.model, instanceId);
+  const animatorId = getAnimatorIdByPath(modelCfg.model);
+  // The fit is measured once per retained VRM instance. A later mount must
+  // not re-measure: the retained scene keeps the previous mount's offsetY
+  // position, so a second bbox read would drift the resident off the ground.
+  const { scale, offsetY } = useMemo(() => {
+    const cached = residentVrmFit.get(vrm);
+    if (cached && cached.animatorId === animatorId) return cached.fit;
+    const fit = computeVRMAvatarFit(vrm, animatorId);
+    residentVrmFit.set(vrm, { animatorId, fit });
+    return fit;
+  }, [vrm, animatorId]);
+
+  // Tint before the first frame draws (layout effect runs in the commit,
+  // ahead of the next R3F frame).
+  useLayoutEffect(() => {
+    applyResidentVrmTint(vrm.scene, tint.tint, tint.tintLerp);
+  }, [vrm, tint.tint, tint.tintLerp]);
+
+  useEffect(() => {
+    applyFattenedFrustumCulling(vrm.scene);
+    const animator = new VRMCharacterAnimator(vrm, animatorId);
+    animatorRef.current = animator;
+    animator.init().catch((err) => {
+      console.warn('[VrmResidentMesh] animator init failed:', err);
+    });
+    return () => {
+      animatorRef.current = null;
+      animator.dispose();
+    };
+  }, [vrm, animatorId]);
+
+  useSceneFrame(({ camera }, delta) => {
+    const group = groupRef.current;
+    if (!group) return;
+    frameCountRef.current += 1;
+    const frame = frameCountRef.current;
+
+    if (!placed.current || (frame + seedBase) % 20 === 0) {
+      const y = getTerrainY(worldX, worldZ, threeScene);
+      if (y > -100) {
+        terrainY.current = y;
+        placed.current = true;
+      }
+    }
+    group.position.set(worldX, terrainY.current, worldZ);
+
+    const dx = worldX - camera.position.x;
+    const dz = worldZ - camera.position.z;
+    if (dx * dx + dz * dz > 25_000_000) return; // 5000 wu² — pose freezes far away
+    const animator = animatorRef.current;
+    if (!animator) return;
+    const dt = Math.min(delta, 0.1);
+    animator.updateMixerOnly(dt, false, false, 1);
+    springDeltaAccRef.current += dt;
+    if ((frame + seedBase) % 2 === 0) {
+      animator.updateSpringOnly(Math.min(springDeltaAccRef.current, 0.1));
+      springDeltaAccRef.current = 0;
+    }
+  });
+
+  return (
+    <group ref={groupRef}>
+      <group rotation={[0, facingRotY + Math.PI, 0]}>
+        <primitive
+          object={vrm.scene}
+          scale={[scale, scale, scale]}
+          position={[0, offsetY, 0]}
+        />
+      </group>
+      <ResidentLabel
+        name={modelCfg.name}
+        labelId={`location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`}
+        anchorRef={groupRef}
+        visible={attachmentVisible}
+      />
     </group>
   );
 });
@@ -841,15 +989,38 @@ const LocationNpc = memo(function LocationNpc({
   // Once warmed it stays warmed (the drei cache keeps the entry, so a
   // resident that streams out and back in mounts at once), except after a
   // model failure (see onModelFailed below).
+  // VRM resident (config.vrm): the parse is a per-instance vrm-loader entry,
+  // not a shared drei cache entry, so it needs an owner. This bracket (the
+  // arena-npcs useVRMOrphanCancel pattern) lives on LocationNpc, which
+  // commits at once, and is declared BEFORE the warm effect so its retain
+  // runs first. A stream-out keeps the parsed instance (like the drei GLB
+  // cache keeps a GLB), so a stream-in mounts at once; the LocationNpc
+  // unmount disposes it, including an entry a warm created before the mesh
+  // ever committed.
+  const vrmPath = config?.vrm ? config.model : null;
+  const vrmInstanceId = residentVrmInstanceId(zoneId);
+  useEffect(() => {
+    if (!vrmPath) return undefined;
+    retainVRMInstance(vrmPath, vrmInstanceId);
+    return () => disposeVRMInstance(vrmPath, vrmInstanceId);
+  }, [vrmPath, vrmInstanceId]);
   const [warmed, setWarmed] = useState(false);
   useEffect(() => {
     if (!config || warmed || !released || !mounted) return undefined;
     let cancelled = false;
-    const models = config.companion ? [config.model, config.companion.model] : [config.model];
+    // readVRMInstance is the non-hook body of useVRMInstance (the render read
+    // in VrmResidentMesh): same (path, instanceId) entry.
+    const reads: (() => unknown)[] = [
+      config.vrm
+        ? () => readVRMInstance(config.model, vrmInstanceId)
+        : () => readLocationNpcModel(config.model),
+    ];
+    if (config.companion) {
+      const companionModel = config.companion.model;
+      reads.push(() => readLocationNpcModel(companionModel));
+    }
     void Promise.all(
-      models.map((model) =>
-        warmSuspenseRead(() => (cancelled ? undefined : readLocationNpcModel(model))),
-      ),
+      reads.map((read) => warmSuspenseRead(() => (cancelled ? undefined : read()))),
     ).then(() => {
       // An unmount (or a stream-out) before the warm resolved cancels the flip.
       if (!cancelled) setWarmed(true);
@@ -857,7 +1028,7 @@ const LocationNpc = memo(function LocationNpc({
     return () => {
       cancelled = true;
     };
-  }, [config, warmed, released, mounted]);
+  }, [config, warmed, released, mounted, vrmInstanceId]);
   // A model failure (caught by the resident's ModelLoadBoundary, which
   // clears the failed cache entry) re-arms the warm for the next stream-in,
   // so the retry reads a resolved entry too. Not on the failure itself: a
@@ -923,15 +1094,28 @@ const LocationNpc = memo(function LocationNpc({
               resetKey={config.model}
               onModelFailed={onModelFailed}
             >
-              <NpcMesh
-                modelCfg={config}
-                worldX={worldX}
-                worldZ={worldZ}
-                facingRotY={facingRotY}
-                seedBase={seed}
-                showLabel={true}
-                attachmentVisible={warmReady}
-              />
+              {config.vrm ? (
+                <VrmResidentMesh
+                  modelCfg={config}
+                  tint={config.vrm}
+                  instanceId={vrmInstanceId}
+                  worldX={worldX}
+                  worldZ={worldZ}
+                  facingRotY={facingRotY}
+                  seedBase={seed}
+                  attachmentVisible={warmReady}
+                />
+              ) : (
+                <NpcMesh
+                  modelCfg={config}
+                  worldX={worldX}
+                  worldZ={worldZ}
+                  facingRotY={facingRotY}
+                  seedBase={seed}
+                  showLabel={true}
+                  attachmentVisible={warmReady}
+                />
+              )}
             </ModelLoadBoundary>
             {companion && (
               <ModelLoadBoundary
@@ -1000,7 +1184,8 @@ export function DeferredNpcPreloads(): ReactElement | null {
       immediateModels.push(model);
     };
     for (const cfg of Object.values(LOCATION_NPCS).filter((c) => !c.deferUntilDecorativeRelease)) {
-      collect(cfg.model);
+      // A VRM resident is not a drei GLB entry; its slot owns its load.
+      if (!cfg.vrm) collect(cfg.model);
       if (cfg.companion) collect(cfg.companion.model);
     }
 

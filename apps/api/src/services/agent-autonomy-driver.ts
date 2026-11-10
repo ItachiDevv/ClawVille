@@ -58,7 +58,6 @@ import { assertProbeActionAllowed } from './brainchain/probe-runtime-scope';
 
 import {
   BUILDING_INTERACTION_RADIUS,
-  BRAINCHAIN_OFFICE_ARRIVAL_RADIUS_WU,
   BUILDING_OPENCLAW_THEMES,
   AUTONOMY_ENTERABLE_PLACES,
   DECISION_SCOPE,
@@ -524,8 +523,10 @@ export function parseDriverAction(reply: string): ParsedDriverAction | null {
   return { verb: match[1], params };
 }
 
-export function destinationArrivalRadius(destinationId: string): number {
-  return destinationId === 'brainchain-office' ? BRAINCHAIN_OFFICE_ARRIVAL_RADIUS_WU : BUILDING_INTERACTION_RADIUS;
+// The BrainChain Office is the `api-integrations` teaching building since
+// 2026-11-10, so every destination uses the teaching-building radius.
+export function destinationArrivalRadius(_destinationId: string): number {
+  return BUILDING_INTERACTION_RADIUS;
 }
 
 /** Track a move only after its route reaches a shared place center. */

@@ -26,7 +26,8 @@
  *
  * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
  *   pineapple-house-opt1-mo-ktx.glb, chum-bucket-v2-opt1-mo-ktx.glb,
- *   krusty-krab-v2-opt1-mo-ktx.glb, salty-spitoon-opt1-ktx.glb?v=3,
+ *   krusty-krab-v2-opt1-mo-ktx.glb,
+ *   brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1 (api-integrations, 2026-11-10),
  *   boating-school-opt1-ktx.glb?v=3,
  *   trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2,
  *   building-lighthouse-opt1-ktx.glb?v=3,
@@ -35,8 +36,9 @@
  *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
  *   old GLB contributed ~1.13M live tris after material merge.
  *
- * LOCATION NPC CHARACTERS (10 SpongeBob + 2 companions, arena-location-npcs.tsx):
- *   spongebob-ktx.glb, gary-ktx.glb, squidward-ktx.glb, flying-dutchman-ktx.glb,
+ * LOCATION NPC CHARACTERS (9 SpongeBob + 2 companions, arena-location-npcs.tsx;
+ * Cortex at api-integrations is a VRM since 2026-11-10, not listed here):
+ *   spongebob-ktx.glb, gary-ktx.glb, squidward-ktx.glb,
  *   pearl-ktx.glb, mrs-puff-ktx.glb, lobster_plush-ktx.glb?v=2, mr-krabs-ktx.glb,
  *   plankton-ktx.glb, karen-ktx.glb, sandy-ktx.glb, patrick-ktx.glb
  *
@@ -93,7 +95,9 @@ export const BUILDING_GLBS: readonly string[] = [
   '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
   '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
   '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
-  '/models/salty-spitoon-opt1-ktx.glb?v=3',
+  // api-integrations — the BrainChain Office exterior (2026-11-10 swap off
+  // salty-spitoon).
+  '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1',
   '/models/boating-school-opt1-ktx.glb?v=3',
   // cron-automation — the Trading Floor exterior (2026-09-19 swap off
   // patty-building). ?v=2: the bytes were replaced once already.
@@ -175,7 +179,6 @@ export const LOCATION_NPC_GLBS: readonly string[] = [
   '/models/characters/spongebob-nonorm-ktx.glb',
   '/models/characters/gary-ktx.glb',       // companion at visual-creation
   '/models/characters/squidward-ktx.glb',
-  '/models/characters/flying-dutchman-nonorm-ktx.glb',
   '/models/characters/pearl-nonorm-ktx.glb',
   '/models/characters/mrs-puff-ktx.glb',
   '/models/characters/mr-krabs-ktx.glb',
@@ -215,7 +218,6 @@ export const DECORATION_GLBS: readonly string[] = [
  * 7-day edge cache would keep serving the old 8.7 MB version.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
-  '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1', // post-reveal audit only
   '/models/quest-bounty-pavilion-nonorm-ktx.glb',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
   '/models/shisha-oasis-mo-ktx.glb',

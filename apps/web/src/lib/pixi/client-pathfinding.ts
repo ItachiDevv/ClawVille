@@ -21,17 +21,6 @@ function buildWalkabilityGrid(): Uint8Array[] {
   const grid = Array.from({ length: ROWS }, () => new Uint8Array(COLS).fill(1));
   for (const collider of getAllColliders()) {
     if (collider.walkable) continue;
-    if (collider.pathfindingRaster?.mode === 'cell-center-expanded-aabb') {
-      const pad = collider.pathfindingRaster.paddingWu;
-      const minX = Math.ceil((collider.centerX - collider.halfX - pad + WORLD_CENTER_PX.x - TILE / 2) / TILE);
-      const maxX = Math.floor((collider.centerX + collider.halfX + pad + WORLD_CENTER_PX.x - TILE / 2) / TILE);
-      const minY = Math.ceil((collider.centerZ - collider.halfZ - pad + WORLD_CENTER_PX.y - TILE / 2) / TILE);
-      const maxY = Math.floor((collider.centerZ + collider.halfZ + pad + WORLD_CENTER_PX.y - TILE / 2) / TILE);
-      for (let row = Math.max(0, minY); row <= Math.min(ROWS - 1, maxY); row++) {
-        grid[row].fill(0, Math.max(0, minX), Math.min(COLS, maxX + 1));
-      }
-      continue;
-    }
     const cx = Math.floor((collider.centerX + WORLD_CENTER_PX.x) / TILE);
     const cy = Math.floor((collider.centerZ + WORLD_CENTER_PX.y) / TILE);
     const hx = Math.ceil(collider.halfX / TILE) + COLLIDER_SAFETY_TILES;
