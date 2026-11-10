@@ -820,7 +820,7 @@ const residentVrmFit = new WeakMap<object, { animatorId: string | undefined; fit
  *  ~30Hz, both skipped past 5000wu (same far gate as NpcMesh). Faces the
  *  village center with the same facingRotY as the GLB residents (staging
  *  check 2026-11-10: an extra +PI turned Cortex away from the plaza). Feet
- *  are re-planted on the terrain from the animated foot bones, because a
+ *  are re-planted on the terrain from the rendered foot bones, because a
  *  bind-pose bbox fit does not match every rig's retargeted idle hips
  *  (Cortex stood 106 wu under the ground). LocationNpc owns the retain/dispose
  *  bracket and the warm read, so this render read never suspends. */
@@ -909,13 +909,18 @@ const VrmResidentMesh = memo(function VrmResidentMesh({
     if ((frame + seedBase) % 2 === 0) {
       animator.updateSpringOnly(Math.min(springDeltaAccRef.current, 0.1));
       springDeltaAccRef.current = 0;
-      // Re-plant every 30 frames from the posed foot bones (no allocation):
-      // world foot Y must equal the terrain Y under the resident.
+      // Re-plant every 30 frames from the rendered (raw) foot bones, measured
+      // in this group's space where the terrain is y = 0. After a lift, the
+      // scene matrices and the animator's deferred skeleton updates are
+      // refreshed so the skin never draws a frame with stale bone matrices.
+      // (The helper builds a 4-entry bone list per call: one small array per
+      // 30 frames, no Vector3.)
       if (placed.current && (frame + seedBase) % 30 === 0) {
-        const footY = animator.getFootWorldYMin();
-        if (Number.isFinite(footY)) {
-          const lift = terrainY.current - footY;
-          if (Math.abs(lift) > 1) vrm.scene.position.y += lift;
+        const footY = animator.getFootYMinInSpace(group);
+        if (Number.isFinite(footY) && Math.abs(footY) > 1) {
+          vrm.scene.position.y -= footY;
+          vrm.scene.updateMatrixWorld(true);
+          animator.flushSkeletonUpdates();
         }
       }
     }
