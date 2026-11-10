@@ -127,6 +127,10 @@ The API app env `BRAINCHAIN_PROBE_CONFIG_PATH=/var/lib/brainchain-probe/root/con
 6. API container: `bun apps/api/scripts/brainchain/register-runtime-probe.ts`. Then `docker restart` the API container so boot hydrates the run.
 7. API container: the Phase 2 command above. It cleans up its fixture.
 8. Delete `config.json`, `prepared.json` and `openai-key`. Keep the pin, head, history and signer key for later revisions.
+
+Timing: the manifest window starts at step 3 (t0) and ends at t0+480 s. Write the key file (step 4) before step 3. Run step 5 before t0+420 s. Steps 6 and 7 must start before t0+450 s (attach needs more than 30 s left), and the probe must finish before t0+480 s. Have every command ready before step 3.
+Retry: `config.json` is an exclusive create, and register refuses the same runId with a new manifest hash. A retry deletes `config.json` and `prepared.json` and starts again at step 2. A failed genesis can rerun: it reuses the saved signed genesis that `pin.json` names while that document is unexpired; after expiry, remove `pin.json` and the saved genesis first. A killed publish leaves `head.json.lock`; remove it only after you confirm no publish runs.
+One-off container: `docker run --rm --user 0 --network host -e CLAWVILLE_ENV=staging --env-file <root-only file with ROOT_DATABASE_URL>`, never the database URL on the command line.
 The legacy modes still have their canary, Nori teacher, Hermes, appearance, and optional echo cost boundaries described in the cost plan.
 Do not execute this mode before the root budget mechanism and reservation exist.
 Current verification includes actual Eliza, controlled loopback HTTP, and isolated PostgreSQL fixtures. It creates no staging account or actual provider request.

@@ -47,14 +47,30 @@ async function genesis() {
     await writeRootTrialRecord(KEY, 0, { pem: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString() });
   }
   const { privateKey, publicKeyHex } = await signer();
-  const now = Date.now();
-  const document: RootComputeDocument = { kind: 'clawville-root-compute-v1', jobId: JOB_ID, revision: 1, previousDocumentHash: null, issuedAtMs: now, expiresAtMs: now + WINDOW_MS,
-    providers: { openai: { capMicros: '10000000', spentMicros: '0' }, openrouter: { capMicros: '10000000', spentMicros: '0' } }, reservations: [] };
-  const doc = signed(document, privateKey);
-  const genesisDocumentHash = rootComputeDocumentHash(doc.document);
-  if (!await exists(STORE.pinPath)) await writeRootTrialRecord(STORE.pinPath, 0, { jobId: JOB_ID, publicKeyHex, genesisDocumentHash });
   const sql = database();
   try {
+    // Preflight before any pin write: the DB is reachable and holds no budget for this job.
+    const [prior] = await sql`SELECT count(*)::int AS n FROM brainchain_compute_budgets WHERE job_id=${JOB_ID}`;
+    if (prior!.n !== 0) throw new Error('job budget rows already exist');
+    if (await exists(`${STORE.headPath}.lock`)) throw new Error('head lock exists');
+    let doc: { document: string; signatureHex: string };
+    if (await exists(STORE.pinPath)) {
+      // Retry: reuse the exact signed genesis that the existing pin names, while it is unexpired.
+      const pin = JSON.parse(await readRootTrialRecord(STORE.pinPath, 0)) as { jobId: string; publicKeyHex: string; genesisDocumentHash: string };
+      const saved = `/signer/genesis-${pin.genesisDocumentHash}.json`;
+      if (pin.jobId !== JOB_ID || pin.publicKeyHex !== publicKeyHex || !await exists(saved)) throw new Error('pin exists without its saved genesis; remove pin.json');
+      doc = JSON.parse(await readRootTrialRecord(saved, 0));
+      if (rootComputeDocumentHash(doc.document) !== pin.genesisDocumentHash || (JSON.parse(doc.document) as RootComputeDocument).expiresAtMs <= Date.now() + 5_000)
+        throw new Error('saved genesis expired; remove pin.json and the saved genesis');
+    } else {
+      const now = Date.now();
+      const document: RootComputeDocument = { kind: 'clawville-root-compute-v1', jobId: JOB_ID, revision: 1, previousDocumentHash: null, issuedAtMs: now, expiresAtMs: now + WINDOW_MS,
+        providers: { openai: { capMicros: '10000000', spentMicros: '0' }, openrouter: { capMicros: '10000000', spentMicros: '0' } }, reservations: [] };
+      doc = signed(document, privateKey);
+      const genesisDocumentHash = rootComputeDocumentHash(doc.document);
+      await writeRootTrialRecord(`/signer/genesis-${genesisDocumentHash}.json`, 0, doc);
+      await writeRootTrialRecord(STORE.pinPath, 0, { jobId: JOB_ID, publicKeyHex, genesisDocumentHash });
+    }
     const store = await ProtectedRootComputeStore.open({ ...STORE, database: sql });
     const head = await store.publish(doc, null);
     console.log(JSON.stringify({ ok: true, head, publicKeyHex }));
@@ -65,6 +81,7 @@ async function reserve(configPath: string) {
   if (process.env.CLAWVILLE_ENV !== 'staging') throw new Error('staging only');
   const config = probeBootstrapConfigSchema.parse(JSON.parse(await readRootTrialRecord(configPath, 0)));
   if (probeManifestHash(config.manifest) !== config.manifestHash) throw new Error('manifest hash mismatch');
+  if (config.manifest.jobId !== JOB_ID) throw new Error('manifest job mismatch');
   const { privateKey } = await signer();
   const sql = database();
   try {

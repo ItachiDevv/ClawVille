@@ -751,7 +751,7 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 - **What changed:** `initializeProbeRuntimeDeployment` no longer crashes staging boot when `BRAINCHAIN_PROBE_CONFIG_PATH` is set and the config is missing, expired or refused; it logs one fixed line and leaves the probe deployment disabled (outside staging a set value stays fatal). New staging-only operator scripts `apps/api/scripts/brainchain/probe-root-op.ts` (root signer: genesis, reservation revision, status) and `probe-config.ts` (protected probe config from the prepared fixture). Procedure: `docs/brainchain-staging-parity-runbook.md`, "Staging operator procedure".
 - **Staging config (Coolify app 3):** new persistent storage `/var/lib/brainchain-probe` (host dir root 0700). The env var `BRAINCHAIN_PROBE_CONFIG_PATH` was added at 15:01Z, then removed again at 15:02Z, because the deployed code before this fix crashes boot when that config is missing. It is re-added after this fix is live.
 - **Why:** an expired probe config would crash-loop the staging API on every later deploy by any session.
-- **Review:** independent reviewer APPROVED the boot fix (doc gap fixed in this diff); operator scripts reviewed separately.
+- **Review:** independent reviewer APPROVED the boot fix (doc gap fixed in this diff); operator script review found a genesis retry block, a missing job check and runbook gaps; all fixed in the follow-up commit.
 - **Who it's for:** the BrainChain hosted runtime probe (release gate E6).
 - **SCHEMA:** unchanged.
 
