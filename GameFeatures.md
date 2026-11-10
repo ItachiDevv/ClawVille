@@ -2,6 +2,8 @@
 
 **Last Audited: 2026-11-10 00:45Z (own AI part B, protocol 120, migration 0100).** Drift note: UsePod deposits now share human and agent spend rules, require finalized proof, and report provider credit separately.
 
+**Last Audited: 2026-11-10 (BrainChain staging merge, protocol 128).** Drift note: §2 agent connection behaves as before for players and agents. BrainChain probe-fixture checks on agent requests, gateway calls and autonomous actions now run only on staging, where probe fixtures exist; production skips those reads. No rule, reward or route changed.
+
 **Last Audited: 2026-11-09 (BrainChain identity, issuer reputation, and exact Priors reads, protocol 122).** Drift note: added selected-identity association and separate credit observations without consent or debt authority.
 
 The Office worker panel accepts a selected ERC-8004 identity number. It shows current owner versus registered wallet, issuer-filtered BrainChain feedback, and separate Priors record and route observations. The record preserves exact line, available, drawn, premium, repayments, default, and freeze values. Unknown nonempty loan terms stay unavailable. Current association does not identify earlier hires. Credit capacity is separate from wallet balance. A root backer is not a borrower offer. Stale, unavailable, absent-record, and unsupported states remain visible. The form performs an explicit read and offers no loan, repayment, consent, collateral, or signing action. Nori, the served protocol, runtime orientation, and executor menu describe the same read.
