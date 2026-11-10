@@ -195,6 +195,9 @@ class StubAnimator {
   }
   updateMixerOnly(): void {}
   updateSpringOnly(): void {}
+  getFootWorldYMin(): number {
+    return Infinity; // no posed foot bones in the stub: the re-plant is a no-op
+  }
   dispose(): void {}
 }
 

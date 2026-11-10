@@ -818,8 +818,11 @@ const residentVrmFit = new WeakMap<object, { animatorId: string | undefined; fit
  *  per-instance VRM (useVRMInstance), bbox auto-fit (computeVRMAvatarFit),
  *  VRMCharacterAnimator Mixamo idle, mixer every frame + spring bones at
  *  ~30Hz, both skipped past 5000wu (same far gate as NpcMesh). Faces the
- *  village center: VRMs face -Z natively (VRMNpcMesh idle yaw = PI), so the
- *  +Z-forward facingRotY gets +PI. LocationNpc owns the retain/dispose
+ *  village center with the same facingRotY as the GLB residents (staging
+ *  check 2026-11-10: an extra +PI turned Cortex away from the plaza). Feet
+ *  are re-planted on the terrain from the animated foot bones, because a
+ *  bind-pose bbox fit does not match every rig's retargeted idle hips
+ *  (Cortex stood 106 wu under the ground). LocationNpc owns the retain/dispose
  *  bracket and the warm read, so this render read never suspends. */
 const VrmResidentMesh = memo(function VrmResidentMesh({
   modelCfg,
@@ -906,12 +909,21 @@ const VrmResidentMesh = memo(function VrmResidentMesh({
     if ((frame + seedBase) % 2 === 0) {
       animator.updateSpringOnly(Math.min(springDeltaAccRef.current, 0.1));
       springDeltaAccRef.current = 0;
+      // Re-plant every 30 frames from the posed foot bones (no allocation):
+      // world foot Y must equal the terrain Y under the resident.
+      if (placed.current && (frame + seedBase) % 30 === 0) {
+        const footY = animator.getFootWorldYMin();
+        if (Number.isFinite(footY)) {
+          const lift = terrainY.current - footY;
+          if (Math.abs(lift) > 1) vrm.scene.position.y += lift;
+        }
+      }
     }
   });
 
   return (
     <group ref={groupRef}>
-      <group rotation={[0, facingRotY + Math.PI, 0]}>
+      <group rotation={[0, facingRotY, 0]}>
         <primitive
           object={vrm.scene}
           scale={[scale, scale, scale]}
