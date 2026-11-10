@@ -919,7 +919,9 @@ import {
 // 121: private BrainChain balances and bounded canonical payment receipt pages.
 // 122: selected worker identity, issuer-filtered reputation, and read-only Priors credit observations.
 // 124: bound worker policy requests, narrowing, explicit start and revocation; human wallet grants stay separate.
-export const PROTOCOL_VERSION = 127;
+// 120 (staging lineage, 2026-11-09, own AI part B, migration 0100): human and agent UsePod deposits share spend rules; ask-before needs human wallet proof. Finalized chain settlement and provider credit stay separate. No automatic top-up or hosted ACTION verb.
+// 128 (2026-11-09, staging merge): one manual carries both lines that used 120 (BrainChain Office 120-127 and own AI part B 120). BrainChain migrations move to 0101-0119 after staging 0100_usepod_deposit. No verb or route change.
+export const PROTOCOL_VERSION = 128;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

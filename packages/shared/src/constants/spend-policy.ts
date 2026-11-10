@@ -5,7 +5,7 @@
  */
 
 /** Payment adapters a human can authorize. Catalog visibility is separate from payment authority. */
-export const SPEND_VENDOR_IDS = ['studios', 'said', 'brainchain'] as const;
+export const SPEND_VENDOR_IDS = ['studios', 'said', 'usepod', 'brainchain'] as const;
 export type SpendVendorId = (typeof SPEND_VENDOR_IDS)[number];
 
 /** Typo guard for one cap value: $1000. Not a product limit. */

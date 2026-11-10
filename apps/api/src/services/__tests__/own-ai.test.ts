@@ -112,7 +112,7 @@ const OPENROUTER_KEY = 'sk-or-TESTSECRETKEY0123456789abcdef';
 const TOKEN = '550e8400-e29b-41d4-a716-446655440000';
 const AVATAR = '11111111-1111-4111-8111-111111111111';
 const USER = '22222222-2222-4222-8222-222222222222';
-const CONTRACT = 'GXfqVnZENHzvim8rNN8TPwqxWXQe8EBbxhcEMYE8Z7BS';
+const CONTRACT = 'BBAdcqUkg68JXNiPQ1HR1wujfZuayyK3eQTQSYAh6FSW';
 
 // Reversible fake crypto: no VANITY_ENCRYPTION_KEY needed.
 const restoreDeps = setOwnAiDepsForTest({
@@ -791,17 +791,18 @@ describe('provider calls', () => {
 describe('UsePod', () => {
   const goodReply = {
     api_token: TOKEN,
-    deposit_code: 'ABCD1234',
+    deposit_code: 'abcdef0123456789',
     status: 'pending_deposit',
     instructions: { contract_address: CONTRACT, dashboard_url: `https://usepod.ai/dashboard/${TOKEN}` },
   };
 
   test('register response validation', () => {
-    expect(parseUsepodRegisterResponse(goodReply)).toEqual({ token: TOKEN, depositCode: 'ABCD1234', contractAddress: CONTRACT });
+    expect(parseUsepodRegisterResponse(goodReply)).toEqual({ token: TOKEN, depositCode: 'abcdef0123456789', contractAddress: CONTRACT });
     const bad = (patch: Record<string, unknown>, instr: Record<string, unknown> = {}) =>
       ({ ...goodReply, ...patch, instructions: { ...goodReply.instructions, ...instr } });
     expectCode(() => parseUsepodRegisterResponse(bad({ api_token: '../x' })), 'provider_error');
     expectCode(() => parseUsepodRegisterResponse(bad({ deposit_code: 'a b' })), 'provider_error');
+    expect(parseUsepodRegisterResponse(bad({ deposit_code: 'ABCDEF0123456789' })).depositCode).toBe('abcdef0123456789');
     expectCode(() => parseUsepodRegisterResponse(bad({}, { contract_address: '0xabc' })), 'provider_error');
     for (const url of [
       `http://usepod.ai/dashboard/${TOKEN}`,
@@ -815,6 +816,7 @@ describe('UsePod', () => {
       expect(isUsepodDashboardUrl(url)).toBe(false);
       expectCode(() => parseUsepodRegisterResponse(bad({}, { dashboard_url: url })), 'provider_error');
     }
+    expectCode(() => parseUsepodRegisterResponse(bad({}, { contract_address: '11111111111111111111111111111111' })), 'provider_error');
     expectCode(() => parseUsepodRegisterResponse(null), 'provider_error');
   });
 
@@ -826,12 +828,12 @@ describe('UsePod', () => {
     queue.select.push([]); // in-lock check
     const r = await registerUsepodToken(AVATAR, USER);
     off();
-    expect(r).toEqual({ dashboardUrl: `https://usepod.ai/dashboard/${TOKEN}`, depositCode: 'ABCD1234', contractAddress: CONTRACT });
+    expect(r).toEqual({ dashboardUrl: `https://usepod.ai/dashboard/${TOKEN}`, depositCode: 'abcdef0123456789', contractAddress: CONTRACT });
     expect(fetchCalls[0]!.url).toBe('https://api.usepod.ai/v1/register');
     expect(fetchCalls[0]!.init.method).toBe('POST');
     expect(fetchCalls[0]!.init.body).toBeUndefined();
     const values = recorded.find((x) => x.op === 'insert')!.calls.find((c) => c.name === 'values')!.args[0] as Record<string, unknown>;
-    expect(values).toMatchObject({ usepodTokenEnc: sealed(TOKEN), usepodTokenLast4: TOKEN.slice(-4), usepodRegistered: true });
+    expect(values).toMatchObject({ usepodTokenEnc: sealed(TOKEN), usepodTokenLast4: TOKEN.slice(-4), usepodRegistered: true, usepodDepositCode: goodReply.deposit_code });
     // The own-key slot, the source, the provider and the model are never touched by register.
     for (const k of ['keyEnc', 'keyIv', 'keyTag', 'keyLast4', 'source', 'provider', 'model']) expect(k in values).toBe(false);
     expect(seen).toEqual([AVATAR]);

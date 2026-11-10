@@ -1,0 +1,948 @@
+/** Custodial UsePod deposits. Never rebuild or resend an admitted transaction. */
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  VersionedTransaction,
+  type AccountMeta,
+} from '@solana/web3.js';
+import bs58 from 'bs58';
+import {
+  agentAiSettings,
+  and,
+  asc,
+  avatars,
+  db,
+  eq,
+  inArray,
+  sql,
+  userSpendPolicies,
+  users,
+  vendorSpendLedger,
+  wallets,
+  type VendorSpendRow,
+} from '@clawville/database';
+import {
+  OWN_AI_USEPOD_PROGRAM_ID,
+  OWN_AI_USEPOD_DEPOSIT_MIN_CENTS,
+  OWN_AI_USEPOD_DEPOSIT_MAX_CENTS,
+  OWN_AI_USEPOD_MIN_SOL_LAMPORTS,
+  USEPOD_DEPOSITS_PER_DAY,
+  type SpendPolicyView,
+} from '@clawville/shared';
+import { decryptWalletRow } from './keypair-vault';
+import { lockSpendRules, toSpendPolicyView } from './spend-policy';
+import { readUsepodBalance } from './own-ai';
+import {
+  issueUsepodDepositChallenge,
+  verifyUsepodDepositProof,
+  type UsepodDepositApprovalTerms,
+} from './spend-policy-proof';
+import { resolveAgentPayRail } from './agent-pay';
+
+export const USEPOD_PROGRAM_ID = OWN_AI_USEPOD_PROGRAM_ID;
+export const USEPOD_CONFIG_PDA = 'G9ko998ReQinG5Cc6YT7NS7hZJucXyuxLxTXTwKEpNPH';
+export const USEPOD_OPS_WALLET = '55XjZhXbLMRoEpNY2JmkHhcFfbTnjFnGh75j36Xk6YgP';
+export const USEPOD_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+export const USEPOD_MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+export const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+export const ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+export const DEPOSIT_DISCRIMINATOR = Buffer.from([184, 148, 250, 169, 224, 213, 34, 126]);
+export const DEPOSIT_EVENT_DISCRIMINATOR = Buffer.from([120, 248, 61, 83, 31, 142, 107, 144]);
+const CONFIG_DISCRIMINATOR = Buffer.from([196, 210, 90, 231, 144, 149, 140, 63]);
+export const USEPOD_MAX_CREDIT_RECONCILE_ATTEMPTS = 8;
+/** Sticky: a finalized tx with no error whose evidence did not match. Never becomes 'failed'. */
+export const FINALIZED_EVIDENCE_MISMATCH = 'finalized_evidence_mismatch';
+const NETWORK = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+export function usepodAta(owner: string): string {
+  return PublicKey.findProgramAddressSync(
+    [
+      new PublicKey(owner).toBuffer(),
+      new PublicKey(TOKEN_PROGRAM).toBuffer(),
+      new PublicKey(USEPOD_USDC_MINT).toBuffer(),
+    ],
+    new PublicKey(ASSOCIATED_TOKEN_PROGRAM),
+  )[0].toBase58();
+}
+export function buildDepositData(code: string, amount: bigint): Buffer {
+  if (!/^[0-9a-f]{16}$/.test(code) || amount <= 0n || amount > 0xffffffffffffffffn)
+    throw new Error('invalid_deposit_terms');
+  const data = Buffer.alloc(24);
+  DEPOSIT_DISCRIMINATOR.copy(data);
+  Buffer.from(code, 'hex').copy(data, 8);
+  data.writeBigUInt64LE(amount, 16);
+  return data;
+}
+export function buildDepositAccounts(depositor: string): AccountMeta[] {
+  return [
+    usepodAta(depositor),
+    usepodAta(USEPOD_OPS_WALLET),
+    USEPOD_CONFIG_PDA,
+    depositor,
+    USEPOD_USDC_MINT,
+    TOKEN_PROGRAM,
+    ASSOCIATED_TOKEN_PROGRAM,
+  ].map((key, i) => ({
+    pubkey: new PublicKey(key),
+    isSigner: i === 3,
+    isWritable: i === 0 || i === 1 || i === 3,
+  }));
+}
+export interface DepositTerms {
+  code: string;
+  amount: string;
+  depositor: string;
+  ledgerId: string;
+  baselineMicro: number;
+}
+export function buildDepositTransaction(terms: DepositTerms, blockhash: string): Transaction {
+  return new Transaction({
+    feePayer: new PublicKey(terms.depositor),
+    recentBlockhash: blockhash,
+  }).add(
+    new TransactionInstruction({
+      programId: new PublicKey(USEPOD_PROGRAM_ID),
+      keys: buildDepositAccounts(terms.depositor),
+      data: buildDepositData(terms.code, BigInt(terms.amount)),
+    }),
+    new TransactionInstruction({
+      programId: new PublicKey(USEPOD_MEMO_PROGRAM),
+      keys: [],
+      data: Buffer.from(`clawville:usepod:${terms.ledgerId}`),
+    }),
+  );
+}
+export function decodeDepositEvent(data: Uint8Array): {
+  code: string;
+  amount: bigint;
+  mint: string;
+  depositor: string;
+  timestamp: bigint;
+} | null {
+  const b = Buffer.from(data);
+  if (b.length !== 96 || !b.subarray(0, 8).equals(DEPOSIT_EVENT_DISCRIMINATOR)) return null;
+  return {
+    code: b.subarray(8, 16).toString('hex'),
+    amount: b.readBigUInt64LE(16),
+    mint: new PublicKey(b.subarray(24, 56)).toBase58(),
+    depositor: new PublicKey(b.subarray(56, 88)).toBase58(),
+    timestamp: b.readBigInt64LE(88),
+  };
+}
+export interface DepositProof {
+  finalized: boolean;
+  err: unknown;
+  fee: number;
+  signatures: string[];
+  feePayer: string;
+  instructions: {
+    programId: string;
+    keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[];
+    data: Uint8Array;
+  }[];
+  logs: string[];
+}
+export function checkDepositProof(proof: DepositProof | null, terms: DepositTerms, signature: string): boolean {
+  if (
+    !proof?.finalized ||
+    proof.err !== null ||
+    proof.signatures[0] !== signature ||
+    proof.feePayer !== terms.depositor ||
+    proof.instructions.length !== 2
+  )
+    return false;
+  const [ix, memo] = proof.instructions;
+  if (
+    !ix ||
+    !memo ||
+    ix.programId !== USEPOD_PROGRAM_ID ||
+    memo.programId !== USEPOD_MEMO_PROGRAM ||
+    memo.keys.length !== 0
+  )
+    return false;
+  if (
+    !Buffer.from(ix.data).equals(buildDepositData(terms.code, BigInt(terms.amount))) ||
+    Buffer.from(memo.data).toString() !== `clawville:usepod:${terms.ledgerId}`
+  )
+    return false;
+  const expected = buildDepositAccounts(terms.depositor);
+  if (
+    ix.keys.length !== expected.length ||
+    ix.keys.some(
+      (key, i) =>
+        key.pubkey !== expected[i]!.pubkey.toBase58() ||
+        key.isSigner !== expected[i]!.isSigner ||
+        key.isWritable !== expected[i]!.isWritable,
+    )
+  )
+    return false;
+  // Accept only an event emitted directly by this program, never a nested CPI log.
+  const stack: string[] = [];
+  let events = 0;
+  for (const log of proof.logs) {
+    const invoke = /^Program (\S+) invoke \[\d+\]$/.exec(log);
+    if (invoke) {
+      stack.push(invoke[1]!);
+      continue;
+    }
+    if (/^Program \S+ (success|failed:)/.test(log)) {
+      stack.pop();
+      continue;
+    }
+    if (stack.at(-1) !== USEPOD_PROGRAM_ID || !log.startsWith('Program data: ')) continue;
+    const event = decodeDepositEvent(Buffer.from(log.slice(14), 'base64'));
+    if (
+      event &&
+      event.code === terms.code &&
+      event.amount === BigInt(terms.amount) &&
+      event.mint === USEPOD_USDC_MINT &&
+      event.depositor === terms.depositor
+    )
+      events++;
+  }
+  return events === 1;
+}
+export interface DepositInput {
+  avatarId: string;
+  actor: 'human' | 'agent';
+  userId?: string;
+  amountCents: number;
+  idempotencyKey: string;
+  nonce?: string;
+  signature?: string;
+}
+export interface DepositSettings {
+  code: string;
+  tokenLast4: string;
+  wallet: string;
+}
+type Balance = { usdcMicro: number; isActive: boolean };
+export type DepositResult =
+  | {
+      ok: true;
+      ledgerId: string;
+      status: 'pending' | 'paid' | 'failed' | 'ambiguous';
+      txSignature: string | null;
+      usdCents: number;
+      creditStatus: 'unknown' | 'seen';
+      balance: Balance | null;
+    }
+  | { ok: false; code: string; ledgerId?: string };
+type Admission =
+  | { ok: true; ledgerId: string; approvalProven?: boolean }
+  | { ok: false; code: string; ledgerId?: string };
+export interface UsepodDepositDeps {
+  policyPrecheck(input: DepositInput): Promise<string | null>;
+  replay(input: DepositInput): Promise<DepositResult | null>;
+  closeUnsigned(id: string): Promise<boolean>;
+  deferReconcile(id: string): Promise<void>;
+  settings(avatarId: string): Promise<DepositSettings | null>;
+  precheck(wallet: string, amount: bigint): Promise<string | null>;
+  balance(avatarId: string): Promise<Balance | null>;
+  admit(input: DepositInput, settings: DepositSettings): Promise<Admission>;
+  blockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
+  sign(avatarId: string, transaction: Transaction): Promise<{ bytes: Uint8Array; signature: string }>;
+  simulate(bytes: Uint8Array): Promise<boolean>;
+  persist(
+    id: string,
+    signed: { bytes: Uint8Array; signature: string },
+    height: number,
+    terms: DepositTerms,
+    input: DepositInput,
+    approvalProven: boolean,
+  ): Promise<boolean>;
+  send(bytes: Uint8Array): Promise<void>;
+  proof(signature: string): Promise<DepositProof | null>;
+  signatureKnown(signature: string): Promise<boolean>;
+  blockHeight(): Promise<number>;
+  finish(
+    id: string,
+    status: 'paid' | 'failed' | 'ambiguous',
+    fields: {
+      feeLamports?: number;
+      failureReason?: string | null;
+      txSignature?: string;
+      creditStatus?: 'unknown' | 'seen';
+    },
+  ): Promise<void>;
+  sleep(ms: number): Promise<void>;
+  reconcileRows(includeExhausted?: boolean): Promise<VendorSpendRow[]>;
+}
+export function approvalTerms(input: DepositInput, settings: DepositSettings): UsepodDepositApprovalTerms {
+  return {
+    avatarId: input.avatarId,
+    amountCents: input.amountCents,
+    opsWallet: USEPOD_OPS_WALLET,
+    programId: USEPOD_PROGRAM_ID,
+    tokenLast4: settings.tokenLast4,
+    idempotencyKey: input.idempotencyKey,
+  };
+}
+export function checkDepositPolicy(
+  policy: SpendPolicyView,
+  amountCents: number,
+  spent: bigint,
+  attempts: number,
+): string | null {
+  if (!policy.configured || policy.perCallCapUsdCents === null || policy.dailyCapUsdCents === null)
+    return 'spend_rules_not_set';
+  if (!policy.allowedVendors.includes('usepod')) return 'vendor_not_allowed';
+  if (amountCents > policy.perCallCapUsdCents) return 'over_per_call_cap';
+  if (spent + BigInt(amountCents) * 10000n > BigInt(policy.dailyCapUsdCents) * 10000n) return 'over_daily_cap';
+  if (attempts >= USEPOD_DEPOSITS_PER_DAY) return 'deposit_daily_limit';
+  return null;
+}
+async function admit(input: DepositInput, settings: DepositSettings): Promise<Admission> {
+  return db.transaction(async (tx) => {
+    await lockSpendRules(tx, input.avatarId);
+    const [existing] = await tx
+      .select({ id: vendorSpendLedger.id })
+      .from(vendorSpendLedger)
+      .where(
+        and(eq(vendorSpendLedger.avatarId, input.avatarId), eq(vendorSpendLedger.idempotencyKey, input.idempotencyKey)),
+      )
+      .limit(1);
+    if (existing) return { ok: false, code: 'duplicate_request', ledgerId: existing.id };
+    const [row] = await tx
+      .select()
+      .from(userSpendPolicies)
+      .where(eq(userSpendPolicies.avatarId, input.avatarId))
+      .limit(1);
+    const policy = toSpendPolicyView(row);
+    const totals = Array.from(
+      await tx.execute<{ spent: string; attempts: number }>(sql`SELECT
+      COALESCE(SUM(usdc_atomic) FILTER (WHERE status IN ('pending','paid','ambiguous')),0)::text AS spent,
+      COUNT(*) FILTER (WHERE vendor = 'usepod' AND (status IN ('pending','paid','ambiguous') OR (status = 'failed' AND failure_reason NOT LIKE 'not_sent_%')))::int AS attempts
+      FROM vendor_spend_ledger WHERE avatar_id = ${input.avatarId}
+      AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`),
+    )[0];
+    const refusal = checkDepositPolicy(policy, input.amountCents, BigInt(totals?.spent ?? '0'), totals?.attempts ?? 0);
+    if (refusal) return { ok: false, code: refusal };
+    // Re-read the registered destination under the same lock as register.
+    const [current] = await tx
+      .select()
+      .from(agentAiSettings)
+      .where(eq(agentAiSettings.avatarId, input.avatarId))
+      .limit(1);
+    if (
+      !current?.usepodRegistered ||
+      current.usepodDepositCode !== settings.code ||
+      current.usepodTokenLast4 !== settings.tokenLast4
+    )
+      return { ok: false, code: 'usepod_deposit_code_missing' };
+    if (policy.requireApproval) {
+      if (input.actor === 'agent') return { ok: false, code: 'approval_required' };
+      if (!input.userId || !input.nonce || !input.signature) return { ok: false, code: 'signature_required' };
+      const [owner] = await tx
+        .select({ wallet: users.linkedWalletPubkey })
+        .from(users)
+        .innerJoin(avatars, eq(avatars.userId, users.id))
+        .where(and(eq(avatars.id, input.avatarId), eq(users.id, input.userId)))
+        .limit(1);
+      if (!owner?.wallet) return { ok: false, code: 'wallet_link_required' };
+      if (
+        verifyUsepodDepositProof({
+          userId: input.userId,
+          terms: approvalTerms(input, settings),
+          nonce: input.nonce,
+          signature: input.signature,
+          walletPubkey: owner.wallet,
+        }) !== 'ok'
+      )
+        return { ok: false, code: 'invalid_wallet_proof' };
+    }
+    const [inserted] = await tx
+      .insert(vendorSpendLedger)
+      .values({
+        avatarId: input.avatarId,
+        vendor: 'usepod',
+        tool: 'usepod_deposit',
+        actor: input.actor,
+        status: 'pending',
+        usdcAtomic: String(input.amountCents * 10000),
+        usdCents: input.amountCents,
+        payTo: USEPOD_OPS_WALLET,
+        payerWallet: settings.wallet,
+        network: NETWORK,
+        idempotencyKey: input.idempotencyKey,
+        creditStatus: 'unknown',
+      })
+      .returning({ id: vendorSpendLedger.id });
+    return {
+      ok: true,
+      ledgerId: inserted!.id,
+      approvalProven: policy.requireApproval,
+    };
+  });
+}
+function defaultDeps(): UsepodDepositDeps {
+  const rail = resolveAgentPayRail();
+  const connection = new Connection(
+    rail.network === 'mainnet' && rail.rpcUrl
+      ? rail.rpcUrl
+      : process.env.SOLANA_MAINNET_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com',
+    'finalized',
+  );
+  return {
+    policyPrecheck: async (input) => {
+      const [row] = await db
+        .select()
+        .from(userSpendPolicies)
+        .where(eq(userSpendPolicies.avatarId, input.avatarId))
+        .limit(1);
+      const policy = toSpendPolicyView(row);
+      const refusal = checkDepositPolicy(policy, input.amountCents, 0n, 0);
+      if (refusal) return refusal;
+      if (policy.requireApproval && input.actor === 'agent') return 'approval_required';
+      if (policy.requireApproval && (!input.userId || !input.nonce || !input.signature)) return 'signature_required';
+      return null;
+    },
+    replay: async (input) => {
+      const [row] = await db
+        .select()
+        .from(vendorSpendLedger)
+        .where(
+          and(
+            eq(vendorSpendLedger.avatarId, input.avatarId),
+            eq(vendorSpendLedger.idempotencyKey, input.idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (!row) return null;
+      if (row.vendor !== 'usepod' || row.usdCents !== input.amountCents)
+        return { ok: false, code: 'duplicate_request', ledgerId: row.id };
+      return {
+        ok: true,
+        ledgerId: row.id,
+        status: row.status,
+        txSignature: row.txSignature ?? row.payerSignature,
+        usdCents: row.usdCents,
+        creditStatus: row.creditStatus === 'seen' ? 'seen' : 'unknown',
+        balance: null,
+      };
+    },
+    closeUnsigned: async (id) =>
+      (
+        await db
+          .update(vendorSpendLedger)
+          .set({
+            status: 'failed',
+            failureReason: 'not_sent_interrupted',
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(vendorSpendLedger.id, id),
+              eq(vendorSpendLedger.status, 'pending'),
+              sql`${vendorSpendLedger.payerSignature} IS NULL`,
+            ),
+          )
+          .returning({ id: vendorSpendLedger.id })
+      ).length === 1,
+    deferReconcile: async (id) => {
+      await db
+        .update(vendorSpendLedger)
+        .set({
+          reconcileAttempts: sql`${vendorSpendLedger.reconcileAttempts} + 1`,
+          reconcileNextAt: sql`now() + make_interval(mins => LEAST(15 * power(2, LEAST(${vendorSpendLedger.reconcileAttempts}, 7)), 1440)::int)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(vendorSpendLedger.id, id));
+    },
+    settings: async (avatarId) => {
+      const [settings] = await db
+        .select({
+          registered: agentAiSettings.usepodRegistered,
+          code: agentAiSettings.usepodDepositCode,
+          tokenLast4: agentAiSettings.usepodTokenLast4,
+        })
+        .from(agentAiSettings)
+        .where(eq(agentAiSettings.avatarId, avatarId))
+        .limit(1);
+      const wallet = await db.query.wallets.findFirst({
+        where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
+        columns: { publicKey: true },
+      });
+      return settings?.registered && settings.code && settings.tokenLast4 && wallet
+        ? {
+            code: settings.code,
+            tokenLast4: settings.tokenLast4,
+            wallet: wallet.publicKey,
+          }
+        : null;
+    },
+    precheck: async (wallet, amount) => {
+      const config = await connection.getAccountInfo(new PublicKey(USEPOD_CONFIG_PDA), 'finalized');
+      if (
+        !config ||
+        config.owner.toBase58() !== USEPOD_PROGRAM_ID ||
+        config.data.length < 137 ||
+        !config.data.subarray(0, 8).equals(CONFIG_DISCRIMINATOR) ||
+        new PublicKey(config.data.subarray(8, 40)).toBase58() !== USEPOD_OPS_WALLET ||
+        new PublicKey(config.data.subarray(105, 137)).toBase58() !== USEPOD_USDC_MINT
+      )
+        return 'vendor_pay_to_changed';
+      const ops = await connection.getAccountInfo(new PublicKey(usepodAta(USEPOD_OPS_WALLET)), 'finalized');
+      if (
+        !ops ||
+        ops.owner.toBase58() !== TOKEN_PROGRAM ||
+        ops.data.length < 165 ||
+        new PublicKey(ops.data.subarray(0, 32)).toBase58() !== USEPOD_USDC_MINT ||
+        new PublicKey(ops.data.subarray(32, 64)).toBase58() !== USEPOD_OPS_WALLET
+      )
+        return 'vendor_pay_to_changed';
+      if ((await connection.getBalance(new PublicKey(wallet), 'finalized')) < OWN_AI_USEPOD_MIN_SOL_LAMPORTS)
+        return 'needs_sol_for_fee';
+      const ata = await connection.getAccountInfo(new PublicKey(usepodAta(wallet)), 'finalized');
+      if (
+        !ata ||
+        ata.owner.toBase58() !== TOKEN_PROGRAM ||
+        ata.data.length < 165 ||
+        new PublicKey(ata.data.subarray(0, 32)).toBase58() !== USEPOD_USDC_MINT ||
+        new PublicKey(ata.data.subarray(32, 64)).toBase58() !== wallet ||
+        ata.data.readBigUInt64LE(64) < amount
+      )
+        return 'insufficient_usdc';
+      return null;
+    },
+    balance: readUsepodBalance,
+    admit,
+    blockhash: () => connection.getLatestBlockhash('finalized'),
+    sign: async (avatarId, transaction) => {
+      const row = await db.query.wallets.findFirst({
+        where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
+      });
+      if (!row) throw new Error('wallet_missing');
+      const key = await decryptWalletRow(row);
+      const secret = key.secretKey;
+      const original = (key as unknown as { _keypair?: { secretKey?: Uint8Array } })._keypair?.secretKey;
+      let signer: Keypair | null = null;
+      try {
+        if (key.publicKey.toBase58() !== transaction.feePayer?.toBase58()) throw new Error('wallet_changed');
+        signer = Keypair.fromSecretKey(secret);
+        transaction.sign(signer);
+        if (!transaction.signature) throw new Error('signature_missing');
+        return {
+          bytes: transaction.serialize(),
+          signature: bs58.encode(transaction.signature),
+        };
+      } finally {
+        secret.fill(0);
+        original?.fill(0);
+        const bytes = (signer as unknown as { _keypair?: { secretKey?: Uint8Array } } | null)?._keypair?.secretKey;
+        bytes?.fill(0);
+      }
+    },
+    simulate: async (bytes) =>
+      (
+        await connection.simulateTransaction(VersionedTransaction.deserialize(bytes), {
+          sigVerify: true,
+          commitment: 'finalized',
+        })
+      ).value.err === null,
+    persist: async (id, signed, height, terms, input, approvalProven) =>
+      db.transaction(async (tx) => {
+        await lockSpendRules(tx, input.avatarId);
+        const [policyRow] = await tx
+          .select()
+          .from(userSpendPolicies)
+          .where(eq(userSpendPolicies.avatarId, input.avatarId))
+          .limit(1);
+        const policy = toSpendPolicyView(policyRow);
+        const [settings] = await tx
+          .select()
+          .from(agentAiSettings)
+          .where(eq(agentAiSettings.avatarId, input.avatarId))
+          .limit(1);
+        const totals = Array.from(
+          await tx.execute<{ total: string }>(
+            sql`SELECT COALESCE(SUM(usdc_atomic),0)::text AS total FROM vendor_spend_ledger WHERE avatar_id=${input.avatarId} AND status IN ('pending','paid','ambiguous') AND created_at >= date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+          ),
+        );
+        if (
+          !settings?.usepodRegistered ||
+          settings.usepodDepositCode !== terms.code ||
+          !policy.configured ||
+          !policy.allowedVendors.includes('usepod') ||
+          policy.perCallCapUsdCents === null ||
+          policy.dailyCapUsdCents === null ||
+          input.amountCents > policy.perCallCapUsdCents ||
+          BigInt(totals[0]?.total ?? '0') > BigInt(policy.dailyCapUsdCents) * 10000n ||
+          (policy.requireApproval && (!approvalProven || input.actor === 'agent'))
+        )
+          return false;
+        const rows = await tx
+          .update(vendorSpendLedger)
+          .set({
+            payerSignature: signed.signature,
+            signedTxB64: Buffer.from(signed.bytes).toString('base64'),
+            lastValidBlockHeight: height,
+            depositTerms: terms,
+            signedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(vendorSpendLedger.id, id),
+              eq(vendorSpendLedger.status, 'pending'),
+              sql`${vendorSpendLedger.payerSignature} IS NULL`,
+              sql`${vendorSpendLedger.createdAt} >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+            ),
+          )
+          .returning({ id: vendorSpendLedger.id });
+        return rows.length === 1;
+      }),
+    send: async (bytes) => {
+      await connection.sendRawTransaction(bytes, {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
+    },
+    proof: async (signature) => {
+      const tx = await connection.getTransaction(signature, {
+        commitment: 'finalized',
+        maxSupportedTransactionVersion: 0,
+      });
+      if (!tx?.meta) return null;
+      const msg = tx.transaction.message;
+      const keys = msg.getAccountKeys({
+        accountKeysFromLookups: tx.meta.loadedAddresses,
+      });
+      return {
+        finalized: true,
+        err: tx.meta.err,
+        fee: tx.meta.fee,
+        signatures: tx.transaction.signatures,
+        feePayer: keys.get(0)!.toBase58(),
+        logs: tx.meta.logMessages ?? [],
+        instructions: msg.compiledInstructions.map((ix) => ({
+          programId: keys.get(ix.programIdIndex)!.toBase58(),
+          data: ix.data,
+          keys: ix.accountKeyIndexes.map((index) => ({
+            pubkey: keys.get(index)!.toBase58(),
+            isSigner: msg.isAccountSigner(index),
+            isWritable: msg.isAccountWritable(index),
+          })),
+        })),
+      };
+    },
+    signatureKnown: async (signature) =>
+      (
+        await connection.getSignatureStatuses([signature], {
+          searchTransactionHistory: true,
+        })
+      ).value[0] !== null,
+    blockHeight: () => connection.getBlockHeight('finalized'),
+    finish: async (id, status, fields) => {
+      await db
+        .update(vendorSpendLedger)
+        .set({
+          status,
+          ...fields,
+          // The mismatch marker survives every non-paid write, atomically in
+          // SQL, so a stale concurrent writer cannot erase it (Codex round 3).
+          ...(status !== 'paid' && 'failureReason' in fields
+            ? {
+                failureReason: sql`CASE WHEN failure_reason = ${FINALIZED_EVIDENCE_MISMATCH}::text THEN ${FINALIZED_EVIDENCE_MISMATCH}::text ELSE ${fields.failureReason ?? null}::text END`,
+              }
+            : {}),
+          ...(status === 'paid'
+            ? { reconcileAttempts: sql`CASE WHEN status <> 'paid' THEN 0 ELSE reconcile_attempts END` }
+            : {}),
+          ...(fields.creditStatus
+            ? {
+                creditStatus: sql`CASE WHEN credit_status = 'seen' THEN 'seen' ELSE ${fields.creditStatus} END`,
+              }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(vendorSpendLedger.id, id),
+            eq(vendorSpendLedger.vendor, 'usepod'),
+            inArray(
+              vendorSpendLedger.status,
+              status === 'paid' ? ['pending', 'ambiguous', 'paid'] : ['pending', 'ambiguous'],
+            ),
+            // A row once seen finalized with no error never becomes 'failed'.
+            ...(status === 'failed'
+              ? [sql`${vendorSpendLedger.failureReason} IS DISTINCT FROM ${FINALIZED_EVIDENCE_MISMATCH}`]
+              : []),
+          ),
+        );
+    },
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    reconcileRows: async (includeExhausted = false) =>
+      db
+        .select()
+        .from(vendorSpendLedger)
+        .where(
+          and(
+            eq(vendorSpendLedger.vendor, 'usepod'),
+            sql`(${vendorSpendLedger.status} IN ('pending','ambiguous') OR (${vendorSpendLedger.status} = 'paid' AND ${vendorSpendLedger.creditStatus} = 'unknown'))`,
+            sql`${vendorSpendLedger.createdAt} < now() - interval '1 minute'`,
+            ...(includeExhausted
+              ? []
+              : [
+                  sql`(${vendorSpendLedger.status} <> 'paid' OR ${vendorSpendLedger.reconcileAttempts} < ${USEPOD_MAX_CREDIT_RECONCILE_ATTEMPTS})`,
+                  sql`(${vendorSpendLedger.reconcileNextAt} IS NULL OR ${vendorSpendLedger.reconcileNextAt} <= now())`,
+                ]),
+          ),
+        )
+        .orderBy(asc(vendorSpendLedger.updatedAt), asc(vendorSpendLedger.id))
+        .limit(100),
+  };
+}
+function validInput(input: DepositInput): boolean {
+  return (
+    Number.isInteger(input.amountCents) &&
+    input.amountCents >= OWN_AI_USEPOD_DEPOSIT_MIN_CENTS &&
+    input.amountCents <= OWN_AI_USEPOD_DEPOSIT_MAX_CENTS &&
+    /^[A-Za-z0-9_-]{1,64}$/.test(input.idempotencyKey)
+  );
+}
+export async function createUsepodDepositChallenge(input: DepositInput) {
+  if (!validInput(input) || !input.userId) return { ok: false as const, code: 'invalid_deposit' };
+  const settings = await defaultDeps().settings(input.avatarId);
+  if (!settings) return { ok: false as const, code: 'usepod_deposit_code_missing' };
+  return {
+    ok: true as const,
+    ...issueUsepodDepositChallenge(input.userId, approvalTerms(input, settings)),
+  };
+}
+export function usepodCreditSeen(baseline: number, amount: bigint, balance: Balance | null): boolean {
+  const slack = amount / 100n > 2000n ? amount / 100n : 2000n;
+  return balance !== null && BigInt(balance.usdcMicro) >= BigInt(baseline) + amount - slack;
+}
+async function credit(
+  deps: UsepodDepositDeps,
+  avatarId: string,
+  terms: DepositTerms,
+  poll: boolean,
+): Promise<{ creditStatus: 'seen' | 'unknown'; balance: Balance | null }> {
+  let balance: Balance | null = null;
+  const deadline = Date.now() + 20000;
+  for (let i = 0; i < (poll ? 11 : 1); i++) {
+    if (i) await deps.sleep(2000);
+    if (Date.now() >= deadline) break;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      balance = await Promise.race([
+        deps.balance(avatarId),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), Math.max(1, deadline - Date.now()));
+          timer.unref?.();
+        }),
+      ]);
+    } catch {
+      /* Credit is separate from chain settlement. */
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    if (usepodCreditSeen(terms.baselineMicro, BigInt(terms.amount), balance)) return { creditStatus: 'seen', balance };
+  }
+  return { creditStatus: 'unknown', balance };
+}
+export async function depositUsepod(
+  input: DepositInput,
+  overrides: Partial<UsepodDepositDeps> = {},
+): Promise<DepositResult> {
+  if (!validInput(input)) return { ok: false, code: 'invalid_deposit' };
+  const deps = { ...defaultDeps(), ...overrides };
+  const replay = await deps.replay(input);
+  if (replay) return replay;
+  const policyRefusal = await deps.policyPrecheck(input);
+  if (policyRefusal) return { ok: false, code: policyRefusal };
+  let settings: DepositSettings | null;
+  let baseline: Balance | null;
+  try {
+    settings = await deps.settings(input.avatarId);
+    if (!settings) return { ok: false, code: 'usepod_deposit_code_missing' };
+    const refusal = await deps.precheck(settings.wallet, BigInt(input.amountCents) * 10000n);
+    if (refusal) return { ok: false, code: refusal };
+    baseline = await deps.balance(input.avatarId);
+    if (!baseline) return { ok: false, code: 'provider_error' };
+  } catch {
+    return { ok: false, code: 'provider_error' };
+  }
+  const admitted = await deps.admit(input, settings);
+  if (!admitted.ok) return admitted.code === 'duplicate_request' ? ((await deps.replay(input)) ?? admitted) : admitted;
+  const ledgerId = admitted.ledgerId;
+  const terms: DepositTerms = {
+    code: settings.code,
+    amount: String(input.amountCents * 10000),
+    depositor: settings.wallet,
+    ledgerId,
+    baselineMicro: baseline.usdcMicro,
+  };
+  let signed: { bytes: Uint8Array; signature: string };
+  try {
+    const hash = await deps.blockhash();
+    signed = await deps.sign(input.avatarId, buildDepositTransaction(terms, hash.blockhash));
+    if (!(await deps.simulate(signed.bytes))) {
+      await deps.finish(ledgerId, 'failed', {
+        failureReason: 'not_sent_simulation_failed',
+      });
+      return { ok: false, code: 'simulation_failed', ledgerId };
+    }
+    if (
+      !(await deps.persist(ledgerId, signed, hash.lastValidBlockHeight, terms, input, admitted.approvalProven === true))
+    ) {
+      await deps.finish(ledgerId, 'failed', {
+        failureReason: 'not_sent_payment_fenced',
+      });
+      return { ok: false, code: 'payment_fenced', ledgerId };
+    }
+  } catch {
+    await deps.finish(ledgerId, 'failed', {
+      failureReason: 'not_sent_prepare_failed',
+    });
+    return { ok: false, code: 'payment_prepare_failed', ledgerId };
+  }
+  let proof: DepositProof | null = null;
+  try {
+    await deps.send(signed.bytes);
+    for (let i = 0; i < 11; i++) {
+      if (i) await deps.sleep(2000);
+      proof = await deps.proof(signed.signature);
+      if (proof?.finalized) break;
+    }
+  } catch {
+    /* A send timeout never proves no transfer. */
+  }
+  if (proof?.finalized && proof.err !== null) {
+    await deps.finish(ledgerId, 'failed', {
+      feeLamports: proof.fee,
+      failureReason: 'onchain_error_finalized',
+      txSignature: signed.signature,
+    });
+    return {
+      ok: true,
+      ledgerId,
+      status: 'failed',
+      txSignature: signed.signature,
+      usdCents: input.amountCents,
+      creditStatus: 'unknown',
+      balance: null,
+    };
+  }
+  const paid = checkDepositProof(proof, terms, signed.signature);
+  await deps.finish(ledgerId, paid ? 'paid' : 'ambiguous', {
+    txSignature: signed.signature,
+    ...(proof ? { feeLamports: proof.fee } : {}),
+    failureReason: paid ? null : proof?.finalized ? FINALIZED_EVIDENCE_MISMATCH : 'finalized_proof_missing',
+  });
+  const credited = paid
+    ? await credit(deps, input.avatarId, terms, true)
+    : { creditStatus: 'unknown' as const, balance: null };
+  if (paid)
+    await deps.finish(ledgerId, 'paid', {
+      creditStatus: credited.creditStatus,
+    });
+  return {
+    ok: true,
+    ledgerId,
+    status: paid ? 'paid' : 'ambiguous',
+    txSignature: signed.signature,
+    usdCents: input.amountCents,
+    ...credited,
+  };
+}
+export async function reconcileUsepodDeposits(
+  options: { apply: boolean; includeExhausted?: boolean; deps?: Partial<UsepodDepositDeps> } = {
+    apply: false,
+  },
+) {
+  const deps = { ...defaultDeps(), ...options.deps };
+  const decisions: {
+    id: string;
+    status: string;
+    creditStatus?: string;
+    operatorReview?: boolean;
+  }[] = [];
+  for (const row of await deps.reconcileRows(options.includeExhausted)) {
+    if (
+      !options.includeExhausted &&
+      row.status === 'paid' &&
+      (row.reconcileAttempts ?? 0) >= USEPOD_MAX_CREDIT_RECONCILE_ATTEMPTS
+    ) {
+      decisions.push({
+        id: row.id,
+        status: 'paid',
+        creditStatus: row.creditStatus ?? 'unknown',
+        operatorReview: row.creditStatus === 'unknown' && Date.now() - row.createdAt.getTime() > 600000,
+      });
+      continue;
+    }
+    try {
+      const terms = row.depositTerms as DepositTerms | null;
+      if (!row.payerSignature) {
+        let closed = false;
+        if (options.apply) {
+          if (Date.now() - row.createdAt.getTime() > 600000) closed = await deps.closeUnsigned(row.id);
+          await deps.deferReconcile(row.id);
+        }
+        decisions.push({ id: row.id, status: closed ? 'failed' : row.status });
+        continue;
+      }
+      if (!terms || row.lastValidBlockHeight === null) {
+        if (options.apply) await deps.deferReconcile(row.id);
+        decisions.push({ id: row.id, status: row.status });
+        continue;
+      }
+      // Finalized settlement is immutable. Paid rows need only a credit read.
+      const proof = row.status === 'paid' ? null : await deps.proof(row.payerSignature);
+      let status: 'paid' | 'failed' | 'ambiguous' = row.status === 'paid' ? 'paid' : 'ambiguous';
+      // Keep the sticky marker on every write of this row.
+      let reason: string | null = row.failureReason === FINALIZED_EVIDENCE_MISMATCH ? FINALIZED_EVIDENCE_MISMATCH : null;
+      if (proof?.finalized && proof.err !== null) {
+        status = 'failed';
+        reason = 'onchain_error_finalized';
+      } else if (checkDepositProof(proof, terms, row.payerSignature)) {
+        status = 'paid';
+        reason = null;
+      } else if (proof?.finalized) {
+        // Finalized with no error, but the evidence does not match: USDC may
+        // have moved. The row stays 'ambiguous' for an operator, for ever.
+        reason = FINALIZED_EVIDENCE_MISMATCH;
+      }
+      // Only a tx that the chain never showed as finalized may expire to 'failed'.
+      else if (
+        row.status !== 'paid' &&
+        proof === null &&
+        reason !== FINALIZED_EVIDENCE_MISMATCH &&
+        (await deps.blockHeight()) > row.lastValidBlockHeight &&
+        !(await deps.signatureKnown(row.payerSignature))
+      ) {
+        status = 'failed';
+        reason = 'expired_signature_unknown';
+      }
+      const credited =
+        status === 'paid'
+          ? await credit(deps, row.avatarId, terms, false)
+          : { creditStatus: 'unknown' as const, balance: null };
+      if (options.apply)
+        await deps.finish(row.id, status, {
+          failureReason: reason,
+          creditStatus: credited.creditStatus,
+          ...(proof ? { feeLamports: proof.fee } : {}),
+          ...(status === 'paid' ? { txSignature: row.payerSignature } : {}),
+        });
+      if (options.apply && (status === 'ambiguous' || (status === 'paid' && credited.creditStatus === 'unknown')))
+        await deps.deferReconcile(row.id);
+      decisions.push({
+        id: row.id,
+        status,
+        creditStatus: credited.creditStatus,
+        operatorReview:
+          status === 'paid' && credited.creditStatus === 'unknown' && Date.now() - row.createdAt.getTime() > 600000,
+      });
+    } catch {
+      if (options.apply) await deps.deferReconcile(row.id).catch(() => {});
+      decisions.push({ id: row.id, status: row.status });
+    }
+  }
+  return decisions;
+}

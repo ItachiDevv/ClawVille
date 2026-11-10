@@ -33,11 +33,13 @@ export const agentAiSettings = pgTable('agent_ai_settings', {
   usepodTokenIv: text('usepod_token_iv'),
   usepodTokenTag: text('usepod_token_tag'),
   usepodTokenLast4: text('usepod_token_last4'),
+  usepodDepositCode: text('usepod_deposit_code'),
   fallbackReason: text('fallback_reason'),
   fallbackAt: timestamp('fallback_at', { withTimezone: true }),
   updatedByUserId: uuid('updated_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
+  depositCodeCheck: check('agent_ai_settings_deposit_code_check', sql`${t.usepodDepositCode} IS NULL OR ${t.usepodDepositCode} ~ '^[0-9a-f]{16}$'`),
   sourceCheck: check('agent_ai_settings_source_check', sql`${t.source} IN ('clawville', 'own_key', 'usepod')`),
   providerCheck: check(
     'agent_ai_settings_provider_check',

@@ -358,6 +358,41 @@ export function verifyUsepodProof(input: {
     buildUsepodMessage(input.action, input.userId, input.avatarId, input.nonce));
 }
 
+export interface UsepodDepositApprovalTerms {
+  avatarId: string;
+  amountCents: number;
+  opsWallet: string;
+  programId: string;
+  tokenLast4: string;
+  idempotencyKey: string;
+}
+
+export function buildUsepodDepositMessage(userId: string, terms: UsepodDepositApprovalTerms, nonce: string, expiresAt: string): string {
+  return ['ClawVille usepod-deposit', `account: ${userId}`, `avatar: ${terms.avatarId}`,
+    `amountCents: ${terms.amountCents}`, `ops wallet: ${terms.opsWallet}`, `program: ${terms.programId}`,
+    `token ending: ${terms.tokenLast4}`, `idempotency key: ${terms.idempotencyKey}`,
+    `expiry: ${expiresAt}`, `nonce: ${nonce}`].join('\n');
+}
+
+export function issueUsepodDepositChallenge(userId: string, terms: UsepodDepositApprovalTerms): SpendProofChallenge {
+  const nonce = bs58.encode(randomBytes(32));
+  const expiresAtMs = Date.now() + NONCE_TTL_MS;
+  const expiresAt = new Date(expiresAtMs).toISOString();
+  const message = buildUsepodDepositMessage(userId, terms, nonce, expiresAt);
+  nonces.set(nonce, { userId, message, expiresAt: expiresAtMs });
+  return { nonce, expiresAt, messageToSign: message };
+}
+
+/** Call only under the avatar spend-policy lock, immediately before admission. */
+export function verifyUsepodDepositProof(input: {
+  userId: string; terms: UsepodDepositApprovalTerms; nonce: string; signature: string; walletPubkey: string;
+}): SpendProofResult {
+  const entry = nonces.get(input.nonce);
+  if (!entry) return 'invalid_challenge';
+  return verifyMessage(input.userId, input.nonce, input.signature, input.walletPubkey,
+    buildUsepodDepositMessage(input.userId, input.terms, input.nonce, new Date(entry.expiresAt).toISOString()));
+}
+
 function verifyMessage(userId: string, nonce: string, signature: string, walletPubkey: string, expected: string): SpendProofResult {
   const entry = nonces.get(nonce);
   if (!entry) return 'invalid_challenge';

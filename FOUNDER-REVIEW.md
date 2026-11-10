@@ -5,6 +5,14 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+### Agent AI card deposit (session claw2.0, own AI part B, 2026-11-09, STAGING after an authorized deployment)
+
+- **STATUS:** local implementation only; no commit, push, registration or transaction in this session.
+- **WHERE:** https://staging.clawville.world/game after deployment. Open Wallet, then Agent AI, then UsePod.
+- **CHECK:** inspect amount limits, wallet USDC and SOL hints, UsePod in spend rules, and the linked-wallet signature request with ask-before on.
+- **CHECK:** inspect chain status separately from UsePod credit seen or unknown. Test desktop, phone and iPad in both orientations.
+- **FEEDBACK:** confirm the labels and errors are clear. A later money test requires separate authorization.
+
 ### Agent AI card: power your hosted agent with your own AI (session claw2.0, own AI part A, 2026-11-09, STAGING after the lead pushes)
 
 - **WHERE:** https://staging.clawville.world/game, signed in with your own browser sign-in, on a phone AND an iPad (portrait and landscape) and on desktop. Open the wallet panel (wallet chip or sidebar Wallet) and find the "Agent AI" card.

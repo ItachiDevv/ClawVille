@@ -17,6 +17,7 @@
 
 import { agentAiSettings, agentAiUsage, and, db, eq, sql } from '@clawville/database';
 import {
+  OWN_AI_USEPOD_PROGRAM_ID,
   OWN_AI_CALL_TIMEOUT_MS,
   OWN_AI_DEFAULT_MAX_TOKENS,
   OWN_AI_DEFAULT_SPEED_SECONDS,
@@ -1078,8 +1079,7 @@ export async function testOwnAiKey(
 // UsePod
 // ---------------------------------------------------------------------------
 
-const DEPOSIT_CODE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const DEPOSIT_CODE_PATTERN = /^[0-9a-f]{16}$/i;
 
 function usepodDashboardUrl(token: string): string {
   return `https://usepod.ai/dashboard/${token.toLowerCase()}`;
@@ -1110,9 +1110,9 @@ export function parseUsepodRegisterResponse(body: unknown): { token: string; dep
   const dashboardUrl = b?.instructions?.dashboard_url;
   if (typeof token !== 'string' || !OWN_AI_USEPOD_TOKEN_PATTERN.test(token)) throw new OwnAiError('provider_error');
   if (typeof depositCode !== 'string' || !DEPOSIT_CODE_PATTERN.test(depositCode)) throw new OwnAiError('provider_error');
-  if (typeof contractAddress !== 'string' || !SOLANA_ADDRESS_PATTERN.test(contractAddress)) throw new OwnAiError('provider_error');
+  if (contractAddress !== OWN_AI_USEPOD_PROGRAM_ID) throw new OwnAiError('provider_error');
   if (!isUsepodDashboardUrl(dashboardUrl)) throw new OwnAiError('provider_error');
-  return { token: token.toLowerCase(), depositCode, contractAddress };
+  return { token: token.toLowerCase(), depositCode: depositCode.toLowerCase(), contractAddress };
 }
 
 async function readUsepodRegistered(executor: Pick<typeof db, 'select'>, avatarId: string): Promise<boolean> {
@@ -1154,6 +1154,7 @@ export async function registerUsepodToken(
       usepodTokenIv: sealed.iv,
       usepodTokenTag: sealed.tag,
       usepodTokenLast4: reg.token.slice(-4),
+      usepodDepositCode: reg.depositCode,
       usepodRegistered: true,
       updatedByUserId: userId,
       updatedAt: new Date(),

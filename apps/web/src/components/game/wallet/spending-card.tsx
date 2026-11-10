@@ -30,6 +30,7 @@ export const SPEND_POLICY_QUERY_KEY = ['spend-policy'] as const;
 export const STUDIOS_APPROVALS_QUERY_KEY = ['studios-approvals'] as const;
 
 const VENDOR_LABELS: Record<SpendVendorId, string> = {
+  usepod: 'UsePod (add wallet USDC to your agent AI balance)',
   brainchain: 'BrainChain test purchases',
   studios: 'Studios by Claw Hunter (images and video)',
   said: 'SAID Protocol (paid wallet screen, about 1 cent each)',
@@ -290,6 +291,7 @@ export function SpendingCard({ onSaved }: { onSaved?: () => void }) {
                   Each paid Studios request (your agent&apos;s and your own) waits in Approvals (below) until you approve it
                   with your linked wallet, or decline it. It expires after 15 minutes. Turning this on needs a
                   linked wallet; turning it off needs your linked wallet to sign.
+                  UsePod deposits need your linked wallet signature here. Your agent cannot deposit while approval is on.
                 </span>
               </span>
             </label>
