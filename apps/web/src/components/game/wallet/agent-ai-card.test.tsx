@@ -22,6 +22,7 @@ function define(name: string, value: unknown): void {
 type CardModule = typeof import('./agent-ai-card');
 let createRoot: typeof import('react-dom/client').createRoot;
 let card: CardModule;
+let SpendingCard: typeof import('./spending-card').SpendingCard;
 let api: Record<string, unknown>;
 let ApiErrorClass: typeof import('@/lib/api').ApiError;
 let originalApi: Record<string, unknown> = {};
@@ -36,6 +37,13 @@ let raiseOnce = false;
 let keyTestFails: string | null = null;
 let signed = 0;
 let noLinkedWallet = false;
+let depositApproval = false;
+let depositEnabled = false;
+let depositTimeout = false;
+let depositRefusal: string | null = null;
+let depositChainStatus = 'paid';
+let depositCreditStatus = 'unknown';
+let solAtomic = "15000";
 
 function baseStatus(over: Partial<OwnAiStatus> = {}): OwnAiStatus {
   return {
@@ -79,6 +87,12 @@ async function router(input: string, init?: RequestInit): Promise<Response> {
   }
   if (path === '/api/agent-ai/challenge') {
     return json({ nonce: 'nonce-1', expiresAt: '2026-11-09T00:05:00Z', messageToSign: 'ClawVille own AI', walletPubkey: WALLET });
+  }
+  if (path === '/api/agent-ai/usepod/deposit/challenge') return json({ nonce: 'deposit-nonce', messageToSign: 'ClawVille usepod-deposit', walletPubkey: WALLET });
+  if (path === '/api/agent-ai/usepod/deposit') {
+    if (depositRefusal) return json({ error: depositRefusal, code: depositRefusal }, 400);
+    if (depositTimeout) { depositTimeout = false; throw new Error('timeout'); }
+    return json({ ok: true, ledgerId: 'ledger-1', status: depositChainStatus, txSignature: 'tx-1', usdCents: body.amountCents, creditStatus: depositCreditStatus, balance: { usdcMicro: 1500000, isActive: true } });
   }
   if (path === '/api/agent-ai/models') return json({ models: ['gpt-4.1', 'gpt-4o-mini', 'o4-mini'], recommended: [] });
   if (path === '/api/agent-ai/usepod/register/challenge' || path === '/api/agent-ai/usepod/link/challenge') {
@@ -131,10 +145,12 @@ beforeAll(async () => {
   ApiErrorClass = apiModule.ApiError;
   api = apiModule.api as unknown as Record<string, unknown>;
   card = await import('./agent-ai-card');
-  const names = ['me', 'getSpendPolicy'];
+  ({ SpendingCard } = await import('./spending-card'));
+  const names = ['me', 'getSpendPolicy', 'walletBalances', 'spendPolicyChallenge', 'putSpendPolicy'];
   originalApi = Object.fromEntries(names.map((n) => [n, api[n]]));
   api.me = async () => ({ user: { id: 'user-1', isGuest } });
-  api.getSpendPolicy = async () => ({ dailyCapUsdCents: null, perCallCapUsdCents: null, allowedVendors: [], configured: false, requireApproval: false, updatedAt: null });
+  api.getSpendPolicy = async () => ({ dailyCapUsdCents: depositEnabled ? 1000 : null, perCallCapUsdCents: depositEnabled ? 100 : null, allowedVendors: depositEnabled ? ['usepod'] : [], configured: depositEnabled, requireApproval: depositApproval, updatedAt: null });
+  api.walletBalances = async () => ({ balances: { USDC: { available: true, uiAmount: 5, amountAtomic: '5000000' }, SOL: { available: true, uiAmount: Number(solAtomic) / 1e9, amountAtomic: solAtomic } } });
 });
 
 afterEach(async () => {
@@ -149,6 +165,13 @@ afterEach(async () => {
   keyTestFails = null;
   signed = 0;
   noLinkedWallet = false;
+  depositApproval = false;
+  depositEnabled = false;
+  depositTimeout = false;
+  depositRefusal = null;
+  depositChainStatus = 'paid';
+  depositCreditStatus = 'unknown';
+  solAtomic = "15000";
   log.length = 0;
 });
 
@@ -165,12 +188,12 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 6; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-async function mount(): Promise<HTMLElement> {
+async function mount(component = card.AgentAiCard): Promise<HTMLElement> {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(createElement(QueryClientProvider, { client: client! }, createElement(card.AgentAiCard))));
+  await act(async () => root!.render(createElement(QueryClientProvider, { client: client! }, createElement(component))));
   await settle();
   return container;
 }
@@ -352,7 +375,7 @@ describe('AgentAiCard', () => {
     // Save sends source 'usepod' with NO key.
     const [model] = Array.from(host.querySelectorAll('select')) as HTMLSelectElement[];
     await choose(model, 'gpt-5.1');
-    await type(host.querySelector('input[inputmode="decimal"]') as HTMLInputElement, '1');
+    await type(Array.from(host.querySelectorAll('label')).find((label) => label.textContent?.includes('Daily limit (US$)'))!.querySelector('input')!, '1');
     await press(button(host, 'Save'));
     const put = log.find((e) => e.method === 'PUT');
     expect(put?.body).toEqual({ source: 'usepod', provider: 'usepod', model: 'gpt-5.1', speedSeconds: 25, dailyLimitCents: 100 });
@@ -433,4 +456,145 @@ describe('AgentAiCard', () => {
     for (const b of Array.from(host.querySelectorAll('button'))) expect(b.className).toContain('min-h-[44px]');
     for (const s of Array.from(host.querySelectorAll('select, input:not([type="radio"])'))) expect(s.className).toContain('min-h-[44px]');
   });
+});
+
+
+describe('UsePod wallet deposit', () => {
+  test('signs the exact deposit challenge when approval is on and reports unknown credit honestly', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    depositEnabled = true;
+    depositApproval = true;
+    const host = await openForm();
+    await press(button(host, 'Add to AI balance'));
+    expect(signed).toBe(1);
+    const challenge = log.find((r) => r.path.endsWith('/deposit/challenge'))!;
+    const sent = log.find((r) => r.path.endsWith('/deposit'))!;
+    expect(sent.body).toMatchObject({ ...(challenge.body as object), nonce: 'deposit-nonce' });
+    expect((sent.body as { signature: string }).signature).toBeTruthy();
+    expect(host.textContent).toContain('Chain status: paid. UsePod credit: unknown.');
+    expect(host.textContent).toContain('Do not repeat this deposit');
+    expect(host.textContent).toContain('Wallet USDC: $5.00');
+  });
+
+  test('retries the same idempotency key after a transport error without a signature when approval is off', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    depositEnabled = true;
+    depositTimeout = true;
+    const host = await openForm();
+    await press(button(host, 'Add to AI balance'));
+    await press(button(host, 'Check the same deposit'));
+    const posts = log.filter((r) => r.path.endsWith('/deposit'));
+    expect(posts).toHaveLength(2);
+    expect(posts[0].body).toEqual(posts[1].body);
+    expect(signed).toBe(0);
+    expect(log.some((r) => r.path.endsWith('/deposit/challenge'))).toBe(false);
+  });
+
+  test('blocks deposits below the SOL fee budget', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    depositEnabled = true;
+    solAtomic = '14999';
+    const host = await openForm();
+    expect(button(host, 'Add to AI balance').disabled).toBe(true);
+    expect(host.textContent).toContain('0.000015 SOL');
+    expect(log.some((r) => r.path.endsWith('/deposit'))).toBe(false);
+  });
+
+  test('blocks deposits until the human allows UsePod and caps', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    const host = await openForm();
+    expect(button(host, 'Add to AI balance').disabled).toBe(true);
+    expect(host.textContent).toContain('Allow UsePod and set both caps');
+  });
+});
+
+
+test('adding UsePod in Spending requires the permission-raise wallet proof', async () => {
+  const saved = { dailyCapUsdCents: 1000, perCallCapUsdCents: 100, allowedVendors: ['studios'], configured: true,
+    requireApproval: false, studiosKeyImagesPerDay: 10, studiosVideosPerDay: 5, studiosCharacterShotsPerDay: 5,
+    studiosRecastsPerDay: 5, studiosPayMode: null, updatedAt: null };
+  const oldGet = api.getSpendPolicy;
+  api.getSpendPolicy = async () => saved;
+  let challenged: unknown;
+  let submitted: unknown;
+  api.spendPolicyChallenge = async (body: unknown) => {
+    challenged = body;
+    return { nonce: 'vendor-nonce', messageToSign: 'Allow UsePod', walletPubkey: WALLET };
+  };
+  api.putSpendPolicy = async (body: unknown) => { submitted = body; return { ...saved, ...(body as object) }; };
+  try {
+    const host = await mount(() => createElement(SpendingCard));
+    const label = Array.from(host.querySelectorAll('label')).find((item) => item.textContent?.includes('UsePod (add wallet'))!;
+    await press(label.querySelector('input')!);
+    await press(button(host, 'Save spend rules'));
+    expect(challenged).toMatchObject({ allowedVendors: ['studios', 'usepod'] });
+    expect(submitted).toMatchObject({ allowedVendors: ['studios', 'usepod'], proof: { nonce: 'vendor-nonce' } });
+    expect((submitted as { proof: { signature: string } }).proof.signature).toBeTruthy();
+    expect(signed).toBe(1);
+  } finally { api.getSpendPolicy = oldGet; }
+});
+
+
+test('a pre-admission cap refusal lets the human change the amount', async () => {
+  status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+  depositEnabled = true;
+  depositRefusal = 'over_per_call_cap';
+  const host = await openForm();
+  await press(button(host, 'Add to AI balance'));
+  const input = host.querySelector('[data-testid="usepod-deposit"] input') as HTMLInputElement;
+  expect(input.disabled).toBe(false);
+  await type(input, '0.25');
+  depositRefusal = null;
+  await press(button(host, 'Add to AI balance'));
+  const posts = log.filter((entry) => entry.path.endsWith('/deposit'));
+  expect(posts.at(-1)?.body).toMatchObject({ amountCents: 25 });
+});
+
+test('an ambiguous deposit can only check its existing idempotency key', async () => {
+  status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+  depositEnabled = true;
+  depositChainStatus = 'ambiguous';
+  const host = await openForm();
+  await press(button(host, 'Add to AI balance'));
+  expect(host.textContent).not.toContain('Start another deposit');
+  expect((host.querySelector('[data-testid="usepod-deposit"] input') as HTMLInputElement).disabled).toBe(true);
+  await press(button(host, 'Check the same deposit'));
+  const posts = log.filter((entry) => entry.path.endsWith('/deposit'));
+  expect(posts).toHaveLength(2);
+  expect(posts[0].body).toEqual(posts[1].body);
+});
+
+
+test('paid deposits with unknown credit refresh the same deposit until credit is seen', async () => {
+  status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+  depositEnabled = true;
+  const host = await openForm();
+  await press(button(host, 'Add to AI balance'));
+  expect(host.textContent).toContain('Chain status: paid. UsePod credit: unknown.');
+  depositCreditStatus = 'seen';
+  await press(button(host, 'Check the same deposit'));
+  const posts = log.filter((entry) => entry.path.endsWith('/deposit'));
+  expect(posts).toHaveLength(2);
+  expect(posts[0].body).toEqual(posts[1].body);
+  expect(host.textContent).toContain('Chain status: paid. UsePod credit: seen.');
+  expect(host.textContent).not.toContain('Check the same deposit');
+});
+
+
+test('known deposit refresh does not request a second wallet signature when approval is on', async () => {
+  status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+  depositEnabled = true;
+  depositApproval = true;
+  const host = await openForm();
+  await press(button(host, 'Add to AI balance'));
+  expect(signed).toBe(1);
+  depositCreditStatus = 'seen';
+  await press(button(host, 'Check the same deposit'));
+  expect(signed).toBe(1);
+  expect(log.filter((entry) => entry.path.endsWith('/deposit/challenge'))).toHaveLength(1);
+  const posts = log.filter((entry) => entry.path.endsWith('/deposit'));
+  expect(posts).toHaveLength(2);
+  const original = posts[0].body as { amountCents: number; idempotencyKey: string };
+  expect(posts[1].body).toEqual({ amountCents: original.amountCents, idempotencyKey: original.idempotencyKey });
+  expect(host.textContent).toContain('UsePod credit: seen.');
 });

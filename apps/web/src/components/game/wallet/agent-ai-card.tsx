@@ -4,8 +4,8 @@
  * AgentAiCard: the human picks the AI that powers their hosted agent (own AI
  * part A, 2026-11-09, GET/PUT/DELETE /api/agent-ai). ClawVille AI is the
  * default. The human can use their own key (OpenAI, Anthropic, OpenRouter) or
- * UsePod, with a model, a speed and a daily dollar limit. No ClawVille or
- * agent-wallet money moves here.
+ * UsePod, with a model, a speed and a daily dollar limit. Avatar
+ * agent-wallet money moves through the separate UsePod deposit control.
  *
  * Secrets: the key input is a password field and clears after each save; the
  * server returns only the last 4 characters. The UsePod dashboard link holds
@@ -21,10 +21,14 @@
  * the PUT goes again with `proof`.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   OWN_AI_DAILY_LIMIT_MAX_CENTS,
+  OWN_AI_USEPOD_DEPOSIT_MAX_CENTS,
+  OWN_AI_USEPOD_DEPOSIT_MIN_CENTS,
+  OWN_AI_USEPOD_MIN_SOL_LAMPORTS,
+  USEPOD_DEPOSITS_PER_DAY,
   OWN_AI_DAILY_LIMIT_MIN_CENTS,
   OWN_AI_DEFAULT_MAX_TOKENS,
   OWN_AI_DEFAULT_SPEED_SECONDS,
@@ -40,7 +44,7 @@ import {
   type OwnAiSource,
   type OwnAiStatus,
 } from '@clawville/shared';
-import { ApiError } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { getFingerprint } from '@/lib/fingerprint';
 import { WalletSignError, signMessageWithSolanaWallet } from '@/lib/solana-wallet';
 import { centsToUsdText, parseUsdToCents } from '@/lib/usd-cents';
@@ -175,6 +179,33 @@ export async function readUsepodLinkWithProof(): Promise<{ dashboardUrl: string 
   return agentAiApi.usepodLink(await signUsepodAction('link'));
 }
 
+export interface UsepodDepositReply {
+  ok: true;
+  ledgerId: string;
+  status: 'pending' | 'paid' | 'ambiguous' | 'failed';
+  txSignature: string | null;
+  usdCents: number;
+  creditStatus: 'unknown' | 'seen';
+  balance: { usdcMicro: number; isActive: boolean } | null;
+}
+
+export async function depositUsepodWithProof(
+  amountCents: number, idempotencyKey: string, requireApproval: boolean,
+): Promise<UsepodDepositReply> {
+  const body = { amountCents, idempotencyKey };
+  let proof: WalletProof | undefined;
+  if (requireApproval) {
+    const challenge = await agentAiRequest<{ nonce: string; messageToSign: string; walletPubkey: string }>(
+      '/api/agent-ai/usepod/deposit/challenge', { method: 'POST', body },
+    );
+    const signed = await signMessageWithSolanaWallet(challenge.messageToSign, challenge.walletPubkey);
+    proof = { nonce: challenge.nonce, signature: signed.signatureBase58 };
+  }
+  return agentAiRequest<UsepodDepositReply>('/api/agent-ai/usepod/deposit', {
+    method: 'POST', body: { ...body, ...proof },
+  });
+}
+
 // ── Pure helpers (tested) ──
 
 /** Decisions per day at one speed. */
@@ -223,6 +254,17 @@ export function agentAiErrorText(error: unknown): string {
   if (error instanceof WalletSignError) return error.message;
   if (error instanceof ApiError) {
     switch (error.code) {
+      case 'needs_sol_for_fee':
+        return 'Your avatar wallet needs at least 0.000015 SOL for the network fee.';
+      case 'insufficient_usdc':
+        return 'Your avatar wallet does not have enough USDC.';
+      case 'approval_required':
+      case 'signature_required':
+        return 'Your linked wallet must approve this deposit. Check your spend rules, then sign again.';
+      case 'usepod_deposit_code_missing':
+        return 'This UsePod balance cannot accept wallet deposits here. Use your private UsePod link instead.';
+      case 'vendor_not_allowed':
+        return 'Allow UsePod in Spending before you add funds.';
       case 'wallet_link_required':
         return 'Link your own wallet first (below). Your linked wallet must approve a higher daily limit.';
       case 'raise_needs_signature':
@@ -316,6 +358,84 @@ export const USEPOD_NEEDS_WALLET_TEXT =
   'Link your own wallet first (below): your linked wallet must approve a UsePod balance and its link. '
   + 'Or paste a token from your own UsePod account in the token field instead.';
 
+function UsepodDepositControl() {
+  const { query } = useHumanSpendPolicy();
+  const policy = query.data;
+  const client = useQueryClient();
+  const [amount, setAmount] = useState('0.50');
+  const [error, setError] = useState<string | null>(null);
+  // Preserve the request identity after a transport error. A retry cannot pay twice.
+  const request = useRef<{ amountCents: number; key: string } | null>(null);
+  const wallet = useQuery({ queryKey: ['wallet-balances'], queryFn: api.walletBalances, retry: false, staleTime: 15_000 });
+  const max = Math.min(policy?.perCallCapUsdCents ?? 0, OWN_AI_USEPOD_DEPOSIT_MAX_CENTS);
+  const allowed = !!policy?.configured && policy.allowedVendors.includes('usepod') && max >= OWN_AI_USEPOD_DEPOSIT_MIN_CENTS;
+  const deposit = useMutation({
+    mutationFn: ({ amountCents, key, refresh = false }: { amountCents: number; key: string; refresh?: boolean }) =>
+      depositUsepodWithProof(amountCents, key, !refresh && (policy?.requireApproval ?? true)),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: [...AGENT_AI_QUERY_KEY, 'usepod-balance'] });
+      client.invalidateQueries({ queryKey: ['wallet-balances'] });
+    },
+    onError: (failure) => {
+      // These failures precede admission. Network errors retain the same key.
+      if (failure instanceof WalletSignError || (failure instanceof ApiError && [
+        'approval_required', 'invalid_wallet_proof', 'wallet_link_required', 'vendor_not_allowed',
+        'spend_rules_not_set', 'over_per_call_cap', 'over_daily_cap', 'deposit_daily_limit', 'signature_required',
+        'needs_sol_for_fee', 'insufficient_usdc', 'usepod_deposit_code_missing',
+      ].includes(failure.code ?? ''))) request.current = null;
+    },
+    retry: false,
+  });
+  const submit = () => {
+    setError(null);
+    if (request.current) return deposit.mutate({ ...request.current, refresh: !!deposit.data });
+    const parsed = parseUsdToCents(amount, max);
+    if (!parsed.ok) return setError(parsed.reason);
+    if (parsed.cents === null || parsed.cents < OWN_AI_USEPOD_DEPOSIT_MIN_CENTS) return setError('Enter at least $0.10.');
+    if (!request.current) request.current = { amountCents: parsed.cents, key: crypto.randomUUID() };
+    deposit.mutate(request.current);
+  };
+  const balances = wallet.data?.balances;
+  const sol = balances?.SOL;
+  const needsSol = sol?.available && sol.amountAtomic !== null && BigInt(sol.amountAtomic) < BigInt(OWN_AI_USEPOD_MIN_SOL_LAMPORTS);
+  const receipt = deposit.data;
+  const settled = receipt?.status === 'paid' || receipt?.status === 'failed';
+  return (
+    <div className="space-y-2 border-t border-white/15 pt-2" data-testid="usepod-deposit">
+      <p className="text-xs text-white/80">Add USDC from your avatar wallet to your AI balance.</p>
+      <p className="text-xs text-white/65">
+        Wallet USDC: {balances?.USDC.available && balances.USDC.uiAmount !== null ? `$${balances.USDC.uiAmount.toFixed(2)}` : 'unavailable'}.
+        {' '}Wallet SOL: {sol?.available && sol.uiAmount !== null ? sol.uiAmount : 'unavailable'}.
+      </p>
+      <p className={`text-xs ${needsSol ? 'text-amber-200' : 'text-white/65'}`}>
+        Your wallet needs at least {OWN_AI_USEPOD_MIN_SOL_LAMPORTS / 1_000_000_000} SOL for the network fee.
+        {' '}At most {USEPOD_DEPOSITS_PER_DAY} deposits per UTC day.
+      </p>
+      {!allowed && <p className="text-xs text-amber-200">Allow UsePod and set both caps in Spending first.</p>}
+      <label className="block text-xs text-white/80 space-y-1">
+        <span>Deposit amount (US$), $0.10 to ${centsToUsdText(max)}</span>
+        <input inputMode="decimal" className={FIELD} value={amount} disabled={deposit.isPending || request.current !== null}
+          onChange={(event) => setAmount(event.target.value)} />
+      </label>
+      {policy?.requireApproval && <p className="text-xs text-white/65">Your linked wallet signs each deposit because approval is on.</p>}
+      <button type="button" className={`w-full ${BUTTON}`} disabled={!allowed || deposit.isPending || !!needsSol || !!receipt}
+        onClick={submit}>{deposit.isPending ? 'Check your wallet and wait...' : receipt ? 'Deposit submitted' : request.current ? 'Check the same deposit' : 'Add to AI balance'}</button>
+      {(error || deposit.error) && <p role="alert" className="text-xs text-red-300">{error ?? agentAiErrorText(deposit.error)}</p>}
+      {receipt && <div role="status" className="text-xs text-white/80 break-words">
+        <p>Chain status: {receipt.status}. UsePod credit: {receipt.creditStatus}.</p>
+        {receipt.status === 'paid' && <p>The chain finalized this deposit.</p>}
+        {receipt.creditStatus === 'unknown' && <p>UsePod credit is not confirmed. Do not repeat this deposit.</p>}
+        {receipt.balance && <p>UsePod balance: ${(receipt.balance.usdcMicro / 1_000_000).toFixed(2)}.</p>}
+        {receipt.txSignature && <p className="break-all">Transaction: {receipt.txSignature}</p>}
+      </div>}
+      {receipt && (!settled || (receipt.status === 'paid' && receipt.creditStatus === 'unknown')) &&
+        <button type="button" className={BUTTON} disabled={deposit.isPending} onClick={submit}>Check the same deposit</button>}
+      {settled && <p className="text-xs text-white/65">A new deposit spends more USDC. It does not check the previous credit.</p>}
+      {settled && <button type="button" className={BUTTON} onClick={() => { request.current = null; deposit.reset(); }}>Start another deposit</button>}
+    </div>
+  );
+}
+
 function UsepodBlock({ ai, onStatus }: { ai: OwnAiStatus; onStatus: (ai: OwnAiStatus) => void }) {
   const isMobile = useIsMobile();
   // The link holds the UsePod token: component state only, never the query cache.
@@ -364,6 +484,7 @@ function UsepodBlock({ ai, onStatus }: { ai: OwnAiStatus; onStatus: (ai: OwnAiSt
           UsePod balance: ${(balance.data.usdcMicro / 1_000_000).toFixed(2)}{balance.data.isActive ? '' : ' (not active)'}
         </p>
       )}
+      {ai.usepodRegistered && <UsepodDepositControl />}
       {hasToken && !safeLink && (
         <button
           type="button"
