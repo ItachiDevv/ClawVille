@@ -296,6 +296,6 @@ The unpushed history contained account-identity text that must not reach the pub
 The rewrite changed only seven handoff/plan documents; every source tree is unchanged. Old-to-new SHAs: docs/brainchain-commit-map.md.
 SHAs elsewhere in these documents are pre-rewrite values. The push identity still needs explicit founder confirmation.
 No push, staging deployment, paid call, testnet transaction or partner message occurred in this session. Budgets remain $0 spent and $0 reserved.
-Update 08:25Z: the founder confirmed the push identity (ItachiDevv, ClawVille repo). Staging runs `c571bedba` (run 42780011947 green; migrations 0101-0119 applied on staging; served manual 128).
+Update 08:24Z: the founder confirmed the push identity (ItachiDevv, ClawVille repo). Staging runs `c571bedba` (run 42780011947 green; migrations 0101-0119 applied on staging; served manual 128).
 Three CI rounds fixed nine defects; see docs/brainchain-ci.md. Staging evidence so far: deploy identity, health, served version, guest world and the /brainchain panel.
 Remaining next steps: recompute probe inputs for 128, push to staging, then run the staging parity runbook and onboarding smoke.

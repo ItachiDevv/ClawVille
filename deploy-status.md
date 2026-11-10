@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-10 08:25Z (session brainchain-office). **STAGING API + WEB = `c571bedba` (BrainChain Office, PROTOCOL 128, migrations 0101-0119 applied on staging): run 42780011947 all jobs success; both containers report SOURCE_COMMIT `c571bedba`; `/health` commit `c571bedba`; public play manual serves 128.0.0; browser shows /game world and the /brainchain panel with no console errors.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
+Last Audited: 2026-11-10 08:24Z (session brainchain-office). **STAGING API + WEB = `c571bedba` (BrainChain Office, PROTOCOL 128, migrations 0101-0119 applied on staging): run 42780011947 all jobs success; both containers report SOURCE_COMMIT `c571bedba`; `/health` commit `c571bedba`; public play manual serves 128.0.0; browser shows /game world and the /brainchain panel with no console errors.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
 
 Prior - Last Audited: 2026-11-10 01:33Z (session claw2.0). **STAGING API + WEB = `d81d5d472` (own AI part B: agent wallet deposit into its UsePod balance; PROTOCOL 120; migration 0100 applied on staging).** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql.
 
