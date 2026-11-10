@@ -16,7 +16,7 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE !== '1')('durable compute enve
     const root = resolve(import.meta.dir, '../../../../..');
     const settings=await getBrainchainFixtureSettings();
     fixture = postgres({...settings.options, max: 12, onnotice: () => {} });
-    const migration = await readFile(resolve(root, 'packages/database/migrations/0103_brainchain_compute_reservations.sql'), 'utf8');
+    const migration = await readFile(resolve(root, 'packages/database/migrations/0104_brainchain_compute_reservations.sql'), 'utf8');
     await fixture.unsafe(migration); await fixture.unsafe(migration);
     service = new DurableInferenceProxy(fixture, [], [], { verifyReservation: async () => {} });
   });

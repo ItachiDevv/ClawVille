@@ -19,7 +19,7 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('BrainChain execution a
   beforeAll(async()=>{
     const root=resolve(import.meta.dir,'../../../../..');const settings=await getBrainchainFixtureSettings();
     fixture=postgres({...settings.options,max:8,onnotice:()=>{}});
-    const migration=await readFile(resolve(root,'packages/database/migrations/0104_brainchain_execution_admission.sql'),'utf8');
+    const migration=await readFile(resolve(root,'packages/database/migrations/0105_brainchain_execution_admission.sql'),'utf8');
     await fixture.unsafe(migration);await fixture.unsafe(migration);
     process.env.DATABASE_URL=settings.url;
     service=await import('./execution');tasks=await import('./tasks');

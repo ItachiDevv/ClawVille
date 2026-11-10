@@ -1,6 +1,7 @@
 # BrainChain CI coverage
 
 Last Audited: 2026-11-09. Status: local implementation; remote workflow execution remains unverified.
+Drift: the staging merge f42e5e0f6 moved BrainChain migrations from 0100-0118 to 0101-0119; see "Staging merge renumber" below.
 
 The Gates workflow adds separate BrainChain pure and PostgreSQL/Linux lanes.
 Existing Gates jobs remain unchanged. Every test file runs in a separate Bun process.
@@ -19,11 +20,12 @@ CI refuses that fallback even when the flag exists. Credentials never appear in 
 
 The PostgreSQL lane runs fixture DDL sequentially and preserves unrelated databases.
 Before tests, its guarded bootstrap creates minimal owner tables and the canonical sessions shape.
-It applies vendor ledger migration 0090 and BrainChain migrations 0100 through 0118.
-Existing signer tables skip legacy migration 0102, whose old constraints exclude retained result signatures.
-Migration 0106 supplies the current signer constraints.
-After every suite, including failures, bootstrap restores migrations 0112, 0115, then 0117 and verifies the exact-consent function wrapper.
-This prevents older migration replay, including 0109, from weakening later consent tests.
+It applies vendor ledger migration 0090 and BrainChain migrations 0101 through 0119.
+Its filter selects only `01NN_brainchain_*.sql`, so staging's `0100_usepod_deposit.sql` stays outside the fixture.
+Existing signer tables skip legacy migration 0103, whose old constraints exclude retained result signatures.
+Migration 0107 supplies the current signer constraints.
+After every suite, including failures, bootstrap restores migrations 0113, 0116, then 0118 and verifies the exact-consent function wrapper.
+This prevents older migration replay, including 0110, from weakening later consent tests.
 The required runner refuses absent opt-in, absent Docker opt-in, and zero executed tests.
 It also runs the actual database/proxy/isolated-child exchange with controlled, zero-charge inference.
 
@@ -231,3 +233,22 @@ Evidence: .brainchain-work/ci-pure-runtime-final-retry.log and .brainchain-work/
 All 33 runtime source hashes and all four corrected fixture hashes matched after the final pure run.
 The final local process handles exited zero: PostgreSQL 29418 and pure retry 76658.
 The first pure handle 50850 exited one; its evidence remains preserved and is not a passing result.
+
+## Staging merge renumber
+
+Merge f42e5e0f6 brought staging commit d81d5d472, which owns `0100_usepod_deposit.sql` and was already applied on the staging database.
+The BrainChain migrations had never reached a deployed database, so each moved up by one number. File contents are unchanged.
+Mapping: old 0100-0118 = new 0101-0119, in the same order. Sections above this one keep their historical numbers.
+Example: historical "0117 configured authority" is now `0118_brainchain_configured_authority.sql`; "0118 probe embeddings" is now 0119.
+The trial merge found a real defect: the old bootstrap filter `^01(0\d|1[0-8])_` matched the staging file and refused the 20-file inventory.
+The filter now selects only BrainChain files, and the legacy-signer guard names `0103_brainchain_signer_records.sql` exactly.
+The merged manual is PROTOCOL 128, because both lines had used 120 for different content.
+The first PostgreSQL run on the merged tree failed three purchase tests: `vendor_spend_ledger.signed_tx_b64` was absent.
+Staging's schema adds five ledger columns in 0100, and the fixture builds that table from 0090 plus explicit columns.
+The bootstrap now adds those five columns and the credit-status check; real databases receive them from 0100.
+Merged-tree results, 2026-11-09, itachi222 via a one-shot scheduled task:
+pure 80 suites/610 passes/one expected Docker skip; PostgreSQL 26 suites/173 passes/zero skips.
+API and web strict TypeScript checks exited zero. The doc path guard passed 808 references with 70 baseline entries.
+Protected Linux did not rerun: no protected test or imported service changed. Its result stays 4 suites/12 passes/5 expected skips.
+Evidence: .brainchain-work/merge128-*.log, ci-pure-results.merge128.json, ci-postgres-results.merge128-pg2.json.
+The failed log remains at .brainchain-work/merge128-postgres.failed-vendor-columns.log. No remote CI result exists.

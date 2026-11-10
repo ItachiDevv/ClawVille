@@ -26,7 +26,7 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('BrainChain real signer
     fixture=postgres({...settings.options,max:12,onnotice:()=>{}});
     // Never replay an older CHECK definition over the newer delivery fixture.
     const [schema]=await fixture`SELECT to_regclass('public.brainchain_signer_operations') AS relation`;
-    if(!schema?.relation){const migration=await readFile(resolve(root,'packages/database/migrations/0102_brainchain_signer_records.sql'),'utf8');await fixture.unsafe(migration);await fixture.unsafe(migration);}
+    if(!schema?.relation){const migration=await readFile(resolve(root,'packages/database/migrations/0103_brainchain_signer_records.sql'),'utf8');await fixture.unsafe(migration);await fixture.unsafe(migration);}
     process.env.DATABASE_URL=settings.url;
     service=await import('./signer-operations');
   });

@@ -24,11 +24,18 @@ export async function bootstrapBrainchainFixture() {
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS signed_at timestamptz`;
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS reconcile_attempts integer NOT NULL DEFAULT 0`;
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS reconcile_next_at timestamptz`;
-    const names = (await readdir(directory)).filter(name => /^01(?:0\d|1[0-8])_.*\.sql$/.test(name)).sort();
+    // vendor_spend_ledger part of 0100_usepod_deposit.sql; its agent_ai_settings part has no fixture table.
+    await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS signed_tx_b64 text`;
+    await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS last_valid_block_height bigint`;
+    await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS fee_lamports bigint`;
+    await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS credit_status varchar(16)`;
+    await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS deposit_terms jsonb`;
+    await sql`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'vendor_spend_ledger_credit_status_check') THEN ALTER TABLE vendor_spend_ledger ADD CONSTRAINT vendor_spend_ledger_credit_status_check CHECK (credit_status IS NULL OR credit_status IN ('unknown', 'seen')); END IF; END $$`;
+    const names = (await readdir(directory)).filter(name => /^01(?:0[1-9]|1\d)_brainchain_[a-z0-9_]+\.sql$/.test(name)).sort();
     if (names.length !== 19) throw Error('Review BrainChain fixture migration inventory');
     for (const name of names) {
-      // 0106 widens these constraints. Replaying 0102 over retained result signatures would narrow them.
-      if (name.startsWith('0102_') && (await sql`SELECT to_regclass('public.brainchain_signer_authorities') AS relation`)[0]?.relation) continue;
+      // 0107 widens these constraints. Replaying 0103 over retained result signatures would narrow them.
+      if (name === '0103_brainchain_signer_records.sql' && (await sql`SELECT to_regclass('public.brainchain_signer_authorities') AS relation`)[0]?.relation) continue;
       await migration(sql, name);
     }
   } finally { await sql.end(); }
@@ -39,9 +46,9 @@ export async function restoreBrainchainFixtureWrappers() {
   const { options } = await getBrainchainFixtureSettings();
   const sql = postgres({ ...options, max: 1, onnotice: () => {} });
   try {
-    await migration(sql, '0112_brainchain_exact_result_recovery.sql');
-    await migration(sql, '0115_brainchain_exact_capture.sql');
-    await migration(sql, '0117_brainchain_configured_authority.sql');
+    await migration(sql, '0113_brainchain_exact_result_recovery.sql');
+    await migration(sql, '0116_brainchain_exact_capture.sql');
+    await migration(sql, '0118_brainchain_configured_authority.sql');
     const [row] = await sql`SELECT pg_get_functiondef('brainchain_assert_recovery_submit(uuid,uuid,uuid,uuid,uuid,text,text,text,text)'::regprocedure) AS definition`;
     if (!row?.definition.includes('brainchain_exact_recovery_consent')) throw Error('Exact recovery wrapper restoration failed');
   } finally { await sql.end(); }

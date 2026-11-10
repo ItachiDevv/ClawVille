@@ -169,7 +169,7 @@ Verification: controlled quote/signature/RPC tests, guarded PostgreSQL race/cras
 
 ### Purchase audit corrections - last audited 2026-11-09
 
-Human approval now stores the exact linked wallet and its monotonic authority version. Migration 0110 increments the version when the wallet or its proof timestamp changes. Rotation, unlink, and wallet reuse cannot restore an old approval. Legacy approval rows without the tuple refuse. Fresh proof can renew approval for the same frozen payment. The human panel provides Approve account spend for a captured order; Submit remains disabled until approval is current.
+Human approval now stores the exact linked wallet and its monotonic authority version. Migration 0111 increments the version when the wallet or its proof timestamp changes. Rotation, unlink, and wallet reuse cannot restore an old approval. Legacy approval rows without the tuple refuse. Fresh proof can renew approval for the same frozen payment. The human panel provides Approve account spend for a captured order; Submit remains disabled until approval is current.
 
 One shared liability query governs buyer and vendor admission under the existing avatar spend-policy lock. Vendor pending/ambiguous rows remain held across days. Vendor paid rows count for their UTC day. Provisional buyer payment and refund observations remain held until a separately reviewed finality/release path exists. Buyer records never also enter the vendor ledger, so the same authorization does not count twice.
 

@@ -29,7 +29,7 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE !== '1')('durable one-use infe
     const root = resolve(import.meta.dir, '../../../../..');
     const settings=await getBrainchainFixtureSettings();
     fixture = postgres({...settings.options, max: 12, onnotice: () => {} });
-    for (const name of ['0103_brainchain_compute_reservations.sql', '0104_brainchain_execution_admission.sql']) {
+    for (const name of ['0104_brainchain_compute_reservations.sql', '0105_brainchain_execution_admission.sql']) {
       const migration = await readFile(resolve(root, 'packages/database/migrations', name), 'utf8');
       await fixture.unsafe(migration); await fixture.unsafe(migration);
     }

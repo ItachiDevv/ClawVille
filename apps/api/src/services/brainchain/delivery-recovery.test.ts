@@ -24,7 +24,7 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('expiry-only delivery r
   beforeAll(async()=>{
     const root=resolve(import.meta.dir,'../../../../..');const settings=await getBrainchainFixtureSettings();
     q=postgres({...settings.options,max:4,onnotice:()=>{}});
-    const migration=await readFile(resolve(root,'packages/database/migrations/0107_brainchain_delivery_recovery.sql'),'utf8');await q.unsafe(migration);await q.unsafe(migration);
+    const migration=await readFile(resolve(root,'packages/database/migrations/0108_brainchain_delivery_recovery.sql'),'utf8');await q.unsafe(migration);await q.unsafe(migration);
     process.env.DATABASE_URL=settings.url;
   });
   afterAll(async()=>{mock.restore();await q.end();if(prior===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=prior;});

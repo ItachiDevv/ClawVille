@@ -115,7 +115,7 @@ Partner questions16-18 remain drafted in the integration plan. No partner messag
 | Backend | apps/api/src/routes/brainchain.ts; apps/api/src/services/brainchain/ | Owner-bound reads and durable worker, purchase, funding, delivery and recovery services |
 | Worker host | apps/api/scripts/brainchain/run-worker.ts; run-worker-scheduler.ts | Explicit trusted host composition; no automatic public activation |
 | Isolated cognition | packages/agent-runtime/src/isolated-task/ | Actual Eliza child, bounded transport, network-none container, no task access to signer/provider secrets |
-| Durable data | packages/database/migrations/0100 through0118; schema/brainchain* | Binding, task, signer, compute, delivery, purchase, policy, consent, funding and probe records |
+| Durable data | packages/database/migrations/0101 through 0119 (renumbered at merge f42e5e0f6); schema/brainchain* | Binding, task, signer, compute, delivery, purchase, policy, consent, funding and probe records |
 | Runtime probe | probe-bootstrap.ts; probe-runtime-scope.ts; packages/agent-runtime/src/probe-runtime.ts | Protected bootstrap, per-identity providers, exact operation restrictions and durable cost accounting |
 | World | brainchain-office-world.ts; three/brainchain-office.tsx; world stage and Pixi paths | Separate venue, guide, door, map/minimap, collision/navigation, 2D entry and return |
 
@@ -279,3 +279,20 @@ The cloud kickoff below explicitly requests continuation of the original impleme
 Retain its full scope and budgets when starting or resuming the cloud goal. Do not infer a token budget.
 No old sub-agent process needs polling. Imported files and fresh tool state are authoritative.
 Keep the complete original plan, budget ledger, evidence matrix and this handoff available through future context resets.
+
+## 13. Continuation checkpoint, 2026-11-09 23:40 EST
+
+This section supersedes the source identities above where they differ.
+Merge f42e5e0f6 brought origin/staging d75c1a935 into this branch. Staging had moved by two commits (own AI part B).
+Staging owns `0100_usepod_deposit.sql`, already applied on the staging database. BrainChain migrations moved to 0101-0119 without content changes.
+Both lines had used PROTOCOL 120 for different manual text. The merged manual is PROTOCOL 128. SPEND_VENDOR_IDS is studios, said, usepod, brainchain.
+The merge exposed two fixture defects, now corrected: the bootstrap filter matched the staging migration, and the fixture ledger lacked five 0100 columns.
+Merged-tree local results: pure 80/610/1 expected skip; PostgreSQL 26/173/0 skips; API and web typechecks exit zero; doc path guard 808/70.
+Protected Linux did not rerun; no protected test or imported service changed.
+The section count, manual hash and probe quota in §8 describe protocol 127. Recompute them for 128 before any probe reservation.
+Bun-dependent commands from this session cannot traverse the bun junctions. Run them through a one-shot scheduled task, then disable it.
+
+Release blocker added this session: the unpushed branch history contains account-identity text that must not reach the public repository.
+A later scrub commit cannot remove text from earlier commits. The founder must choose between rewriting the unpushed history and publishing a squashed branch.
+No push, staging deployment, paid call, testnet transaction or partner message occurred in this session. Budgets remain $0 spent and $0 reserved.
+Next steps after that decision: recompute probe inputs for 128, push to staging, then run the staging parity runbook and onboarding smoke.

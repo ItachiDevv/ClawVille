@@ -25,7 +25,7 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('Exact unsigned capture
     const settings=await getBrainchainFixtureSettings();process.env.DATABASE_URL=settings.url;process.env.CLAWVILLE_ENV='staging';
     q=postgres({...settings.options,max:4,onnotice:()=>{}});
     await q`CREATE TABLE IF NOT EXISTS sessions(id varchar(255) PRIMARY KEY,user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at timestamp NOT NULL,created_via text)`;
-    const migration=await readFile(new URL('../../../../../packages/database/migrations/0115_brainchain_exact_capture.sql',import.meta.url),'utf8');
+    const migration=await readFile(new URL('../../../../../packages/database/migrations/0116_brainchain_exact_capture.sql',import.meta.url),'utf8');
     await q.unsafe(migration);await q.unsafe(migration);
     shared=(await import('@clawville/database')).getPostgresClient();service=new ExactResultRecoveryConsents(shared);
     const policy=await import('./signer-policy');mock.module('./signer-policy',()=>({...policy,assertSignerActivation:()=>{},assertSignerArtifactAdmission:()=>{}}));

@@ -24,7 +24,7 @@ describe.skipIf(!enabled)('BrainChain real isolated PostgreSQL constraints and r
     const settings = await getBrainchainFixtureSettings();
     fixture = postgres({ ...settings.options, max: 10, onnotice: () => {} });
     await fixture.unsafe('CREATE TABLE IF NOT EXISTS avatars (id uuid PRIMARY KEY)');
-    const migration = await readFile(resolve(root, 'packages/database/migrations/0100_brainchain_worker_bindings.sql'), 'utf8');
+    const migration = await readFile(resolve(root, 'packages/database/migrations/0101_brainchain_worker_bindings.sql'), 'utf8');
     await fixture.unsafe(migration);
     await fixture.unsafe(migration); // CI rerun safety is real, not a string assertion.
     await fixture.unsafe(`CREATE TABLE IF NOT EXISTS building_skills (

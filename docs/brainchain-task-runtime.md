@@ -241,7 +241,7 @@ This evidence proves the process-to-durable-receipt seam and no paid provider or
 `apps/api/src/services/brainchain/inference-proxy.ts` implements the trusted internal proxy service.
 `apps/api/src/services/brainchain/inference-policy.ts` defines integer price calculations and trusted policy validation.
 `packages/database/src/schema/brainchain-compute.ts` defines its accounting records.
-Migration `packages/database/migrations/0103_brainchain_compute_reservations.sql` creates those records without changing recovery authority.
+Migration `packages/database/migrations/0104_brainchain_compute_reservations.sql` creates those records without changing recovery authority.
 The service registers no public HTTP route and reads no provider credential or environment variable.
 
 The root supplies a PostgreSQL connection, reviewed price policies, fixed provider adapters, and a root-budget verifier.

@@ -3,6 +3,10 @@
 Updated2026-11-09. This matrix preserves the full implementation goal.
 A scoped test or source approval does not satisfy a broader release requirement.
 
+Checkpoint 2026-11-09 23:40 EST: staging merge f42e5e0f6, PROTOCOL 128, BrainChain migrations 0101-0119.
+Merged-tree local lanes pass (pure 80/610, PostgreSQL 26/173). Push is blocked on a founder decision about unpushed history text.
+See docs/brainchain-cloud-handoff.md §13. No staging, testnet or mainnet evidence was added. Rows below keep their earlier evidence.
+
 | Requirement | Current evidence | Evidence still required |
 | --- | --- | --- |
 | Office building and teacher | Generated model, Float32/mipmap WebGPU captures, scoped Claude and Codex navigation reviews, local door/guide/E/world-map/minimap paths, Shift sprint and eight-size touch movement, existing teacher entry and eight collider approach regressions | B3a/R2 source has scoped Claude/root approval; queue42/106 and mounted React8/20 pass; actual-browser synthetic party/Office recovery passed; foreground performance comparison; final integrated staging scene. B1/B2/B4 and visible footprints have scoped Claude approval; actual pointer fallback passed. Local2D entry/100 transitions/eight-size touch evidence exists |

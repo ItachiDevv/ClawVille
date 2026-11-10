@@ -19,7 +19,7 @@ class Client extends FundingExitClient{calls=0;fail=true;reorg=false;sent:string
  override async source(_a:FundingArtifact,transaction:string):Promise<FundingSourceEvidence>{if(this.reorg)throw Error('controlled reorg');return {transaction,blockNumber:'10',blockHash:`0x${'a'.repeat(64)}`,observedAt:new Date().toISOString(),finalized:true,destination:'unresolved'};}
 }
 beforeAll(async()=>{if(!enabled)return;const settings=await getBrainchainFixtureSettings();sql=postgres({...settings.options,max:8,prepare:false,onnotice:()=>{}});drizzle(sql);
- const migration=await readFile(new URL('../../../../../packages/database/migrations/0116_brainchain_funding_exit.sql',import.meta.url),'utf8');await sql.unsafe(migration);await sql.unsafe(migration);
+ const migration=await readFile(new URL('../../../../../packages/database/migrations/0117_brainchain_funding_exit.sql',import.meta.url),'utf8');await sql.unsafe(migration);await sql.unsafe(migration);
 });afterAll(async()=>{if(sql)await sql.end();});
 async function setup(kind:'parent_eth'|'parent_exit'='parent_eth'){
  const userId=randomUUID(),avatarId=randomUUID(),workerId=randomUUID(),key=nacl.sign.keyPair(),account=privateKeyToAccount(generatePrivateKey());

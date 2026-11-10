@@ -36,10 +36,10 @@ beforeAll(async()=>{if(!enabled)return;const settings=await getBrainchainFixture
  await sql`ALTER TABLE avatars ADD COLUMN IF NOT EXISTS user_id uuid`;await sql`ALTER TABLE avatars ADD COLUMN IF NOT EXISTS is_guest boolean NOT NULL DEFAULT false`;
  await sql`CREATE TABLE IF NOT EXISTS user_spend_policies(avatar_id uuid PRIMARY KEY,daily_cap_usd_cents integer,per_call_cap_usd_cents integer,allowed_vendors text[] NOT NULL,require_approval boolean NOT NULL)`;
  await sql`ALTER TABLE user_spend_policies ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT clock_timestamp()`;
- const migration=await readFile(new URL('../../../../../packages/database/migrations/0108_brainchain_buyer_orders.sql',import.meta.url),'utf8');await sql.unsafe(migration);await sql.unsafe(migration);
+ const migration=await readFile(new URL('../../../../../packages/database/migrations/0109_brainchain_buyer_orders.sql',import.meta.url),'utf8');await sql.unsafe(migration);await sql.unsafe(migration);
  await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_wallet_at timestamptz`;
- const authority=await readFile(new URL('../../../../../packages/database/migrations/0110_brainchain_buyer_authority.sql',import.meta.url),'utf8');await sql.unsafe(authority);await sql.unsafe(authority);
- const solana=await readFile(new URL('../../../../../packages/database/migrations/0111_brainchain_solana_buyer.sql',import.meta.url),'utf8');await sql.unsafe(solana);await sql.unsafe(solana);
+ const authority=await readFile(new URL('../../../../../packages/database/migrations/0111_brainchain_buyer_authority.sql',import.meta.url),'utf8');await sql.unsafe(authority);await sql.unsafe(authority);
+ const solana=await readFile(new URL('../../../../../packages/database/migrations/0112_brainchain_solana_buyer.sql',import.meta.url),'utf8');await sql.unsafe(solana);await sql.unsafe(solana);
  const vendor=await readFile(new URL('../../../../../packages/database/migrations/0090_vendor_spend_ledger.sql',import.meta.url),'utf8');await sql.unsafe(vendor);
  await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS signed_at timestamptz`;await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS reconcile_attempts integer NOT NULL DEFAULT 0`;await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS reconcile_next_at timestamptz`;
 });

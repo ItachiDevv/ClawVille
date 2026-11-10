@@ -34,7 +34,7 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('Worker owner grants wi
   const oldDatabase=process.env.DATABASE_URL;
   beforeAll(async()=>{
     const settings=await getBrainchainFixtureSettings();sql=postgres({...settings.options,max:8,onnotice:()=>{}});process.env.DATABASE_URL=settings.url;
-    const migration=await readFile(new URL('../../../../../packages/database/migrations/0109_brainchain_worker_owner_policy.sql',import.meta.url),'utf8');
+    const migration=await readFile(new URL('../../../../../packages/database/migrations/0110_brainchain_worker_owner_policy.sql',import.meta.url),'utf8');
     await sql.unsafe(migration);await sql.unsafe(migration);service=new WorkerOwnerPolicies(sql);process.env.CLAWVILLE_ENV='staging';
   });
   afterAll(async()=>{await sql?.end();if(oldEnvironment===undefined)delete process.env.CLAWVILLE_ENV;else process.env.CLAWVILLE_ENV=oldEnvironment;if(oldDatabase===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=oldDatabase;});

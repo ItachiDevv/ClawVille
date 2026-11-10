@@ -16,7 +16,7 @@ BrainChain earnings: `GET /api/brainchain/workers/:id/earnings` accepts optional
 
 PARITY: human path: Office worker panel and earnings GET; agent path: clawville_brainchain op=earnings and hosted brainchain action; ownership binds to the resolved active avatar. No CT settlement occurs.
 
-**Last Audited: 2026-11-09 (BrainChain Office observations, signer capture, execution authority, and frozen results, migrations 0100–0105).** Drift note: added pinned worker reads, durable task observations, reorg suspension, immutable attempt fences, internal testnet authority, and private delivery preparation. Human and ledger-capable bound-agent paths share avatar ownership. No signer process, funds movement, or worker execution is active.
+**Last Audited: 2026-11-09 (BrainChain Office observations, signer capture, execution authority, and frozen results, migrations 0101–0106).** Drift note: added pinned worker reads, durable task observations, reorg suspension, immutable attempt fences, internal testnet authority, and private delivery preparation. Human and ledger-capable bound-agent paths share avatar ownership. No signer process, funds movement, or worker execution is active.
 
 Audit corrections: the BrainChain router now mounts before the global JSON parser and reads at most 4 KiB before authentication.
 Private routes hydrate Lucia cookies before the shared identity resolver.
@@ -1672,7 +1672,7 @@ It permits only local paused/draining requests and never changes protocol hire e
 Connected markers do not prove client consumption. Responses explicitly keep consumption verification false until a separate runtime probe proves it.
 Office hosted installation requires complete section readback through the installer's opt-in `requireComplete` check; partial persistence returns an error.
 The wrapper also checks the installed hash against its declared code version after concurrent source changes.
-Migration 0100 adds `brainchain_worker_bindings` and `brainchain_binding_challenges` with permanent uniqueness, owner foreign keys, and format/network checks.
+Migration 0101 adds `brainchain_worker_bindings` and `brainchain_binding_challenges` with permanent uniqueness, owner foreign keys, and format/network checks.
 
 `apps/api/src/services/brainchain/contracts.ts` pins release 3.5 contracts and retired boards for both chains.
 `apps/api/src/services/brainchain/chain-client.ts` restricts RPC methods, checks chain identity, and bounds response size and request time.
@@ -1684,12 +1684,12 @@ It scans at most 2,000 blocks, 25 new hires, and 25 existing tasks per request, 
 Checkpoint or hire-hash changes suspend canonical attribution and rewind the board cursor without releasing the task owner.
 A monotonic cursor epoch fences each batch and increments on suspension, so a rewound block number cannot admit a stale batch.
 Snapshots expose `executionEligible:false` and stale/recent evidence; historical data grants no execution authority.
-Migration 0101 adds task observations, owner-constrained recovery attempts, cursor checkpoints, and immutable owner triggers.
+Migration 0102 adds task observations, owner-constrained recovery attempts, cursor checkpoints, and immutable owner triggers.
 Task identity is chain plus board plus task number; the manifest hash remains evidence only.
 `apps/api/src/services/brainchain/tasks.ts` fences recovery leases with task generation, random owner token, and database wall-clock expiry.
 Recovery leases cannot sign transactions, spend funds, run cognition, or submit task results. No scheduler activates these reads.
 
-Migration 0102 adds dedicated testnet signer streams, separate single-use intent/gas authority, and frozen operation records.
+Migration 0103 adds dedicated testnet signer streams, separate single-use intent/gas authority, and frozen operation records.
 `apps/api/src/services/brainchain/signer-policy.ts` permits only typed faucet, exact approvals, stake, own-worker application, drain, and withdrawal preparation.
 It rejects mainnet, foreign signer addresses, stale blocks, arbitrary calldata, general proposals, and task delivery without execution authority.
 Artifact admission remains closed until independent deployed-bytecode equivalence is approved.
@@ -1709,17 +1709,17 @@ Its separate `@clawville/agent-runtime/isolated-task` entry uses real Eliza with
 The runtime owner reports 33 tests with 376 assertions. OS sandbox, durable proxy, and root budget admission remain required gates.
 These runtime tests do not establish active task execution or process isolation.
 No raw private key or signature enters these tables; only canonical proof messages and hashes persist.
-Migration 0104 adds root-issued, single-attempt testnet execution authority with exact brief/input/prompt hashes and immutable lease fences.
+Migration 0105 adds root-issued, single-attempt testnet execution authority with exact brief/input/prompt hashes and immutable lease fences.
 `apps/api/src/services/brainchain/execution.ts` admits only fresh canonical Hired tasks for internally enabled workers.
 It checks expiry after locks, consumes one authority, and limits the lease to sixty seconds or the earlier task/authority deadline.
 Pause blocks new cognition; drain permits an already admitted attempt. Neither control grants spend authority.
 Reorg suspension invalidates execution attempts; recovery cannot replace a live execution lease.
 Last audited: 2026-11-09. Drift: durable acceptance precedes key use; bounded execution admission replaces the recovery-only internal limitation.
-Migration 0105 adds one immutable private result per task, attempt, and settled compute call, with composite owner constraints.
+Migration 0106 adds one immutable private result per task, attempt, and settled compute call, with composite owner constraints.
 `apps/api/src/services/brainchain/task-delivery.ts` freezes exact output, claims one upload, retains uncertainty, and prepares pinned submit calldata.
 `apps/api/src/services/brainchain/task-delivery-protocol.ts` implements the verified result-v2 message and bounded fixed-host upload protocol.
 Replay after lease loss only reads frozen bytes; new uploads and submission preparation require the current execution fence.
-Migration 0106 adds immutable result-signature acceptance and a permanent result-to-submit-operation link.
+Migration 0107 adds immutable result-signature acceptance and a permanent result-to-submit-operation link.
 `apps/api/src/services/brainchain/result-signing.ts` coordinates root-authorized result-v2 signatures and protected capture recovery.
 The isolated driver constructs the fixed EIP-191 message and keeps signature payloads in a separate journal namespace.
 Typed submit authority now reuses nonce reservation, exact-byte capture, and receipt recovery with current execution/result checks.
@@ -2787,7 +2787,7 @@ Older history: `git log apps/api/ apps/web/src/lib/three/ packages/database/`.
 
 ### BrainChain expiry-only delivery recovery — last audited 2026-11-09
 
-Migration 0107 adds immutable original-hire snapshots, separate root delivery grants and leases, and reconciliation evidence.
+Migration 0108 adds immutable original-hire snapshots, separate root delivery grants and leases, and reconciliation evidence.
 The internal delivery-recovery service preserves frozen compute lineage and requires the same canonical hire before any new delivery stage.
 Revocation, signer generation changes, unknown uploads and missing signature captures refuse new effects. Captured transactions retain exact bytes and nonce.
 Matching Submitted records reconciliation without another broadcast. The signer activation gate remains false.
@@ -2819,7 +2819,7 @@ PARITY: no new public route; existing human and agent controls retain the same b
 
 ### BrainChain testnet buyer orders - last audited 2026-11-09
 
-Drift note: migration 0108 adds durable avatar-bound buyer orders, permanent external payer associations, encrypted payment capture, and append-only receipt events. The private purchase routes in `apps/api/src/routes/brainchain.ts` use the canonical cookie or owner-proven agent-session identity and non-guest ledger checks. The service in `apps/api/src/services/brainchain/purchases.ts` rechecks current identity after waits. Testnet submission remains disabled by a reviewed source constant; no new environment flag enables it.
+Drift note: migration 0109 adds durable avatar-bound buyer orders, permanent external payer associations, encrypted payment capture, and append-only receipt events. The private purchase routes in `apps/api/src/routes/brainchain.ts` use the canonical cookie or owner-proven agent-session identity and non-guest ledger checks. The service in `apps/api/src/services/brainchain/purchases.ts` rechecks current identity after waits. Testnet submission remains disabled by a reviewed source constant; no new environment flag enables it.
 
 The supported lane pins Base Sepolia 84532, its test USDC contract, token domain, desk recipient, fixed resource and one-token quote. `apps/api/src/services/brainchain/purchase-policy.ts` builds exact application and EIP-3009 typed data. `apps/api/src/services/brainchain/purchase-client.ts` limits fixed-origin requests, body size, redirects, time and retries. Its final fence runs after DNS validation. `apps/api/src/services/brainchain/purchase-receipts.ts` accepts only fixed-network reads and verifies exact canonical token receipts. No Solana custody signer or CT settlement participates.
 
@@ -2853,7 +2853,7 @@ PARITY: the human panel and agent routes share avatar-bound policy records; agen
 
 ### BrainChain buyer authority and shared spend correction - last audited 2026-11-09
 
-Drift note: migration 0110 adds users.linked_wallet_authority_version and the purchase approval wallet/version tuple. Its DB trigger increments the version on linked-wallet or proof-time change and rejects manual version reset. The safe-integer bound preserves exact schema serialization. Legacy approvals without the tuple refuse. The purchase service checks the current locked user tuple during proof verification, capture, and the final post-await dispatch fence. Away-and-back wallet rotation cannot revive a previous approval. Approval renewal preserves frozen task/payment bytes and all existing liabilities.
+Drift note: migration 0111 adds users.linked_wallet_authority_version and the purchase approval wallet/version tuple. Its DB trigger increments the version on linked-wallet or proof-time change and rejects manual version reset. The safe-integer bound preserves exact schema serialization. Legacy approvals without the tuple refuse. The purchase service checks the current locked user tuple during proof verification, capture, and the final post-await dispatch fence. Away-and-back wallet rotation cannot revive a previous approval. Approval renewal preserves frozen task/payment bytes and all existing liabilities.
 
 The shared SQL query in `apps/api/src/services/account-spend-liability.ts` governs both buyer and outbound vendor admission under the same spend-policy avatar lock. It uses exact six-decimal atomic arithmetic. Vendor pending/ambiguous rows carry across UTC days; paid rows count for their UTC day; failed rows do not count. Provisional buyer payment/refund observations remain held until a separately reviewed finality/release policy exists. Buyer and vendor records represent distinct authorizations, with no duplicated ledger write. Testnet buyer authorizations consume the existing global cap; they receive no second allowance and do not represent a production token transfer. Solana mainnet token/network guards remain unchanged.
 
@@ -2876,7 +2876,7 @@ PARITY: human and bound-agent queue/party operations use the same avatar-bound s
 
 ### BrainChain Solana devnet buyer adapter - Last Audited 2026-11-09
 
-Drift: additive migration 0111 gives buyer records an immutable payment-network discriminator and frozen Solana artifact.
+Drift: additive migration 0112 gives buyer records an immutable payment-network discriminator and frozen Solana artifact.
 Existing EVM rows keep eip155:84532. Solana payer rows use a null EVM chain ID; no integer substitutes for the Solana network.
 The adapter uses fixed read-only devnet RPC, strict classic SPL accounts, exact v0 bytes, external Ed25519 intent, and partial transaction capture.
 The existing linked-wallet authority version, shared account lock, caps, encrypted capture, and final owner checks apply to both adapters.
@@ -2901,7 +2901,7 @@ BrainChain scheduler S1 audit correction, Last Audited2026-11-09: the owner auth
 
 ### BrainChain bounded buyer history discovery - Last Audited 2026-11-09
 
-Drift: migration 0114 adds bounded Solana discovery metadata to existing buyer orders, without a financial-release record or cap exclusion.
+Drift: migration 0115 adds bounded Solana discovery metadata to existing buyer orders, without a financial-release record or cap exclusion.
 The existing reconciliation service scans only captured payer and source-account history through fixed read-only RPC.
 Four history pages, twelve candidates, a fifteen-second overall deadline, and existing RPC response/deadline bounds constrain each request.
 Unavailable evidence restores the prior private cursor. An exact finalized payment observation never creates a remote order or task identity.
@@ -2950,7 +2950,7 @@ PARITY: human and bound-agent worker paths consume the same persisted owner/reco
 
 Last Audited: 2026-11-09. Drift: probe embeddings now have a dedicated durable call ledger under the existing provider budget and envelope.
 
-`apps/api/src/services/brainchain/probe-embedding-budget.ts` owns trusted manifest registration, durable start/call quotas, current identity/root fences, single-winner dispatch, stop and conservative uncertainty settlement. Migration `packages/database/migrations/0118_brainchain_probe_embeddings.sql` adds permanent fixture markers and immutable run/call scope. Historical identity IDs have no identity foreign keys, so fixture cleanup retains liabilities. Runtime lookup includes inactive scope and cannot silently select normal providers for a marked identity.
+`apps/api/src/services/brainchain/probe-embedding-budget.ts` owns trusted manifest registration, durable start/call quotas, current identity/root fences, single-winner dispatch, stop and conservative uncertainty settlement. Migration `packages/database/migrations/0119_brainchain_probe_embeddings.sql` adds permanent fixture markers and immutable run/call scope. Historical identity IDs have no identity foreign keys, so fixture cleanup retains liabilities. Runtime lookup includes inactive scope and cannot silently select normal providers for a marked identity.
 
 `apps/api/src/services/brainchain/compute-accounting.ts` validates and sums task and probe calls under the same provider/envelope locks. Both envelope closure and protected root publication use that aggregate. The fixed `apps/api/src/services/brainchain/probe-embedding-provider.ts` has no credential discovery or fallback; its constructor accepts the trusted adapter credential. No runtime/provider activation follows from these primitives. Canonical task authority remains unchanged.
 

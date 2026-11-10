@@ -31,8 +31,8 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('durable exact task del
   beforeAll(async()=>{
     const root=resolve(import.meta.dir,'../../../../..');const settings=await getBrainchainFixtureSettings();
     fixture=postgres({...settings.options,max:12,onnotice:()=>{}});
-    const migration=await readFile(resolve(root,'packages/database/migrations/0105_brainchain_task_results.sql'),'utf8');await fixture.unsafe(migration);await fixture.unsafe(migration);
-    const signatures=await readFile(resolve(root,'packages/database/migrations/0106_brainchain_result_signatures.sql'),'utf8');await fixture.unsafe(signatures);await fixture.unsafe(signatures);
+    const migration=await readFile(resolve(root,'packages/database/migrations/0106_brainchain_task_results.sql'),'utf8');await fixture.unsafe(migration);await fixture.unsafe(migration);
+    const signatures=await readFile(resolve(root,'packages/database/migrations/0107_brainchain_result_signatures.sql'),'utf8');await fixture.unsafe(signatures);await fixture.unsafe(signatures);
     process.env.DATABASE_URL=settings.url;
     execution=await import('./execution');tasks=await import('./tasks');
     const policy=await import('./signer-policy');mock.module('./signer-policy',()=>({...policy,assertSignerActivation:()=>{},assertSignerArtifactAdmission:policy.assertObservedSignerCode}));

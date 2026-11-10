@@ -12,7 +12,7 @@ async function refusal(fn:()=>PromiseLike<unknown>){try{await fn();return false;
 describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('probe embedding durable shared pool',()=>{
  let q:ReturnType<typeof postgres>;
  beforeAll(async()=>{const s=await getBrainchainFixtureSettings();q=postgres({...s.options,max:4,onnotice:()=>{}});drizzle(q);
-  const sql=await Bun.file(new URL('../../../../../packages/database/migrations/0118_brainchain_probe_embeddings.sql',import.meta.url)).text();await q.unsafe(sql);await q.unsafe(sql);
+  const sql=await Bun.file(new URL('../../../../../packages/database/migrations/0119_brainchain_probe_embeddings.sql',import.meta.url)).text();await q.unsafe(sql);await q.unsafe(sql);
  });afterAll(async()=>{await q.end();});
  async function setup(options:{throwProvider?:boolean;hangRoot?:boolean;providerWait?:()=>Promise<void>}={}){
   const m:ProbeManifest={version:1,runId:randomUUID(),envelopeId:randomUUID(),jobId:randomUUID(),userId:randomUUID(),avatarId:randomUUID(),platformAgentId:randomUUID(),runtimeAgentId:randomUUID(),sourceCommit:'a'.repeat(40),apiOrigin:'https://api-staging.clawville.world',protocolHash:'b'.repeat(64),curriculumHash:'c'.repeat(64),protocolInputs:[probeHash('protocol')],brainchainInputs:[probeHash('brainchain')],maxCalls:35,maxStarts:2,startedAtMs:Date.now(),expiresAtMs:Date.now()+120000,model:'text-embedding-3-small',dimensions:1536,pricingVersion:'openai-embedding-20261109-v1',maximumMicros:'200'};

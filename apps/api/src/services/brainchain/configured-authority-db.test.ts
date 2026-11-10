@@ -7,7 +7,7 @@ import {CONFIGURED_AUTHORITY_VERSION as version,CONFIGURED_AUTHORITY_DIGEST as d
 import {assertPersistedConfiguredAuthority} from './configured-authority-reader';
 describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('configured authority PostgreSQL linkage',()=>{
  let q:ReturnType<typeof postgres>,migration:string;const owned:string[]=[];
- beforeAll(async()=>{const settings=await getBrainchainFixtureSettings();q=postgres({...settings.options,max:4,onnotice:()=>{}});migration=await readFile(new URL('../../../../../packages/database/migrations/0117_brainchain_configured_authority.sql',import.meta.url),'utf8');await q.unsafe(migration);await q.unsafe(migration);});
+ beforeAll(async()=>{const settings=await getBrainchainFixtureSettings();q=postgres({...settings.options,max:4,onnotice:()=>{}});migration=await readFile(new URL('../../../../../packages/database/migrations/0118_brainchain_configured_authority.sql',import.meta.url),'utf8');await q.unsafe(migration);await q.unsafe(migration);});
  afterAll(async()=>{await q?.end();});
  async function grant(current:boolean){const id=randomUUID();await q`INSERT INTO brainchain_signer_authorities SELECT (jsonb_populate_record(NULL::brainchain_signer_authorities,to_jsonb(a)||jsonb_build_object('id',${id}::text,'authority_policy_version',${current?version:null}::text,'authority_policy_digest',${current?digest:null}::text))).* FROM brainchain_signer_authorities a LIMIT 1`;owned.push(id);return id;}
  async function refusal(action:()=>PromiseLike<unknown>){try{await action();return false;}catch{return true;}}
