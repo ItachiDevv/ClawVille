@@ -244,3 +244,10 @@ export function isOwnAiReasoningModel(provider: OwnAiProvider, model: string): b
   const bare = bareOwnAiModelId(model);
   return /^o\d(-|$)|^gpt-5|deepseek-r1|reasoner|thinking|^gemini-2\.5-pro/.test(bare);
 }
+
+/** Custodial UsePod deposits: hard bounds and daily SOL fee budget. */
+export const OWN_AI_USEPOD_PROGRAM_ID = 'BBAdcqUkg68JXNiPQ1HR1wujfZuayyK3eQTQSYAh6FSW';
+export const OWN_AI_USEPOD_DEPOSIT_MIN_CENTS = 10;
+export const OWN_AI_USEPOD_DEPOSIT_MAX_CENTS = 5000;
+export const USEPOD_DEPOSITS_PER_DAY = 5;
+export const OWN_AI_USEPOD_MIN_SOL_LAMPORTS = 15000;

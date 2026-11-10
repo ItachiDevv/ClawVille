@@ -1,7 +1,9 @@
 # Inference Router — spec (implementation-ready)
 
 **Status:** SCOPED, not built. Replaces the interim `OPENAI_BASE_URL` global-env hack (commit `e95de207`) which must be removed as part of this work.
-**Last Audited: 2026-11-09 05:26Z (own AI part A).** Drift note: the `hosted-user` row said local first; the code default is `[openai]` (founder: only the house fleet uses local). Section 2f adds the per-avatar own-AI handler. The router itself is built (`packages/agent-runtime/src/inference/inference-router.ts`); the status line above is history.
+**Last Audited: 2026-11-10 00:45Z (own AI part B, protocol 120, migration 0100).** Drift note: UsePod deposits now share human and agent spend rules, require finalized proof, and report provider credit separately.
+
+Prior **Last Audited: 2026-11-09 05:26Z (own AI part A).** Drift note: the `hosted-user` row said local first; the code default is `[openai]` (founder: only the house fleet uses local). Section 2f adds the per-avatar own-AI handler. The router itself is built (`packages/agent-runtime/src/inference/inference-router.ts`); the status line above is history.
 **Owner branch:** `feat/agent-metaverse-p0` (== `origin/staging`). Ship to staging first; prod config pre-staged, activates on master merge.
 **Verified integration facts (2026-07-06):** the ElizaOS text handler receives `runtime: IAgentRuntime` (`openai-text-provider.ts:196`, currently ignored as `_runtime`) → it can read the agent's route off the runtime. `agentOrchestrator.ensureAgentRuntime(..., opts?: {isHouse?})` already knows `agent.type` (`avatar-agent | openclaw-bot | system-agent`) + `isHouse` → it assigns the route. Provider is already per-runtime model-preset-configured (`makeHandler(model)`), so per-agent endpoint selection is natural.
 
@@ -62,12 +64,14 @@ Per-endpoint state `{ consecutiveFailures, openUntil }`. Config `{ failThreshold
 ### 2e. Metering (cost/capacity visibility)
 Per-endpoint counters `{ requests, successes, failures, lastLatencyMs }`. Local ≈ free, cloud = $. Expose via a `router.stats()` for `/dash` later (not blocking).
 
-### 2f. Own AI per avatar (2026-11-09, own AI part A, PROTOCOL 119)
+### 2f. Own AI per avatar (2026-11-09, own AI parts A and B, PROTOCOL 120)
 The router stays process-wide and has no per-avatar key or endpoint. A human can instead give their hosted agent its own AI in the wallet panel "Agent AI" card: their own key (OpenAI, Anthropic, OpenRouter) or a UsePod token, a model, a speed (seconds between decisions) and a daily limit.
 - `apps/api/src/services/agent-orchestrator.ts` loads `loadOwnAiRuntimeConfig(avatarId)` from `apps/api/src/services/own-ai.ts` at runtime start, for user-owned avatars only (never house, teacher or system agents), and passes it to `createElizaRuntime` as `ownAi`.
 - `packages/agent-runtime/src/plugins/own-ai-provider.ts` registers the text model handler at priority 98: below an OpenClaw gateway (100), above the router text handler (95). An OpenClaw gateway and own AI never run together: the save is refused while a gateway is set, and if both reach the runtime the gateway wins (no throw).
 - Each call first reserves its worst-case cost under the daily limit (`mayCall`: prompt chars/4 in plus max_tokens out at the model price, one conditional upsert, so parallel calls near the limit cannot all pass; the reservation is settled with the real cost after the call, or released when the call fails). Limit reached, HTTP 401/403 (key refused), 402 (UsePod balance empty), 400/404 (model unavailable), timeout, 5xx or network error: that call uses the router text handler (ClawVille AI) instead, and the reason is recorded for the status read. Usage (tokens, estimated cost from a price table) is metered per avatar per UTC day in `agent_ai_usage`.
 - Provider hosts are fixed per provider (never user-supplied). Embeddings and teacher replies stay on the platform endpoints.
+
+- Part B adds wallet USDC deposits to the registered UsePod token through the Agent AI card or the avatar agent session. Vendor `usepod` must be allowed within spend rules. Ask-before requires a fresh human linked-wallet signature; agents receive `approval_required`. Deposits require finalized chain proof. Provider credit stays `seen` or `unknown`; neither the runtime nor reconciliation automatically deposits again. This changes funding, not inference routing.
 
 ## 3. Integration points (files)
 - **NEW `packages/agent-runtime/src/inference/inference-router.ts`** — the class (endpoints, routes, breaker, meter, `generateText`). Framework-agnostic; no ElizaOS import.
