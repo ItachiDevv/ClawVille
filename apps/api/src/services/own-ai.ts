@@ -59,6 +59,7 @@ export type OwnAiErrorCode =
   | 'usepod_token_registered'
   | 'raise_needs_signature'
   | 'key_rejected'
+  | 'usepod_not_activated'
   | 'balance_empty'
   | 'model_unavailable'
   | 'rate_limited'
@@ -78,6 +79,7 @@ const ERROR_HTTP_STATUS: Record<OwnAiErrorCode, number> = {
   usepod_token_registered: 400,
   raise_needs_signature: 403,
   key_rejected: 400,
+  usepod_not_activated: 400,
   balance_empty: 402,
   model_unavailable: 400,
   rate_limited: 429,
@@ -867,6 +869,20 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
  * parsed JSON (or null when `readBody` is false). Any failure throws an
  * OwnAiError with a short code; the URL, headers and body never reach it.
  */
+/**
+ * Pure: true for UsePod's balance 401 reply for a token it has not activated
+ * (seen 2026-11-10: `{"error":{"message":"unauthorized: token not found or not
+ * activated","type":"unauthorized"}}`). Any other 401 body stays key_rejected.
+ */
+export function usepodNotActivatedReply(text: string): boolean {
+  try {
+    const e = (JSON.parse(text) as { error?: { message?: unknown; type?: unknown } } | null)?.error;
+    return e?.type === 'unauthorized' && typeof e.message === 'string' && /\bnot activated\b/.test(e.message);
+  } catch {
+    return false;
+  }
+}
+
 async function callProvider(
   url: string,
   init: { method: 'GET' | 'POST'; headers: Record<string, string>; body?: string },
@@ -878,6 +894,8 @@ async function callProvider(
     const res = await fetch(url, { ...init, redirect: 'manual', signal: ac.signal });
     const code = mapProviderStatus(res.status, opts.kind);
     if (code) {
+      if (opts.kind === 'balance' && res.status === 401 && usepodNotActivatedReply(await readCapped(res, SMALL_MAX_BYTES).catch(() => '')))
+        throw new OwnAiError('usepod_not_activated');
       await res.body?.cancel().catch(() => {});
       throw new OwnAiError(code);
     }
@@ -1192,13 +1210,24 @@ export function parseUsepodBalance(body: unknown): { usdcMicro: number; isActive
  */
 export async function readUsepodBalance(avatarId: string): Promise<{ usdcMicro: number; isActive: boolean } | null> {
   const row = await loadStoredRow(avatarId);
-  const token = registeredToken(avatarId, row) ?? slotKey(avatarId, row, 'usepod');
+  const registered = registeredToken(avatarId, row);
+  const token = registered ?? slotKey(avatarId, row, 'usepod');
   if (!token) return null;
-  const body = await callProvider(
-    `${USEPOD_API}/proxy/${token.toLowerCase()}/balance`,
-    { method: 'GET', headers: { Accept: 'application/json' } },
-    { kind: 'balance', timeoutMs: USEPOD_TIMEOUT_MS, maxBytes: SMALL_MAX_BYTES, readBody: true },
-  );
+  let body: unknown;
+  try {
+    body = await callProvider(
+      `${USEPOD_API}/proxy/${token.toLowerCase()}/balance`,
+      { method: 'GET', headers: { Accept: 'application/json' } },
+      { kind: 'balance', timeoutMs: USEPOD_TIMEOUT_MS, maxBytes: SMALL_MAX_BYTES, readBody: true },
+    );
+  } catch (err) {
+    // UsePod answers 401 "token not found or not activated" for a token it
+    // issued that never held a balance (the first deposit activates it). Only
+    // the token WE registered may report that state; a pasted token keeps
+    // key_rejected.
+    if (!registered && err instanceof OwnAiError && err.code === 'usepod_not_activated') throw new OwnAiError('key_rejected');
+    throw err;
+  }
   const balance = parseUsepodBalance(body);
   if (balance.usdcMicro > 0 && balance.isActive) {
     const cleared = await db

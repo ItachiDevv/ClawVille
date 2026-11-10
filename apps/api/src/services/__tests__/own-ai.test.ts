@@ -87,6 +87,7 @@ const {
   parseUsepodBalance,
   parseUsepodRegisterResponse,
   readUsepodBalance,
+  usepodNotActivatedReply,
   readUsepodDashboardLink,
   recordOwnAiFallback,
   recordOwnAiUsage,
@@ -877,6 +878,34 @@ describe('UsePod', () => {
     queue.select.push([row]);
     fetchReply = () => json({ error: `token ${TOKEN} unknown` }, 401);
     await expectCodeAsync(readUsepodBalance(AVATAR), 'key_rejected', [TOKEN]);
+
+    // Our registered token, never funded: UsePod's exact 401 "not activated" reply.
+    const notActivated = { error: { message: 'unauthorized: token not found or not activated', type: 'unauthorized' } };
+    queue.select.push([row]);
+    fetchReply = () => json(notActivated, 401);
+    await expectCodeAsync(readUsepodBalance(AVATAR), 'usepod_not_activated', [TOKEN]);
+
+    // The same body with 403 or 404 stays key_rejected.
+    for (const status of [403, 404]) {
+      queue.select.push([row]);
+      fetchReply = () => json(notActivated, status);
+      await expectCodeAsync(readUsepodBalance(AVATAR), 'key_rejected', [TOKEN]);
+    }
+
+    // A pasted token (own-key slot) with the activation 401 stays key_rejected.
+    queue.select.push([{ ...row, provider: 'usepod', keyEnc: sealed(TOKEN), usepodRegistered: false, usepodTokenEnc: null }]);
+    fetchReply = () => json(notActivated, 401);
+    await expectCodeAsync(readUsepodBalance(AVATAR), 'key_rejected', [TOKEN]);
+  });
+
+  test('UsePod activation reply match is exact', () => {
+    const ok = JSON.stringify({ error: { message: 'unauthorized: token not found or not activated', type: 'unauthorized' } });
+    expect(usepodNotActivatedReply(ok)).toBe(true);
+    expect(usepodNotActivatedReply(JSON.stringify({ error: { message: 'unauthorized: bad token', type: 'unauthorized' } }))).toBe(false);
+    expect(usepodNotActivatedReply(JSON.stringify({ error: { message: 'not activated', type: 'other' } }))).toBe(false);
+    expect(usepodNotActivatedReply(JSON.stringify({ error: 'not activated' }))).toBe(false);
+    expect(usepodNotActivatedReply('not json')).toBe(false);
+    expect(usepodNotActivatedReply('')).toBe(false);
   });
 
   test('balance reply validation', () => {
