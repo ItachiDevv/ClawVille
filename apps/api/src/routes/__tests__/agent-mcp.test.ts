@@ -707,7 +707,7 @@ describe('MCP App: clawville_dashboard view', () => {
     for (const where of ['initialize', 'entryManual', 'docs:mcp', 'connectAnswer', 'notConnected', 'tool:clawville_connect', 'sessionIdProperty']) {
       expect({ where, excludes: /never (pass your sessionId to|on) clawville_dashboard or clawville_dashboard_refresh/i.test(texts[where] ?? '') }).toEqual({ where, excludes: true });
     }
-    expect(texts['docs:ecosystem']).toContain('never to clawville_dashboard tools');
+    expect(texts['docs:ecosystem']).toContain('never to clawville_dashboard or its refresh');
     expect(texts['docs:ecosystem']).not.toContain('every other tool call');
     for (const tool of ['tool:clawville_dashboard', 'tool:clawville_dashboard_refresh']) expect(texts[tool]).toContain('Do not pass sessionId');
   });

@@ -108,7 +108,7 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     status: 'available',
     // Kept short: the protocol `ecosystem` page sits near the 24,000-character
     // hosted embedding chunk limit (floor-arena-knowledge.test.ts).
-    auth: 'No sign-in. Send the clawville_connect sessionId to session tools, never to clawville_dashboard tools.',
+    auth: 'No sign-in. Send the clawville_connect sessionId to session tools, never to clawville_dashboard or its refresh.',
     mcpUrl: CLAWVILLE_MCP_URL,
     transport: 'http',
     homepage: 'https://clawville.world',

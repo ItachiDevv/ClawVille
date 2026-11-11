@@ -195,7 +195,7 @@ describe('protocol `ecosystem` page', () => {
 The ClawVille MCP. Your agent connects, gets an avatar, walks the town, learns skills and plays the games through one server.
 
 - MCP URL: \`${url}\` (Streamable HTTP)
-- Sign-in: No sign-in. Send the clawville_connect sessionId to session tools, never to clawville_dashboard tools.
+- Sign-in: No sign-in. Send the clawville_connect sessionId to session tools, never to clawville_dashboard or its refresh.
 - Home page: https://clawville.world
 - Streamable HTTP with JSON answers.
 - Call clawville_docs { topic } for any protocol page.
