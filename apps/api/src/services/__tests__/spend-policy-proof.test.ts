@@ -4,6 +4,10 @@ import bs58 from 'bs58';
 import { isSpendPolicyRaise } from '@clawville/shared';
 import {
   _resetSpendProofNoncesForTest,
+  buildUsepodDepositMessage,
+  issueUsepodDepositChallenge,
+  verifyUsepodDepositProof,
+  issueUsepodChallenge,
   buildApprovalMessage,
   buildSpendRulesMessage,
   issueApprovalChallenge,
@@ -164,5 +168,59 @@ describe('approval proof ("ask me before each payment")', () => {
   it('a spend-rules challenge never approves a payment', () => {
     const challenge = issueSpendProofChallenge('user-1', VALUES);
     expect(verifyApprovalProof({ userId: 'user-1', terms: TERMS, nonce: challenge.nonce, signature: sign(challenge.messageToSign), walletPubkey })).toBe('invalid_challenge');
+  });
+});
+
+
+describe('UsePod deposit approval proof', () => {
+  const terms = { avatarId: 'avatar-1', amountCents: 50,
+    opsWallet: '55XjZhXbLMRoEpNY2JmkHhcFfbTnjFnGh75j36Xk6YgP',
+    programId: 'BBAdcqUkg68JXNiPQ1HR1wujfZuayyK3eQTQSYAh6FSW', tokenLast4: '1234', idempotencyKey: 'deposit-1' };
+
+  it('binds the distinct purpose, every deposit term, expiry and nonce', () => {
+    const challenge = issueUsepodDepositChallenge('user-1', terms);
+    expect(challenge.messageToSign).toBe(buildUsepodDepositMessage('user-1', terms, challenge.nonce, challenge.expiresAt));
+    for (const line of ['ClawVille usepod-deposit', 'account: user-1', 'avatar: avatar-1', 'amountCents: 50',
+      `ops wallet: ${terms.opsWallet}`, `program: ${terms.programId}`, 'token ending: 1234',
+      'idempotency key: deposit-1', `expiry: ${challenge.expiresAt}`, `nonce: ${challenge.nonce}`]) {
+      expect(challenge.messageToSign.split('\n')).toContain(line);
+    }
+    const proof = { userId: 'user-1', terms, nonce: challenge.nonce, signature: sign(challenge.messageToSign), walletPubkey };
+    expect(verifyUsepodDepositProof(proof)).toBe('ok');
+    expect(verifyUsepodDepositProof(proof)).toBe('invalid_challenge');
+  });
+
+  it('refuses every changed term, even a signature over the changed message', () => {
+    for (const change of [{ avatarId: 'avatar-2' }, { amountCents: 51 }, { opsWallet: walletPubkey },
+      { programId: walletPubkey }, { tokenLast4: '5678' }, { idempotencyKey: 'deposit-2' }]) {
+      const challenge = issueUsepodDepositChallenge('user-1', terms);
+      const changed = { ...terms, ...change };
+      expect(verifyUsepodDepositProof({ userId: 'user-1', terms: changed, nonce: challenge.nonce,
+        signature: sign(buildUsepodDepositMessage('user-1', changed, challenge.nonce, challenge.expiresAt)), walletPubkey })).toBe('invalid_challenge');
+    }
+  });
+
+  it('refuses another wallet, another account, a different expiry and an expired nonce', () => {
+    const a = issueUsepodDepositChallenge('user-1', terms);
+    expect(verifyUsepodDepositProof({ userId: 'user-1', terms, nonce: a.nonce, signature: sign(a.messageToSign, other.secretKey), walletPubkey })).not.toBe('ok');
+    const b = issueUsepodDepositChallenge('user-1', terms);
+    expect(verifyUsepodDepositProof({ userId: 'user-2', terms, nonce: b.nonce, signature: sign(b.messageToSign), walletPubkey })).toBe('invalid_challenge');
+    const c = issueUsepodDepositChallenge('user-1', terms);
+    expect(verifyUsepodDepositProof({ userId: 'user-1', terms, nonce: c.nonce,
+      signature: sign(buildUsepodDepositMessage('user-1', terms, c.nonce, '2099-01-01T00:00:00.000Z')), walletPubkey })).not.toBe('ok');
+    const d = issueUsepodDepositChallenge('user-1', terms);
+    const originalNow = Date.now;
+    try {
+      Date.now = () => Date.parse(d.expiresAt) + 1;
+      expect(verifyUsepodDepositProof({ userId: 'user-1', terms, nonce: d.nonce, signature: sign(d.messageToSign), walletPubkey })).toBe('invalid_challenge');
+    } finally { Date.now = originalNow; }
+  });
+
+  it('never accepts a registration, link or spend-policy signature as a deposit approval', () => {
+    for (const challenge of [issueUsepodChallenge('register', 'user-1', terms.avatarId),
+      issueUsepodChallenge('link', 'user-1', terms.avatarId), issueSpendProofChallenge('user-1', VALUES)]) {
+      expect(verifyUsepodDepositProof({ userId: 'user-1', terms, nonce: challenge.nonce,
+        signature: sign(challenge.messageToSign), walletPubkey })).toBe('invalid_challenge');
+    }
   });
 });

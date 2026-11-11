@@ -19,6 +19,7 @@ import nacl from 'tweetnacl';
 import * as realDatabase from '@clawville/database';
 import * as realAgentAuth from '../../middleware/require-auth-or-agent';
 import * as realOwnAi from '../../services/own-ai';
+import * as realDeposit from '../../services/usepod-deposit';
 
 type Middleware = (c: any, next: () => Promise<void>) => unknown;
 const AGENT_HEADER = realAgentAuth.AGENT_SESSION_HEADER;
@@ -36,14 +37,36 @@ let lastFindUserId: string | null = null;
 // bun's mock.module is process-wide and patches live bindings. The CI money
 // lane runs many files in one process, so copy the real exports now and put
 // them back after this file (else own-ai.test.ts gets this file's fakes).
+const realDepositCopy = { ...realDeposit };
+const deposits: realDeposit.DepositInput[] = [];
+let depositApproval = false;
+let depositChallengeCalls = 0;
+let ledgerCapable = true;
+let balanceThrows: string | null = null;
+let priorDepositImpl: () => Promise<boolean> = async () => false;
 const realOwnAiCopy = { ...realOwnAi };
 const realDatabaseCopy = { ...realDatabase };
 const realAgentAuthCopy = { ...realAgentAuth };
 afterAll(() => {
   mock.module('../../services/own-ai', () => realOwnAiCopy);
+  mock.module('../../services/usepod-deposit', () => realDepositCopy);
   mock.module('@clawville/database', () => realDatabaseCopy);
   mock.module('../../middleware/require-auth-or-agent', () => realAgentAuthCopy);
 });
+
+mock.module('../../services/usepod-deposit', () => ({
+  ...realDepositCopy,
+  hasPriorUsepodDeposit: () => priorDepositImpl(),
+  createUsepodDepositChallenge: async () => {
+    depositChallengeCalls++;
+    return { ok: true, nonce: 'n'.repeat(44), expiresAt: new Date().toISOString(), messageToSign: 'ClawVille usepod-deposit' };
+  },
+  depositUsepod: async (input: realDeposit.DepositInput) => {
+    deposits.push(input);
+    if (depositApproval && (input.actor === 'agent' || !input.signature)) return { ok: false, code: 'approval_required' };
+    return { ok: true, ledgerId: 'ledger-1', status: 'paid', txSignature: 'tx-1', usdCents: input.amountCents, creditStatus: 'unknown', balance: null };
+  },
+}));
 
 mock.module('../../lib/auth', () => ({
   resolveSessionCookieDomain: () => undefined,
@@ -71,7 +94,7 @@ mock.module('../../middleware/require-auth-or-agent', () => ({
     }
     const session = agentAvatarBySession.get(c.req.header(AGENT_HEADER) ?? '');
     if (!session) throw new HTTPException(401, { message: 'Invalid or expired agent session' });
-    c.set('identity', { kind: 'agent', ...session, agentId: 'agent-1', sessionId: 's', ledgerCapable: true });
+    c.set('identity', { kind: 'agent', ...session, agentId: 'agent-1', sessionId: 's', ledgerCapable });
     return next();
   }) as Middleware,
 }));
@@ -191,7 +214,10 @@ mock.module('../../services/own-ai', () => ({
     };
   },
   readUsepodDashboardLink: async (avatarId: string) => usepodLinks.get(avatarId) ?? null,
-  readUsepodBalance: async (avatarId: string) => (usepodLinks.has(avatarId) ? { usdcMicro: 1_500_000, isActive: true } : null),
+  readUsepodBalance: async (avatarId: string) => {
+    if (balanceThrows) throw new realOwnAi.OwnAiError(balanceThrows as realOwnAi.OwnAiErrorCode);
+    return usepodLinks.has(avatarId) ? { usdcMicro: 1_500_000, isActive: true } : null;
+  },
 }));
 
 const { agentAiRoutes, resetAgentAiRateLimits } = await import('../agent-ai');
@@ -246,6 +272,10 @@ async function signUsepod(action: 'register' | 'link', cookie: string, wallet: n
 }
 
 beforeEach(() => {
+  deposits.length = 0;
+  depositChallengeCalls = 0;
+  depositApproval = false;
+  ledgerCapable = true;
   sessions.clear();
   guests.clear();
   activeAvatarByUser.clear();
@@ -792,5 +822,109 @@ describe('DELETE, models, UsePod', () => {
     expect(await agent.json()).toEqual({ usdcMicro: 1_500_000, isActive: true });
     const human = await call('GET', '/usepod/balance', { cookie: 'pw-a' });
     expect(human.status).toBe(200);
+  });
+
+  it('usepod balance: a registered token UsePod has not activated', async () => {
+    try {
+      balanceThrows = 'usepod_not_activated';
+      priorDepositImpl = async () => false;
+      const fresh = await call('GET', '/usepod/balance', { cookie: 'pw-a' });
+      expect(fresh.status).toBe(200);
+      expect(await fresh.json()).toEqual({ usdcMicro: 0, isActive: false });
+      // After a deposit that may have moved money: unavailable, not empty.
+      priorDepositImpl = async () => true;
+      const funded = await call('GET', '/usepod/balance', { agent: 'agent-session-a' });
+      expect(funded.status).toBe(400);
+      expect((await funded.json() as { code: string }).code).toBe('key_rejected');
+      priorDepositImpl = async () => { throw new Error('db down'); };
+      const dbDown = await call('GET', '/usepod/balance', { cookie: 'pw-a' });
+      expect(dbDown.status).toBe(502);
+      expect((await dbDown.json() as { code: string }).code).toBe('provider_error');
+    } finally {
+      balanceThrows = null;
+      priorDepositImpl = async () => false;
+    }
+  });
+});
+
+
+describe('UsePod deposit routes', () => {
+  const body = { amountCents: 50, idempotencyKey: 'deposit-1' };
+  it('binds human and agent deposits to their resolved avatar without returning token material', async () => {
+    for (const auth of [{ cookie: 'pw-a' }, { agent: 'agent-session-a' }]) {
+      const res = await call('POST', '/usepod/deposit', { ...auth, body });
+      expect(res.status).toBe(200);
+      expectNoStore(res);
+      expect(await res.json()).toEqual({ ok: true, ledgerId: 'ledger-1', status: 'paid', txSignature: 'tx-1', usdCents: 50, creditStatus: 'unknown', balance: null });
+    }
+    expect(deposits.map((item) => [item.avatarId, item.actor])).toEqual([['avatar-a', 'human'], ['avatar-a', 'agent']]);
+  });
+  it('refuses agent deposits with approval on and human deposits without a signature', async () => {
+    depositApproval = true;
+    for (const auth of [{ cookie: 'magic-a' }, { agent: 'agent-session-a' }]) {
+      const res = await call('POST', '/usepod/deposit', { ...auth, body });
+      expect(res.status).toBe(403);
+      expectNoStore(res);
+      expect((await res.json() as { code: string }).code).toBe('approval_required');
+    }
+    const signed = await call('POST', '/usepod/deposit', { cookie: 'magic-a', body: { ...body, nonce: 'n'.repeat(44), signature: 's'.repeat(88) } });
+    expect(signed.status).toBe(200);
+    expect(deposits.at(-1)?.nonce).toBe('n'.repeat(44));
+  });
+  it('requires a linked human wallet for a challenge and refuses agents', async () => {
+    const agent = await call('POST', '/usepod/deposit/challenge', { agent: 'agent-session-a', body });
+    expect(agent.status).toBe(403);
+    expectNoStore(agent);
+    const missing = await call('POST', '/usepod/deposit/challenge', { cookie: 'pw-a', body });
+    expect(missing.status).toBe(403);
+    linkWallet('user-a');
+    const human = await call('POST', '/usepod/deposit/challenge', { cookie: 'pw-a', body });
+    expect(human.status).toBe(200);
+    expectNoStore(human);
+    expect((await human.json() as { walletPubkey: string }).walletPubkey).toBe(linkedWallets.get('user-a')!);
+  });
+  it('refuses unproven agents, guests, exchanged sessions and malformed bodies before the service', async () => {
+    ledgerCapable = false;
+    expect((await call('POST', '/usepod/deposit', { agent: 'agent-session-a', body })).status).toBe(403);
+    for (const cookie of ['pw-guest', 'exchanged-a', 'legacy-a']) {
+      const res = await call('POST', '/usepod/deposit', { cookie, body });
+      expect(res.status).toBe(403);
+      expectNoStore(res);
+    }
+    expect((await call('POST', '/usepod/deposit', { cookie: 'pw-a', body: { ...body, amountCents: 5001 } })).status).toBe(400);
+    expect((await call('POST', '/usepod/deposit', { cookie: 'pw-a', agent: 'agent-session-a', body })).status).toBe(403);
+    expect(deposits).toHaveLength(0);
+  });
+});
+
+
+describe('UsePod request rate limits', () => {
+  const body = { amountCents: 50, idempotencyKey: 'limited-deposit' };
+  it('shares the deposit limiter between human and agent requests for the same avatar', async () => {
+    for (let index = 0; index < 6; index++) {
+      const auth = index % 2 ? { agent: 'agent-session-a' } : { cookie: 'pw-a' };
+      expect((await call('POST', '/usepod/deposit', { ...auth, body })).status).toBe(200);
+    }
+    const limited = await call('POST', '/usepod/deposit', { agent: 'agent-session-a', body });
+    expect(limited.status).toBe(429);
+    expectNoStore(limited);
+    expect((await limited.json() as { code: string }).code).toBe('rate_limited');
+    expect(deposits).toHaveLength(6);
+    resetAgentAiRateLimits();
+    expect((await call('POST', '/usepod/deposit', { cookie: 'pw-a', body })).status).toBe(200);
+  });
+  it('limits deposit challenges independently before the challenge service', async () => {
+    linkWallet('user-a');
+    for (let index = 0; index < 6; index++) {
+      expect((await call('POST', '/usepod/deposit/challenge', { cookie: 'pw-a', body })).status).toBe(200);
+    }
+    const limited = await call('POST', '/usepod/deposit/challenge', { cookie: 'pw-a', body });
+    expect(limited.status).toBe(429);
+    expectNoStore(limited);
+    expect((await limited.json() as { code: string }).code).toBe('rate_limited');
+    expect(depositChallengeCalls).toBe(6);
+    expect((await call('POST', '/usepod/deposit', { cookie: 'pw-a', body })).status).toBe(200);
+    resetAgentAiRateLimits();
+    expect((await call('POST', '/usepod/deposit/challenge', { cookie: 'pw-a', body })).status).toBe(200);
   });
 });

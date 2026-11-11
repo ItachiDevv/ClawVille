@@ -127,7 +127,7 @@ export async function reconcileVendorLedger(options: {
   const rows = Array.from(await db.execute<Row>(sql`
     SELECT id, status, payer_wallet, payer_signature, created_at::text, signed_at::text, reconcile_attempts
     FROM vendor_spend_ledger
-    WHERE status IN ('pending', 'ambiguous')
+    WHERE vendor <> 'usepod' AND status IN ('pending', 'ambiguous')
       AND created_at < now() - make_interval(mins => ${olderThan})
       AND ${scheduled}
     ORDER BY COALESCE(reconcile_next_at, created_at)
@@ -181,6 +181,9 @@ let worker: ReturnType<typeof setInterval> | null = null;
 export function startVendorLedgerReconcile(intervalMs = 15 * 60_000): void {
   if (worker) return;
   const run = () => {
+    void import('./usepod-deposit').then(({ reconcileUsepodDeposits }) => reconcileUsepodDeposits({ apply: true }))
+      .then(rows => { const unknown = rows.filter(row => row.operatorReview).map(row => row.id); if (unknown.length) console.warn('[usepod-deposit] credit unknown after 10 minutes; ledger ids:', unknown); })
+      .catch(() => console.error('[usepod-deposit] reconcile pass failed'));
     void reconcileVendorLedger({ apply: true })
       .then((decisions) => {
         const changed = decisions.filter((d) => d.to !== 'unchanged');

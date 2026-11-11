@@ -17,6 +17,7 @@
 
 import { agentAiSettings, agentAiUsage, and, db, eq, sql } from '@clawville/database';
 import {
+  OWN_AI_USEPOD_PROGRAM_ID,
   OWN_AI_CALL_TIMEOUT_MS,
   OWN_AI_DEFAULT_MAX_TOKENS,
   OWN_AI_DEFAULT_SPEED_SECONDS,
@@ -58,6 +59,7 @@ export type OwnAiErrorCode =
   | 'usepod_token_registered'
   | 'raise_needs_signature'
   | 'key_rejected'
+  | 'usepod_not_activated'
   | 'balance_empty'
   | 'model_unavailable'
   | 'rate_limited'
@@ -77,6 +79,7 @@ const ERROR_HTTP_STATUS: Record<OwnAiErrorCode, number> = {
   usepod_token_registered: 400,
   raise_needs_signature: 403,
   key_rejected: 400,
+  usepod_not_activated: 400,
   balance_empty: 402,
   model_unavailable: 400,
   rate_limited: 429,
@@ -446,10 +449,17 @@ export async function saveOwnAiSettings(avatarId: string, userId: string, input:
       updatedByUserId: userId,
       updatedAt: new Date(),
     };
-    await tx
-      .insert(agentAiSettings)
-      .values({ avatarId, ...values })
-      .onConflictDoUpdate({ target: agentAiSettings.avatarId, set: values });
+    // An existing row is UPDATED, never upserted: Postgres checks CHECK
+    // constraints on the proposed INSERT row before ON CONFLICT, and that row
+    // has no usepod_token_* columns, so a usepod save on the registered token
+    // failed agent_ai_settings_own_complete_check (500 on staging 2026-11-10).
+    // `stored` was read under the spend-rules lock, which every creator of this
+    // row (save, register) also takes, so no other writer can INSERT it between.
+    if (stored) {
+      await tx.update(agentAiSettings).set(values).where(eq(agentAiSettings.avatarId, avatarId));
+    } else {
+      await tx.insert(agentAiSettings).values({ avatarId, ...values });
+    }
   });
   emitSettingsChanged(avatarId);
   return readOwnAiStatus(avatarId);
@@ -866,6 +876,20 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
  * parsed JSON (or null when `readBody` is false). Any failure throws an
  * OwnAiError with a short code; the URL, headers and body never reach it.
  */
+/**
+ * Pure: true for UsePod's balance 401 reply for a token it has not activated
+ * (seen 2026-11-10: `{"error":{"message":"unauthorized: token not found or not
+ * activated","type":"unauthorized"}}`). Any other 401 body stays key_rejected.
+ */
+export function usepodNotActivatedReply(text: string): boolean {
+  try {
+    const e = (JSON.parse(text) as { error?: { message?: unknown; type?: unknown } } | null)?.error;
+    return e?.type === 'unauthorized' && typeof e.message === 'string' && /\bnot activated\b/.test(e.message);
+  } catch {
+    return false;
+  }
+}
+
 async function callProvider(
   url: string,
   init: { method: 'GET' | 'POST'; headers: Record<string, string>; body?: string },
@@ -877,6 +901,8 @@ async function callProvider(
     const res = await fetch(url, { ...init, redirect: 'manual', signal: ac.signal });
     const code = mapProviderStatus(res.status, opts.kind);
     if (code) {
+      if (opts.kind === 'balance' && res.status === 401 && usepodNotActivatedReply(await readCapped(res, SMALL_MAX_BYTES).catch(() => '')))
+        throw new OwnAiError('usepod_not_activated');
       await res.body?.cancel().catch(() => {});
       throw new OwnAiError(code);
     }
@@ -1078,8 +1104,7 @@ export async function testOwnAiKey(
 // UsePod
 // ---------------------------------------------------------------------------
 
-const DEPOSIT_CODE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const DEPOSIT_CODE_PATTERN = /^[0-9a-f]{16}$/i;
 
 function usepodDashboardUrl(token: string): string {
   return `https://usepod.ai/dashboard/${token.toLowerCase()}`;
@@ -1110,9 +1135,9 @@ export function parseUsepodRegisterResponse(body: unknown): { token: string; dep
   const dashboardUrl = b?.instructions?.dashboard_url;
   if (typeof token !== 'string' || !OWN_AI_USEPOD_TOKEN_PATTERN.test(token)) throw new OwnAiError('provider_error');
   if (typeof depositCode !== 'string' || !DEPOSIT_CODE_PATTERN.test(depositCode)) throw new OwnAiError('provider_error');
-  if (typeof contractAddress !== 'string' || !SOLANA_ADDRESS_PATTERN.test(contractAddress)) throw new OwnAiError('provider_error');
+  if (contractAddress !== OWN_AI_USEPOD_PROGRAM_ID) throw new OwnAiError('provider_error');
   if (!isUsepodDashboardUrl(dashboardUrl)) throw new OwnAiError('provider_error');
-  return { token: token.toLowerCase(), depositCode, contractAddress };
+  return { token: token.toLowerCase(), depositCode: depositCode.toLowerCase(), contractAddress };
 }
 
 async function readUsepodRegistered(executor: Pick<typeof db, 'select'>, avatarId: string): Promise<boolean> {
@@ -1154,6 +1179,7 @@ export async function registerUsepodToken(
       usepodTokenIv: sealed.iv,
       usepodTokenTag: sealed.tag,
       usepodTokenLast4: reg.token.slice(-4),
+      usepodDepositCode: reg.depositCode,
       usepodRegistered: true,
       updatedByUserId: userId,
       updatedAt: new Date(),
@@ -1191,13 +1217,24 @@ export function parseUsepodBalance(body: unknown): { usdcMicro: number; isActive
  */
 export async function readUsepodBalance(avatarId: string): Promise<{ usdcMicro: number; isActive: boolean } | null> {
   const row = await loadStoredRow(avatarId);
-  const token = registeredToken(avatarId, row) ?? slotKey(avatarId, row, 'usepod');
+  const registered = registeredToken(avatarId, row);
+  const token = registered ?? slotKey(avatarId, row, 'usepod');
   if (!token) return null;
-  const body = await callProvider(
-    `${USEPOD_API}/proxy/${token.toLowerCase()}/balance`,
-    { method: 'GET', headers: { Accept: 'application/json' } },
-    { kind: 'balance', timeoutMs: USEPOD_TIMEOUT_MS, maxBytes: SMALL_MAX_BYTES, readBody: true },
-  );
+  let body: unknown;
+  try {
+    body = await callProvider(
+      `${USEPOD_API}/proxy/${token.toLowerCase()}/balance`,
+      { method: 'GET', headers: { Accept: 'application/json' } },
+      { kind: 'balance', timeoutMs: USEPOD_TIMEOUT_MS, maxBytes: SMALL_MAX_BYTES, readBody: true },
+    );
+  } catch (err) {
+    // UsePod answers 401 "token not found or not activated" for a token it
+    // issued that never held a balance (the first deposit activates it). Only
+    // the token WE registered may report that state; a pasted token keeps
+    // key_rejected.
+    if (!registered && err instanceof OwnAiError && err.code === 'usepod_not_activated') throw new OwnAiError('key_rejected');
+    throw err;
+  }
   const balance = parseUsepodBalance(body);
   if (balance.usdcMicro > 0 && balance.isActive) {
     const cleared = await db

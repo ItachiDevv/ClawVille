@@ -50,19 +50,24 @@
  * is an OpenClaw bot with its own gateway (the gateway already chooses the AI).
  * No route returns or logs a key, a UsePod token or a provider error body.
  *
- * PARITY (Rule E5): the WRITE is human-only by design (the owner chooses whose
+ * PARITY (Rule E5): settings writes are human-only (the owner chooses whose
  * AI account pays, like the Studios key and the spend rules). Agent path: read
  * `GET /api/agent-ai` and the UsePod balance with the agent session header
  * (MCP `clawville_call`); the driver and the runtime then use the setting.
- * Both bind to the same avatar row.
+ * Both bind to the same avatar row. Part B adds POST /usepod/deposit for human
+ * and ledger-capable agent identities. Approval-on agents are refused; humans
+ * sign POST /usepod/deposit/challenge terms with their linked wallet.
  */
 
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type MiddlewareHandler } from 'hono';
+import { createMiddleware } from 'hono/factory';
 import { safeBodyLimit } from '../middleware/safe-body-limit';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import {
   OWN_AI_DAILY_LIMIT_MAX_CENTS,
+  OWN_AI_USEPOD_DEPOSIT_MIN_CENTS,
+  OWN_AI_USEPOD_DEPOSIT_MAX_CENTS,
   OWN_AI_DAILY_LIMIT_MIN_CENTS,
   OWN_AI_PROVIDERS,
   OWN_AI_PROVIDER_SPECS,
@@ -102,6 +107,7 @@ import {
   runMeteredOwnAiKeyTest,
   saveOwnAiSettings,
 } from '../services/own-ai';
+import { createUsepodDepositChallenge, depositUsepod, hasPriorUsepodDeposit } from '../services/usepod-deposit';
 
 export const agentAiRoutes = new Hono<ActivityAuthContext>();
 // Own prefix with no public sibling, so a router-wide no-store is safe here.
@@ -111,6 +117,8 @@ const modelsRateLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000
 const registerRateLimiter = createRateLimiter({ maxPerWindow: 1, windowMs: 60 * 60_000 });
 // Each balance read is one UsePod call; an agent loop is slowed per avatar.
 const balanceRateLimiter = createRateLimiter({ maxPerWindow: 30, windowMs: 60_000 });
+const depositRateLimiter = createRateLimiter({ maxPerWindow: 6, windowMs: 60_000 });
+const depositChallengeRateLimiter = createRateLimiter({ maxPerWindow: 6, windowMs: 60_000 });
 // A save that changes the key, provider or model makes one PAID test call.
 const keyTestRateLimiter = createRateLimiter({ maxPerWindow: 6, windowMs: 10 * 60_000 });
 /** Avatars with a key test call in flight (one at a time per avatar). */
@@ -121,6 +129,8 @@ export function resetAgentAiRateLimits(): void {
   modelsRateLimiter.reset();
   registerRateLimiter.reset();
   balanceRateLimiter.reset();
+  depositRateLimiter.reset();
+  depositChallengeRateLimiter.reset();
   keyTestRateLimiter.reset();
   keyTestsInFlight.clear();
 }
@@ -138,6 +148,18 @@ const GATE: HumanGateCopy = {
 };
 const humanGate = [refuseAgentHeader(GATE), requireAuth, requireHumanSessionOrigin(GATE), requireNonGuestUser] as const;
 const readGate = [requireAuthOrAgentSession, requireNonGuestIdentity] as const;
+// Apply the existing human gate only to human identities. An agent must hold
+// ledger capability before this route can reach the custodial signing service.
+const depositIdentityGate = createMiddleware<ActivityAuthContext>(async (c, next) => {
+  const identity = c.get('identity');
+  if (!identity?.avatarId) return c.json({ error: 'avatar_required', code: 'avatar_required' }, 403);
+  if (identity.kind === 'agent' && !identity.ledgerCapable) {
+    return c.json({ error: 'ledger_capability_required', code: 'ledger_capability_required' }, 403);
+  }
+  return next();
+});
+const depositHumanGate = (humanGate as readonly MiddlewareHandler[]).map((gate) => createMiddleware<ActivityAuthContext>((c, next) =>
+  c.get('identity').kind === 'agent' ? next() : gate(c, next)));
 
 function refusal(code: string, message: string, extra: Record<string, unknown> = {}) {
   return { error: code, code, message, ...extra };
@@ -255,6 +277,7 @@ const OWN_AI_ERROR_MESSAGES: Record<string, string> = {
   usepod_token_registered: 'ClawVille registered a UsePod token for this agent. Save without pasting a token.',
   key_required: 'Paste the API key for this provider.',
   key_rejected: 'The provider refused this key.',
+  usepod_not_activated: 'UsePod has not activated this token yet. The first deposit activates it.',
   balance_empty: 'The UsePod balance is empty. Add funds on UsePod.',
   model_unavailable: 'The provider does not offer this model for this key.',
   rate_limited: 'The provider is rate limiting this key. Wait, then try again.',
@@ -522,6 +545,23 @@ agentAiRoutes.get('/usepod/balance', ...readGate, async (c) => {
   try {
     balance = await readUsepodBalance(identity.avatarId);
   } catch (err) {
+    // Registered token that never held a balance: report an empty, inactive
+    // balance. After a deposit that may have moved money, the same reply means
+    // the token is unavailable, not empty.
+    if (err instanceof OwnAiError && err.code === 'usepod_not_activated') {
+      let prior: boolean;
+      try {
+        prior = await hasPriorUsepodDeposit(db, identity.avatarId);
+      } catch (dbErr) {
+        return ownAiFailure(c, dbErr, { code: 'provider_error', message: 'UsePod did not answer. Try again later.', status: 502 });
+      }
+      if (!prior) return c.json({ usdcMicro: 0, isActive: false });
+      return ownAiFailure(c, new OwnAiError('key_rejected'), {
+        code: 'provider_error',
+        message: 'UsePod did not answer. Try again later.',
+        status: 502,
+      });
+    }
     return ownAiFailure(c, err, {
       code: 'provider_error',
       message: 'UsePod did not answer. Try again later.',
@@ -540,4 +580,37 @@ agentAiRoutes.post('/usepod/link', smallBody, ...humanGate, async (c) => {
   const dashboardUrl = await readUsepodDashboardLink(avatar.id);
   if (!dashboardUrl) return c.json(refusal('usepod_not_set', 'This agent has no UsePod token.'), 404);
   return c.json({ dashboardUrl });
+});
+
+const depositBodySchema = z.object({
+  amountCents: z.number().int().min(OWN_AI_USEPOD_DEPOSIT_MIN_CENTS).max(OWN_AI_USEPOD_DEPOSIT_MAX_CENTS),
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  nonce: proofSchema.shape.nonce.optional(),
+  signature: proofSchema.shape.signature.optional(),
+}).strict();
+
+agentAiRoutes.post('/usepod/deposit/challenge', smallBody, ...humanGate, async (c) => {
+  const parsed = depositBodySchema.omit({ nonce: true, signature: true }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json(invalid(parsed.error.issues), 400);
+  const user = currentUser(c);
+  const avatar = await activeAvatar(user.id);
+  if (!depositChallengeRateLimiter.check(avatar.id)) return c.json(RATE_LIMITED, 429);
+  const walletPubkey = await linkedWallet(user.id);
+  if (!walletPubkey) return c.json(USEPOD_WALLET_LINK_REQUIRED, 403);
+  const result = await createUsepodDepositChallenge({ ...parsed.data, actor: 'human', userId: user.id, avatarId: avatar.id });
+  if (!result.ok) return c.json({ ...result, error: result.code }, 400);
+  return c.json({ ...result, walletPubkey });
+});
+
+agentAiRoutes.post('/usepod/deposit', smallBody, ...readGate, depositIdentityGate, ...depositHumanGate, async (c) => {
+  const parsed = depositBodySchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json(invalid(parsed.error.issues), 400);
+  const identity = c.get('identity');
+  if (!depositRateLimiter.check(identity.avatarId)) return c.json(RATE_LIMITED, 429);
+  const result = await depositUsepod({
+    ...parsed.data, avatarId: identity.avatarId, userId: identity.userId,
+    actor: identity.kind === 'agent' ? 'agent' : 'human',
+  });
+  if (!result.ok) return c.json({ ...result, error: result.code }, ['approval_required', 'signature_required', 'invalid_wallet_proof'].includes(result.code) ? 403 : 400);
+  return c.json(result);
 });

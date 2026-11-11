@@ -87,6 +87,7 @@ const {
   parseUsepodBalance,
   parseUsepodRegisterResponse,
   readUsepodBalance,
+  usepodNotActivatedReply,
   readUsepodDashboardLink,
   recordOwnAiFallback,
   recordOwnAiUsage,
@@ -112,7 +113,7 @@ const OPENROUTER_KEY = 'sk-or-TESTSECRETKEY0123456789abcdef';
 const TOKEN = '550e8400-e29b-41d4-a716-446655440000';
 const AVATAR = '11111111-1111-4111-8111-111111111111';
 const USER = '22222222-2222-4222-8222-222222222222';
-const CONTRACT = 'GXfqVnZENHzvim8rNN8TPwqxWXQe8EBbxhcEMYE8Z7BS';
+const CONTRACT = 'BBAdcqUkg68JXNiPQ1HR1wujfZuayyK3eQTQSYAh6FSW';
 
 // Reversible fake crypto: no VANITY_ENCRYPTION_KEY needed.
 const restoreDeps = setOwnAiDepsForTest({
@@ -791,17 +792,18 @@ describe('provider calls', () => {
 describe('UsePod', () => {
   const goodReply = {
     api_token: TOKEN,
-    deposit_code: 'ABCD1234',
+    deposit_code: 'abcdef0123456789',
     status: 'pending_deposit',
     instructions: { contract_address: CONTRACT, dashboard_url: `https://usepod.ai/dashboard/${TOKEN}` },
   };
 
   test('register response validation', () => {
-    expect(parseUsepodRegisterResponse(goodReply)).toEqual({ token: TOKEN, depositCode: 'ABCD1234', contractAddress: CONTRACT });
+    expect(parseUsepodRegisterResponse(goodReply)).toEqual({ token: TOKEN, depositCode: 'abcdef0123456789', contractAddress: CONTRACT });
     const bad = (patch: Record<string, unknown>, instr: Record<string, unknown> = {}) =>
       ({ ...goodReply, ...patch, instructions: { ...goodReply.instructions, ...instr } });
     expectCode(() => parseUsepodRegisterResponse(bad({ api_token: '../x' })), 'provider_error');
     expectCode(() => parseUsepodRegisterResponse(bad({ deposit_code: 'a b' })), 'provider_error');
+    expect(parseUsepodRegisterResponse(bad({ deposit_code: 'ABCDEF0123456789' })).depositCode).toBe('abcdef0123456789');
     expectCode(() => parseUsepodRegisterResponse(bad({}, { contract_address: '0xabc' })), 'provider_error');
     for (const url of [
       `http://usepod.ai/dashboard/${TOKEN}`,
@@ -815,6 +817,7 @@ describe('UsePod', () => {
       expect(isUsepodDashboardUrl(url)).toBe(false);
       expectCode(() => parseUsepodRegisterResponse(bad({}, { dashboard_url: url })), 'provider_error');
     }
+    expectCode(() => parseUsepodRegisterResponse(bad({}, { contract_address: '11111111111111111111111111111111' })), 'provider_error');
     expectCode(() => parseUsepodRegisterResponse(null), 'provider_error');
   });
 
@@ -826,12 +829,12 @@ describe('UsePod', () => {
     queue.select.push([]); // in-lock check
     const r = await registerUsepodToken(AVATAR, USER);
     off();
-    expect(r).toEqual({ dashboardUrl: `https://usepod.ai/dashboard/${TOKEN}`, depositCode: 'ABCD1234', contractAddress: CONTRACT });
+    expect(r).toEqual({ dashboardUrl: `https://usepod.ai/dashboard/${TOKEN}`, depositCode: 'abcdef0123456789', contractAddress: CONTRACT });
     expect(fetchCalls[0]!.url).toBe('https://api.usepod.ai/v1/register');
     expect(fetchCalls[0]!.init.method).toBe('POST');
     expect(fetchCalls[0]!.init.body).toBeUndefined();
     const values = recorded.find((x) => x.op === 'insert')!.calls.find((c) => c.name === 'values')!.args[0] as Record<string, unknown>;
-    expect(values).toMatchObject({ usepodTokenEnc: sealed(TOKEN), usepodTokenLast4: TOKEN.slice(-4), usepodRegistered: true });
+    expect(values).toMatchObject({ usepodTokenEnc: sealed(TOKEN), usepodTokenLast4: TOKEN.slice(-4), usepodRegistered: true, usepodDepositCode: goodReply.deposit_code });
     // The own-key slot, the source, the provider and the model are never touched by register.
     for (const k of ['keyEnc', 'keyIv', 'keyTag', 'keyLast4', 'source', 'provider', 'model']) expect(k in values).toBe(false);
     expect(seen).toEqual([AVATAR]);
@@ -875,6 +878,34 @@ describe('UsePod', () => {
     queue.select.push([row]);
     fetchReply = () => json({ error: `token ${TOKEN} unknown` }, 401);
     await expectCodeAsync(readUsepodBalance(AVATAR), 'key_rejected', [TOKEN]);
+
+    // Our registered token, never funded: UsePod's exact 401 "not activated" reply.
+    const notActivated = { error: { message: 'unauthorized: token not found or not activated', type: 'unauthorized' } };
+    queue.select.push([row]);
+    fetchReply = () => json(notActivated, 401);
+    await expectCodeAsync(readUsepodBalance(AVATAR), 'usepod_not_activated', [TOKEN]);
+
+    // The same body with 403 or 404 stays key_rejected.
+    for (const status of [403, 404]) {
+      queue.select.push([row]);
+      fetchReply = () => json(notActivated, status);
+      await expectCodeAsync(readUsepodBalance(AVATAR), 'key_rejected', [TOKEN]);
+    }
+
+    // A pasted token (own-key slot) with the activation 401 stays key_rejected.
+    queue.select.push([{ ...row, provider: 'usepod', keyEnc: sealed(TOKEN), usepodRegistered: false, usepodTokenEnc: null }]);
+    fetchReply = () => json(notActivated, 401);
+    await expectCodeAsync(readUsepodBalance(AVATAR), 'key_rejected', [TOKEN]);
+  });
+
+  test('UsePod activation reply match is exact', () => {
+    const ok = JSON.stringify({ error: { message: 'unauthorized: token not found or not activated', type: 'unauthorized' } });
+    expect(usepodNotActivatedReply(ok)).toBe(true);
+    expect(usepodNotActivatedReply(JSON.stringify({ error: { message: 'unauthorized: bad token', type: 'unauthorized' } }))).toBe(false);
+    expect(usepodNotActivatedReply(JSON.stringify({ error: { message: 'not activated', type: 'other' } }))).toBe(false);
+    expect(usepodNotActivatedReply(JSON.stringify({ error: 'not activated' }))).toBe(false);
+    expect(usepodNotActivatedReply('not json')).toBe(false);
+    expect(usepodNotActivatedReply('')).toBe(false);
   });
 
   test('balance reply validation', () => {
@@ -948,18 +979,42 @@ describe('lead follow-up: sticky reasons, active-now read, raise race, registere
     expectCode(() => resolveOwnAiSave({ source: 'usepod', provider: 'usepod', model: 'gpt-oss-120b' }, { ...pasted, hasKey: false }), 'key_required');
   });
 
-  test('a save never writes the registered-token columns', async () => {
+  test('a save on an existing row is an UPDATE (no upsert) and never writes the registered-token columns', async () => {
+    // An upsert's proposed INSERT row has no token columns, and Postgres checks
+    // agent_ai_settings_own_complete_check on it before ON CONFLICT (500 on staging 2026-11-10).
     queue.select.push([{ provider: 'openai', speedSeconds: 25, dailyLimitCents: 100, keyEnc: 'x', usepodRegistered: true }]);
     await saveOwnAiSettings(AVATAR, USER, { source: 'usepod', provider: 'usepod', model: 'gpt-oss-120b' });
-    const values = recorded.find((r) => r.op === 'insert')!.calls.find((c) => c.name === 'values')!.args[0] as Record<string, unknown>;
+    expect(recorded.some((r) => r.op === 'insert')).toBe(false);
+    const upd = recorded.find((r) => r.op === 'update')!;
+    const values = upd.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
     expect(values).toMatchObject({ source: 'usepod', provider: 'usepod', keyEnc: null, keyLast4: null });
-    for (const k of ['usepodRegistered', 'usepodTokenEnc', 'usepodTokenIv', 'usepodTokenTag', 'usepodTokenLast4']) expect(k in values).toBe(false);
+    for (const k of ['usepodRegistered', 'usepodTokenEnc', 'usepodTokenIv', 'usepodTokenTag', 'usepodTokenLast4', 'usepodDepositCode']) expect(k in values).toBe(false);
+    expect(render(upd.calls.find((c) => c.name === 'where')!.args[0]).params).toEqual([AVATAR]);
+    // An existing own-key row saved without a new key: UPDATE that leaves the key columns out.
+    recorded = [];
+    queue.select.push([{ provider: 'openai', speedSeconds: 25, dailyLimitCents: 100, keyEnc: 'x', usepodRegistered: false }]);
+    await saveOwnAiSettings(AVATAR, USER, { source: 'own_key', provider: 'openai', model: 'gpt-4.1', dailyLimitCents: 50 });
+    expect(recorded.some((r) => r.op === 'insert')).toBe(false);
+    const keep = recorded.find((r) => r.op === 'update')!.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
+    expect(keep).toMatchObject({ source: 'own_key', model: 'gpt-4.1', dailyLimitCents: 50 });
+    for (const k of ['keyEnc', 'keyIv', 'keyTag', 'keyLast4']) expect(k in keep).toBe(false);
     recorded = [];
     queue.select.push([{ provider: 'usepod', speedSeconds: 25, dailyLimitCents: 100, keyEnc: null, usepodRegistered: true }]);
     await saveOwnAiSettings(AVATAR, USER, { ...save, key: OPENAI_KEY });
-    const v2 = recorded.find((r) => r.op === 'insert')!.calls.find((c) => c.name === 'values')!.args[0] as Record<string, unknown>;
+    expect(recorded.some((r) => r.op === 'insert')).toBe(false);
+    const v2 = recorded.find((r) => r.op === 'update')!.calls.find((c) => c.name === 'set')!.args[0] as Record<string, unknown>;
     expect(v2).toMatchObject({ keyEnc: sealed(OPENAI_KEY) });
     for (const k of ['usepodRegistered', 'usepodTokenEnc', 'usepodTokenLast4']) expect(k in v2).toBe(false);
+  });
+
+  test('a first save with no row is a plain INSERT (no upsert)', async () => {
+    queue.select.push([]);
+    queue.select.push([{ source: 'own_key', provider: 'openai', model: 'gpt-4.1', speedSeconds: 25, dailyLimitCents: 100, keyLast4: 'cdef', usepodRegistered: false, fallbackReason: null, fallbackAt: null, updatedAt: new Date() }]);
+    queue.select.push([]);
+    await saveOwnAiSettings(AVATAR, USER, { source: 'own_key', provider: 'openai', model: 'gpt-4.1', dailyLimitCents: 100, key: OPENAI_KEY });
+    const ins = recorded.find((r) => r.op === 'insert')!;
+    expect(ins.calls.some((c) => c.name === 'onConflictDoUpdate')).toBe(false);
+    expect(recorded.some((r) => r.op === 'update')).toBe(false);
   });
 
   test('runtime config: registered token first, pasted token otherwise, null while sticky', async () => {
