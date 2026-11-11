@@ -326,7 +326,9 @@ export function ArenaParamsForm({
   errors,
   disabled = false,
   compact,
+  section,
 }: {
+  section?: 'coins' | 'buy' | 'sell' | 'limits';
   value: FloorArenaParams;
   onChange: (next: FloorArenaParams) => void;
   errors: readonly string[];
@@ -349,10 +351,10 @@ export function ArenaParamsForm({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }} data-testid="arena-params-form">
-      <ArenaHardRules />
+      {!section && <ArenaHardRules />}
       <FieldErrors errors={byPath.get('params')} />
 
-      <details
+      {(!section || section === 'coins' || section === 'buy') && <details
         // Re-mounts when errors appear, so a collapsed filter list opens on the
         // field that needs a fix instead of hiding it.
         key={filterErrorCount > 0 ? 'filters-errors' : 'filters-ok'}
@@ -362,7 +364,7 @@ export function ArenaParamsForm({
         <summary
           style={{ minHeight: 44, display: 'flex', alignItems: 'center', cursor: 'pointer', color: FLOOR_TEXT.value, fontSize: 13, fontWeight: 700 }}
         >
-          Which coins it looks at
+          {section === 'buy' ? 'Price and activity filters' : 'Coins it looks at'}
           {filterErrorCount > 0 ? (
             <span style={{ color: FLOOR_TEXT.danger, fontWeight: 400, marginLeft: 6 }}>
               ({filterErrorCount} to fix)
@@ -371,7 +373,7 @@ export function ArenaParamsForm({
         </summary>
         <FieldErrors errors={byPath.get('filters')} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
-          {FILTER_ROWS.map((row) => (
+          {FILTER_ROWS.filter((row) => !section || (section === 'coins' ? ['Market cap', 'Liquidity', 'Pair age', 'Top-10 holders'].includes(row.title) : !['Market cap', 'Liquidity', 'Pair age', 'Top-10 holders'].includes(row.title))).map((row) => (
             <div key={row.title} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div style={{ color: FLOOR_TEXT.primary, fontSize: 12, fontWeight: 700 }}>{row.title}</div>
               <div style={grid(compact)}>
@@ -399,9 +401,9 @@ export function ArenaParamsForm({
             </div>
           ))}
         </div>
-      </details>
+      </details>}
 
-      <Section title="How it picks a coin" errors={byPath.get('entry')}>
+      {(!section || section === 'buy') && <Section title="When it buys" errors={byPath.get('entry')}>
         <div style={grid(compact)}>
           <NumberField
             path="entry.discovered_within_s"
@@ -464,9 +466,9 @@ export function ArenaParamsForm({
             disabled={disabled}
           />
         </div>
-      </Section>
+      </Section>}
 
-      <Section title="When it sells" errors={byPath.get('exits')}>
+      {(!section || section === 'sell') && <Section title="When it sells" errors={byPath.get('exits')}>
         <TakeProfitEditor
           legs={value.exits.tp}
           onChange={(tp) => setExits({ tp })}
@@ -529,9 +531,9 @@ export function ArenaParamsForm({
             disabled={disabled}
           />
         </div>
-      </Section>
+      </Section>}
 
-      <Section title="Limits" errors={byPath.get('limits')}>
+      {(!section || section === 'limits') && <Section title="Size and limits" errors={byPath.get('limits')}>
         <div style={grid(compact)}>
           <NumberField
             path="limits.position_usd"
@@ -558,7 +560,7 @@ export function ArenaParamsForm({
             disabled={disabled}
           />
         </div>
-      </Section>
+      </Section>}
     </div>
   );
 }

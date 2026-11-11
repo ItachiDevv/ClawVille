@@ -213,6 +213,7 @@ export interface FloorArenaEventView {
   type: FloorArenaEventType | 'other';
   mint: string | null;
   summary: string;
+  data: Record<string, unknown> | null;
   /** Realised P&L of an exit when the event carries one; null otherwise. */
   pnlUsd: number | null;
 }
@@ -556,6 +557,7 @@ export function readEvent(value: unknown): FloorArenaEventView | null {
       : 'other',
     mint: str(row.mint),
     summary: typeof row.summary === 'string' ? row.summary : '',
+    data,
     pnlUsd: num(data?.pnlUsd ?? data?.pnl_usd),
   };
 }

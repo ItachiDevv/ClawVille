@@ -64,7 +64,7 @@ export default function HouseAgentWalkup() {
   const eAvailable = useHouseAgentWalkup((state) => state.eAvailable);
   const dismissedIndex = useHouseAgentWalkupPanel((state) => state.dismissedIndex);
   const pendingTemplateId = useHouseAgentWalkupPanel((state) => state.pendingTemplateId);
-  const exchangeOpen = useGameStore((state) => state.exchangeOpen);
+  const exchangeOpen = useGameStore((state) => state.exchangeOpen || state.tradingFloorOpen);
   const myAgent = useFloorArenaUi((state) => state.myAgent);
   const touch = useIsMobile();
   const template = index >= 0 ? (FLOOR_ARENA_TEMPLATES[index] ?? null) : null;

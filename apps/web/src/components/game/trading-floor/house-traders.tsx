@@ -364,9 +364,7 @@ export function HouseTradersView({
             first view. */}
         The team&apos;s own traders on ClawPump. They trade real money and are not the arena house agents above,
         which trade on paper, even where a name is the same.{' '}
-        <a href="#clawpump-templates" style={{ color: FLOOR_TEXT.link }}>
-          Start your own below.
-        </a>
+        <span>Open Dashboard to start your own trader.</span>
       </p>
       {/* SECTION LEVEL, and it is the only thing that covers a full unpair:
           `unpairObservedClawPumpAgent` DELETES the link row, so that trader

@@ -380,7 +380,7 @@ function resetTradingFloorProximity(): void {
  */
 export function openTradingFloorMonitor(): void {
   const store = useGameStore.getState();
-  if (store.exchangeOpen && store.exchangeTab === 'floor') return;
+  if (store.tradingFloorOpen) return;
   store.openTradingFloor();
 }
 
@@ -429,7 +429,7 @@ export function activateTradingFloorSeat(seatIndex: number): boolean {
  * toggled the seat. Read this at the point of action, never cached.
  */
 export function tradingFloorInteractionsFrozen(): boolean {
-  return useGameStore.getState().exchangeOpen;
+  return (useGameStore.getState().exchangeOpen || useGameStore.getState().tradingFloorOpen);
 }
 
 /**
@@ -440,7 +440,8 @@ export function tradingFloorInteractionsFrozen(): boolean {
 export function closeTradingFloorExchangeOnEscape(): void {
   const game = useGameStore.getState();
   if (game.exchangeEscapeOwnedByDialog) return;
-  game.closeExchange();
+  if (game.tradingFloorOpen) game.closeTradingFloor();
+  else game.closeExchange();
 }
 
 export function activateTradingFloorUse(): boolean {
@@ -793,7 +794,7 @@ export function attachTradingFloorPointerOrbit(
 ): ReturnType<typeof attachPlayerPointerOrbit> {
   const orbit = attachPlayerPointerOrbit(element, state, config);
   const unsubscribe = useGameStore.subscribe((next, previous) => {
-    if (next.exchangeOpen && !previous.exchangeOpen) orbit.reset();
+    if ((next.exchangeOpen || next.tradingFloorOpen) && !(previous.exchangeOpen || previous.tradingFloorOpen)) orbit.reset();
   });
   return { reset: orbit.reset, detach: () => { unsubscribe(); orbit.detach(); } };
 }
@@ -1331,11 +1332,11 @@ function TradingFloorAvatarMotion({
     // no E re-firing the monitor or dropping the player out of the room.
     onFrameStart: () => {
       frozenPrevRef.current = frozenLastRef.current;
-      frozenLastRef.current = useGameStore.getState().exchangeOpen;
+      frozenLastRef.current = (useGameStore.getState().exchangeOpen || useGameStore.getState().tradingFloorOpen);
       // Consumed E frames and modal frames cannot retain stale movement.
       updateAnimation(0, false, false);
     },
-    isFrozen: () => useGameStore.getState().exchangeOpen,
+    isFrozen: () => (useGameStore.getState().exchangeOpen || useGameStore.getState().tradingFloorOpen),
     onEscapeWhileFrozen: closeTradingFloorExchangeOnEscape,
     onActivationReset: resetToSpawn,
     // The keyboard E edge and the touch USE button run the SAME action. The
@@ -1684,7 +1685,7 @@ function TradingFloorVRMPlayer({
       return;
     }
 
-    const frozen = useGameStore.getState().exchangeOpen;
+    const frozen = (useGameStore.getState().exchangeOpen || useGameStore.getState().tradingFloorOpen);
     const moving = !frozen && _seatedIndex < 0 && locomotionRef.current.moving;
     const running = moving && locomotionRef.current.running;
 

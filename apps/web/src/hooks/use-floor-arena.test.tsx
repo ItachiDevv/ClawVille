@@ -132,7 +132,7 @@ function resetStores(): void {
     seatWriteVersion: 0,
     launched: null,
   });
-  useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+  useGameStore.setState({ tradingFloorOpen: false, exchangeTab: 'browse' });
   resetFloorArenaSeatSyncForTest();
 }
 
@@ -243,6 +243,9 @@ describe('Floor arena wire readers', () => {
     expect(readEvent({ id: '13', type: 'exit', summary: 'Sold', data: { pnlUsd: '2.5' } })?.pnlUsd).toBe(2.5);
     expect(readEvent({ id: 14, type: 'mystery', summary: 'x' })?.type).toBe('other');
     expect(readEvent({ type: 'entry', summary: 'no id' })).toBeNull();
+    expect(readEvent({ id: 15, data: { nested: { count: 2 } } })?.data).toEqual({ nested: { count: 2 } });
+    expect(readEvent({ id: 16, data: ['invalid'] })?.data).toBeNull();
+    expect(readEvent({ id: 17 })?.data).toBeNull();
   });
 
   test('stats read losses from the route and keep a missing count unknown', () => {
@@ -421,13 +424,13 @@ describe('Seat sync from the 3D room', () => {
     reportTradingFloorSeat(2);
     await flushFloorArenaSeatWritesForTest();
     // Not at once: the open panel freezes the controller that seats the avatar.
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     jest.advanceTimersByTime(FLOOR_ARENA_DESK_PANEL_FALLBACK_MS - 1);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     notifyTradingFloorSeatSettled(2);
     jest.useRealTimers();
-    expect(useGameStore.getState().exchangeOpen).toBe(true);
-    expect(useGameStore.getState().exchangeTab).toBe('floor');
+    expect(useGameStore.getState().tradingFloorOpen).toBe(true);
+    expect(useGameStore.getState().exchangeOpen).toBe(false);
     expect(useFloorArenaUi.getState().panel).toBe('desk');
     expect(useFloorArenaUi.getState().localSeatIndex).toBe(2);
     expect(calls).toEqual([]);
@@ -437,9 +440,9 @@ describe('Seat sync from the 3D room', () => {
     jest.useFakeTimers();
     reportTradingFloorSeat(9);
     jest.advanceTimersByTime(FLOOR_ARENA_DESK_PANEL_FALLBACK_MS - 1);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     jest.advanceTimersByTime(1);
-    expect(useGameStore.getState().exchangeOpen).toBe(true);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(true);
     jest.useRealTimers();
   });
 
@@ -447,12 +450,12 @@ describe('Seat sync from the 3D room', () => {
     jest.useFakeTimers();
     reportTradingFloorSeat(2);
     notifyTradingFloorSeatSettled(2);
-    expect(useGameStore.getState().exchangeOpen).toBe(true);
-    useGameStore.getState().closeExchange();
+    expect(useGameStore.getState().tradingFloorOpen).toBe(true);
+    useGameStore.getState().closeTradingFloor();
     notifyTradingFloorSeatSettled(2);
     reportTradingFloorSeat(2);
     jest.advanceTimersByTime(FLOOR_ARENA_DESK_PANEL_FALLBACK_MS * 2);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     jest.useRealTimers();
   });
 
@@ -460,15 +463,15 @@ describe('Seat sync from the 3D room', () => {
     jest.useFakeTimers();
     reportTradingFloorSeat(1);
     notifyTradingFloorSeatSettled(2);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     reportTradingFloorSeat(-1);
     notifyTradingFloorSeatSettled(1);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     reportTradingFloorSeat(3);
     notifyTradingFloorSeatSettled(1);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     notifyTradingFloorSeatSettled(3);
-    expect(useGameStore.getState().exchangeOpen).toBe(true);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(true);
     jest.useRealTimers();
   });
 
@@ -490,7 +493,7 @@ describe('Seat sync from the 3D room', () => {
     reportTradingFloorSeat(-1);
     jest.advanceTimersByTime(FLOOR_ARENA_DESK_PANEL_FALLBACK_MS * 2);
     jest.useRealTimers();
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
   });
 
   test('the same seat reported twice writes once, and a stand does not reopen the panel', async () => {
@@ -499,10 +502,10 @@ describe('Seat sync from the 3D room', () => {
     reportTradingFloorSeat(1);
     await flushFloorArenaSeatWritesForTest();
     expect(calls).toHaveLength(1);
-    useGameStore.setState({ exchangeOpen: false });
+    useGameStore.setState({ tradingFloorOpen: false });
     reportTradingFloorSeat(-1);
     await flushFloorArenaSeatWritesForTest();
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     expect(calls).toHaveLength(2);
   });
 

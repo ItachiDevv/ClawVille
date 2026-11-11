@@ -293,6 +293,8 @@ sight was lost on expiry, the hold low was never stored and the pass/skip stream
 
 ## 5. CONTRACT — API (`apps/api/src/routes/floor-arena.ts`, mounted at `/api/floor/arena`; public GETs registered before `sessionMiddleware` like `trading-floor.ts`)
 
+**Last Audited: 2026-11-11 21:38Z (terminal phase 1, local implementation).** Drift note: the separate Trading Floor window consumes these existing routes; the Exchange no longer contains a floor tab. Dashboard selects `/me` statistics by contest, 24h or all time. Closed trades use the public profile's latest 50 positions. Owner rule checks use `/me/events`; other agents use public events. Strategy keeps `PATCH /me/params` and shared bounds. Reports keep the existing suggestion route. No new route, schema or equity source exists in phase 1.
+
 Public (60/min per IP, short cache): `GET /templates` (templates + hard rules + bounds + each house agent's live stats),
 `GET /leaderboard?window=contest|24h|all` (rows: rank, agentId, name, kind, templateId, realisedUsd, trades, wins,
 deaths, openPositions, lastTradeAt, eligible), `GET /agents/:id` (public profile: params, status, seated, stats, open
@@ -1289,6 +1291,9 @@ House ClawPump agents (2026-10-16, founder go): the five house paper bots now ge
   liquidity-drop exit (section 6d), PumpPortal feed with `pumpportal:migration` tradeable (section 6f, D25 amended, migration 0084),
   Codex decider shadow (section 6g, migration 0085). PROTOCOL_VERSION 88 (new exit fields and the tradeable-source text).
   Unit-tested only: not deployed.
+
+- 2026-11-11 21:38Z: Trading Floor terminal phase 1, local implementation on `feat/tf-terminal`. The floor leaves the Exchange window. Six tabs, owner activity, bounded five-section Strategy and existing owner controls use existing hooks. Guest public views remain available. The event reader retains unknown-safe event data. Knowledge surfaces replace Exchange-tab directions; protocol is 133. No commit or deployment occurs in this task. Browser and device checks remain separate from source and test verification.
+  PARITY note: human path: terminal and existing arena hooks; agent path: existing arena REST routes and tools; settlement binds to the same authenticated avatar resolver.
 
 ## 8. Punch list (tracked deferrals, rule E6)
 

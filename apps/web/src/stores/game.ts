@@ -477,11 +477,13 @@ export interface GameState {
   // 3D marketplace stand (lib/three/marketplace-stall.tsx). See
   // packages/database/src/schema/exchange.ts for the escrow flow doc.
   exchangeOpen: boolean;
-  exchangeTab: 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post';
+  exchangeTab: 'browse' | 'my-listings' | 'my-orders' | 'post';
   openExchange: () => void;
+  tradingFloorOpen: boolean;
   openTradingFloor: () => void;
+  closeTradingFloor: () => void;
   closeExchange: () => void;
-  setExchangeTab: (tab: 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post') => void;
+  setExchangeTab: (tab: 'browse' | 'my-listings' | 'my-orders' | 'post') => void;
   /**
    * True when the LAST Escape keydown while the Exchange was open belonged to
    * a nested Exchange dialog (cancel prompt, submit, release, guest upsell).
@@ -1376,10 +1378,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   exchangeOpen: false,
   exchangeTab: 'browse' as const,
-  openExchange: () => set({ exchangeOpen: true, exchangeTab: 'browse' }),
-  openTradingFloor: () => set({ exchangeOpen: true, exchangeTab: 'floor' }),
+  openExchange: () => set({ exchangeOpen: true, tradingFloorOpen: false, exchangeTab: 'browse' }),
+  tradingFloorOpen: false,
+  openTradingFloor: () => set({ tradingFloorOpen: true, exchangeOpen: false, exchangeEscapeOwnedByDialog: false }),
+  closeTradingFloor: () => set({ tradingFloorOpen: false }),
   closeExchange: () => set({ exchangeOpen: false, exchangeEscapeOwnedByDialog: false }),
-  setExchangeTab: (tab: 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post') => set({ exchangeTab: tab }),
+  setExchangeTab: (tab: 'browse' | 'my-listings' | 'my-orders' | 'post') => set({ exchangeTab: tab }),
   exchangeEscapeOwnedByDialog: false,
   setExchangeEscapeOwnedByDialog: (owned) => set({ exchangeEscapeOwnedByDialog: owned }),
 
@@ -1544,6 +1548,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     questBoardOpen: false,
     bountyBoardOpen: false,
     exchangeOpen: false,
+    tradingFloorOpen: false,
     exchangeEscapeOwnedByDialog: false,
     leaderboardOpen: false,
     avatarLevel: 1,

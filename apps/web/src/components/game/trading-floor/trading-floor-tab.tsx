@@ -29,7 +29,6 @@ import {
 import { useWalletLink } from '@/hooks/use-wallet-link';
 import { ApiError } from '@/lib/api';
 import { hasSolanaWallet } from '@/lib/solana-wallet';
-import { useFloorArenaUi } from '@/stores/floor-arena-ui';
 import { useTradeTickerStore } from '@/stores/trade-ticker';
 import { useWorldStreamStore } from '@/stores/world-stream-state';
 import {
@@ -39,8 +38,6 @@ import {
   tradeAgeLabel,
   unscoredReasonCopy,
 } from './format';
-import { FloorArenaSection } from './arena/arena-section';
-import { HouseTradersSection } from './house-traders';
 import { floorStatusCopy } from './floor-tape';
 import { TapeRow } from './trade-row';
 import {
@@ -89,38 +86,6 @@ const WALLET_SOURCE_LABELS: Record<TradingWallet['source'], string> = {
   custodial: 'In-game wallet',
   signed: 'Signed wallet',
 };
-
-/**
- * Where "Start a ClawPump trader" used to sit. Launching a trader now happens
- * in the arena at the top of this tab, so this card only points there. It
- * keeps the `clawpump-templates` id because the house traders panel above
- * links to it ("Start your own below").
- */
-function ArenaLaunchEntry({ isGuest, onGuestBlocked }: { isGuest: boolean; onGuestBlocked: (variant?: 'arena') => void }) {
-  const hasTrader = useFloorArenaUi((state) => state.myAgent === 'present');
-  const openLaunch = () => {
-    if (isGuest) {
-      onGuestBlocked('arena');
-      return;
-    }
-    useFloorArenaUi.getState().showPanel(hasTrader ? 'desk' : 'launch', { templateId: null });
-    if (typeof document !== 'undefined') {
-      document.getElementById('floor-arena')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
-    }
-  };
-  return (
-    <section id="clawpump-templates" style={cardStyle} data-testid="arena-launch-entry">
-      <CardTitle>Start your own trader</CardTitle>
-      <p style={{ margin: '0 0 10px', color: FLOOR_TEXT.muted, fontSize: 12 }}>
-        Your own trader runs in the Trading Arena at the top of this tab. Start from any of the five house agents, change
-        its rules, and trade on paper while it sits at a desk.
-      </p>
-      <button type="button" onClick={openLaunch} style={buttonStyle}>
-        {hasTrader ? 'Open my trader' : 'Launch your trader'}
-      </button>
-    </section>
-  );
-}
 
 function walletSourceLabel(source: TradingWallet['source']): string {
   return WALLET_SOURCE_LABELS[source];
@@ -393,7 +358,6 @@ export function TradingFloorTab({
         color: FLOOR_TEXT.primary,
       }}
     >
-      <FloorArenaSection active={active} isGuest={isGuest} onGuestBlocked={() => onGuestBlocked('arena')} />
 
       <header style={cardStyle}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 10 }}>
@@ -673,9 +637,7 @@ export function TradingFloorTab({
         <p style={{ color: FLOOR_TEXT.muted }}>Every other pair scores 1x.</p>
       </section>
 
-      <HouseTradersSection active={active} />
 
-      <ArenaLaunchEntry isGuest={isGuest} onGuestBlocked={onGuestBlocked} />
 
       {TRADING_FLOOR_GUARDRAIL_LINES.length > 0 || TRADING_FLOOR_RULES.executionWhitelist !== null ? (
         <section style={cardStyle}>

@@ -64,8 +64,6 @@ import {
 } from '@/components/rpg';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { GuestUpsellModal } from '@/components/game/guest-upsell-modal';
-import { TradingFloorTab } from '@/components/game/trading-floor/trading-floor-tab';
-import { ARENA_GUEST_UPSELL } from '@/components/game/trading-floor/arena/arena-kit';
 
 // Guests run an all-demo economy (founder ruling 2026-07-06). The Exchange is
 // P2P escrowed trade in REAL ClawTokens — it can't be safely simulated, so a
@@ -78,7 +76,7 @@ const EXCHANGE_UPSELL = {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-type ExchangeTab = 'floor' | 'browse' | 'my-listings' | 'my-orders' | 'post';
+type ExchangeTab = 'browse' | 'my-listings' | 'my-orders' | 'post';
 
 type SortMode = 'newest' | 'reward-high' | 'reward-low';
 
@@ -1530,7 +1528,6 @@ function TabStrip({
     >
       {(
         [
-          { key: 'floor', label: 'Trading Floor' },
           { key: 'browse', label: 'Browse' },
           { key: 'my-listings', label: 'My Listings' },
           { key: 'my-orders', label: 'My Orders' },
@@ -1600,8 +1597,7 @@ export default function ExchangeModal() {
   const [guestUpsellOpen, setGuestUpsellOpen] = useState(false);
   // The Trading Arena is paper only, so its launch gets its own wording. Reset
   // on close, so every other opener keeps the Exchange copy.
-  const [guestUpsellArena, setGuestUpsellArena] = useState(false);
-  const guestUpsell = guestUpsellArena ? ARENA_GUEST_UPSELL : EXCHANGE_UPSELL;
+  const guestUpsell = EXCHANGE_UPSELL;
 
   // Browse filter state
   const [browseType, setBrowseType] = useState<ExchangeListingType>('need');
@@ -1774,9 +1770,7 @@ export default function ExchangeModal() {
         onClose={close}
         closeOnEscape={!nestedDialogOpen}
         title="Exchange"
-        subtitle={tab === 'floor'
-          ? 'Verified on-chain swaps · Live floor · Rules'
-          : 'Peer marketplace · Needs · Offers · Escrowed Trade'}
+        subtitle={'Peer marketplace · Needs · Offers · Escrowed Trade'}
         tier="rare"
         glow="subtle"
         headerIcon={<ExchangeSigil />}
@@ -1785,16 +1779,6 @@ export default function ExchangeModal() {
       >
         <TabStrip tab={tab} onChange={setTab} />
 
-        {tab === 'floor' && (
-          <TradingFloorTab
-            active={open && tab === 'floor'}
-            isGuest={isGuest}
-            onGuestBlocked={(variant) => {
-              setGuestUpsellArena(variant === 'arena');
-              setGuestUpsellOpen(true);
-            }}
-          />
-        )}
 
         {/* ═══════════════════════════ BROWSE ═══════════════════════════ */}
         {tab === 'browse' && (
@@ -2061,7 +2045,6 @@ export default function ExchangeModal() {
         open={guestUpsellOpen}
         onClose={() => {
           setGuestUpsellOpen(false);
-          setGuestUpsellArena(false);
         }}
         headline={guestUpsell.headline}
         body={guestUpsell.body}

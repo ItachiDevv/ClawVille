@@ -1,0 +1,18 @@
+@font-face {
+  font-family: 'Anton';
+  src: url('/fonts/anton-regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Barlow';
+  src: url('/fonts/barlow-regular.ttf') format('truetype');
+  font-display: swap;
+}
+.floor-terminal button, .floor-terminal select, .floor-terminal summary {
+  min-height: 44px;
+}
+.floor-terminal button:focus-visible, .floor-terminal select:focus-visible,
+.floor-terminal a:focus-visible, .floor-terminal summary:focus-visible {
+  outline: 2px solid #F8D038;
+  outline-offset: 2px;
+}
