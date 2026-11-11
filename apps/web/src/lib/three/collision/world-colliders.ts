@@ -140,13 +140,13 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   // Native size: 25.873×25.873, scale≈96.6 → footprint cap → worldX=worldZ=2000 → ×0.85
   'messaging-channels': { halfX: 850, halfZ: 850 },
 
-  // GLB: brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb, targetMaxDim=1400
-  // (2026-11-10 BrainChain Office swap; was salty-spitoon at 850×850).
-  // Scene bbox 1.6102 × 1.9021 × 1.3320 (node scale 0.951 included), maxDim = Y.
-  // scale = 1400/1.9021 = 736.0 → authored footprint 1185 × 980 (no cap).
-  // Rotated by rotY -2.093 (|cos| 0.5, |sin| 0.866): world AABB
-  //   X = 0.5×1185 + 0.866×980 = 1441, Z = 0.866×1185 + 0.5×980 = 1516 → ×0.85 / 2
-  'api-integrations':   { halfX: 613, halfZ: 644 },
+  // GLB: brainchain/brainchain-office-v3-ktx.glb, targetMaxDim=1400.
+  // Scene bbox 1.8990 x 1.3639 x 1.4047, maxDim = X.
+  // Scale = 1400 / 1.8990 = 737.2; authored footprint 1400 x 1035.6 (no cap).
+  // rotY -2.093 (|cos| 0.5, |sin| 0.866) gives world AABB:
+  // X = 0.5*1400 + 0.866*1035.6 = 1596.8;
+  // Z = 0.866*1400 + 0.5*1035.6 = 1730.2; times 0.85 / 2.
+  'api-integrations':   { halfX: 679, halfZ: 735 },
 
   // GLB: boating-school.glb, targetMaxDim=1000
   // Approximately square footprint → worldX=1000, worldZ=995 → ×0.85

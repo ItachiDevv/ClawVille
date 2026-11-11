@@ -32,7 +32,7 @@ const BUILDINGS = [
   { id: 'code-development',   glb: 'apps/web/public/models/chum-bucket-v2.glb',               targetMaxDim: 1400, box3Recenter: false },
   { id: 'mcp-tool-use',       glb: 'apps/web/public/models/krusty-krab-v2.glb',               targetMaxDim: 1400, box3Recenter: false },
   { id: 'messaging-channels', glb: 'apps/web/public/models/sandy-treedome-v3.glb',            targetMaxDim: 2500, box3Recenter: false },
-  { id: 'api-integrations',   glb: 'apps/web/public/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb', targetMaxDim: 1400, box3Recenter: false },
+  { id: 'api-integrations',   glb: 'apps/web/public/models/brainchain/brainchain-office-v3-ktx.glb', targetMaxDim: 1400, box3Recenter: false },
   { id: 'app-publishing',     glb: 'apps/web/public/models/boating-school.glb',               targetMaxDim: 1000, box3Recenter: false },
   { id: 'cron-automation',    glb: 'apps/web/public/models/patty-building.glb',               targetMaxDim: 2200, box3Recenter: false },
   { id: 'deployment-ops',     glb: 'apps/web/public/models/building-lighthouse.glb',          targetMaxDim: 1400, box3Recenter: false },

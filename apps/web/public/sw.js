@@ -88,6 +88,12 @@
 //   - Added the 13 ambient/wanderer VRMs to the existing page-signaled roster.
 //   - The v11 handshake, v12 byte ledger, and 10 MB per-file cap are unchanged.
 
+// 2026-11-11 (v13, no version bump: roster entry only):
+//   - Replaced the Office entry in the page-signaled precache roster with the
+//     new filename brainchain-office-v3-ktx.glb. The roster skips cached
+//     entries, so only the new file downloads; a version bump would evict and
+//     re-download every cached asset for every returning player.
+//
 const CACHE_VERSION = 'v13';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
@@ -121,7 +127,7 @@ const PRECACHE_GLBS = [
   '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
   '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
   '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
-  '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1',
+  '/models/brainchain/brainchain-office-v3-ktx.glb',
   '/models/boating-school-opt1-ktx.glb?v=3',
   '/models/patty-building-opt1-mo-ktx.glb?v=3',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',

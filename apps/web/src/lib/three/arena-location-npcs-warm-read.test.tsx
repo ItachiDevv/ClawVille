@@ -28,11 +28,7 @@
  *   (a) 0 render reads suspended (base: >= 1 per resident model);
  *   (b) for every resident model + companion in LOCATION_NPCS: a warm read
  *       outside render ran before the first render read, with the SAME path
- *       (drei key [GLTFLoader, path]), draco, meshopt and extender. A VRM
- *       resident (LocationNpcConfig.vrm, ring slot 4 BrainChain "Cortex") reads
- *       through a vrm-loader recorder instead: warm first, ONE
- *       `location-npc:<zone>` instance id, retained before the read, disposed
- *       on unmount, its own material tinted, never read through drei;
+ *       (drei key [GLTFLoader, path]), draco, meshopt and extender;
  *   (c) an unmount during the warm: no render read and no mount afterwards,
  *       no error;
  *   plus StrictMode, and a failed model: the warm resolves, the render
@@ -143,71 +139,7 @@ function recordingUseGLTF(path: string, draco?: unknown, meshopt?: unknown, exte
   throw pending;
 }
 
-// ---------------------------------------------------------------------------
-// vrm-loader recorder for VRM residents (LocationNpcConfig.vrm). Same
-// suspend-by-key emulation, keyed `${path}#${instanceId}` like the real
-// per-instance cache. useVRMInstance (render) and readVRMInstance (warm)
-// share it; the stack tells a warm read from a render read.
-// ---------------------------------------------------------------------------
-
-type VrmRead = { seq: number; path: string; instanceId: string; inRender: boolean; suspended: boolean };
-const vrmReads: VrmRead[] = [];
-type FakeVrm = { scene: InstanceType<typeof threeCjs.Group> };
-const vrmCache = new Map<string, FakeVrm>();
-const vrmLoading = new Map<string, Promise<void>>();
-const vrmRetains: string[] = [];
-const vrmDisposes: string[] = [];
-
-function recordingReadVRM(path: string, instanceId: string): FakeVrm {
-  const key = `${path}#${instanceId}`;
-  const read: VrmRead = {
-    seq: (seq += 1),
-    path,
-    instanceId,
-    inRender: !(new Error().stack ?? '').includes('warmSuspenseRead'),
-    suspended: false,
-  };
-  vrmReads.push(read);
-  const hit = vrmCache.get(key);
-  if (hit) return hit;
-  let pending = vrmLoading.get(key);
-  if (!pending) {
-    const gate = loadGate;
-    pending = new Promise<void>((resolve) => setTimeout(resolve, 3))
-      .then(() => gate ?? undefined)
-      .then(() => {
-        // Ignore a load whose entry was disposed meanwhile (real generation guard).
-        if (vrmLoading.get(key) !== pending) return;
-        const scene = new threeCjs.Group();
-        scene.name = `fake-vrm:${path}`;
-        scene.add(new threeCjs.Mesh(new threeCjs.BoxGeometry(1, 2, 1), new threeCjs.MeshStandardMaterial({ color: 0xffffff })));
-        vrmCache.set(key, { scene });
-      });
-    vrmLoading.set(key, pending);
-  }
-  read.suspended = true;
-  throw pending;
-}
-
-class StubAnimator {
-  init(): Promise<void> {
-    return Promise.resolve();
-  }
-  updateMixerOnly(): void {}
-  updateSpringOnly(): void {}
-  getFootYMinInSpace(): number {
-    return Infinity; // no posed foot bones in the stub: the re-plant is a no-op
-  }
-  flushSkeletonUpdates(): void {}
-  dispose(): void {}
-}
-
 function resetCache(): void {
-  vrmReads.length = 0;
-  vrmCache.clear();
-  vrmLoading.clear();
-  vrmRetains.length = 0;
-  vrmDisposes.length = 0;
   reads.length = 0;
   cache.clear();
   failed.clear();
@@ -293,24 +225,6 @@ beforeAll(async () => {
     }),
   }));
 
-  const realAnimator = await import('./vrm-character-animator');
-  mock.module('./vrm-character-animator', () => ({ ...realAnimator, VRMCharacterAnimator: StubAnimator }));
-  const realVrmLoader = { ...(await import('./vrm-loader')) };
-  mock.module('./vrm-loader', () => ({
-    ...realVrmLoader,
-    useVRMInstance: recordingReadVRM,
-    readVRMInstance: recordingReadVRM,
-    retainVRMInstance: (path: string, id: string) => {
-      vrmRetains.push(`${path}#${id}`);
-    },
-    disposeVRMInstance: (path: string, id: string) => {
-      const key = `${path}#${id}`;
-      vrmDisposes.push(key);
-      vrmCache.delete(key);
-      vrmLoading.delete(key);
-    },
-  }));
-
   r3f = await import('@react-three/fiber');
   r3f.extend(threeCjs as never);
   const mod = await import('./arena-location-npcs');
@@ -318,7 +232,7 @@ beforeAll(async () => {
   LOCATION_NPCS = mod.LOCATION_NPCS;
   const { buildingZones } = await import('@/lib/pixi/tilemap-data');
   zoneIds = buildingZones.map((z) => z.id).filter((id) => LOCATION_NPCS[id] !== undefined);
-}, 30_000); // cold module imports (three, VRM loader, animator) can exceed the 5 s hook default
+}, 30_000); // cold module imports (three and residents) can exceed the 5 s hook default
 
 afterAll(async () => {
   console.error = originalConsoleError;
@@ -377,26 +291,19 @@ async function mount(element: ReactNode) {
     store = root.render(element);
   });
   const committed = (path: string) =>
-    (store.getState().scene.getObjectByName(`fake-gltf:${path}`)
-      ?? store.getState().scene.getObjectByName(`fake-vrm:${path}`)) as THREE.Object3D | undefined;
+    store.getState().scene.getObjectByName(`fake-gltf:${path}`) as THREE.Object3D | undefined;
   return { root, store, committed };
 }
 
-/** Every (zone, model) the registry renders: the primary and its companion.
- *  vrm = the primary is a VRM resident (vrm-loader, not drei). */
-function residentModels(): { zoneId: string; model: string; vrm: boolean }[] {
-  const out: { zoneId: string; model: string; vrm: boolean }[] = [];
+/** Every (zone, model) the registry renders: the primary and its companion. */
+function residentModels(): { zoneId: string; model: string }[] {
+  const out: { zoneId: string; model: string }[] = [];
   for (const zoneId of zoneIds) {
     const cfg = LOCATION_NPCS[zoneId]!;
-    out.push({ zoneId, model: cfg.model, vrm: cfg.vrm !== undefined });
-    if (cfg.companion) out.push({ zoneId, model: cfg.companion.model, vrm: false });
+    out.push({ zoneId, model: cfg.model });
+    if (cfg.companion) out.push({ zoneId, model: cfg.companion.model });
   }
   return out;
-}
-
-/** GLB and VRM reads together (warm-vs-render ordering checks). */
-function allReads(): { seq: number; path: string; inRender: boolean; suspended: boolean }[] {
-  return [...reads, ...vrmReads];
 }
 
 /** Catches what ArenaLocationNpcs throws (stands in for the outer boundary). */
@@ -433,28 +340,12 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
       await waitFor(() => models.every((m) => committed(m.model) !== undefined), 'every resident committed');
 
       // (a) the release render never suspended.
-      const suspendedRenders = allReads().filter((r) => r.inRender && r.suspended);
+      const suspendedRenders = reads.filter((r) => r.inRender && r.suspended);
       expect(suspendedRenders.map((r) => r.path)).toEqual([]);
 
       // (b) parity: same drei cache key (path) and the same loader options.
       const problems: string[] = [];
-      for (const { zoneId, model, vrm } of models) {
-        if (vrm) {
-          // VRM resident: warm first, same (path, instanceId) entry as the render.
-          const forPath = vrmReads.filter((r) => r.path === model);
-          const firstRender = forPath.findIndex((r) => r.inRender);
-          if (firstRender === -1) problems.push(`${model}: never read by a render`);
-          else if (forPath.slice(0, firstRender).every((r) => r.inRender)) {
-            problems.push(`${model}: no warm read outside render before the first render read`);
-          }
-          const ids = new Set(forPath.map((r) => r.instanceId));
-          if (ids.size !== 1 || !ids.has(`location-npc:${zoneId}`)) {
-            problems.push(`${model}: instance ids ${[...ids].join(', ')}`);
-          }
-          if (!vrmRetains.includes(`${model}#location-npc:${zoneId}`)) problems.push(`${model}: never retained`);
-          if (reads.some((r) => r.path === model)) problems.push(`${model}: VRM read through drei useGLTF`);
-          continue;
-        }
+      for (const { model } of models) {
         const forPath = reads.filter((r) => r.path === model);
         const firstRender = forPath.findIndex((r) => r.inRender);
         if (firstRender === -1) {
@@ -472,26 +363,13 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
       }
       // No warm read for a path no resident renders.
       const known = new Set(models.map((m) => m.model));
-      for (const r of allReads()) if (!known.has(r.path)) problems.push(`${r.path}: read but not a resident model`);
+      for (const r of reads) if (!known.has(r.path)) problems.push(`${r.path}: read but not a resident model`);
       expect(problems).toEqual([]);
-      // The VRM re-skin tinted the instance's own material (lerp toward the slot tint).
-      for (const { zoneId, model, vrm } of models) {
-        if (!vrm) continue;
-        const tint = LOCATION_NPCS[zoneId]!.vrm!.tint;
-        const mesh = committed(model)!.children[0] as THREE.Mesh;
-        const mat = mesh.material as THREE.MeshStandardMaterial;
-        expect(mat.userData.residentTint).toBe(tint);
-        expect(mat.color.getHex()).not.toBe(0xffffff);
-      }
       // One extender for the whole registry (the module constant).
       expect(new Set(reads.map((r) => r.extender)).size).toBe(1);
       expect(consoleErrors).toEqual([]);
       expect(reported).toEqual([]);
       await r3f.act(async () => root.unmount());
-      // The LocationNpc bracket disposes each VRM resident instance on unmount.
-      for (const { zoneId, model, vrm } of models) {
-        if (vrm) expect(vrmDisposes).toContain(`${model}#location-npc:${zoneId}`);
-      }
     },
     30_000,
   );
@@ -501,7 +379,7 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     const { root, committed } = await mount(createElement(StrictMode, null, createElement(ArenaLocationNpcs)));
     const models = residentModels();
     await waitFor(() => models.every((m) => committed(m.model) !== undefined), 'every StrictMode resident committed');
-    expect(allReads().filter((r) => r.inRender && r.suspended)).toEqual([]);
+    expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
     expect(consoleErrors).toEqual([]);
     expect(reported).toEqual([]);
     await r3f.act(async () => root.unmount());
@@ -516,11 +394,11 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     const models = residentModels();
     const { root, committed } = await mount(createElement(ArenaLocationNpcs));
     await waitFor(
-      () => models.every((m) => allReads().some((r) => r.path === m.model && !r.inRender)),
+      () => models.every((m) => reads.some((r) => r.path === m.model && !r.inRender)),
       'every resident model warm read started',
       3_000,
     );
-    expect(allReads().filter((r) => r.inRender)).toEqual([]);
+    expect(reads.filter((r) => r.inRender)).toEqual([]);
 
     // The residents unmount while every load is held open.
     await r3f.act(async () => {
@@ -530,7 +408,7 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     openGate();
     loadGate = null;
     await settle(60);
-    expect(allReads().filter((r) => r.seq > seqAtUnmount && r.inRender)).toEqual([]);
+    expect(reads.filter((r) => r.seq > seqAtUnmount && r.inRender)).toEqual([]);
     for (const { model } of models) expect(committed(model)).toBeUndefined();
     expect(consoleErrors).toEqual([]);
     expect(reported).toEqual([]);
@@ -564,7 +442,7 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     // The warm ran first and resolved on the failure; no render read suspended.
     const forPath = reads.filter((r) => r.path === failing);
     expect(forPath.some((r) => !r.inRender)).toBe(true);
-    expect(allReads().filter((r) => r.inRender && r.suspended)).toEqual([]);
+    expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
     // The boundary's clear() evicted the failed entry (retry on remount).
     expect(clears).toEqual([failing]);
     await r3f.act(async () => root.unmount());
@@ -585,7 +463,7 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     });
     await waitFor(() => committed(failing) !== undefined, 'the resident committed after the remount');
     expect(loadStarts.get(failing)).toBe(2);
-    expect(allReads().filter((r) => r.inRender && r.suspended)).toEqual([]);
+    expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
     await r3f.act(async () => root.unmount());
   }, 20_000);
 
@@ -614,33 +492,8 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     await waitFor(() => committed(failing) !== undefined, 'the resident committed after the stream-in');
     expect(committed(sibling)).toBeDefined();
     expect(loadStarts.get(failing)).toBe(2);
-    expect(allReads().filter((r) => r.inRender && r.suspended)).toEqual([]);
+    expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
     await r3f.act(async () => root.unmount());
   }, 20_000);
 
-  test('the VRM resident keeps its fit and ground offset across a stream-out + stream-in', async () => {
-    resetCache();
-    const { root, store } = await mount(createElement(ArenaLocationNpcs));
-    const vrmPath = LOCATION_NPCS['api-integrations']!.model;
-    const frames = async (n: number) => {
-      for (let k = 0; k < n; k += 1) {
-        await r3f.act(async () => {
-          store.getState().advance(performance.now());
-        });
-      }
-    };
-    const scene = () => [...vrmCache.entries()].find(([key]) => key.startsWith(`${vrmPath}#`))?.[1].scene;
-    await waitFor(() => scene()?.parent != null, 'the VRM resident committed');
-    const first = { y: scene()!.position.y, scale: scene()!.scale.x };
-    expect(Number.isFinite(first.y) && first.scale > 0).toBe(true);
-    const camera = store.getState().camera;
-    camera.position.set(10_000_000, 0, 0);
-    await frames(30);
-    camera.position.set(0, 0, 5);
-    await frames(30);
-    await waitFor(() => scene()?.parent != null, 'the VRM resident committed after the stream-in');
-    expect(scene()!.position.y).toBeCloseTo(first.y, 6);
-    expect(scene()!.scale.x).toBeCloseTo(first.scale, 6);
-    await r3f.act(async () => root.unmount());
-  }, 20_000);
 });

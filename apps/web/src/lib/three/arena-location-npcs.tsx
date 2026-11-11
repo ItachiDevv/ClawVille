@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useLayoutEffect, useState, type ReactElement, type RefObject } from 'react';
+import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useState, type ReactElement, type RefObject } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
@@ -25,16 +25,7 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terrain-heightfield';
 import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
-import {
-  applyFattenedFrustumCulling,
-  disposeVRMInstance,
-  readVRMInstance,
-  retainVRMInstance,
-  useVRMInstance,
-} from '@/lib/three/vrm-loader';
-import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
-import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
-import { getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
+import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 import { extendLoaderWithTextureDeviceCap, tagGltfLoadRejection } from '@/lib/three/use-gltf-ktx2';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
@@ -121,18 +112,6 @@ type LocationNpcConfig = NpcModelConfig & {
    *  loading screen. Timing-only deferral — the NPC always mounts once
    *  released (atomic, no fade); release is monotonic across canvas remounts. */
   deferUntilDecorativeRelease?: boolean;
-  /** When set, `model` is an in-repo VRM path and the resident renders
-   *  through the per-instance VRM loader (VrmResidentMesh: Mixamo idle via
-   *  VRMCharacterAnimator, bbox auto-fit) instead of drei useGLTF. The
-   *  re-skin is a runtime tint of this instance's own materials — the asset
-   *  file is never mutated. GLB-only fields (color, scaleOverride,
-   *  rotYOffset) do not apply. Companions stay GLB-only. */
-  vrm?: {
-    /** Hex colour the base colour + MToon shade colour lerp toward. */
-    tint: number;
-    /** Lerp factor 0..1 (keep low: re-skin, not repaint). */
-    tintLerp: number;
-  };
   companion?: NpcModelConfig & {
     /** World-unit X offset from primary NPC position (default 80). */
     offsetX?: number;
@@ -163,19 +142,12 @@ export const LOCATION_NPCS: Readonly<Record<string, LocationNpcConfig>> = {
   // Slot 1 — memory-rag — bb-building (interim Squidward's house)
   'memory-rag': { name: 'Squidward', model: '/models/characters/squidward-ktx.glb', deferUntilDecorativeRelease: true },
 
-  // Slot 4 — api-integrations — BrainChain Office (founder 2026-11-10: replaces
-  // the Salty Spitoon; the zone id never changes). Resident "Cortex" (name is a
-  // placeholder pending founder review) is a RE-SKIN of an existing in-repo
-  // VRM — no new asset, no paid generation. clytemnestra-w30k.vrm: neutral
-  // (non-partner) humanoid, the smallest decimated VRM in /avatars (589 KB,
-  // ~30k-tri weld), already served at this exact path (registry + Reef Race),
-  // so no ?v= bump. Tint = BrainChain Office sage-teal #477e73
-  // (brainchain-office.module.css `.hero h1 span`), lerp 0.3 = subtle.
-  // Replaced the Flying Dutchman ghost GLB.
+  // Slot 4: BrainChain Office. Cortex is the custom brain-head clerk robot.
+  // The skinned GLB uses the existing height fit and Idle clip selection.
+  // Browser height verification is pending; no scaleOverride is applied.
   'api-integrations': {
     name: 'Cortex',
-    model: '/avatars/clytemnestra-w30k.vrm',
-    vrm: { tint: 0x477e73, tintLerp: 0.3 },
+    model: '/models/brainchain/brainchain-clerk-v1-ktx.glb',
     deferUntilDecorativeRelease: true,
   },
 
@@ -689,12 +661,9 @@ const NpcMesh = memo(function NpcMesh({
   );
 });
 
-/** Bio-luminescent resident label — same rig as GLBNpcMesh / VRMNpcMesh.
- *  WorldLabelsOverlay label, distance-faded, occlusion raycast enabled (a
- *  teacher can stand behind a building at some camera angles). The id
- *  encodes model path + position so residents never collide. Offset 320wu
- *  sits above the head of the ~300-350wu GLB cast and the 270wu VRM. Shared
- *  by NpcMesh (GLB) and VrmResidentMesh (VRM). */
+/** Resident DOM label for NpcMesh, with distance fade and occlusion raycasts.
+ *  The id includes the model path and position to distinguish residents.
+ *  The existing 320 wu offset places the label above the GLB cast. */
 function ResidentLabel({
   name,
   labelId,
@@ -782,169 +751,6 @@ function ResidentLabel({
   );
 }
 
-/** Stable per-slot VRM instance id: vrm-loader parses one private VRM per
- *  (path, instanceId), so the resident never shares a scene, skeleton or
- *  materials with a wanderer/player wearing the same body. */
-function residentVrmInstanceId(zoneId: string): string {
-  return `location-npc:${zoneId}`;
-}
-
-/** Re-skin: lerp this instance's own base colour (and MToon shade colour)
- *  toward the slot tint, in place. The materials belong to this parse alone
- *  (vrm-loader parses per instance and disposes them with it), so nothing is
- *  cloned and no shared cache is touched. Idempotent per material via a
- *  userData tag: the instance outlives a stream-out/in remount of the mesh. */
-function applyResidentVrmTint(root: THREE.Object3D, tintHex: number, lerp: number): void {
-  const tint = new THREE.Color(tintHex);
-  root.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.material) return;
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    for (const mat of mats) {
-      if (mat.userData.residentTint === tintHex) continue;
-      mat.userData.residentTint = tintHex;
-      const m = mat as THREE.Material & { color?: THREE.Color; shadeColorFactor?: THREE.Color };
-      m.color?.lerp(tint, lerp);
-      m.shadeColorFactor?.lerp(tint, lerp);
-    }
-  });
-}
-
-/** First-mount VRM fit per retained resident instance (see VrmResidentMesh). */
-const residentVrmFit = new WeakMap<object, { animatorId: string | undefined; fit: { scale: number; offsetY: number } }>();
-
-/** VrmResidentMesh — a building resident rendered from an in-repo VRM
- *  (LocationNpcConfig.vrm). Mirrors the VRMNpcMesh path in arena-npcs.tsx:
- *  per-instance VRM (useVRMInstance), bbox auto-fit (computeVRMAvatarFit),
- *  VRMCharacterAnimator Mixamo idle, mixer every frame + spring bones at
- *  ~30Hz, both skipped past 5000wu (same far gate as NpcMesh). Faces the
- *  village center with the same facingRotY as the GLB residents (staging
- *  check 2026-11-10: an extra +PI turned Cortex away from the plaza). Feet
- *  are re-planted on the terrain from the rendered foot bones, because a
- *  bind-pose bbox fit does not match every rig's retargeted idle hips
- *  (Cortex stood 106 wu under the ground). LocationNpc owns the retain/dispose
- *  bracket and the warm read, so this render read never suspends. */
-const VrmResidentMesh = memo(function VrmResidentMesh({
-  modelCfg,
-  tint,
-  instanceId,
-  worldX,
-  worldZ,
-  facingRotY,
-  seedBase,
-  attachmentVisible,
-}: {
-  modelCfg: NpcModelConfig;
-  tint: NonNullable<LocationNpcConfig['vrm']>;
-  instanceId: string;
-  worldX: number;
-  worldZ: number;
-  facingRotY: number;
-  seedBase: number;
-  attachmentVisible: boolean;
-}) {
-  const groupRef = useRef<THREE.Group>(null);
-  const animatorRef = useRef<VRMCharacterAnimator | null>(null);
-  const frameCountRef = useRef(0);
-  const springDeltaAccRef = useRef(0);
-  const terrainY = useRef(-2);
-  const placed = useRef(false);
-  const { scene: threeScene } = useThree();
-
-  const vrm = useVRMInstance(modelCfg.model, instanceId);
-  const animatorId = getAnimatorIdByPath(modelCfg.model);
-  // The fit is measured once per retained VRM instance. A later mount must
-  // not re-measure: the retained scene keeps the previous mount's offsetY
-  // position, so a second bbox read would drift the resident off the ground.
-  const { scale, offsetY } = useMemo(() => {
-    const cached = residentVrmFit.get(vrm);
-    if (cached && cached.animatorId === animatorId) return cached.fit;
-    const fit = computeVRMAvatarFit(vrm, animatorId);
-    residentVrmFit.set(vrm, { animatorId, fit });
-    return fit;
-  }, [vrm, animatorId]);
-
-  // Tint before the first frame draws (layout effect runs in the commit,
-  // ahead of the next R3F frame).
-  useLayoutEffect(() => {
-    applyResidentVrmTint(vrm.scene, tint.tint, tint.tintLerp);
-  }, [vrm, tint.tint, tint.tintLerp]);
-
-  useEffect(() => {
-    applyFattenedFrustumCulling(vrm.scene);
-    const animator = new VRMCharacterAnimator(vrm, animatorId);
-    animatorRef.current = animator;
-    animator.init().catch((err) => {
-      console.warn('[VrmResidentMesh] animator init failed:', err);
-    });
-    return () => {
-      animatorRef.current = null;
-      animator.dispose();
-    };
-  }, [vrm, animatorId]);
-
-  useSceneFrame(({ camera }, delta) => {
-    const group = groupRef.current;
-    if (!group) return;
-    frameCountRef.current += 1;
-    const frame = frameCountRef.current;
-
-    if (!placed.current || (frame + seedBase) % 20 === 0) {
-      const y = getTerrainY(worldX, worldZ, threeScene);
-      if (y > -100) {
-        terrainY.current = y;
-        placed.current = true;
-      }
-    }
-    group.position.set(worldX, terrainY.current, worldZ);
-
-    const dx = worldX - camera.position.x;
-    const dz = worldZ - camera.position.z;
-    if (dx * dx + dz * dz > 25_000_000) return; // 5000 wu² — pose freezes far away
-    const animator = animatorRef.current;
-    if (!animator) return;
-    const dt = Math.min(delta, 0.1);
-    animator.updateMixerOnly(dt, false, false, 1);
-    springDeltaAccRef.current += dt;
-    if ((frame + seedBase) % 2 === 0) {
-      animator.updateSpringOnly(Math.min(springDeltaAccRef.current, 0.1));
-      springDeltaAccRef.current = 0;
-      // Re-plant every 30 frames from the rendered (raw) foot bones, measured
-      // in this group's space where the terrain is y = 0. After a lift, the
-      // scene matrices and the animator's deferred skeleton updates are
-      // refreshed so the skin never draws a frame with stale bone matrices.
-      // (The helper builds a 4-entry bone list per call: one small array per
-      // 30 frames, no Vector3.)
-      if (placed.current && (frame + seedBase) % 30 === 0) {
-        const footY = animator.getFootYMinInSpace(group);
-        if (Number.isFinite(footY) && Math.abs(footY) > 1) {
-          vrm.scene.position.y -= footY;
-          vrm.scene.updateMatrixWorld(true);
-          animator.flushSkeletonUpdates();
-        }
-      }
-    }
-  });
-
-  return (
-    <group ref={groupRef}>
-      <group rotation={[0, facingRotY, 0]}>
-        <primitive
-          object={vrm.scene}
-          scale={[scale, scale, scale]}
-          position={[0, offsetY, 0]}
-        />
-      </group>
-      <ResidentLabel
-        name={modelCfg.name}
-        labelId={`location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`}
-        anchorRef={groupRef}
-        visible={attachmentVisible}
-      />
-    </group>
-  );
-});
-
 const LocationNpc = memo(function LocationNpc({
   zoneId,
   worldX,
@@ -1006,31 +812,12 @@ const LocationNpc = memo(function LocationNpc({
   // Once warmed it stays warmed (the drei cache keeps the entry, so a
   // resident that streams out and back in mounts at once), except after a
   // model failure (see onModelFailed below).
-  // VRM resident (config.vrm): the parse is a per-instance vrm-loader entry,
-  // not a shared drei cache entry, so it needs an owner. This bracket (the
-  // arena-npcs useVRMOrphanCancel pattern) lives on LocationNpc, which
-  // commits at once, and is declared BEFORE the warm effect so its retain
-  // runs first. A stream-out keeps the parsed instance (like the drei GLB
-  // cache keeps a GLB), so a stream-in mounts at once; the LocationNpc
-  // unmount disposes it, including an entry a warm created before the mesh
-  // ever committed.
-  const vrmPath = config?.vrm ? config.model : null;
-  const vrmInstanceId = residentVrmInstanceId(zoneId);
-  useEffect(() => {
-    if (!vrmPath) return undefined;
-    retainVRMInstance(vrmPath, vrmInstanceId);
-    return () => disposeVRMInstance(vrmPath, vrmInstanceId);
-  }, [vrmPath, vrmInstanceId]);
   const [warmed, setWarmed] = useState(false);
   useEffect(() => {
     if (!config || warmed || !released || !mounted) return undefined;
     let cancelled = false;
-    // readVRMInstance is the non-hook body of useVRMInstance (the render read
-    // in VrmResidentMesh): same (path, instanceId) entry.
     const reads: (() => unknown)[] = [
-      config.vrm
-        ? () => readVRMInstance(config.model, vrmInstanceId)
-        : () => readLocationNpcModel(config.model),
+      () => readLocationNpcModel(config.model),
     ];
     if (config.companion) {
       const companionModel = config.companion.model;
@@ -1045,7 +832,7 @@ const LocationNpc = memo(function LocationNpc({
     return () => {
       cancelled = true;
     };
-  }, [config, warmed, released, mounted, vrmInstanceId]);
+  }, [config, warmed, released, mounted]);
   // A model failure (caught by the resident's ModelLoadBoundary, which
   // clears the failed cache entry) re-arms the warm for the next stream-in,
   // so the retry reads a resolved entry too. Not on the failure itself: a
@@ -1111,28 +898,15 @@ const LocationNpc = memo(function LocationNpc({
               resetKey={config.model}
               onModelFailed={onModelFailed}
             >
-              {config.vrm ? (
-                <VrmResidentMesh
-                  modelCfg={config}
-                  tint={config.vrm}
-                  instanceId={vrmInstanceId}
-                  worldX={worldX}
-                  worldZ={worldZ}
-                  facingRotY={facingRotY}
-                  seedBase={seed}
-                  attachmentVisible={warmReady}
-                />
-              ) : (
-                <NpcMesh
-                  modelCfg={config}
-                  worldX={worldX}
-                  worldZ={worldZ}
-                  facingRotY={facingRotY}
-                  seedBase={seed}
-                  showLabel={true}
-                  attachmentVisible={warmReady}
-                />
-              )}
+              <NpcMesh
+                modelCfg={config}
+                worldX={worldX}
+                worldZ={worldZ}
+                facingRotY={facingRotY}
+                seedBase={seed}
+                showLabel={true}
+                attachmentVisible={warmReady}
+              />
             </ModelLoadBoundary>
             {companion && (
               <ModelLoadBoundary
@@ -1201,8 +975,7 @@ export function DeferredNpcPreloads(): ReactElement | null {
       immediateModels.push(model);
     };
     for (const cfg of Object.values(LOCATION_NPCS).filter((c) => !c.deferUntilDecorativeRelease)) {
-      // A VRM resident is not a drei GLB entry; its slot owns its load.
-      if (!cfg.vrm) collect(cfg.model);
+      collect(cfg.model);
       if (cfg.companion) collect(cfg.companion.model);
     }
 

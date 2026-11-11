@@ -185,20 +185,17 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // component for the messaging building instead of loading the GLB.
   'messaging-channels':  { model: '/models/sandy-treedome-v3-opt1.glb?v=2',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 2500 },
   // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
-  // BRAINCHAIN OFFICE (founder decision 2026-11-10). Replaces salty-spitoon; the
-  // id stays `api-integrations` (quests, books, pathfinding, tools key on it).
-  // The standalone Office venue at world (760, -3040) was removed in the same diff.
-  //
-  // brainchain-office-exterior-v2-mips-mo-ktx.glb: one mesh, one material,
-  // KHR_mesh_quantization (int16 positions, int8 normals, uint16 UVs, all
-  // normalized; makeObject3DWebGPUSafe converts the stride-6/stride-3 attributes).
-  // Scene bbox with the 0.951 node scale: 1.6102 × 1.9021 × 1.3320, centred in
-  // XZ; maxDim = Y. ENTRANCE FACES +Z at rotY 0 (the old venue door sat on its
-  // +Z side) — the ring convention — so NO rotYOffset.
-  //
-  // targetMaxDim 1400 → scale 736.0 → height 1400, footprint 1185 × 980
-  // (no MAX_FOOTPRINT cap). Same landmark tier as Krusty Krab / Chum Bucket.
-  'api-integrations':    { model: '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1', yOffset: 0, rotY: -2.093, targetMaxDim: 1400 },
+  // BRAINCHAIN OFFICE: slot 4 keeps api-integrations for quests and tools.
+  // brainchain-office-v3-ktx.glb: one mesh, one material, 11,999 triangles,
+  // meshopt + KHR_mesh_quantization; KTX2 base color and emissive glow maps.
+  // Scene bounds: X -0.9506..0.9484, Y -0.6838..0.6801, Z -0.7040..0.7006.
+  // Size 1.8990 x 1.3639 x 1.4047, centred in XZ; maxDim = X.
+  // Entrance faces +Z at rotY 0, so the ring needs no rotYOffset.
+  // targetMaxDim 1400 / 1.8990 = scale 737.2: authored footprint X 1400 x
+  // Z 1035.6, height 1005.5; no MAX_FOOTPRINT cap applies.
+  // computeBuildingScale returns bbox.min.y * scale; the inner group subtracts
+  // it (+504.1 wu), grounding the centred Y bounds with yOffset 0.
+  'api-integrations':    { model: '/models/brainchain/brainchain-office-v3-ktx.glb', yOffset: 0, rotY: -2.093, targetMaxDim: 1400 },
   // Slot 5 — SSE (cx=245, cy=293): dx=-65, dz=-113 → atan2(-65,-113)≈-2.620 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
   'app-publishing':      { model: '/models/boating-school-opt1-ktx.glb?v=3',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },

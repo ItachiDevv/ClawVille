@@ -111,7 +111,7 @@ const LANDING_BUILDINGS: LandingBuildingDef[] = [
   { model: '/models/pineapple-house-opt1-mo-ktx.glb?v=3',      rotY:  0.000 },  // visual-creation
   { model: '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',       rotY: -0.522 },  // code-development
   { model: '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',       rotY: -1.049 },  // mcp-tool-use
-  { model: '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1', rotY: -2.093 },  // api-integrations (BrainChain Office)
+  { model: '/models/brainchain/brainchain-office-v3-ktx.glb', rotY: -2.093 },  // api-integrations (BrainChain Office)
   { model: '/models/boating-school-opt1-ktx.glb?v=3',       rotY: -2.620 },  // app-publishing
   { model: '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2', rotY: 3.142 },  // cron-automation (Trading Floor)
   { model: '/models/building-lighthouse-opt1-ktx.glb?v=3',  rotY:  2.620 },  // deployment-ops

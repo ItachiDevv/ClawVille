@@ -65,8 +65,13 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   'code-development':   { halfX: 591, halfZ: 595 },
   'mcp-tool-use':       { halfX: 589, halfZ: 595 },
   'messaging-channels': { halfX: 850, halfZ: 850 },
-  // BrainChain Office exterior (2026-11-10 swap; was salty-spitoon at 850×850).
-  'api-integrations':   { halfX: 613, halfZ: 644 },
+  // GLB: brainchain/brainchain-office-v3-ktx.glb, targetMaxDim=1400.
+  // Scene bbox 1.8990 x 1.3639 x 1.4047, maxDim = X.
+  // Scale = 1400 / 1.8990 = 737.2; authored footprint 1400 x 1035.6 (no cap).
+  // rotY -2.093 (|cos| 0.5, |sin| 0.866) gives world AABB:
+  // X = 0.5*1400 + 0.866*1035.6 = 1596.8;
+  // Z = 0.866*1400 + 0.5*1035.6 = 1730.2; times 0.85 / 2.
+  'api-integrations':   { halfX: 679, halfZ: 735 },
   'app-publishing':     { halfX: 425, halfZ: 423 },
   // Trading Floor exterior (2026-09-19 swap; was patty-building at 850×498).
   'cron-automation':    { halfX: 823, halfZ: 720 },

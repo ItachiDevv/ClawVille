@@ -27,7 +27,7 @@
  * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
  *   pineapple-house-opt1-mo-ktx.glb, chum-bucket-v2-opt1-mo-ktx.glb,
  *   krusty-krab-v2-opt1-mo-ktx.glb,
- *   brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1 (api-integrations, 2026-11-10),
+ *   brainchain/brainchain-office-v3-ktx.glb (api-integrations, 2026-11-11),
  *   boating-school-opt1-ktx.glb?v=3,
  *   trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2,
  *   building-lighthouse-opt1-ktx.glb?v=3,
@@ -95,9 +95,9 @@ export const BUILDING_GLBS: readonly string[] = [
   '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
   '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
   '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
-  // api-integrations — the BrainChain Office exterior (2026-11-10 swap off
-  // salty-spitoon).
-  '/models/brainchain/brainchain-office-exterior-v2-mips-mo-ktx.glb?v=1',
+  // api-integrations: BrainChain Office v3 (2026-11-11).
+  // The new filename invalidates the previous asset cache entry.
+  '/models/brainchain/brainchain-office-v3-ktx.glb',
   '/models/boating-school-opt1-ktx.glb?v=3',
   // cron-automation — the Trading Floor exterior (2026-09-19 swap off
   // patty-building). ?v=2: the bytes were replaced once already.
