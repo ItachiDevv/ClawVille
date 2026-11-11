@@ -23,6 +23,7 @@ import {
 } from './kelp-forest-location';
 import {
   TRADING_FLOOR_BUILDING_ID,
+  TRADING_FLOOR_BUILDING_WORLD,
   TRADING_FLOOR_DOOR_WORLD,
   TRADING_FLOOR_PROMPT_RADIUS_WU,
 } from './trading-floor/trading-floor-location';
@@ -211,9 +212,12 @@ export const COVE_EXIT_WORLD_Z = COVE_WORLD_Z;                  // 0
 // TRADING FLOOR entry (founder order 2026-09-19 — "they would enter it like
 // they enter the cove").
 //
-// Same shape as the cove block above, minus the auto-enter band: crossing an
-// auto-enter band on the way OUT is exactly what produced the cove's exit
-// re-entry loop, so this venue is click / tap / E only.
+// Same shape as the cove block above. Click, tap and E enter from the whole
+// prompt band. Walking INTO the door face also enters (founder report
+// 2026-11-11: "walking into the front door does nothing"). That auto-enter
+// strip sits flush on the building face, far from the exit spawn, and it fires
+// once per visit to the prompt band (world-frame-interaction.ts), so the cove's
+// exit re-entry loop cannot happen here.
 // ---------------------------------------------------------------------------
 const TRADING_FLOOR_PROMPT_SQ =
   TRADING_FLOOR_PROMPT_RADIUS_WU * TRADING_FLOOR_PROMPT_RADIUS_WU;
@@ -245,6 +249,36 @@ export function isTradingFloorProximate(
   const dx = playerWorldX - TRADING_FLOOR_DOOR_WORLD.x;
   const dz = playerWorldZ - TRADING_FLOOR_DOOR_WORLD.z;
   return dx * dx + dz * dz <= TRADING_FLOOR_PROMPT_SQ;
+}
+
+/** Half-width (wu) of the door-face auto-enter strip: the 360 wu doorway
+ *  (3dStructure.md §9g) split across the door centre line. */
+export const TRADING_FLOOR_DOOR_FACE_HALF_X_WU = 180;
+/** Slack (wu) on the town side of the door target. An avatar pressed against
+ *  the collider face stands 773 wu (chibi, half 25) or 798 wu (humanoid, half
+ *  50) in front of the building centre; the door target is 800 wu in front.
+ *  40 wu of slack keeps both bodies inside the strip with room for float
+ *  error, and stays far from the exit spawn. Pinned by
+ *  trading-floor-door-auto-enter.test.ts, which walks real clamped paths. */
+const TRADING_FLOOR_DOOR_FACE_SLACK_WU = 40;
+/** Town-side edge (world Z) of the door-face strip. Today 3320. */
+export const TRADING_FLOOR_DOOR_FACE_MIN_Z =
+  TRADING_FLOOR_DOOR_WORLD.z - TRADING_FLOOR_DOOR_FACE_SLACK_WU;
+
+/**
+ * isAtTradingFloorDoorFace — true only in the narrow strip flush on the
+ * Trading Floor's door face (the avatar has walked into the door). Drives the
+ * walk-into-the-door auto-enter. Zero-alloc, pure-primitive, safe per frame.
+ */
+export function isAtTradingFloorDoorFace(
+  playerWorldX: number,
+  playerWorldZ: number,
+): boolean {
+  return (
+    Math.abs(playerWorldX - TRADING_FLOOR_DOOR_WORLD.x) <= TRADING_FLOOR_DOOR_FACE_HALF_X_WU &&
+    playerWorldZ >= TRADING_FLOOR_DOOR_FACE_MIN_Z &&
+    playerWorldZ <= TRADING_FLOOR_BUILDING_WORLD.z
+  );
 }
 
 // Kelp Forest realm portal — world-side human prompt only. The connected-agent

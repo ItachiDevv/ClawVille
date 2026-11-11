@@ -85,7 +85,10 @@ export const TRADING_FLOOR_DOOR_PX = Object.freeze({
  *
  * 400 leaves a ~500 wu approach corridor between Pearl's 260 wu talk radius
  * and the building face, so walking up reads: resident prompt first, then the
- * door prompt. There is deliberately NO auto-enter band — the cove's was the
- * mechanism behind the exit re-entry loop (founder-reported 2026-09-18).
+ * door prompt. Walking into the door face also enters: a narrow strip flush on
+ * the face (`isAtTradingFloorDoorFace` in character-positions.ts) fires the
+ * walk-in once, and re-arms only after the avatar leaves this prompt band. The
+ * exit spawn sits outside this band, so the cove's exit re-entry loop
+ * (founder-reported 2026-09-18) cannot recur here.
  */
 export const TRADING_FLOOR_PROMPT_RADIUS_WU = 400;

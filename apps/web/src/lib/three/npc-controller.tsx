@@ -41,6 +41,7 @@ import {
   triggerKelpForestWalkIn,
 } from '@/lib/three/kelp-forest-transition';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
+import { stepTradingFloorAutoEnter } from '@/lib/world-frame-interaction';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
 import { isWorldInputBlocked, isWorldFrameBlocked } from './world-input-guard';
 import { registerInputReset } from '@/lib/three/input-reset';
@@ -252,6 +253,10 @@ export default function NpcController() {
       const ndz = wz - NORI_WORLD_Z;
       const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
       if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
+
+      // Walking the possessed body into the Trading Floor door enters it, the
+      // same helper the player avatar path runs (world-frame-interaction.ts).
+      stepTradingFloorAutoEnter(wx, wz);
     }
 
     // ---- Unified input: joystick + WASD → camera-relative ----
