@@ -1,11 +1,11 @@
 # BrainChain commit map after the 2026-11-10 history rewrite
 
-Last Audited: 2026-11-10. Status: local rewrite of the unpushed branch; source trees unchanged.
+Last Audited: 2026-11-11. Status: local rewrite of the unpushed branch; source trees unchanged. Drift: the backup branch was deleted (2026-11-11).
 
 The founder chose a rewrite of the unpushed `docs/brainchain-plan` history before its first push.
 The rewrite changed only seven `docs/brainchain-*` handoff and plan documents. It removed account-identity lines and used neutral release wording.
 Every commit kept its subject, author, date and all other files. Review records and evidence files still cite the old SHAs.
-Use this table to find the published commit for an old SHA. Old commits exist only in the local backup branch.
+Use this table to find the published commit for an old SHA. The old commits no longer exist: the founder had the local backup branch deleted and its objects pruned on 2026-11-11.
 
 | Old | New | Subject |
 | --- | --- | --- |
