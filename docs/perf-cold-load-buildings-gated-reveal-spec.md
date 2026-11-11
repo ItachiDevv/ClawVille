@@ -1,5 +1,13 @@
 # Buildings-gated reveal — spec (rev 3 FROZEN, 2026-08-20; R1 8+1 and R2 8+1 folded)
 
+> **AMENDMENT A2 (game-load C1, 2026-11-11):** the fuses stay as they are.
+> When a fuse dismisses the overlay before the buildings leg holds, the
+> decorative release and the post-reveal stream milestone stay closed until
+> the buildings are presented, capped at 30 s, so the building bytes do not
+> share a slow link with about 40 deferred downloads. The world still counts
+> as revealed (`isWorldRevealed()`). Details: `3dStructure.md`
+> "Buildings-first hold".
+
 > **AMENDMENT A1 (founder, 2026-08-20, post-#271 sign-off):** "I need Nori to
 > also be in the first loading batch … really the first thing that loads, the
 > center town guide." `npc:town-guide` joins the reveal-required set WHEN

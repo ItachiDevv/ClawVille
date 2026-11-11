@@ -42,7 +42,7 @@ import {
   triggerKelpForestWalkIn,
 } from './kelp-forest-transition';
 import { useVRMInstance, disposeVRMInstance, retainVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
-import { isDecorativeReleased } from '@/lib/three/decorative-release';
+import { isWorldRevealed } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import {
   VRMCharacterAnimator,
@@ -404,11 +404,11 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   // Rung-4 slice C (Codex round-1 finding 2, late-mount leg), extended by
   // slice D [R3-F1][R4-F2]: captured ONCE at the first render AFTER the
   // Suspense demand resolves. Deferred-warm attach when the world already
-  // revealed (decorative release) OR when this exact actor resource did not
+  // revealed (isWorldRevealed, not the held decorative release) OR when this exact actor resource did not
   // participate in the closed boot gate (none/timeout closure, post-closure
   // kind/resource replacement). An on-time covered actor mounts RAW.
   const lateResolved = useMemo(
-    () => isDecorativeReleased() || requiresDeferredAttach('player-vrm', reg.path),
+    () => isWorldRevealed() || requiresDeferredAttach('player-vrm', reg.path),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
@@ -622,7 +622,7 @@ function PlayerAvatarGLBInner({ forcedModelKey }: { forcedModelKey?: string } = 
   // the VRM inner — an uncovered/post-closure GLB body warms hidden instead
   // of attaching raw.
   const lateResolved = useMemo(
-    () => isDecorativeReleased() || requiresDeferredAttach('player-glb', reg.path),
+    () => isWorldRevealed() || requiresDeferredAttach('player-glb', reg.path),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );

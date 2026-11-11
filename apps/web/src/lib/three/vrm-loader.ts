@@ -37,7 +37,7 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
 import { primeVrmHipsHeightCache } from './mixamo-retarget';
-import { isDecorativeReleased } from './decorative-release';
+import { isWorldRevealed } from './decorative-release';
 import { fetchArrayBufferWithRetry } from './glb-fetch-retry';
 import { ModelLoadError } from './model-load-error';
 import { stampColdLoadPhase } from './cold-load-stamp';
@@ -344,8 +344,9 @@ export const PLAYER_NPC_INSTANCE_ID = '__player-npc__';
 
 // ---------------------------------------------------------------------------
 // Rung-4 slice C acceptance telemetry: how many VRM parses EXECUTED before the
-// decorative release (== before the reveal, since the release is first-paint
-// anchored). Player-class = the player avatar or the possessed demo body;
+// reveal (isWorldRevealed: the first-paint release qualified; the
+// buildings-first hold can delay the release itself, not this boundary).
+// Player-class = the player avatar or the possessed demo body;
 // everything else is ambient. Acceptance: ambient === 0, player ≤ 1.
 // Stamped into __W3D_PHASES so the cold-load probe captures them and the
 // ?perf=1 HUD can display them. Telemetry only — never throws, never read back.
@@ -393,7 +394,7 @@ export function beginWorldVrmParseEpoch(): void {
 function countPreRevealParse(instanceId: string): void {
   try {
     if (!_worldVrmEpochActive) return;
-    if (isDecorativeReleased()) return;
+    if (isWorldRevealed()) return;
     if (instanceId === PLAYER_INSTANCE_ID || instanceId === PLAYER_NPC_INSTANCE_ID) {
       _preRevealPlayerParses += 1;
       stampColdLoadPhase('vrmPreRevealPlayerParses', _preRevealPlayerParses);

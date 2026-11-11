@@ -102,6 +102,7 @@ mock.module('./use-gltf-ktx2', () => ({
 }));
 mock.module('./decorative-release', () => ({
   isDecorativeReleased: () => true,
+  isWorldRevealed: () => true,
   onDecorativeReleaseStaggered: (callback: () => void) => {
     callback();
     return () => undefined;
