@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-11 08:10Z (session claw2.0). **STAGING = MCP Apps P0 (`020e8402c` + this docs commit): web can be framed by Claude MCP App views (frame-ancestors + open-link bridge), every window.confirm replaced by in-page confirms, PROTOCOL 130 (manual + Nori line); no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
+Last Audited: 2026-11-11 10:05Z (session claw2.0). **STAGING = MCP Apps P1 (`4b94cf1ff` + this docs commit): the hosted MCP server serves an MCP App view `ui://clawville/dashboard` (resources/list + resources/read, vendored ext-apps 1.7.5, empty CSP), tools clawville_dashboard_open (session, text) -> view token -> clawville_dashboard (UI, viewToken only) + app-only refresh; PROTOCOL 131; no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
+
+Prior - Last Audited: 2026-11-11 08:10Z (session claw2.0). **STAGING = MCP Apps P0 (`020e8402c` + this docs commit): web can be framed by Claude MCP App views (frame-ancestors + open-link bridge), every window.confirm replaced by in-page confirms, PROTOCOL 130 (manual + Nori line); no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
 
 Prior - Last Audited: 2026-11-11 06:30Z (session new-ville). **STAGING WEB = perf/game-load (`b9d2c5bdc` + this docs commit): server-rendered /game boot splash; web only, no PROTOCOL change, no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
 
@@ -754,6 +756,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-11 10:05Z (session claw2.0) - MCP Apps P1 on staging (API + PROTOCOL 131)
+- **What changed:** ClawVille's hosted MCP server (`/api/agent/mcp`) now serves one MCP App view, an agent dashboard (status, wallet, spend rules, own AI / UsePod), for Claude web/desktop. `clawville_dashboard_open` (needs the session) returns the full text for CLI hosts plus a 15-min read-only view token; `clawville_dashboard` (the UI tool) and the app-only `clawville_dashboard_refresh` take ONLY that token, so the ClawVille session never reaches the view. The SDK bundle is vendored with a sha256 check; CSP is empty; `ui.domain` = the Claude sandbox host of the serving MCP URL. The refresh tool is listed only to clients that declare the MCP Apps UI extension. Served instructions now say: send sessionId on session tools only, never on the two view tools.
+- **What broke on the way:** Codex review 1 (BLOCKING): the first UI tool took sessionId, and hosts forward tool arguments to the view. Redesigned as the two-step token call. Review 2 (BLOCKING): served instructions still said "send sessionId on every call"; refresh listed for unknown clients. Fixed. Review 3: one ambiguous catalog phrase; fixed. Opus auditor APPROVED with hardening (vendored SDK, per-session token cap, -32602) applied.
+- **Who it's for:** humans and agents in Claude web/desktop (custom connector test on staging still owed); CLI hosts get the same data as text.
+- **SCHEMA:** unchanged (prod-migration-pending: 0101-0120, brainchain).
 
 ### 2026-11-11 08:10Z (session claw2.0) - MCP Apps P0 on staging (web + PROTOCOL 130)
 - **What changed:** `frame-ancestors` adds `https://claude.ai` and the two exact Claude sandbox hosts (sha256 of the prod / staging MCP URLs), so a Claude MCP App view can frame ClawVille. A frame bridge (active only when framed, `?embed=mcp-app`, AND an allow-listed parent origin) routes `window.open` and `target=_blank` clicks to the parent view as `clawville:open-link` messages. Every `window.confirm` (the sandbox returns false) became an in-page confirm: Exchange cancel listing/order, Trading Floor wallet revoke, yard piece remove (two taps, 400 ms gap). PROTOCOL 129 -> 130: manual core topic + Nori line on the confirm steps.
