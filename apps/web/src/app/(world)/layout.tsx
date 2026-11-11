@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { WorldStageRoot } from '@/components/three/world-stage/WorldStageRoot';
 import { WorldPresence } from '@/components/three/world-stage/WorldPresence';
 import { BootSplash } from '@/components/three/world-stage/boot-splash';
+import { McpAppFrameBridgeInstaller } from '@/lib/embed/mcp-app-frame-bridge-installer';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +14,7 @@ export default function WorldRouteGroupLayout({
   return (
     <>
       <BootSplash />
+      <McpAppFrameBridgeInstaller />
       <WorldPresence />
       <WorldStageRoot>{children}</WorldStageRoot>
     </>

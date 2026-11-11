@@ -163,11 +163,18 @@ function WalletRow({
   wallet,
   onRevoke,
   pending,
+  busy,
 }: {
   wallet: TradingWallet;
   onRevoke: () => void;
+  /** This row's revoke is in flight. */
   pending: boolean;
+  /** Any row's revoke is in flight (one revoke at a time). */
+  busy: boolean;
 }) {
+  // `armed` is cleared on "Yes, revoke", so a row never re-shows its confirm
+  // when its own (or another row's) revoke settles.
+  const [armed, setArmed] = useState(false);
   return (
     <div
       style={{
@@ -214,14 +221,36 @@ function WalletRow({
           </div>
         ) : null}
       </div>
-      <button
-        type="button"
-        onClick={onRevoke}
-        disabled={pending}
-        style={{ ...buttonStyle, color: FLOOR_TEXT.danger }}
-      >
-        {pending ? 'Revoking...' : 'Revoke'}
-      </button>
+      {/* In-page two-step confirm: window.confirm() always returns false
+          inside the Claude MCP App sandbox iframe. */}
+      {armed ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: FLOOR_TEXT.warning, fontSize: 11 }}>Revoke this wallet?</span>
+          <button type="button" onClick={() => setArmed(false)} style={buttonStyle}>
+            Keep
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setArmed(false);
+              onRevoke();
+            }}
+            style={{ ...buttonStyle, color: FLOOR_TEXT.danger }}
+          >
+            Yes, revoke
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setArmed(true)}
+          disabled={pending}
+          style={{ ...buttonStyle, color: FLOOR_TEXT.danger }}
+        >
+          {pending ? 'Revoking...' : 'Revoke'}
+        </button>
+      )}
     </div>
   );
 }
@@ -442,9 +471,9 @@ export function TradingFloorTab({
                 <WalletRow
                   key={`${wallet.subjectKind}:${wallet.pubkey}`}
                   wallet={wallet}
-                  pending={revoke.isPending}
+                  pending={revoke.isPending && revoke.variables?.pubkey === wallet.pubkey}
+                  busy={revoke.isPending}
                   onRevoke={() => {
-                    if (!window.confirm('Revoke this Trading Floor wallet?')) return;
                     revoke.mutate(
                       { pubkey: wallet.pubkey },
                       { onError: handleMutationError },

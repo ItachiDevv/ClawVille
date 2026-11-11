@@ -18,6 +18,7 @@ import {
 
 import {
   activateTradingFloorSeat,
+  closeTradingFloorExchangeOnEscape,
   tradingFloorSitClips,
   attachTradingFloorPointerOrbit,
   drainTradingFloorPointerOrbit,
@@ -289,6 +290,51 @@ describe('Trading Floor stand intent', () => {
       resetPlayerKeys();
       useGameStore.setState({ exchangeOpen: oldExchangeOpen });
     }
+  });
+
+  test('controller Escape keeps the Exchange open when a nested dialog owned that press', () => {
+    resetPlayerKeys();
+    const old = useGameStore.getState();
+    const oldOpen = old.exchangeOpen;
+    const oldOwned = old.exchangeEscapeOwnedByDialog;
+    const config: PlayerCapabilityControllerConfig = {
+      sceneId: 'trading-floor', capabilities: DEFAULT_PLAYER_CAPABILITIES,
+      motion: TRADING_FLOOR_POLICY.motion, input: TRADING_FLOOR_POLICY.input,
+      isDriving: () => true, isFrozen: () => useGameStore.getState().exchangeOpen,
+      onEscapeWhileFrozen: closeTradingFloorExchangeOnEscape,
+      space: {
+        speedPerSec: 1, readPosition: (out) => { out.x = 0; out.z = 0; },
+        clampMovement: (_px, _pz, x, z, out) => { out.x = x; out.z = z; out.groundY = 0; },
+        commitPosition: () => {},
+      },
+    };
+    const runtime = createPlayerControllerTestRuntime(config.motion);
+    const state = { camera: new THREE.PerspectiveCamera(), clock: { elapsedTime: 0 } } as RootState;
+    try {
+      // Escape press 1: the cancel prompt owned it (the modal's capture
+      // listener wrote the flag at keydown, then the prompt closed).
+      useGameStore.setState({ exchangeOpen: true, exchangeEscapeOwnedByDialog: true });
+      playerKeyState.escape = true;
+      runPlayerControllerFrameForTests(config, runtime, state, FRAME_SECONDS);
+      expect(useGameStore.getState().exchangeOpen).toBe(true);
+      playerKeyState.escape = false;
+      runPlayerControllerFrameForTests(config, runtime, state, FRAME_SECONDS);
+
+      // Escape press 2: no nested dialog, so the controller closes the Exchange.
+      useGameStore.getState().setExchangeEscapeOwnedByDialog(false);
+      playerKeyState.escape = true;
+      runPlayerControllerFrameForTests(config, runtime, state, FRAME_SECONDS);
+      expect(useGameStore.getState().exchangeOpen).toBe(false);
+    } finally {
+      resetPlayerKeys();
+      useGameStore.setState({ exchangeOpen: oldOpen, exchangeEscapeOwnedByDialog: oldOwned });
+    }
+  });
+
+  test('the interior controller routes frozen Escape through the nested-dialog guard', () => {
+    const scene = readFileSync(join(import.meta.dir, 'trading-floor-interior.tsx'), 'utf8');
+    expect(scene).toContain('onEscapeWhileFrozen: closeTradingFloorExchangeOnEscape,');
+    expect(scene).not.toContain('onEscapeWhileFrozen: () => useGameStore.getState().closeExchange()');
   });
 
   test('all five hold’em fallback rigs use manual seats; Milady retains the enter clip', () => {

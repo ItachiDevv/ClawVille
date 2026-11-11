@@ -67,6 +67,7 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 import { shortTouchRowStyle, useShortTouchRow } from '@/hooks/use-short-touch-viewport';
 import { api } from '@/lib/api';
 import { clearIdentityState } from '@/lib/clear-identity-state';
+import { isMcpAppFrameBridgeActive } from '@/lib/embed/mcp-app-frame-bridge';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import FloorTape from '@/components/game/trading-floor/floor-tape';
 
@@ -837,9 +838,13 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
       // foreign origin and have no reason to leak `window.opener` to the
       // scape tab.
       window.open(redirectUrl, '_blank', 'noopener,noreferrer');
+      // Inside a verified Claude MCP App frame the bridge hands the link to
+      // Claude, which asks the user before it opens a tab. Say that.
       addToast(
         '🌊',
-        "Opened 'scape in a new tab. Your progress there is separate from ClawVille.",
+        isMcpAppFrameBridgeActive()
+          ? "Sent the 'scape link to Claude to open in a new tab. Your progress there is separate from ClawVille."
+          : "Opened 'scape in a new tab. Your progress there is separate from ClawVille.",
         4500,
       );
     } catch (err) {

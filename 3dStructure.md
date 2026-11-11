@@ -1,6 +1,6 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-11-11 05:30Z (/game boot splash).** Drift note: the (world) layout now server-renders `apps/web/src/components/three/world-stage/boot-splash.tsx` on `/game`, a static copy of the SeaLoadingScreen first frame, so phones paint before the HUD bundle hydrates (local phone profile: first paint about 8.3 s to 1.1 s; see the BOOT_CORE_PRESENTED bullet). Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; the Office GLB now stands at `api-integrations` with resident Cortex, and the separate venue is removed (section "BrainChain Office spatial contract"). Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry and navigation).** Drift note: the office adds prop colliders without a teaching-building slot. Client navigation now spans the full 704-tile world and includes actual prop footprints. The previous 360-tile planner could not reach the Office or eastern ring buildings. The renderer now mounts a post-reveal Office prop and a guide that reuses the loaded lobster plush model. Actual-world visual verification remains pending.
+**Last Audited: 2026-11-11 07:53Z (yard editor two-tap remove).** Drift note: the remove step in `apps/web/src/lib/three/yard-editor-three.tsx` used `window.confirm`, which always returns false inside the Claude MCP App sandbox frame; it is now two taps that reuse the existing selection highlight mesh (see "Yard editor parity"). No new 3D objects, no per-frame cost. Prior - **Last Audited: 2026-11-11 05:30Z (/game boot splash).** Drift note: the (world) layout now server-renders `apps/web/src/components/three/world-stage/boot-splash.tsx` on `/game`, a static copy of the SeaLoadingScreen first frame, so phones paint before the HUD bundle hydrates (local phone profile: first paint about 8.3 s to 1.1 s; see the BOOT_CORE_PRESENTED bullet). Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; the Office GLB now stands at `api-integrations` with resident Cortex, and the separate venue is removed (section "BrainChain Office spatial contract"). Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry and navigation).** Drift note: the office adds prop colliders without a teaching-building slot. Client navigation now spans the full 704-tile world and includes actual prop footprints. The previous 360-tile planner could not reach the Office or eastern ring buildings. The renderer now mounts a post-reveal Office prop and a guide that reuses the loaded lobster plush model. Actual-world visual verification remains pending.
 
 ### BrainChain Office spatial contract (2026-11-10: ring slot 4)
 
@@ -1029,7 +1029,11 @@ plus one) is replaced by `preferredStackLevel`, the highest level that legally
 evaluates, so hovering a deck plank raises the ghost onto it and hovering bare
 sand drops it to the ground. Hit boxes and the selection highlight use each
 piece's real rotated AABB with a 24 wu minimum span, since an 8 wu `path-stone`
-would otherwise be unclickable.
+would otherwise be unclickable. Remove mode (2026-11-11) is two taps: the first
+pointerdown sets `selectedPlacedPieceId`, so the existing selection mesh
+highlights the piece; a second pointerdown on it at least 400 ms later
+(`REMOVE_CONFIRM_MIN_MS`, arm time in a ref) deletes it. No new 3D objects and
+no per-frame work; a ground tap or Esc clears the selection.
 
 **Ring and parcel legibility.** `land-ring-decorations.tsx` hardcoded
 `FOUNDER_FOOT 38 / STARTER_FOOT 34 / C_FOOT 34` under a "keep in sync if tier

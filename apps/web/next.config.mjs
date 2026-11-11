@@ -22,11 +22,22 @@ config({ path: resolve(__dirname, '../../.env.local') });
 //   https://www.uos.agency  — uOS browser-OS shell (Mini App embed; see
 //   https://uos.agency        docs/uos-integration-plan.md — apex included
 //                             defensively, the shell lives on www)
+//   https://claude.ai       — Claude MCP App view. Claude frames a sandbox
+//   https://<hash>.claudemcpcontent.com  host named sha256(MCP server URL)[0:32],
+//                             which frames us with ?embed=mcp-app. EXACT hosts
+//                             only, never a *.claudemcpcontent.com wildcard:
+//     fbbf4fac72ecb46c1810ee8a4f3bb886 = https://api.clawville.world/api/agent/mcp
+//     b1bb7d1e416a979f53eac06556dc647b = https://api-staging.clawville.world/api/agent/mcp
+//                             Keep in sync with MCP_APP_PARENT_ORIGINS in
+//                             src/lib/embed/mcp-app-frame-bridge.ts.
 const FRAME_ANCESTORS =
   "frame-ancestors 'self' https://*.clawville.world " +
   'http://localhost:* https://localhost:* ' +
   'http://127.0.0.1:* https://127.0.0.1:* ' +
   'https://www.uos.agency https://uos.agency ' +
+  'https://claude.ai ' +
+  'https://fbbf4fac72ecb46c1810ee8a4f3bb886.claudemcpcontent.com ' +
+  'https://b1bb7d1e416a979f53eac06556dc647b.claudemcpcontent.com ' +
   'electrobun: capacitor: tauri: app: file:';
 
 const BUILD_SOURCE_COMMIT =
@@ -85,7 +96,8 @@ const nextConfig = {
   turbopack: {
     root: resolve(__dirname, '../..'),
   },
-  // Allow embedding in Milady's viewer shell — set CSP frame-ancestors on
+  // Allow embedding in Milady's viewer shell, uOS and the Claude MCP App
+  // view — set CSP frame-ancestors on
   // every route, and explicitly do NOT set X-Frame-Options (which would
   // override the CSP and force DENY in older browsers).
   async headers() {

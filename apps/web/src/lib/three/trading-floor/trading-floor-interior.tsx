@@ -432,6 +432,17 @@ export function tradingFloorInteractionsFrozen(): boolean {
   return useGameStore.getState().exchangeOpen;
 }
 
+/**
+ * Controller Escape while the Exchange is up. When that Escape press belonged
+ * to a nested Exchange dialog (cancel prompt, submit, release, guest upsell),
+ * the dialog closes and the Exchange stays open.
+ */
+export function closeTradingFloorExchangeOnEscape(): void {
+  const game = useGameStore.getState();
+  if (game.exchangeEscapeOwnedByDialog) return;
+  game.closeExchange();
+}
+
 export function activateTradingFloorUse(): boolean {
   switch (
     resolveTradingFloorInteraction(
@@ -1325,7 +1336,7 @@ function TradingFloorAvatarMotion({
       updateAnimation(0, false, false);
     },
     isFrozen: () => useGameStore.getState().exchangeOpen,
-    onEscapeWhileFrozen: () => useGameStore.getState().closeExchange(),
+    onEscapeWhileFrozen: closeTradingFloorExchangeOnEscape,
     onActivationReset: resetToSpawn,
     // The keyboard E edge and the touch USE button run the SAME action. The
     // ladder itself lives in `activateTradingFloorUse` so a future fifth

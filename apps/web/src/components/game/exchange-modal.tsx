@@ -28,7 +28,7 @@
  * This file is presentation + form state + tab orchestration only.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import {
@@ -1019,6 +1019,40 @@ function ConfirmReleaseDialog({
   );
 }
 
+// ─── Cancel confirm — in-page, replaces window.confirm ─────────────────────
+// window.confirm() always returns false inside the Claude MCP App sandbox
+// iframe (embed=mcp-app), so cancel needs its own confirmation step.
+
+function CancelConfirmDialog({
+  open,
+  onClose,
+  onConfirm,
+  title,
+  body,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  title: string;
+  body: string;
+}) {
+  return (
+    <RpgModal open={open} onClose={onClose} title={title} tier="rare" maxWidth={440}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '18px 22px' }}>
+        <div style={{ color: '#cbd5e1', fontSize: 13, lineHeight: 1.55 }}>{body}</div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <RpgButton variant="secondary" size="md" onClick={onClose} style={{ minHeight: 44 }}>
+            Keep it
+          </RpgButton>
+          <RpgButton variant="danger" size="md" onClick={onConfirm} style={{ minHeight: 44 }}>
+            Yes, cancel
+          </RpgButton>
+        </div>
+      </div>
+    </RpgModal>
+  );
+}
+
 // ─── Post tab ───────────────────────────────────────────────────────────────
 
 interface PostFormState {
@@ -1603,6 +1637,33 @@ export default function ExchangeModal() {
     order: ExchangeOrder;
     listing: ExchangeListing;
   } | null>(null);
+  const [cancelPrompt, setCancelPrompt] = useState<
+    | { kind: 'listing'; listing: ExchangeListing }
+    | { kind: 'order'; orderId: string }
+    | null
+  >(null);
+
+  // A nested dialog (cancel prompt, submit, release, guest upsell) owns
+  // Escape while open: Escape closes only that dialog, not the Exchange.
+  // Two closers listen for Escape: the RpgModal below (closeOnEscape) and the
+  // Trading Floor 3D controller (onEscapeWhileFrozen, a later frame). The
+  // controller reads `exchangeEscapeOwnedByDialog`, which this capture
+  // listener writes at the key event itself, before any RpgModal (bubble)
+  // handler has closed the nested dialog.
+  const nestedDialogOpen = !!cancelPrompt || !!submitTarget || !!confirmTarget || guestUpsellOpen;
+  const nestedDialogOpenRef = useRef(nestedDialogOpen);
+  useEffect(() => {
+    nestedDialogOpenRef.current = nestedDialogOpen;
+  }, [nestedDialogOpen]);
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      useGameStore.getState().setExchangeEscapeOwnedByDialog(nestedDialogOpenRef.current);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [open]);
 
   // Client-side sort — keeps the server payload simple and lets the chips
   // toggle without an extra refetch.
@@ -1631,15 +1692,18 @@ export default function ExchangeModal() {
     });
   };
 
+  // Step 1 of cancel: open the in-page confirm. Step 2 (run*) fires on "Yes".
   const onAuthorCancel = (l: ExchangeListing) => {
     if (cancelListingM.isPending) return;
     if (isGuest) {
       setGuestUpsellOpen(true);
       return;
     }
-    if (!window.confirm('Cancel this listing? Open orders will be refunded.')) {
-      return;
-    }
+    setCancelPrompt({ kind: 'listing', listing: l });
+  };
+
+  const runAuthorCancel = (l: ExchangeListing) => {
+    if (cancelListingM.isPending) return;
     setPendingTarget(l.id);
     cancelListingM.mutate(l.id, {
       onError: (err) => {
@@ -1689,7 +1753,11 @@ export default function ExchangeModal() {
       setGuestUpsellOpen(true);
       return;
     }
-    if (!window.confirm('Cancel this order? Escrow will be refunded.')) return;
+    setCancelPrompt({ kind: 'order', orderId });
+  };
+
+  const runCancelOrder = (orderId: string) => {
+    if (cancelOrderM.isPending) return;
     setPendingTarget(orderId);
     cancelOrderM.mutate(orderId, {
       onError: (err) => {
@@ -1704,6 +1772,7 @@ export default function ExchangeModal() {
       <RpgModal
         open={open}
         onClose={close}
+        closeOnEscape={!nestedDialogOpen}
         title="Exchange"
         subtitle={tab === 'floor'
           ? 'Verified on-chain swaps · Live floor · Rules'
@@ -1971,6 +2040,21 @@ export default function ExchangeModal() {
         recipientName={confirmTarget?.listing.creatorId === myAvatarId
           ? 'the claimant'
           : confirmTarget?.listing.creatorName ?? 'the seller'}
+      />
+      <CancelConfirmDialog
+        open={!!cancelPrompt}
+        onClose={() => setCancelPrompt(null)}
+        title={cancelPrompt?.kind === 'order' ? 'Cancel this order?' : 'Cancel this listing?'}
+        body={cancelPrompt?.kind === 'order'
+          ? 'Escrow will be refunded.'
+          : 'Open orders will be refunded.'}
+        onConfirm={() => {
+          const prompt = cancelPrompt;
+          setCancelPrompt(null);
+          if (!prompt) return;
+          if (prompt.kind === 'listing') runAuthorCancel(prompt.listing);
+          else runCancelOrder(prompt.orderId);
+        }}
       />
 
       <GuestUpsellModal
