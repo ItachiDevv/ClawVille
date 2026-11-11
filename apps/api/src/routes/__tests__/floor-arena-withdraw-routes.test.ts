@@ -136,6 +136,8 @@ function makeDeps(store: ReturnType<typeof makeStore>): FloorArenaRouteDeps {
     readReport: async () => null,
     readLatestReport: async () => null,
     setReportState: async () => false,
+    readTrades: async () => [],
+    readEquity: async (_id, bounds) => ({ series: [], openPnlUsd: 0, startAt: bounds.closedFrom?.toISOString() ?? bounds.openedFrom?.toISOString() ?? null }),
     readPositions: async () => [],
     readParamChanges: async () => [],
     readEvents: async (_agentId, after, limit, types) => {

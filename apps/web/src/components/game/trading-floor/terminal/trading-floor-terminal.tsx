@@ -13,10 +13,11 @@ import { TradingFloorTab } from '../trading-floor-tab';
 import { AgentProfile } from '../arena/agent-profile';
 import { FloorArenaSection } from '../arena/arena-section';
 import { ARENA_GUEST_UPSELL, useArenaNow } from '../arena/arena-kit';
-import { ArenaClosedTrades, ArenaOpenPositions, ArenaReport } from '../arena/arena-parts';
+import { ArenaOpenPositions, ArenaReport } from '../arena/arena-parts';
 import { signedUsd } from '../arena/arena-format';
 import { TerminalStrategy } from './terminal-strategy';
 import { TerminalBlock, TerminalRuleChecks, TerminalStats, TerminalWindowPicker, statsForWindow, terminalButton, terminalHeading, terminalMuted } from './terminal-parts';
+import { TerminalEquity, TerminalTrades } from './terminal-history';
 import './terminal.css';
 
 export const TERMINAL_TABS = ['Dashboard', 'Trades', 'Decisions', 'Strategy', 'Reports', 'Other agents'] as const;
@@ -113,10 +114,11 @@ function TerminalContent({ onClose }: { onClose: () => void }) {
     if (tab === 'Dashboard') body = <>
       <TerminalWindowPicker value={range} onChange={setRange} />
       <TerminalStats stats={statsForWindow(agent.stats, range)} compact={compact} />
+      <TerminalEquity key={agent.id} agentId={agent.id} owner />
       <TerminalBlock title="Open positions">{profile.isLoading ? <p style={terminalMuted}>Loading positions...</p> : profile.isError && !profile.data ? <p role="status" style={terminalMuted}>Positions could not be loaded.</p> : <ArenaOpenPositions positions={profile.data?.openPositions ?? []} params={agent.params} paramsVersion={agent.paramsVersion} nowMs={nowMs} />}</TerminalBlock>
       <TerminalBlock title="Latest report"><ArenaReport report={report} nowMs={nowMs} /></TerminalBlock>
     </>;
-    if (tab === 'Trades') body = <TerminalBlock title="Closed trades: latest 50"><p style={terminalMuted}>The latest 50 closed trades. Full history is not available here yet. P&amp;L includes paper costs.</p>{profile.isLoading ? <p style={terminalMuted}>Loading trades...</p> : profile.isError && !profile.data ? <p role="status" style={terminalMuted}>Trades could not be loaded.</p> : <ArenaClosedTrades positions={profile.data?.closedPositions ?? []} nowMs={nowMs} limit={50} />}</TerminalBlock>;
+    if (tab === 'Trades') body = <TerminalTrades key={agent.id} agentId={agent.id} owner nowMs={nowMs} />;
     if (tab === 'Decisions') body = <TerminalBlock title="Decisions: rule checks"><TerminalRuleChecks events={events.data ?? []} isLoading={events.isLoading} isError={events.isError} nowMs={nowMs} /></TerminalBlock>;
     if (tab === 'Strategy') body = agent.params ? <TerminalStrategy key={`${agent.id}:${agent.paramsVersion}`} params={agent.params} compact={compact} /> : <p style={terminalMuted}>Your rules could not be loaded.</p>;
     if (tab === 'Reports') body = <TerminalReport report={report} nowMs={nowMs} />;

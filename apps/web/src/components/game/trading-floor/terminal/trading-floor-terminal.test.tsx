@@ -18,6 +18,7 @@ let guest = false;
 let failedMe = false;
 let refusedMe = 0;
 let requests: string[] = [];
+let history = false;
 let Component: typeof import('./trading-floor-terminal').TradingFloorTerminal;
 let createRoot: typeof import('react-dom/client').createRoot;
 const originals = new Map<string, PropertyDescriptor | undefined>();
@@ -45,7 +46,7 @@ beforeEach(() => {
   for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Node', 'MutationObserver', 'IS_REACT_ACT_ENVIRONMENT', 'fetch']) originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   for (const [key, value] of Object.entries({ window: dom, document: dom.document, navigator: dom.navigator, HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node, MutationObserver: dom.MutationObserver, IS_REACT_ACT_ENVIRONMENT: true })) Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
   dom.localStorage.setItem(FINGERPRINT_STORAGE_KEY, '0123456789abcdef0123456789abcdef');
-  guest = false; failedMe = false; refusedMe = 0; requests = [];
+  guest = false; failedMe = false; refusedMe = 0; requests = []; history = false;
   client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: 0 } } });
   host = document.createElement('div'); document.body.append(host);
   useFloorArenaUi.getState().resetIdentity();
@@ -59,6 +60,8 @@ beforeEach(() => {
       if (failedMe) return Response.json({ error: 'unavailable' }, { status: 503 });
       body = { agent, stats: { contest: { realisedUsd: -9, trades: 4 }, last24h: { realisedUsd: 2, trades: 1 }, all: { realisedUsd: -7, trades: 5 } }, latestReport: null };
     } else if (url.includes('/events')) body = { events: [{ id: '1', type: 'skip', summary: 'Rule threshold failed', data: { reason: 'threshold' } }] };
+    else if (url.includes('/trades?')) body = history ? { trades: [{ id: url.includes('before=') ? 'second' : 'first', mint: 'mint', symbol: url.includes('before=') ? 'SECOND' : 'FIRST', status: 'closed', pnlUsd: 3, closedAt: '2026-11-11T12:00:00Z' }], nextCursor: url.includes('before=') ? null : { before: '2026-11-11T12:00:00.123456Z', beforeId: '00000000-0000-4000-8000-000000000001' } } : { trades: [], nextCursor: null };
+    else if (url.includes('/equity?')) body = { series: [], openPnlUsd: null, startAt: null };
     else if (url.includes('/agents/')) body = { agent: { ...agent, id: 'public-agent', name: 'Public trader' }, openPositions: [], closedPositions: [] };
     else if (url.includes('/leaderboard')) body = { rows: [{ agentId: 'public-agent', name: 'Public trader', rank: 1, realisedUsd: 3, trades: 2 }] };
     else if (url.includes('/house-traders')) body = { slots: [] };
@@ -73,11 +76,24 @@ afterEach(async () => {
 });
 
 describe('Trading Floor terminal', () => {
+  test('phone equity uses a narrow viewBox and readable labels', async () => {
+    const { EquityCurve } = await import('./terminal-history');
+    const previousWidth = dom.innerWidth;
+    dom.innerWidth = 390;
+    try {
+      root = createRoot(host);
+      await act(async () => { root!.render(createElement(EquityCurve, { series: [{ closedAt: '2026-11-11T12:00:00.123456Z', equityUsd: 18 }] })); });
+      await flush();
+      expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 360 210');
+      // Allow 80 px for terminal padding at the 390 px phone width.
+      for (const label of host.querySelectorAll('svg text')) expect(Number(label.getAttribute('font-size')) * 310 / 360).toBeGreaterThanOrEqual(11);
+    } finally { dom.innerWidth = previousWidth; }
+  });
   test('owner navigates all six tabs with real data and separate public events', async () => {
     await render();
     expect(host.textContent).toContain('-$9.00');
     await click('24 hours'); expect(host.textContent).toContain('+$2.00');
-    await click('Trades'); expect(host.textContent).toContain('latest 50');
+    await click('Trades'); expect(host.textContent).toContain('Closed trades');
     await click('Decisions'); expect(host.textContent).toContain('Decisions: rule checks');
     expect(host.textContent).toContain('Rule threshold failed');
     await click('Strategy'); expect(host.textContent).toContain('Coins it looks at');
@@ -87,9 +103,38 @@ describe('Trading Floor terminal', () => {
     await act(async () => { publicButton.click(); }); await flush();
     expect(requests.some((url) => url.includes('/arena/me/events'))).toBe(true);
     expect(requests.some((url) => url.includes('/agents/public-agent/events'))).toBe(true);
-    expect(host.textContent).not.toContain('Equity curve');
+    expect(host.textContent).toContain('Equity curve');
+    expect(requests.some((url) => url.includes('/agents/public-agent/trades?'))).toBe(true);
+    expect(requests.some((url) => url.includes('/agents/public-agent/equity?'))).toBe(true);
     await act(async () => useGameStore.getState().closeTradingFloor());
     expect(host.querySelector('[role="dialog"]')).toBeNull();
+  });
+  test('owner history loads another cursor page and filters reset pagination', async () => {
+    history = true;
+    await render();
+    expect(requests.some((url) => url.includes('/arena/me/equity?window=contest'))).toBe(true);
+    expect(host.textContent).toContain('No closed trades in this window');
+    await click('7 days');
+    expect(requests.some((url) => url.includes('/arena/me/equity?window=7d'))).toBe(true);
+    await click('Trades');
+    expect(host.textContent).toContain('FIRST');
+    const tradesQuery = client.getQueryCache().find({ queryKey: ['floor-arena', 'my-trades', agent.id, 'all', '', 50] })!;
+    const interval = (tradesQuery.options as unknown as { refetchInterval: (query: typeof tradesQuery) => number | false }).refetchInterval;
+    expect(interval(tradesQuery)).toBeGreaterThan(0);
+    await click('Load more');
+    expect(interval(tradesQuery)).toBe(false);
+    expect(host.textContent).toContain('SECOND');
+    expect(requests.some((url) => url.includes('before=2026-11-11T12%3A00%3A00.123456Z') && url.includes('beforeId='))).toBe(true);
+    const select = host.querySelector<HTMLSelectElement>('[aria-label="Trade outcome"]')!;
+    await act(async () => { select.value = 'win'; select.dispatchEvent(new dom.Event('change', { bubbles: true }) as unknown as Event); }); await flush();
+    expect(requests.at(-1)).toContain('outcome=win');
+    expect(requests.at(-1)).not.toContain('before=');
+    expect(host.textContent).not.toContain('SECOND');
+    const filteredQuery = client.getQueryCache().find({ queryKey: ['floor-arena', 'my-trades', agent.id, 'win', '', 50] })!;
+    expect(interval(filteredQuery)).toBeGreaterThan(0);
+    const reason = host.querySelector<HTMLSelectElement>('[aria-label="Trade exit reason"]')!;
+    await act(async () => { reason.value = 'stop'; reason.dispatchEvent(new dom.Event('change', { bubbles: true }) as unknown as Event); }); await flush();
+    expect(requests.at(-1)).toContain('reason=stop');
   });
   test('guests see sign-in and public agents without owner requests', async () => {
     guest = true; await render();

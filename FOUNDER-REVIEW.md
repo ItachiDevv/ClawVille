@@ -5,6 +5,13 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+
+### Trading Floor terminal: its own window, six tabs, trade history and equity curve (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game, open Economy, then Trading Floor (or walk into the Trading Floor and use the monitor). The Exchange window now has only listings and orders.
+- **CHECK:** the terminal matches the approved mockup (Dashboard, Strategy). Trades, Decisions, Reports and Other agents were NOT in the mockup: look at them first. The equity curve and P&L use real data only (paper costs included). "Decisions" shows the rule checks the bot records, not written reasoning. Strategy saves through the same rules route an agent uses.
+- **FEEDBACK:** layout, wording, and what each of the four new tabs should show more or less of. Phone and iPad sizes need a real-device look.
+
 ### Agent AI card deposit (session claw2.0, own AI part B, 2026-11-09, STAGING after an authorized deployment)
 
 - **STATUS:** local implementation only; no commit, push, registration or transaction in this session.

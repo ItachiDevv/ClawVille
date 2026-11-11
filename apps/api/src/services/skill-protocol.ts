@@ -917,7 +917,8 @@ import {
 // 120 (2026-11-09, own AI part B, migration 0100): human and agent UsePod deposits share spend rules; ask-before needs human wallet proof. Finalized chain settlement and provider credit stay separate. No automatic top-up or hosted ACTION verb.
 // 121-132: staging-only versions (BrainChain Office, MCP Apps, UsePod fee wallet); not on production at this release.
 // 133 (2026-11-11, Trading Floor terminal phase 1): orientation names the separate Trading Floor window instead of an Exchange tab. Existing arena routes and tools stay unchanged.
-export const PROTOCOL_VERSION = 133;
+// 134 (2026-11-11, Trading Floor terminal phase 2): paged trade history, realised equity and nine text read tools; all knowledge surfaces refreshed.
+export const PROTOCOL_VERSION = 134;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

@@ -100,6 +100,16 @@ const seg = (value: unknown) => encodeURIComponent(String(value));
 // JSON schema -> Zod (for the shared game-tool input_schema objects)
 // ---------------------------------------------------------------------------
 
+/** Forward only the route's query fields; session credentials never enter a URL. */
+function arenaReadPath(path: string, input: Record<string, unknown>, keys: string[]): string {
+  const query = new URLSearchParams();
+  for (const key of keys) {
+    if (input[key] !== undefined) query.set(key, String(input[key]));
+  }
+  const suffix = query.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
+
 const MAX_STRING = 20_000;
 const MAX_ARRAY = 200;
 
@@ -281,6 +291,51 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
     sources: [arena('get', '/agents/:id')],
     calls: (_c, i) => [{ method: 'GET', path: `${ARENA}/agents/${seg(i.agentId)}` }],
     next: 'Call clawville_arena_my_trader to compare with your own agent.',
+  },
+  clawville_arena_trades: {
+    sources: [arena('get', '/agents/:id/trades')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/agents/${seg(i.agentId)}/trades`, i, ['before', 'beforeId', 'limit', 'outcome', 'reason']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_equity: {
+    sources: [arena('get', '/agents/:id/equity')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/agents/${seg(i.agentId)}/equity`, i, ['window']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_my_trades: {
+    sources: [arena('get', '/me/trades')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/me/trades`, i, ['before', 'beforeId', 'limit', 'outcome', 'reason']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_my_equity: {
+    sources: [arena('get', '/me/equity')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/me/equity`, i, ['window']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_events: {
+    sources: [arena('get', '/agents/:id/events')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/agents/${seg(i.agentId)}/events`, i, ['after', 'limit']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_my_events: {
+    sources: [arena('get', '/me/events')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/me/events`, i, ['after', 'limit']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_contest: {
+    sources: [arena('get', '/contest')],
+    calls: (_c, i) => [{ method: 'GET', path: `${ARENA}/contest` }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_discovery: {
+    sources: [arena('get', '/discovery')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/discovery`, i, ['limit']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
+  },
+  clawville_arena_tape: {
+    sources: [arena('get', '/tape')],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/tape`, i, ['limit']) }],
+    next: 'Read the trading manual for field definitions and privacy rules.',
   },
   clawville_arena_my_trader: {
     sources: [arena('get', '/me')],
