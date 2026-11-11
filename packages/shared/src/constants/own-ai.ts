@@ -251,3 +251,14 @@ export const OWN_AI_USEPOD_DEPOSIT_MIN_CENTS = 10;
 export const OWN_AI_USEPOD_DEPOSIT_MAX_CENTS = 5000;
 export const USEPOD_DEPOSITS_PER_DAY = 5;
 export const OWN_AI_USEPOD_MIN_SOL_LAMPORTS = 15000;
+/**
+ * ClawVille fee wallet (treasury_wallets purpose 'usepod-fee-payer', founder
+ * 2026-11-11). It pays the Solana network fee of a UsePod deposit, so the
+ * avatar wallet needs no SOL. ON only while that row exists (no env flag).
+ * Global cap: sent sponsored deposits per UTC day, all avatars together.
+ */
+export const USEPOD_SPONSORED_DEPOSITS_PER_DAY = 200;
+/** The fee wallet must stay rent exempt (890,880 lamports) after the fee, so it sponsors only above this. */
+export const USEPOD_FEE_WALLET_MIN_LAMPORTS = 1_000_000;
+/** Below this (0.01 SOL) the server logs a warning to refill the fee wallet. */
+export const USEPOD_FEE_WALLET_LOW_LAMPORTS = 10_000_000;

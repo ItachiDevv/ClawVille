@@ -30,9 +30,13 @@ import {
   OWN_AI_USEPOD_DEPOSIT_MAX_CENTS,
   OWN_AI_USEPOD_MIN_SOL_LAMPORTS,
   USEPOD_DEPOSITS_PER_DAY,
+  USEPOD_FEE_WALLET_LOW_LAMPORTS,
+  USEPOD_FEE_WALLET_MIN_LAMPORTS,
+  USEPOD_SPONSORED_DEPOSITS_PER_DAY,
   type SpendPolicyView,
 } from '@clawville/shared';
 import { decryptWalletRow } from './keypair-vault';
+import { loadUsepodFeePayerKeypair, readUsepodFeePayer, wipeKeypair } from './usepod-fee-payer';
 import { lockSpendRules, toSpendPolicyView } from './spend-policy';
 import { OwnAiError, readUsepodBalance } from './own-ai';
 import {
@@ -96,10 +100,17 @@ export interface DepositTerms {
   depositor: string;
   ledgerId: string;
   baselineMicro: number;
+  /** Set only when the ClawVille fee wallet pays the network fee. Absent = the depositor pays (all rows before 2026-11-11). */
+  feePayer?: string;
+}
+/** The account that must pay the fee for these terms. */
+export function expectedFeePayer(terms: DepositTerms): string {
+  return terms.feePayer ?? terms.depositor;
 }
 export function buildDepositTransaction(terms: DepositTerms, blockhash: string): Transaction {
+  if (terms.feePayer !== undefined && terms.feePayer === terms.depositor) throw new Error('invalid_deposit_terms');
   return new Transaction({
-    feePayer: new PublicKey(terms.depositor),
+    feePayer: new PublicKey(expectedFeePayer(terms)),
     recentBlockhash: blockhash,
   }).add(
     new TransactionInstruction({
@@ -149,7 +160,9 @@ export function checkDepositProof(proof: DepositProof | null, terms: DepositTerm
     !proof?.finalized ||
     proof.err !== null ||
     proof.signatures[0] !== signature ||
-    proof.feePayer !== terms.depositor ||
+    // The fee payer pinned in the terms: the ClawVille fee wallet, or the depositor for an unsponsored row.
+    proof.feePayer !== expectedFeePayer(terms) ||
+    proof.signatures.length !== (terms.feePayer === undefined ? 1 : 2) ||
     proof.instructions.length !== 2
   )
     return false;
@@ -204,6 +217,79 @@ export function checkDepositProof(proof: DepositProof | null, terms: DepositTerm
   }
   return events === 1;
 }
+/**
+ * The exact shape a key may sign: one deposit_usdc instruction for the pinned
+ * program and one memo with no accounts, nothing else. When the fee wallet
+ * pays, it appears in no instruction account list, so its signature only pays
+ * the fee (writable only as the fee payer). Throws on any other shape.
+ */
+export function assertDepositTransaction(transaction: Transaction): {
+  depositor: string;
+  feePayer: string;
+  sponsored: boolean;
+} {
+  const [ix, memo] = transaction.instructions;
+  const feePayer = transaction.feePayer?.toBase58();
+  if (
+    transaction.instructions.length !== 2 ||
+    !ix ||
+    !memo ||
+    !feePayer ||
+    ix.programId.toBase58() !== USEPOD_PROGRAM_ID ||
+    ix.keys.length !== 7 ||
+    !Buffer.from(ix.data.subarray(0, 8)).equals(DEPOSIT_DISCRIMINATOR) ||
+    ix.data.length !== 24 ||
+    memo.programId.toBase58() !== USEPOD_MEMO_PROGRAM ||
+    memo.keys.length !== 0
+  )
+    throw new Error('unexpected_transaction_shape');
+  const depositor = ix.keys[3]!.pubkey.toBase58();
+  const expected = buildDepositAccounts(depositor);
+  if (
+    ix.keys.some(
+      (key, i) =>
+        !key.pubkey.equals(expected[i]!.pubkey) ||
+        key.isSigner !== expected[i]!.isSigner ||
+        key.isWritable !== expected[i]!.isWritable,
+    )
+  )
+    throw new Error('unexpected_transaction_shape');
+  const sponsored = feePayer !== depositor;
+  if (sponsored && transaction.instructions.some((i) => i.keys.some((key) => key.pubkey.toBase58() === feePayer)))
+    throw new Error('unexpected_transaction_shape');
+  return { depositor, feePayer, sponsored };
+}
+/**
+ * Signs a checked deposit transaction with the avatar key (depositor) and, when
+ * sponsored, the fee wallet key. Wipes both keys in every case.
+ */
+export function signDepositTransaction(
+  transaction: Transaction,
+  depositorKey: Keypair,
+  feeKey: Keypair | null,
+): { bytes: Uint8Array; signature: string } {
+  try {
+    const shape = assertDepositTransaction(transaction);
+    if (depositorKey.publicKey.toBase58() !== shape.depositor) throw new Error('wallet_changed');
+    if (shape.sponsored) {
+      if (!feeKey || feeKey.publicKey.toBase58() !== shape.feePayer) throw new Error('fee_wallet_changed');
+      transaction.sign(feeKey, depositorKey);
+    } else {
+      if (feeKey) throw new Error('fee_wallet_unexpected');
+      transaction.sign(depositorKey);
+    }
+    // The first signature is the fee payer's: it is the transaction id.
+    if (!transaction.signature || transaction.signatures.some((s) => !s.signature))
+      throw new Error('signature_missing');
+    return {
+      bytes: transaction.serialize(),
+      signature: bs58.encode(transaction.signature),
+    };
+  } finally {
+    wipeKeypair(depositorKey);
+    wipeKeypair(feeKey);
+  }
+}
 export interface DepositInput {
   avatarId: string;
   actor: 'human' | 'agent';
@@ -228,6 +314,8 @@ export type DepositResult =
       usdCents: number;
       creditStatus: 'unknown' | 'seen';
       balance: Balance | null;
+      /** 'clawville' = the ClawVille fee wallet paid the network fee; 'avatar' = the avatar wallet paid. */
+      feePaidBy: 'clawville' | 'avatar';
     }
   | { ok: false; code: string; ledgerId?: string };
 type Admission =
@@ -239,12 +327,21 @@ export interface UsepodDepositDeps {
   closeUnsigned(id: string): Promise<boolean>;
   deferReconcile(id: string): Promise<void>;
   settings(avatarId: string): Promise<DepositSettings | null>;
+  /** Vendor accounts and depositor USDC. The SOL fee check is in chooseFeePayer. */
   precheck(wallet: string, amount: bigint): Promise<string | null>;
+  /** The ACTIVE ClawVille fee wallet public key, or null (sponsorship off). */
+  feePayer(): Promise<string | null>;
+  solBalance(wallet: string): Promise<number>;
+  /** Sponsored deposits today (UTC), all avatars, that may have been sent. */
+  sponsoredToday(): Promise<number>;
   balance(avatarId: string): Promise<Balance | null>;
   /** True when this avatar has a usepod ledger row that may have moved money (pending, ambiguous or paid). */
   priorDeposit(avatarId: string): Promise<boolean>;
-  /** firstDeposit: baseline 0 was assumed; admission rechecks hasPriorUsepodDeposit under the lock. */
-  admit(input: DepositInput, settings: DepositSettings, firstDeposit?: boolean): Promise<Admission>;
+  /**
+   * firstDeposit: baseline 0 was assumed; admission rechecks hasPriorUsepodDeposit under the lock.
+   * feePayer: the fee wallet that will pay; admission rechecks the global sponsored cap under a global lock.
+   */
+  admit(input: DepositInput, settings: DepositSettings, firstDeposit?: boolean, feePayer?: string | null): Promise<Admission>;
   blockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   sign(avatarId: string, transaction: Transaction): Promise<{ bytes: Uint8Array; signature: string }>;
   simulate(bytes: Uint8Array): Promise<boolean>;
@@ -312,7 +409,21 @@ export async function hasPriorUsepodDeposit(executor: Pick<typeof db, 'select'>,
     .limit(1);
   return row !== undefined;
 }
-async function admit(input: DepositInput, settings: DepositSettings, firstDeposit = false): Promise<Admission> {
+/** Global lock for the sponsored cap. Always taken AFTER the per-avatar spend lock (one lock order). */
+export const USEPOD_FEE_PAYER_LOCK_KEY = 'usepod:fee-payer:global';
+/** Sponsored UsePod rows today (UTC) that hold a reservation or may have been sent (same rule as the per-avatar count). */
+export function sponsoredTodaySql() {
+  return sql`SELECT COUNT(*)::int AS n FROM vendor_spend_ledger
+    WHERE vendor = 'usepod' AND fee_payer IS NOT NULL
+    AND (status IN ('pending','paid','ambiguous') OR (status = 'failed' AND failure_reason NOT LIKE 'not_sent_%'))
+    AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`;
+}
+async function admit(
+  input: DepositInput,
+  settings: DepositSettings,
+  firstDeposit = false,
+  feePayer: string | null = null,
+): Promise<Admission> {
   return db.transaction(async (tx) => {
     await lockSpendRules(tx, input.avatarId);
     const [existing] = await tx
@@ -374,6 +485,11 @@ async function admit(input: DepositInput, settings: DepositSettings, firstDeposi
       )
         return { ok: false, code: 'invalid_wallet_proof' };
     }
+    if (feePayer) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${USEPOD_FEE_PAYER_LOCK_KEY}, 0))`);
+      const sponsored = Array.from(await tx.execute<{ n: number }>(sponsoredTodaySql()))[0]?.n ?? 0;
+      if (sponsored >= USEPOD_SPONSORED_DEPOSITS_PER_DAY) return { ok: false, code: 'fee_sponsor_daily_limit' };
+    }
     const [inserted] = await tx
       .insert(vendorSpendLedger)
       .values({
@@ -389,6 +505,7 @@ async function admit(input: DepositInput, settings: DepositSettings, firstDeposi
         network: NETWORK,
         idempotencyKey: input.idempotencyKey,
         creditStatus: 'unknown',
+        feePayer,
       })
       .returning({ id: vendorSpendLedger.id });
     return {
@@ -442,6 +559,7 @@ function defaultDeps(): UsepodDepositDeps {
         usdCents: row.usdCents,
         creditStatus: row.creditStatus === 'seen' ? 'seen' : 'unknown',
         balance: null,
+        feePaidBy: row.feePayer ? 'clawville' : 'avatar',
       };
     },
     closeUnsigned: async (id) =>
@@ -514,8 +632,6 @@ function defaultDeps(): UsepodDepositDeps {
         new PublicKey(ops.data.subarray(32, 64)).toBase58() !== USEPOD_OPS_WALLET
       )
         return 'vendor_pay_to_changed';
-      if ((await connection.getBalance(new PublicKey(wallet), 'finalized')) < OWN_AI_USEPOD_MIN_SOL_LAMPORTS)
-        return 'needs_sol_for_fee';
       const ata = await connection.getAccountInfo(new PublicKey(usepodAta(wallet)), 'finalized');
       if (
         !ata ||
@@ -528,6 +644,9 @@ function defaultDeps(): UsepodDepositDeps {
         return 'insufficient_usdc';
       return null;
     },
+    feePayer: readUsepodFeePayer,
+    solBalance: (wallet) => connection.getBalance(new PublicKey(wallet), 'finalized'),
+    sponsoredToday: async () => Array.from(await db.execute<{ n: number }>(sponsoredTodaySql()))[0]?.n ?? 0,
     balance: readUsepodBalance,
     priorDeposit: (avatarId) => hasPriorUsepodDeposit(db, avatarId),
     admit,
@@ -537,25 +656,18 @@ function defaultDeps(): UsepodDepositDeps {
         where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
       });
       if (!row) throw new Error('wallet_missing');
+      // Check the shape before any key is decrypted.
+      const shape = assertDepositTransaction(transaction);
       const key = await decryptWalletRow(row);
-      const secret = key.secretKey;
-      const original = (key as unknown as { _keypair?: { secretKey?: Uint8Array } })._keypair?.secretKey;
-      let signer: Keypair | null = null;
+      let feeKey: Keypair | null = null;
       try {
-        if (key.publicKey.toBase58() !== transaction.feePayer?.toBase58()) throw new Error('wallet_changed');
-        signer = Keypair.fromSecretKey(secret);
-        transaction.sign(signer);
-        if (!transaction.signature) throw new Error('signature_missing');
-        return {
-          bytes: transaction.serialize(),
-          signature: bs58.encode(transaction.signature),
-        };
-      } finally {
-        secret.fill(0);
-        original?.fill(0);
-        const bytes = (signer as unknown as { _keypair?: { secretKey?: Uint8Array } } | null)?._keypair?.secretKey;
-        bytes?.fill(0);
+        if (shape.sponsored) feeKey = await loadUsepodFeePayerKeypair(shape.feePayer);
+      } catch (err) {
+        wipeKeypair(key);
+        throw err;
       }
+      // signDepositTransaction wipes both keys in every case.
+      return signDepositTransaction(transaction, key, feeKey);
     },
     simulate: async (bytes) =>
       (
@@ -787,6 +899,34 @@ async function firstBalance(
     return { balance: { usdcMicro: 0, isActive: false }, assumed: true };
   }
 }
+/**
+ * Who pays the network fee. The ClawVille fee wallet pays when one is active,
+ * under the global daily cap, and holds at least USEPOD_FEE_WALLET_MIN_LAMPORTS
+ * (it stays rent exempt). Otherwise the avatar wallet pays if it holds
+ * OWN_AI_USEPOD_MIN_SOL_LAMPORTS (the behaviour before 2026-11-11). Else a
+ * clear refusal: fee_wallet_empty, fee_sponsor_daily_limit or needs_sol_for_fee.
+ */
+export async function chooseFeePayer(
+  deps: Pick<UsepodDepositDeps, 'feePayer' | 'solBalance' | 'sponsoredToday'>,
+  depositor: string,
+): Promise<{ ok: true; feePayer: string | null } | { ok: false; code: string }> {
+  const sponsor = await deps.feePayer();
+  let sponsorRefusal: string | null = null;
+  if (sponsor && sponsor !== depositor) {
+    if ((await deps.sponsoredToday()) >= USEPOD_SPONSORED_DEPOSITS_PER_DAY) {
+      sponsorRefusal = 'fee_sponsor_daily_limit';
+    } else {
+      const lamports = await deps.solBalance(sponsor);
+      // Public key and lamports only.
+      if (lamports < USEPOD_FEE_WALLET_LOW_LAMPORTS)
+        console.warn(`[usepod-fee-payer] fee wallet ${sponsor} is low: ${lamports} lamports. Refill it.`);
+      if (lamports >= USEPOD_FEE_WALLET_MIN_LAMPORTS) return { ok: true, feePayer: sponsor };
+      sponsorRefusal = 'fee_wallet_empty';
+    }
+  }
+  if ((await deps.solBalance(depositor)) >= OWN_AI_USEPOD_MIN_SOL_LAMPORTS) return { ok: true, feePayer: null };
+  return { ok: false, code: sponsorRefusal ?? 'needs_sol_for_fee' };
+}
 export async function depositUsepod(
   input: DepositInput,
   overrides: Partial<UsepodDepositDeps> = {},
@@ -800,17 +940,21 @@ export async function depositUsepod(
   let settings: DepositSettings | null;
   let baseline: Balance | null;
   let assumedBaseline: boolean;
+  let feePayer: string | null;
   try {
     settings = await deps.settings(input.avatarId);
     if (!settings) return { ok: false, code: 'usepod_deposit_code_missing' };
     const refusal = await deps.precheck(settings.wallet, BigInt(input.amountCents) * 10000n);
     if (refusal) return { ok: false, code: refusal };
+    const payer = await chooseFeePayer(deps, settings.wallet);
+    if (!payer.ok) return { ok: false, code: payer.code };
+    feePayer = payer.feePayer;
     ({ balance: baseline, assumed: assumedBaseline } = await firstBalance(deps, input.avatarId));
     if (!baseline) return { ok: false, code: 'provider_error' };
   } catch {
     return { ok: false, code: 'provider_error' };
   }
-  const admitted = await deps.admit(input, settings, assumedBaseline);
+  const admitted = await deps.admit(input, settings, assumedBaseline, feePayer);
   if (!admitted.ok) return admitted.code === 'duplicate_request' ? ((await deps.replay(input)) ?? admitted) : admitted;
   const ledgerId = admitted.ledgerId;
   const terms: DepositTerms = {
@@ -819,7 +963,9 @@ export async function depositUsepod(
     depositor: settings.wallet,
     ledgerId,
     baselineMicro: baseline.usdcMicro,
+    ...(feePayer ? { feePayer } : {}),
   };
+  const feePaidBy = feePayer ? ('clawville' as const) : ('avatar' as const);
   let signed: { bytes: Uint8Array; signature: string };
   try {
     const hash = await deps.blockhash();
@@ -869,6 +1015,7 @@ export async function depositUsepod(
       usdCents: input.amountCents,
       creditStatus: 'unknown',
       balance: null,
+      feePaidBy,
     };
   }
   const paid = checkDepositProof(proof, terms, signed.signature);
@@ -891,6 +1038,7 @@ export async function depositUsepod(
     txSignature: signed.signature,
     usdCents: input.amountCents,
     ...credited,
+    feePaidBy,
   };
 }
 export async function reconcileUsepodDeposits(

@@ -20,6 +20,7 @@ import * as realDatabase from '@clawville/database';
 import * as realAgentAuth from '../../middleware/require-auth-or-agent';
 import * as realOwnAi from '../../services/own-ai';
 import * as realDeposit from '../../services/usepod-deposit';
+import * as realFeePayer from '../../services/usepod-fee-payer';
 
 type Middleware = (c: any, next: () => Promise<void>) => unknown;
 const AGENT_HEADER = realAgentAuth.AGENT_SESSION_HEADER;
@@ -47,12 +48,20 @@ let priorDepositImpl: () => Promise<boolean> = async () => false;
 const realOwnAiCopy = { ...realOwnAi };
 const realDatabaseCopy = { ...realDatabase };
 const realAgentAuthCopy = { ...realAgentAuth };
+const realFeePayerCopy = { ...realFeePayer };
+let feePayerImpl: () => Promise<string | null> = async () => null;
 afterAll(() => {
   mock.module('../../services/own-ai', () => realOwnAiCopy);
   mock.module('../../services/usepod-deposit', () => realDepositCopy);
+  mock.module('../../services/usepod-fee-payer', () => realFeePayerCopy);
   mock.module('@clawville/database', () => realDatabaseCopy);
   mock.module('../../middleware/require-auth-or-agent', () => realAgentAuthCopy);
 });
+
+mock.module('../../services/usepod-fee-payer', () => ({
+  ...realFeePayerCopy,
+  readUsepodFeePayer: () => feePayerImpl(),
+}));
 
 mock.module('../../services/usepod-deposit', () => ({
   ...realDepositCopy,
@@ -843,6 +852,29 @@ describe('DELETE, models, UsePod', () => {
     } finally {
       balanceThrows = null;
       priorDepositImpl = async () => false;
+    }
+  });
+
+  it('usepod fee: human and agent read who pays the network fee; a read error says not sponsored', async () => {
+    try {
+      feePayerImpl = async () => null;
+      const off = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
+      expect(off.status).toBe(200);
+      expectNoStore(off);
+      expect(await off.json()).toEqual({ sponsored: false, avatarMinSolLamports: 15000 });
+      feePayerImpl = async () => '4yzVEy3QRS9zQrfnXqTpZieDEHoXxNAfc1VDCoyE9ntr';
+      const human = await call('GET', '/usepod/fee', { cookie: 'pw-a' });
+      expect(await human.json()).toEqual({ sponsored: true, avatarMinSolLamports: 15000 });
+      const agent = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
+      expect(await agent.json()).toEqual({ sponsored: true, avatarMinSolLamports: 15000 });
+      feePayerImpl = async () => { throw new Error('db down'); };
+      const down = await call('GET', '/usepod/fee', { cookie: 'pw-a' });
+      expect(down.status).toBe(200);
+      expect(await down.json()).toEqual({ sponsored: false, avatarMinSolLamports: 15000 });
+      const anon = await call('GET', '/usepod/fee', {});
+      expect(anon.status).toBe(401);
+    } finally {
+      feePayerImpl = async () => null;
     }
   });
 });

@@ -69,6 +69,8 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
     expect(importers).toEqual([
       'routes/ct-topup.ts',
       'routes/partner-hatcher.ts',
+      // Operator script (UsePod fee wallet creation, 2026-11-11); encrypts only, never decrypts.
+      'scripts/create-usepod-fee-payer.ts',
       // Operator script (land hold-verify wallet provisioning); not a trading path.
       'scripts/land/provision-hold-verify-wallet.ts',
       'services/agent-pay.ts',
@@ -85,6 +87,9 @@ describe('Trading Floor Wave 2 structural boundaries', () => {
       'services/own-ai.ts',
       'services/trading-signer.ts',
       'services/usepod-deposit.ts',
+      // UsePod fee wallet (2026-11-11): decrypts the treasury fee-payer key
+      // only to sign one checked deposit transaction, then wipes it.
+      'services/usepod-fee-payer.ts',
       // MCP hub step 2 phase 2b: a human's own vendor API key, AES-256-GCM
       // via encryptToken/decryptToken; never a wallet key.
       'services/vendor-credentials.ts',

@@ -13,6 +13,15 @@
 - **CHECK:** when the moving loader (water line, bubbles, lobster) appears, the banner does not jump and nothing flashes.
 - **FEEDBACK:** say if the start looks the same as before apart from being faster.
 
+### UsePod fee wallet: fund it (session claw2.0, job usepod-fee-payer, 2026-11-11, STAGING then PRODUCTION)
+
+- **STATUS:** code on the branch `feat/usepod-fee-payer`; no fee wallet exists yet. Until its row exists, deposits work as before (the avatar wallet pays the fee).
+- **DO (staging first):** after migrations 0121, 0121a and 0121b run, run `bun run scripts/create-usepod-fee-payer.ts` from `apps/api` in the staging API container. It prints ONLY the public key. Send less than 0.05 SOL (mainnet) to that address.
+- **DO (production):** after the promotion, run the same script in the production API container and fund that new address with less than 0.05 SOL. Each box has its own fee wallet.
+- **CHECK:** on https://staging.clawville.world/game open Wallet, then Agent AI, then UsePod. The card says "ClawVille pays the network fee. Your wallet needs no SOL." A deposit from an avatar wallet with 0 SOL finishes, and the receipt says "ClawVille paid the network fee".
+- **COST:** about 0.00001 SOL per deposit. The fee wallet stops at 0.001 SOL (it stays rent exempt), and the API logs a refill warning under 0.01 SOL. At most 200 sponsored deposits per UTC day for all players (about 0.002 SOL per day at most).
+- **FEEDBACK:** say the amount you sent and if the card text is clear on phone and desktop.
+
 ### Agent AI card deposit (session claw2.0, own AI part B, 2026-11-09, STAGING after an authorized deployment)
 
 - **STATUS:** local implementation only; no commit, push, registration or transaction in this session.

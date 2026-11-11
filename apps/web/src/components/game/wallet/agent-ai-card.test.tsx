@@ -41,6 +41,7 @@ let depositApproval = false;
 let depositEnabled = false;
 let depositTimeout = false;
 let depositRefusal: string | null = null;
+let feeSponsored = false;
 let depositChainStatus = 'paid';
 let depositCreditStatus = 'unknown';
 let solAtomic = "15000";
@@ -113,6 +114,7 @@ async function router(input: string, init?: RequestInit): Promise<Response> {
   }
   if (path === '/api/agent-ai/usepod/link') return json({ dashboardUrl: DASHBOARD });
   if (path === '/api/agent-ai/usepod/balance') return json({ usdcMicro: 1_500_000, isActive: true });
+  if (path === '/api/agent-ai/usepod/fee') return json({ sponsored: feeSponsored, avatarMinSolLamports: 15000 });
   return json({ error: 'not found' }, 404);
 }
 
@@ -169,6 +171,7 @@ afterEach(async () => {
   depositEnabled = false;
   depositTimeout = false;
   depositRefusal = null;
+  feeSponsored = false;
   depositChainStatus = 'paid';
   depositCreditStatus = 'unknown';
   solAtomic = "15000";
@@ -498,6 +501,20 @@ describe('UsePod wallet deposit', () => {
     expect(button(host, 'Add to AI balance').disabled).toBe(true);
     expect(host.textContent).toContain('0.000015 SOL');
     expect(log.some((r) => r.path.endsWith('/deposit'))).toBe(false);
+  });
+
+  test('ClawVille fee wallet: no SOL needed, the button stays on, the fallback refusal is plain text', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    depositEnabled = true;
+    feeSponsored = true;
+    solAtomic = '0';
+    const host = await openForm();
+    expect(host.querySelector('[data-testid="usepod-fee-note"]')!.textContent).toContain('ClawVille pays the network fee');
+    expect(host.textContent).not.toContain('needs at least');
+    expect(button(host, 'Add to AI balance').disabled).toBe(false);
+    depositRefusal = 'fee_wallet_empty';
+    await press(button(host, 'Add to AI balance'));
+    expect(host.textContent).toContain('The ClawVille fee wallet is empty now');
   });
 
   test('blocks deposits until the human allows UsePod and caps', async () => {

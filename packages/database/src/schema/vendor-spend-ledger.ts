@@ -32,6 +32,8 @@ export const vendorSpendLedger = pgTable('vendor_spend_ledger', {
   feeLamports: bigint('fee_lamports', { mode: 'number' }),
   creditStatus: varchar('credit_status', { length: 16 }),
   depositTerms: jsonb('deposit_terms'),
+  /** UsePod deposits only (migration 0121): the ClawVille fee wallet that paid the network fee. NULL = the avatar wallet paid. */
+  feePayer: varchar('fee_payer', { length: 64 }),
   failureReason: text('failure_reason'),
   reconcileAttempts: integer('reconcile_attempts').notNull().default(0),
   reconcileNextAt: timestamp('reconcile_next_at', { withTimezone: true }),

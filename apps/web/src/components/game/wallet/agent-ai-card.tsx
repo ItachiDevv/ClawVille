@@ -141,6 +141,7 @@ const agentAiApi = {
   usepodLink: (proof: WalletProof) =>
     agentAiRequest<{ dashboardUrl: string }>('/api/agent-ai/usepod/link', { method: 'POST', body: { proof } }),
   usepodBalance: () => agentAiRequest<{ usdcMicro: number; isActive: boolean }>('/api/agent-ai/usepod/balance'),
+  usepodFee: () => agentAiRequest<{ sponsored: boolean; avatarMinSolLamports: number }>('/api/agent-ai/usepod/fee'),
 };
 
 /**
@@ -187,6 +188,8 @@ export interface UsepodDepositReply {
   usdCents: number;
   creditStatus: 'unknown' | 'seen';
   balance: { usdcMicro: number; isActive: boolean } | null;
+  /** 'clawville' = the ClawVille fee wallet paid the network fee. */
+  feePaidBy?: 'clawville' | 'avatar';
 }
 
 export async function depositUsepodWithProof(
@@ -256,6 +259,10 @@ export function agentAiErrorText(error: unknown): string {
     switch (error.code) {
       case 'needs_sol_for_fee':
         return 'Your avatar wallet needs at least 0.000015 SOL for the network fee.';
+      case 'fee_wallet_empty':
+        return 'The ClawVille fee wallet is empty now. Add at least 0.000015 SOL to your avatar wallet, or try again later.';
+      case 'fee_sponsor_daily_limit':
+        return 'ClawVille paid all the network fees it can pay today. Add at least 0.000015 SOL to your avatar wallet, or try again after midnight UTC.';
       case 'insufficient_usdc':
         return 'Your avatar wallet does not have enough USDC.';
       case 'approval_required':
@@ -367,6 +374,7 @@ function UsepodDepositControl() {
   // Preserve the request identity after a transport error. A retry cannot pay twice.
   const request = useRef<{ amountCents: number; key: string } | null>(null);
   const wallet = useQuery({ queryKey: ['wallet-balances'], queryFn: api.walletBalances, retry: false, staleTime: 15_000 });
+  const fee = useQuery({ queryKey: [...AGENT_AI_QUERY_KEY, 'usepod-fee'], queryFn: agentAiApi.usepodFee, retry: false, staleTime: 60_000 });
   const max = Math.min(policy?.perCallCapUsdCents ?? 0, OWN_AI_USEPOD_DEPOSIT_MAX_CENTS);
   const allowed = !!policy?.configured && policy.allowedVendors.includes('usepod') && max >= OWN_AI_USEPOD_DEPOSIT_MIN_CENTS;
   const deposit = useMutation({
@@ -381,7 +389,8 @@ function UsepodDepositControl() {
       if (failure instanceof WalletSignError || (failure instanceof ApiError && [
         'approval_required', 'invalid_wallet_proof', 'wallet_link_required', 'vendor_not_allowed',
         'spend_rules_not_set', 'over_per_call_cap', 'over_daily_cap', 'deposit_daily_limit', 'signature_required',
-        'needs_sol_for_fee', 'insufficient_usdc', 'usepod_deposit_code_missing',
+        'needs_sol_for_fee', 'fee_wallet_empty', 'fee_sponsor_daily_limit', 'insufficient_usdc',
+        'usepod_deposit_code_missing',
       ].includes(failure.code ?? ''))) request.current = null;
     },
     retry: false,
@@ -397,7 +406,9 @@ function UsepodDepositControl() {
   };
   const balances = wallet.data?.balances;
   const sol = balances?.SOL;
-  const needsSol = sol?.available && sol.amountAtomic !== null && BigInt(sol.amountAtomic) < BigInt(OWN_AI_USEPOD_MIN_SOL_LAMPORTS);
+  // When ClawVille pays the network fee, the avatar wallet needs no SOL.
+  const sponsored = fee.data?.sponsored === true;
+  const needsSol = !sponsored && sol?.available && sol.amountAtomic !== null && BigInt(sol.amountAtomic) < BigInt(OWN_AI_USEPOD_MIN_SOL_LAMPORTS);
   const receipt = deposit.data;
   const settled = receipt?.status === 'paid' || receipt?.status === 'failed';
   return (
@@ -407,8 +418,10 @@ function UsepodDepositControl() {
         Wallet USDC: {balances?.USDC.available && balances.USDC.uiAmount !== null ? `$${balances.USDC.uiAmount.toFixed(2)}` : 'unavailable'}.
         {' '}Wallet SOL: {sol?.available && sol.uiAmount !== null ? sol.uiAmount : 'unavailable'}.
       </p>
-      <p className={`text-xs ${needsSol ? 'text-amber-200' : 'text-white/65'}`}>
-        Your wallet needs at least {OWN_AI_USEPOD_MIN_SOL_LAMPORTS / 1_000_000_000} SOL for the network fee.
+      <p className={`text-xs ${needsSol ? 'text-amber-200' : 'text-white/65'}`} data-testid="usepod-fee-note">
+        {sponsored
+          ? 'ClawVille pays the network fee. Your wallet needs no SOL.'
+          : `Your wallet needs at least ${OWN_AI_USEPOD_MIN_SOL_LAMPORTS / 1_000_000_000} SOL for the network fee.`}
         {' '}At most {USEPOD_DEPOSITS_PER_DAY} deposits per UTC day.
       </p>
       {!allowed && <p className="text-xs text-amber-200">Allow UsePod and set both caps in Spending first.</p>}
@@ -424,6 +437,7 @@ function UsepodDepositControl() {
       {receipt && <div role="status" className="text-xs text-white/80 break-words">
         <p>Chain status: {receipt.status}. UsePod credit: {receipt.creditStatus}.</p>
         {receipt.status === 'paid' && <p>The chain finalized this deposit.</p>}
+        {receipt.feePaidBy === 'clawville' && <p>ClawVille paid the network fee.</p>}
         {receipt.creditStatus === 'unknown' && <p>UsePod credit is not confirmed. Do not repeat this deposit.</p>}
         {receipt.balance && <p>UsePod balance: ${(receipt.balance.usdcMicro / 1_000_000).toFixed(2)}.</p>}
         {receipt.txSignature && <p className="break-all">Transaction: {receipt.txSignature}</p>}

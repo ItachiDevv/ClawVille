@@ -48,7 +48,12 @@ export function decryptSecretKey(
     decipher.final(),
   ]);
 
-  return Keypair.fromSecretKey(new Uint8Array(decrypted));
+  try {
+    return Keypair.fromSecretKey(new Uint8Array(decrypted));
+  } finally {
+    // The Keypair holds its own copy; the plaintext buffer is wiped.
+    decrypted.fill(0);
+  }
 }
 
 /**
@@ -317,7 +322,13 @@ export async function decryptSecretKeyEnveloped(row: {
     decipher.final(),
   ]);
 
-  return Keypair.fromSecretKey(new Uint8Array(decrypted));
+  try {
+    return Keypair.fromSecretKey(new Uint8Array(decrypted));
+  } finally {
+    // The Keypair holds its own copy; the plaintext buffer and the DEK are wiped.
+    decrypted.fill(0);
+    dek.fill(0);
+  }
 }
 
 /**
