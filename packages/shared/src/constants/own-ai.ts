@@ -258,6 +258,8 @@ export const OWN_AI_USEPOD_MIN_SOL_LAMPORTS = 15000;
  * Global cap: sent sponsored deposits per UTC day, all avatars together.
  */
 export const USEPOD_SPONSORED_DEPOSITS_PER_DAY = 200;
+/** Sponsored deposits per avatar per UTC day; beyond it the avatar wallet pays (or the deposit is refused). */
+export const USEPOD_SPONSORED_DEPOSITS_PER_AVATAR_PER_DAY = 2;
 /** The fee wallet must stay rent exempt (890,880 lamports) after the fee, so it sponsors only above this. */
 export const USEPOD_FEE_WALLET_MIN_LAMPORTS = 1_000_000;
 /** Below this (0.01 SOL) the server logs a warning to refill the fee wallet. */

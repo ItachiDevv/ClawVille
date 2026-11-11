@@ -22,7 +22,14 @@ export function encryptSecretKey(secretKey: Uint8Array): {
   const key = getEncryptionKey();
   const iv = randomBytes(12);
   const cipher = createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([cipher.update(Buffer.from(secretKey)), cipher.final()]);
+  const plaintext = Buffer.from(secretKey);
+  let encrypted: Buffer;
+  try {
+    encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  } finally {
+    // The copy made here is wiped; the caller wipes its own buffer.
+    plaintext.fill(0);
+  }
   const tag = cipher.getAuthTag();
 
   return {
@@ -38,21 +45,30 @@ export function decryptSecretKey(
   encryptionIv: string,
   encryptionTag: string,
 ): Keypair {
-  const key = getEncryptionKey();
-  const iv = Buffer.from(encryptionIv, 'base64');
-  const tag = Buffer.from(encryptionTag, 'base64');
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(tag);
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(encryptedSecretKey, 'base64')),
-    decipher.final(),
-  ]);
+  return decryptKeypairWithKey(getEncryptionKey(), encryptedSecretKey, encryptionIv, encryptionTag);
+}
 
+/**
+ * AES-256-GCM decrypt into a Keypair. Every plaintext buffer made here (the
+ * update() part, the final() part and the joined copy) is wiped on every path,
+ * the auth-failure throw included. The Keypair holds its own copy, which the
+ * caller wipes after use.
+ */
+function decryptKeypairWithKey(key: Buffer, encryptedSecretKey: string, encryptionIv: string, encryptionTag: string): Keypair {
+  const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(encryptionIv, 'base64'));
+  decipher.setAuthTag(Buffer.from(encryptionTag, 'base64'));
+  let head: Buffer | undefined;
+  let tail: Buffer | undefined;
+  let decrypted: Buffer | undefined;
   try {
+    head = decipher.update(Buffer.from(encryptedSecretKey, 'base64'));
+    tail = decipher.final();
+    decrypted = Buffer.concat([head, tail]);
     return Keypair.fromSecretKey(new Uint8Array(decrypted));
   } finally {
-    // The Keypair holds its own copy; the plaintext buffer is wiped.
-    decrypted.fill(0);
+    head?.fill(0);
+    tail?.fill(0);
+    decrypted?.fill(0);
   }
 }
 
@@ -310,23 +326,13 @@ export async function decryptSecretKeyEnveloped(row: {
   if (!plaintextDek) throw new Error('CF secrets Worker /unwrap returned no plaintextDek');
 
   const dek = Buffer.from(plaintextDek, 'base64');
-  if (dek.length !== 32) {
-    throw new Error(`Unwrapped DEK has wrong length: got ${dek.length}, expected 32`);
-  }
-  const iv = Buffer.from(row.encryptionIv, 'base64');
-  const tag = Buffer.from(row.encryptionTag, 'base64');
-  const decipher = createDecipheriv(ALGORITHM, dek, iv);
-  decipher.setAuthTag(tag);
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(row.encryptedSecretKey, 'base64')),
-    decipher.final(),
-  ]);
-
   try {
-    return Keypair.fromSecretKey(new Uint8Array(decrypted));
+    if (dek.length !== 32) {
+      throw new Error(`Unwrapped DEK has wrong length: got ${dek.length}, expected 32`);
+    }
+    return decryptKeypairWithKey(dek, row.encryptedSecretKey, row.encryptionIv, row.encryptionTag);
   } finally {
-    // The Keypair holds its own copy; the plaintext buffer and the DEK are wiped.
-    decrypted.fill(0);
+    // The DEK is wiped on every path, an auth failure included.
     dek.fill(0);
   }
 }

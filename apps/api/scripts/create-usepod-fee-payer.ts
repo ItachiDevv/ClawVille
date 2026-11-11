@@ -27,7 +27,7 @@ config({ path: resolve(__dirname, '../../../.env.local') });
 import { Keypair } from '@solana/web3.js';
 import { db, sql } from '@clawville/database';
 import { encryptSecretKey } from '../src/services/keypair-vault';
-import { USEPOD_FEE_PAYER_PURPOSE } from '../src/services/usepod-fee-payer';
+import { USEPOD_FEE_PAYER_PURPOSE, wipeKeypair } from '../src/services/usepod-fee-payer';
 
 const CREATE_LOCK_KEY = 'usepod:fee-payer:create';
 
@@ -42,8 +42,10 @@ async function main(): Promise<void> {
       throw new Error('a usepod-fee-payer treasury wallet already exists; this script never replaces one');
     }
     const keypair = Keypair.generate();
+    // The `secretKey` getter returns a copy: hold that one copy and wipe it.
+    const secret = keypair.secretKey;
     try {
-      const encrypted = encryptSecretKey(keypair.secretKey);
+      const encrypted = encryptSecretKey(secret);
       const inserted = await tx.execute<{ public_key: string }>(sql`
         INSERT INTO treasury_wallets
           (purpose, public_key, encrypted_secret_key, encryption_iv, encryption_tag, notes)
@@ -56,7 +58,8 @@ async function main(): Promise<void> {
       if (!row) throw new Error('insert returned no row');
       return row.public_key;
     } finally {
-      (keypair as unknown as { _keypair?: { secretKey?: Uint8Array } })._keypair?.secretKey?.fill(0);
+      secret.fill(0);
+      wipeKeypair(keypair);
     }
   });
   console.log(`UsePod fee wallet public key (fund on MAINNET with less than 0.05 SOL): ${publicKey}`);

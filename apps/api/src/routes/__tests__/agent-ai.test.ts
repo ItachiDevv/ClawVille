@@ -20,7 +20,6 @@ import * as realDatabase from '@clawville/database';
 import * as realAgentAuth from '../../middleware/require-auth-or-agent';
 import * as realOwnAi from '../../services/own-ai';
 import * as realDeposit from '../../services/usepod-deposit';
-import * as realFeePayer from '../../services/usepod-fee-payer';
 
 type Middleware = (c: any, next: () => Promise<void>) => unknown;
 const AGENT_HEADER = realAgentAuth.AGENT_SESSION_HEADER;
@@ -48,24 +47,24 @@ let priorDepositImpl: () => Promise<boolean> = async () => false;
 const realOwnAiCopy = { ...realOwnAi };
 const realDatabaseCopy = { ...realDatabase };
 const realAgentAuthCopy = { ...realAgentAuth };
-const realFeePayerCopy = { ...realFeePayer };
-let feePayerImpl: () => Promise<string | null> = async () => null;
+type FeeStatus = Awaited<ReturnType<typeof realDeposit.readUsepodFeeStatus>>;
+const feeOff: FeeStatus = { sponsored: false, reason: 'no_fee_wallet', avatarSponsoredToday: 0, sponsoredPerAvatarPerDay: 2, avatarMinSolLamports: 15000 };
+let feeStatusImpl: (avatarId: string) => Promise<FeeStatus> = async () => feeOff;
+const feeStatusCalls: string[] = [];
 afterAll(() => {
   mock.module('../../services/own-ai', () => realOwnAiCopy);
   mock.module('../../services/usepod-deposit', () => realDepositCopy);
-  mock.module('../../services/usepod-fee-payer', () => realFeePayerCopy);
   mock.module('@clawville/database', () => realDatabaseCopy);
   mock.module('../../middleware/require-auth-or-agent', () => realAgentAuthCopy);
 });
 
-mock.module('../../services/usepod-fee-payer', () => ({
-  ...realFeePayerCopy,
-  readUsepodFeePayer: () => feePayerImpl(),
-}));
-
 mock.module('../../services/usepod-deposit', () => ({
   ...realDepositCopy,
   hasPriorUsepodDeposit: () => priorDepositImpl(),
+  readUsepodFeeStatus: (avatarId: string) => {
+    feeStatusCalls.push(avatarId);
+    return feeStatusImpl(avatarId);
+  },
   createUsepodDepositChallenge: async () => {
     depositChallengeCalls++;
     return { ok: true, nonce: 'n'.repeat(44), expiresAt: new Date().toISOString(), messageToSign: 'ClawVille usepod-deposit' };
@@ -855,26 +854,30 @@ describe('DELETE, models, UsePod', () => {
     }
   });
 
-  it('usepod fee: human and agent read who pays the network fee; a read error says not sponsored', async () => {
+  it('usepod fee: human and agent of the avatar read the same live answer; rate limited like the balance', async () => {
     try {
-      feePayerImpl = async () => null;
+      feeStatusCalls.length = 0;
       const off = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
       expect(off.status).toBe(200);
       expectNoStore(off);
-      expect(await off.json()).toEqual({ sponsored: false, avatarMinSolLamports: 15000 });
-      feePayerImpl = async () => '4yzVEy3QRS9zQrfnXqTpZieDEHoXxNAfc1VDCoyE9ntr';
+      expect(await off.json()).toEqual(feeOff);
+      const on: FeeStatus = { ...feeOff, sponsored: true, reason: null, avatarSponsoredToday: 1 };
+      feeStatusImpl = async () => on;
       const human = await call('GET', '/usepod/fee', { cookie: 'pw-a' });
-      expect(await human.json()).toEqual({ sponsored: true, avatarMinSolLamports: 15000 });
+      expect(await human.json()).toEqual(on);
       const agent = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
-      expect(await agent.json()).toEqual({ sponsored: true, avatarMinSolLamports: 15000 });
-      feePayerImpl = async () => { throw new Error('db down'); };
-      const down = await call('GET', '/usepod/fee', { cookie: 'pw-a' });
-      expect(down.status).toBe(200);
-      expect(await down.json()).toEqual({ sponsored: false, avatarMinSolLamports: 15000 });
+      expect(await agent.json()).toEqual(on);
+      // Both sessions resolve the same avatar.
+      expect(feeStatusCalls).toEqual(['avatar-a', 'avatar-a', 'avatar-a']);
       const anon = await call('GET', '/usepod/fee', {});
       expect(anon.status).toBe(401);
+      // 30 per minute per avatar, shared by human and agent sessions.
+      for (let i = 3; i < 30; i++) expect((await call('GET', '/usepod/fee', { cookie: 'pw-a' })).status).toBe(200);
+      const limited = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
+      expect(limited.status).toBe(429);
+      expect(feeStatusCalls).toHaveLength(30);
     } finally {
-      feePayerImpl = async () => null;
+      feeStatusImpl = async () => feeOff;
     }
   });
 });

@@ -141,7 +141,14 @@ const agentAiApi = {
   usepodLink: (proof: WalletProof) =>
     agentAiRequest<{ dashboardUrl: string }>('/api/agent-ai/usepod/link', { method: 'POST', body: { proof } }),
   usepodBalance: () => agentAiRequest<{ usdcMicro: number; isActive: boolean }>('/api/agent-ai/usepod/balance'),
-  usepodFee: () => agentAiRequest<{ sponsored: boolean; avatarMinSolLamports: number }>('/api/agent-ai/usepod/fee'),
+  /** Can ClawVille pay the network fee of the next deposit NOW (server checks the fee wallet, its SOL and the caps). */
+  usepodFee: () => agentAiRequest<{
+    sponsored: boolean;
+    reason: 'no_fee_wallet' | 'avatar_daily_limit' | 'daily_limit' | 'fee_wallet_empty' | 'unavailable' | null;
+    avatarSponsoredToday: number | null;
+    sponsoredPerAvatarPerDay: number;
+    avatarMinSolLamports: number;
+  }>('/api/agent-ai/usepod/fee'),
 };
 
 /**
@@ -263,6 +270,8 @@ export function agentAiErrorText(error: unknown): string {
         return 'The ClawVille fee wallet is empty now. Add at least 0.000015 SOL to your avatar wallet, or try again later.';
       case 'fee_sponsor_daily_limit':
         return 'ClawVille paid all the network fees it can pay today. Add at least 0.000015 SOL to your avatar wallet, or try again after midnight UTC.';
+      case 'fee_sponsor_avatar_daily_limit':
+        return 'ClawVille paid the network fee of your agent\'s deposits the most times it can today. Add at least 0.000015 SOL to your avatar wallet, or try again after midnight UTC.';
       case 'insufficient_usdc':
         return 'Your avatar wallet does not have enough USDC.';
       case 'approval_required':
@@ -382,6 +391,7 @@ function UsepodDepositControl() {
       depositUsepodWithProof(amountCents, key, !refresh && (policy?.requireApproval ?? true)),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: [...AGENT_AI_QUERY_KEY, 'usepod-balance'] });
+      client.invalidateQueries({ queryKey: [...AGENT_AI_QUERY_KEY, 'usepod-fee'] });
       client.invalidateQueries({ queryKey: ['wallet-balances'] });
     },
     onError: (failure) => {
@@ -389,7 +399,7 @@ function UsepodDepositControl() {
       if (failure instanceof WalletSignError || (failure instanceof ApiError && [
         'approval_required', 'invalid_wallet_proof', 'wallet_link_required', 'vendor_not_allowed',
         'spend_rules_not_set', 'over_per_call_cap', 'over_daily_cap', 'deposit_daily_limit', 'signature_required',
-        'needs_sol_for_fee', 'fee_wallet_empty', 'fee_sponsor_daily_limit', 'insufficient_usdc',
+        'needs_sol_for_fee', 'fee_wallet_empty', 'fee_sponsor_daily_limit', 'fee_sponsor_avatar_daily_limit', 'insufficient_usdc',
         'usepod_deposit_code_missing',
       ].includes(failure.code ?? ''))) request.current = null;
     },
@@ -406,7 +416,8 @@ function UsepodDepositControl() {
   };
   const balances = wallet.data?.balances;
   const sol = balances?.SOL;
-  // When ClawVille pays the network fee, the avatar wallet needs no SOL.
+  // When ClawVille can pay the network fee now, the avatar wallet needs no SOL.
+  // The server checks the fee wallet, its SOL and both daily caps; it decides again at deposit.
   const sponsored = fee.data?.sponsored === true;
   const needsSol = !sponsored && sol?.available && sol.amountAtomic !== null && BigInt(sol.amountAtomic) < BigInt(OWN_AI_USEPOD_MIN_SOL_LAMPORTS);
   const receipt = deposit.data;
@@ -438,6 +449,7 @@ function UsepodDepositControl() {
         <p>Chain status: {receipt.status}. UsePod credit: {receipt.creditStatus}.</p>
         {receipt.status === 'paid' && <p>The chain finalized this deposit.</p>}
         {receipt.feePaidBy === 'clawville' && <p>ClawVille paid the network fee.</p>}
+        {receipt.feePaidBy === 'avatar' && <p>Your agent wallet paid the network fee.</p>}
         {receipt.creditStatus === 'unknown' && <p>UsePod credit is not confirmed. Do not repeat this deposit.</p>}
         {receipt.balance && <p>UsePod balance: ${(receipt.balance.usdcMicro / 1_000_000).toFixed(2)}.</p>}
         {receipt.txSignature && <p className="break-all">Transaction: {receipt.txSignature}</p>}

@@ -33,9 +33,11 @@
  *          contractAddress, ai }`. Human only + the linked wallet's signature;
  *          1 per avatar per hour (counted only after a valid proof).
  *   GET    /api/agent-ai/usepod/balance  `{ usdcMicro, isActive }`. Human or agent.
- *   GET    /api/agent-ai/usepod/fee      `{ sponsored, avatarMinSolLamports }`.
- *          Human or agent. `sponsored` = a ClawVille fee wallet pays the
- *          deposit network fee (2026-11-11); else the avatar wallet needs SOL.
+ *   GET    /api/agent-ai/usepod/fee      `{ sponsored, reason, avatarSponsoredToday,
+ *          sponsoredPerAvatarPerDay, avatarMinSolLamports }`. Human or agent;
+ *          30 per minute per avatar. `sponsored` = the ClawVille fee wallet can
+ *          pay this avatar's next deposit fee NOW (2026-11-11); else the
+ *          avatar wallet pays and needs SOL.
  *   POST   /api/agent-ai/usepod/link     body `{ proof }` -> `{ dashboardUrl }`.
  *          Human only + the linked wallet's signature.
  *
@@ -71,7 +73,6 @@ import {
   OWN_AI_DAILY_LIMIT_MAX_CENTS,
   OWN_AI_USEPOD_DEPOSIT_MIN_CENTS,
   OWN_AI_USEPOD_DEPOSIT_MAX_CENTS,
-  OWN_AI_USEPOD_MIN_SOL_LAMPORTS,
   OWN_AI_DAILY_LIMIT_MIN_CENTS,
   OWN_AI_PROVIDERS,
   OWN_AI_PROVIDER_SPECS,
@@ -111,8 +112,12 @@ import {
   runMeteredOwnAiKeyTest,
   saveOwnAiSettings,
 } from '../services/own-ai';
-import { createUsepodDepositChallenge, depositUsepod, hasPriorUsepodDeposit } from '../services/usepod-deposit';
-import { readUsepodFeePayer } from '../services/usepod-fee-payer';
+import {
+  createUsepodDepositChallenge,
+  depositUsepod,
+  hasPriorUsepodDeposit,
+  readUsepodFeeStatus,
+} from '../services/usepod-deposit';
 
 export const agentAiRoutes = new Hono<ActivityAuthContext>();
 // Own prefix with no public sibling, so a router-wide no-store is safe here.
@@ -122,6 +127,8 @@ const modelsRateLimiter = createRateLimiter({ maxPerWindow: 10, windowMs: 60_000
 const registerRateLimiter = createRateLimiter({ maxPerWindow: 1, windowMs: 60 * 60_000 });
 // Each balance read is one UsePod call; an agent loop is slowed per avatar.
 const balanceRateLimiter = createRateLimiter({ maxPerWindow: 30, windowMs: 60_000 });
+// Each fee read is one RPC balance read of the fee wallet; same limit as the balance.
+const feeRateLimiter = createRateLimiter({ maxPerWindow: 30, windowMs: 60_000 });
 const depositRateLimiter = createRateLimiter({ maxPerWindow: 6, windowMs: 60_000 });
 const depositChallengeRateLimiter = createRateLimiter({ maxPerWindow: 6, windowMs: 60_000 });
 // A save that changes the key, provider or model makes one PAID test call.
@@ -134,6 +141,7 @@ export function resetAgentAiRateLimits(): void {
   modelsRateLimiter.reset();
   registerRateLimiter.reset();
   balanceRateLimiter.reset();
+  feeRateLimiter.reset();
   depositRateLimiter.reset();
   depositChallengeRateLimiter.reset();
   keyTestRateLimiter.reset();
@@ -578,21 +586,18 @@ agentAiRoutes.get('/usepod/balance', ...readGate, async (c) => {
 });
 
 /**
- * Who pays the network fee of a UsePod deposit (2026-11-11). `sponsored` is
- * true while a ClawVille fee wallet is provisioned; the deposit itself still
- * falls back to the avatar wallet when the fee wallet is low or at its daily
- * cap. Human and agent sessions read the same answer.
+ * Can ClawVille pay the network fee of this avatar's next UsePod deposit NOW
+ * (2026-11-11): an active fee wallet, at least 0.001 SOL in it, under the
+ * global and the per-avatar daily sponsored caps. `sponsored: false` names the
+ * `reason`; then the avatar wallet pays. The deposit decides again under its
+ * locks. Human and agent sessions read the same answer. It reads the chain, so
+ * it shares the /usepod/balance rate limit (30 per minute per avatar).
  */
 agentAiRoutes.get('/usepod/fee', ...readGate, async (c) => {
   const identity = c.get('identity');
   if (!identity?.avatarId) throw new HTTPException(403, { message: 'avatar_required' });
-  let sponsored = false;
-  try {
-    sponsored = (await readUsepodFeePayer()) !== null;
-  } catch {
-    /* A failed read is reported as not sponsored; the deposit decides again. */
-  }
-  return c.json({ sponsored, avatarMinSolLamports: OWN_AI_USEPOD_MIN_SOL_LAMPORTS });
+  if (!feeRateLimiter.check(identity.avatarId)) return c.json(RATE_LIMITED, 429);
+  return c.json(await readUsepodFeeStatus(identity.avatarId));
 });
 
 agentAiRoutes.post('/usepod/link', smallBody, ...humanGate, async (c) => {
