@@ -343,8 +343,14 @@ export type DepositResult =
       usdCents: number;
       creditStatus: 'unknown' | 'seen';
       balance: Balance | null;
-      /** 'clawville' = the ClawVille fee wallet paid the network fee; 'avatar' = the avatar wallet paid. */
-      feePaidBy: 'clawville' | 'avatar';
+      /** Who is the fee payer of this deposit transaction (chosen, not a proof of a charge). */
+      feePayer: 'clawville' | 'avatar';
+      /**
+       * true = the chain finalized the transaction, so the fee payer was charged (status paid, or failed
+       * on chain). false = the transaction never landed (not sent, or expired unseen), no fee. null =
+       * not known yet (pending or ambiguous): the fee payer is charged only if it lands.
+       */
+      feeCharged: boolean | null;
     }
   | { ok: false; code: string; ledgerId?: string };
 /** A fee wallet chosen before admission, and whether the avatar wallet could pay instead. */
@@ -614,7 +620,8 @@ function defaultDeps(): UsepodDepositDeps {
         usdCents: row.usdCents,
         creditStatus: row.creditStatus === 'seen' ? 'seen' : 'unknown',
         balance: null,
-        feePaidBy: row.feePayer ? 'clawville' : 'avatar',
+        feePayer: row.feePayer ? 'clawville' : 'avatar',
+        feeCharged: feeChargedFor(row.status, row.failureReason),
       };
     },
     closeUnsigned: async (id) =>
@@ -1079,7 +1086,7 @@ export async function depositUsepod(
     baselineMicro: baseline.usdcMicro,
     ...(feePayer ? { feePayer } : {}),
   };
-  const feePaidBy = feePayer ? ('clawville' as const) : ('avatar' as const);
+  const feePayerLabel = feePayer ? ('clawville' as const) : ('avatar' as const);
   let signed: { bytes: Uint8Array; signature: string };
   try {
     const hash = await deps.blockhash();
@@ -1129,7 +1136,9 @@ export async function depositUsepod(
       usdCents: input.amountCents,
       creditStatus: 'unknown',
       balance: null,
-      feePaidBy,
+      feePayer: feePayerLabel,
+      // Finalized with an on-chain error: the fee was charged.
+      feeCharged: true,
     };
   }
   const paid = checkDepositProof(proof, terms, signed.signature);
@@ -1152,8 +1161,21 @@ export async function depositUsepod(
     txSignature: signed.signature,
     usdCents: input.amountCents,
     ...credited,
-    feePaidBy,
+    feePayer: feePayerLabel,
+    // Paid or finalized (evidence mismatch): charged. No finalized proof yet: not known.
+    feeCharged: paid || proof?.finalized === true ? true : null,
   };
+}
+/** feeCharged for a stored ledger row (see DepositResult). */
+export function feeChargedFor(status: string, failureReason: string | null): boolean | null {
+  if (status === 'paid') return true;
+  if (status === 'failed') {
+    if (failureReason === 'onchain_error_finalized') return true;
+    if (failureReason?.startsWith('not_sent_') || failureReason === 'expired_signature_unknown') return false;
+    return null;
+  }
+  // pending or ambiguous: a finalized evidence mismatch still landed on chain.
+  return failureReason === FINALIZED_EVIDENCE_MISMATCH ? true : null;
 }
 export async function reconcileUsepodDeposits(
   options: { apply: boolean; includeExhausted?: boolean; deps?: Partial<UsepodDepositDeps> } = {

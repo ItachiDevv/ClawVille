@@ -94,7 +94,7 @@ async function router(input: string, init?: RequestInit): Promise<Response> {
   if (path === '/api/agent-ai/usepod/deposit') {
     if (depositRefusal) return json({ error: depositRefusal, code: depositRefusal }, 400);
     if (depositTimeout) { depositTimeout = false; throw new Error('timeout'); }
-    return json({ ok: true, ledgerId: 'ledger-1', status: depositChainStatus, txSignature: 'tx-1', usdCents: body.amountCents, creditStatus: depositCreditStatus, balance: { usdcMicro: 1500000, isActive: true }, feePaidBy: feeSponsored ? 'clawville' : 'avatar' });
+    return json({ ok: true, ledgerId: 'ledger-1', status: depositChainStatus, txSignature: 'tx-1', usdCents: body.amountCents, creditStatus: depositCreditStatus, balance: { usdcMicro: 1500000, isActive: true }, feePayer: feeSponsored ? 'clawville' : 'avatar', feeCharged: depositChainStatus === 'ambiguous' ? null : true });
   }
   if (path === '/api/agent-ai/models') return json({ models: ['gpt-4.1', 'gpt-4o-mini', 'o4-mini'], recommended: [] });
   if (path === '/api/agent-ai/usepod/register/challenge' || path === '/api/agent-ai/usepod/link/challenge') {
@@ -532,6 +532,15 @@ describe('UsePod wallet deposit', () => {
     expect(host.textContent).not.toContain('Your agent wallet paid the network fee.');
   });
 
+  test('fee line text: paid only when charged, "if it lands" when unknown, none when it never landed', () => {
+    expect(card.feeLineText('clawville', true)).toBe('ClawVille paid the network fee.');
+    expect(card.feeLineText('avatar', true)).toBe('Your agent wallet paid the network fee.');
+    expect(card.feeLineText('clawville', null)).toBe('ClawVille will pay the network fee if this deposit lands.');
+    expect(card.feeLineText('avatar', null)).toBe('Your agent wallet will pay the network fee if this deposit lands.');
+    expect(card.feeLineText('clawville', false)).toBeNull();
+    expect(card.feeLineText('avatar', false)).toBeNull();
+  });
+
   test('fee wallet exists but cannot pay now (cap or empty): the card asks for SOL, never says ClawVille pays', async () => {
     status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
     depositEnabled = true;
@@ -602,6 +611,11 @@ test('an ambiguous deposit can only check its existing idempotency key', async (
   const host = await openForm();
   await press(button(host, 'Add to AI balance'));
   expect(host.textContent).not.toContain('Start another deposit');
+  // Not confirmed: the fee line never says "paid".
+  expect(host.querySelector('[data-testid="usepod-fee-line"]')!.textContent).toBe(
+    'Your agent wallet will pay the network fee if this deposit lands.',
+  );
+  expect(host.textContent).not.toContain('paid the network fee');
   expect((host.querySelector('[data-testid="usepod-deposit"] input') as HTMLInputElement).disabled).toBe(true);
   await press(button(host, 'Check the same deposit'));
   const posts = log.filter((entry) => entry.path.endsWith('/deposit'));

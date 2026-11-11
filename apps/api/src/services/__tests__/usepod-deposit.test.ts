@@ -386,7 +386,8 @@ describe('flow boundaries', () => {
       usdCents: 50,
       creditStatus: 'seen' as const,
       balance: null,
-      feePaidBy: 'avatar' as const,
+      feePayer: 'avatar' as const,
+      feeCharged: true,
     };
     expect(
       await depositUsepod(
@@ -1232,7 +1233,7 @@ describe('fee wallet: deposit flow', () => {
     } finally {
       logs.restore();
     }
-    expect(result).toMatchObject({ ok: true, status: 'paid', feePaidBy: 'clawville' });
+    expect(result).toMatchObject({ ok: true, status: 'paid', feePayer: 'clawville', feeCharged: true });
     expect(admittedSponsor).toEqual({ feePayer: FEE, avatarCanPay: false });
     expect(persistedTerms!.feePayer).toBe(FEE);
     const parsed = Transaction.from(signedBytes!);
@@ -1258,7 +1259,7 @@ describe('fee wallet: deposit flow', () => {
         proof: async () => proof(),
       }),
     );
-    expect(r).toMatchObject({ ok: true, status: 'paid', feePaidBy: 'avatar' });
+    expect(r).toMatchObject({ ok: true, status: 'paid', feePayer: 'avatar', feeCharged: true });
     expect(signedTerms!.feePayer).toBeUndefined();
   });
   test('admission can never add a sponsor that was not chosen', async () => {
@@ -1266,7 +1267,7 @@ describe('fee wallet: deposit flow', () => {
     expect(r).toEqual({ ok: false, code: 'payment_prepare_failed', ledgerId: 'ledger' });
     expect(history).toEqual([]);
   });
-  test('no fee wallet row: the old flow, feePaidBy avatar, admission gets no sponsor', async () => {
+  test('no fee wallet row: the old flow, feePayer avatar, admission gets no sponsor', async () => {
     let admittedSponsor: unknown = 'unset';
     const r = await depositUsepod(
       input,
@@ -1277,7 +1278,7 @@ describe('fee wallet: deposit flow', () => {
         },
       }),
     );
-    expect(r).toMatchObject({ ok: true, status: 'paid', feePaidBy: 'avatar' });
+    expect(r).toMatchObject({ ok: true, status: 'paid', feePayer: 'avatar', feeCharged: true });
     expect(admittedSponsor).toBeNull();
   });
   test('fee wallet empty and avatar without SOL refuses before admission', async () => {
@@ -1309,7 +1310,7 @@ describe('fee wallet: admission under the locks (race at the cap)', () => {
     admissionFixture();
     executeQueue.push([], [{ n: USEPOD_SPONSORED_DEPOSITS_PER_DAY - 1 }]);
     const r = await depositUsepod(input, sponsoredAdmission());
-    expect(r).toMatchObject({ ok: true, feePaidBy: 'clawville' });
+    expect(r).toMatchObject({ ok: true, feePayer: 'clawville' });
     expect(inserts).toHaveLength(1);
     expect((inserts[0] as { feePayer: string }).feePayer).toBe(FEE);
     const texts = queries.map((q) => new PgDialect().sqlToQuery(q));
@@ -1330,7 +1331,7 @@ describe('fee wallet: admission under the locks (race at the cap)', () => {
         proof: async () => proof(),
       }),
     );
-    expect(r).toMatchObject({ ok: true, status: 'paid', feePaidBy: 'avatar' });
+    expect(r).toMatchObject({ ok: true, status: 'paid', feePayer: 'avatar', feeCharged: true });
     expect((inserts[0] as { feePayer: string | null }).feePayer).toBeNull();
   });
   test('race: the loser without SOL is refused with fee_sponsor_daily_limit, no row, no signature', async () => {
@@ -1348,7 +1349,7 @@ describe('fee wallet: admission under the locks (race at the cap)', () => {
       input,
       sponsoredAdmission({ ...feeDeps({ mine: 1, avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }), proof: async () => proof() }),
     );
-    expect(ok).toMatchObject({ ok: true, feePaidBy: 'avatar' });
+    expect(ok).toMatchObject({ ok: true, feePayer: 'avatar' });
     expect(queries.map((q) => new PgDialect().sqlToQuery(q).params).flat()).not.toContain('usepod:fee-payer:global');
     inserts = [];
     history = [];
@@ -1377,7 +1378,7 @@ describe('fee wallet: admission under the locks (race at the cap)', () => {
     selectQueue.push([{ wallet: walletPubkey }]);
     expect(await depositUsepod({ ...input, nonce: challenge.nonce, signature }, sponsoredAdmission())).toMatchObject({
       ok: true,
-      feePaidBy: 'clawville',
+      feePayer: 'clawville',
     });
   });
   test('the per-avatar five-per-day cap still applies to sponsored deposits', async () => {
@@ -1390,5 +1391,39 @@ describe('fee wallet: admission under the locks (race at the cap)', () => {
     await depositUsepod(input, actualAdmission());
     expect(queries.map((q) => new PgDialect().sqlToQuery(q).params).flat()).not.toContain('usepod:fee-payer:global');
     expect((inserts[0] as { feePayer: string | null }).feePayer).toBeNull();
+  });
+});
+
+describe('fee payer chosen vs fee charged (Codex re-review)', () => {
+  const { feeChargedFor } = service;
+  test('send timeout: ambiguous, the fee is charged only if it lands (null)', async () => {
+    const r = await depositUsepod(input, deps({ ...feeDeps({}), sign: async (_a, tx, t) => {
+      history.push('sign');
+      return signDepositTransaction(tx, t, Keypair.fromSecretKey(wallet.secretKey), Keypair.fromSecretKey(feeWallet.secretKey));
+    }, send: async () => { throw new Error('timeout'); }, proof: async () => null }));
+    expect(r).toMatchObject({ ok: true, status: 'ambiguous', feePayer: 'clawville', feeCharged: null });
+  });
+  test('finalized on-chain error: failed, the fee was charged', async () => {
+    const r = await depositUsepod(input, deps({ proof: async () => ({ ...proof(), err: { InstructionError: 1 } }) }));
+    expect(r).toMatchObject({ ok: true, status: 'failed', feePayer: 'avatar', feeCharged: true });
+  });
+  test('finalized with mismatched evidence: ambiguous, but it landed, so the fee was charged', async () => {
+    const r = await depositUsepod(input, deps({ proof: async () => ({ ...proof(), logs: [] }) }));
+    expect(r).toMatchObject({ ok: true, status: 'ambiguous', feeCharged: true });
+  });
+  test('not sent (simulation failed): a refusal with no fee fields', async () => {
+    const r = await depositUsepod(input, deps({ simulate: async () => false }));
+    expect(r).toEqual({ ok: false, code: 'simulation_failed', ledgerId: 'ledger' });
+  });
+  test('stored rows (replay): paid and on-chain failure charged; not sent and expired not charged; others unknown', () => {
+    expect(feeChargedFor('paid', null)).toBe(true);
+    expect(feeChargedFor('failed', 'onchain_error_finalized')).toBe(true);
+    expect(feeChargedFor('failed', 'not_sent_simulation_failed')).toBe(false);
+    expect(feeChargedFor('failed', 'not_sent_interrupted')).toBe(false);
+    expect(feeChargedFor('failed', 'expired_signature_unknown')).toBe(false);
+    expect(feeChargedFor('ambiguous', 'finalized_proof_missing')).toBeNull();
+    expect(feeChargedFor('ambiguous', FINALIZED_EVIDENCE_MISMATCH)).toBe(true);
+    expect(feeChargedFor('ambiguous', FEE_PAYER_MISMATCH)).toBeNull();
+    expect(feeChargedFor('pending', null)).toBeNull();
   });
 });

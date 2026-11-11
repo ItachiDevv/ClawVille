@@ -195,8 +195,10 @@ export interface UsepodDepositReply {
   usdCents: number;
   creditStatus: 'unknown' | 'seen';
   balance: { usdcMicro: number; isActive: boolean } | null;
-  /** 'clawville' = the ClawVille fee wallet paid the network fee. */
-  feePaidBy?: 'clawville' | 'avatar';
+  /** Who is the fee payer of this transaction (chosen, not proof of a charge). */
+  feePayer?: 'clawville' | 'avatar';
+  /** true = the chain finalized it (fee charged); false = it never landed (no fee); null = not known yet. */
+  feeCharged?: boolean | null;
 }
 
 export async function depositUsepodWithProof(
@@ -374,6 +376,19 @@ export const USEPOD_NEEDS_WALLET_TEXT =
   'Link your own wallet first (below): your linked wallet must approve a UsePod balance and its link. '
   + 'Or paste a token from your own UsePod account in the token field instead.';
 
+/** The network fee line of a deposit receipt: "paid" only for a fee the chain charged. */
+export function feeLineText(feePayer: 'clawville' | 'avatar', feeCharged: boolean | null): string | null {
+  const who = feePayer === 'clawville' ? 'ClawVille' : 'Your agent wallet';
+  if (feeCharged === true) return `${who} paid the network fee.`;
+  if (feeCharged === null) return `${who} will pay the network fee if this deposit lands.`;
+  return null; // Never landed: no fee.
+}
+
+function FeeLine({ feePayer, feeCharged }: { feePayer: 'clawville' | 'avatar'; feeCharged: boolean | null }) {
+  const text = feeLineText(feePayer, feeCharged);
+  return text ? <p data-testid="usepod-fee-line">{text}</p> : null;
+}
+
 function UsepodDepositControl() {
   const { query } = useHumanSpendPolicy();
   const policy = query.data;
@@ -448,8 +463,7 @@ function UsepodDepositControl() {
       {receipt && <div role="status" className="text-xs text-white/80 break-words">
         <p>Chain status: {receipt.status}. UsePod credit: {receipt.creditStatus}.</p>
         {receipt.status === 'paid' && <p>The chain finalized this deposit.</p>}
-        {receipt.feePaidBy === 'clawville' && <p>ClawVille paid the network fee.</p>}
-        {receipt.feePaidBy === 'avatar' && <p>Your agent wallet paid the network fee.</p>}
+        {receipt.feePayer && <FeeLine feePayer={receipt.feePayer} feeCharged={receipt.feeCharged ?? null} />}
         {receipt.creditStatus === 'unknown' && <p>UsePod credit is not confirmed. Do not repeat this deposit.</p>}
         {receipt.balance && <p>UsePod balance: ${(receipt.balance.usdcMicro / 1_000_000).toFixed(2)}.</p>}
         {receipt.txSignature && <p className="break-all">Transaction: {receipt.txSignature}</p>}

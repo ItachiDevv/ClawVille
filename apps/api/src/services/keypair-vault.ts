@@ -54,17 +54,26 @@ export function decryptSecretKey(
  * the auth-failure throw included. The Keypair holds its own copy, which the
  * caller wipes after use.
  */
-function decryptKeypairWithKey(key: Buffer, encryptedSecretKey: string, encryptionIv: string, encryptionTag: string): Keypair {
+export function decryptKeypairWithKey(key: Buffer, encryptedSecretKey: string, encryptionIv: string, encryptionTag: string): Keypair {
   const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(encryptionIv, 'base64'));
   decipher.setAuthTag(Buffer.from(encryptionTag, 'base64'));
   let head: Buffer | undefined;
   let tail: Buffer | undefined;
   let decrypted: Buffer | undefined;
+  let held: Uint8Array | undefined;
   try {
     head = decipher.update(Buffer.from(encryptedSecretKey, 'base64'));
     tail = decipher.final();
     decrypted = Buffer.concat([head, tail]);
-    return Keypair.fromSecretKey(new Uint8Array(decrypted));
+    // On success the Keypair keeps `held` (the caller wipes it). If fromSecretKey
+    // throws (invalid key material behind a valid tag), `held` is wiped here.
+    held = new Uint8Array(decrypted);
+    const keypair = Keypair.fromSecretKey(held);
+    held = undefined;
+    return keypair;
+  } catch (err) {
+    held?.fill(0);
+    throw err;
   } finally {
     head?.fill(0);
     tail?.fill(0);
