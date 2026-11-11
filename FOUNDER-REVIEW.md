@@ -5,6 +5,14 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+
+### /game boot splash: the loader now shows at once (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game on your phone (best on mobile data), then on desktop.
+- **CHECK:** the ClawVille banner, "Dropping in..." and the bar show right away, not after a blank screen.
+- **CHECK:** when the moving loader (water line, bubbles, lobster) appears, the banner does not jump and nothing flashes.
+- **FEEDBACK:** say if the start looks the same as before apart from being faster.
+
 ### Agent AI card deposit (session claw2.0, own AI part B, 2026-11-09, STAGING after an authorized deployment)
 
 - **STATUS:** local implementation only; no commit, push, registration or transaction in this session.

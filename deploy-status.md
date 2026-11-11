@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-11 04:35Z (session claw2.0). **PROD = `50e5ce7a1` (promotion #28, PR #340: own AI part B ONLY, PROTOCOL 120, migration 0100 applied on prod).** STAGING moves: `git log -1 origin/staging` (it also holds BrainChain, PROTOCOL 128/129, migrations 0101-0120, NOT on prod). SCHEMA: prod-migration-pending: 0101-0120 (brainchain).
+Last Audited: 2026-11-11 06:30Z (session new-ville). **STAGING WEB = perf/game-load (`b9d2c5bdc` + this docs commit): server-rendered /game boot splash; web only, no PROTOCOL change, no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
+
+Prior - Last Audited: 2026-11-11 04:35Z (session claw2.0). **PROD = `50e5ce7a1` (promotion #28, PR #340: own AI part B ONLY, PROTOCOL 120, migration 0100 applied on prod).** STAGING moves: `git log -1 origin/staging` (it also holds BrainChain, PROTOCOL 128/129, migrations 0101-0120, NOT on prod). SCHEMA: prod-migration-pending: 0101-0120 (brainchain).
 
 Prior - Last Audited: 2026-11-11 00:35Z (session brainchain-office). **STAGING API + WEB = `55910beb8` (BrainChain Office replaces the Salty Spitoon at ring building `api-integrations`; resident Cortex; PROTOCOL 129; migration 0120 applied on staging): CI run 42927893429 all jobs success; both containers report SOURCE_COMMIT `55910beb8` (the web rolling update first failed with "pull access denied" after the image export; a solo web redeploy finished 00:25Z); `/health` ok; the DB row reads BrainChain Office and the stored curriculum names Cortex; browser: the Office stands in the ring with its door to the plaza, Cortex faces the plaza with feet on the ground, the building panel shows "Enter BrainChain Office" and it opens `/brainchain`.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain), 0120_brainchain_office_ring_slot.sql.
 
@@ -750,6 +752,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-11 06:30Z (session new-ville) - /game boot splash on staging (web only)
+- **What changed:** the (world) layout server-renders `BootSplash` (`apps/web/src/components/three/world-stage/boot-splash.tsx`) on `/game`: the first frame of the sea loader (gradient, banner, "Dropping in...", 0% bar). Before, the server HTML was an empty stage, so phones painted nothing until the HUD bundle hydrated (prod probe, 4x CPU + slow 4G: first paint 9.1 s). The splash crossfades out over the live loader after the loader's entrance animation; failure UIs release it. SeaLoadingScreen is unchanged.
+- **Measured (local prod build, staging API):** phone profile splash at 1.0-1.3 s vs live loader at 8.2-8.9 s; desktop first paint 1580 ms to 312-672 ms; ready time not worse; 9 sizes (phone and iPad, portrait and landscape) show no uncovered frame and no logo jump; client nav /game to /cove to /game and cold /cove to /game show no stuck splash and no errors.
+- **What broke on the way:** the first version edited SeaLoadingScreen, which tripped the coupling gates (components/game/** needs a served-manual change). The splash moved to world-stage and SeaLoadingScreen went back to its staging content. Codex found 3 P2 issues (stage cover above splash, no screen-reader status, hard swap); all fixed.
+- **Who it's for:** every visitor of /game, mostly phones on slow networks.
+- **SCHEMA:** unchanged (prod-migration-pending: 0101-0120, brainchain).
 
 ### 2026-11-11 04:35Z (session claw2.0) - Promotion #28 ON PROD (`50e5ce7a1`, PR #340): own AI part B ONLY + 2 fixes
 - **What changed:** founder chose part B only (BrainChain stays on staging). Branch `release/own-ai-b` cut from master `7dc9a0001` with 7 cherry-picks from staging (`892514ad2`, `9fd879bea`, `d81d5d472`, `d75c1a935`, `37d374de0`, `91c2d9d39`, `17d5e1669`); deploy-status conflicts resolved keeping only claw2.0 entries; 31 files, migration `0100_usepod_deposit.sql` only, PROTOCOL 120. Master then merged back into staging (tree equal to staging, docs-only push).
