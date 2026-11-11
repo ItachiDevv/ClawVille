@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-11 19:58Z (session brainchain). **STAGING = BrainChain Office v3 building + Cortex clerk robot (`cbbd961ca`, VERIFIED 19:17Z: CI run 43083255309 green, both containers on `cbbd961ca`, `/health` `cbbd961ca`) plus follow-up pushes up to `91c12c6ed` (VERIFIED 19:58Z: CI run 43090075468 green, both containers on `91c12c6ed`): Cortex `scaleOverride: 106` (about 190 wu) and Meshy-driver fixes.** Web + one shared collider constant; no PROTOCOL change (still 132), no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (BrainChain + UsePod, staging only).
+Last Audited: 2026-11-11 22:09Z (session new-ville). **STAGING = Trading Floor terminal phases 1+2 (`11e475784`, `023be7e27`, `879c422c2` + this docs commit) on top of `baf896371`: the Trading Floor opens its own window (Dashboard, Trades, Decisions, Strategy, Reports, Other agents); new read routes `/api/floor/arena/agents/:id/trades`, `/agents/:id/equity`, `/me/trades`, `/me/equity`; nine MCP arena read tools; PROTOCOL 134; no migration.** VERIFICATION PENDING (CI, both containers, `/health`, browser). PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
+
+Prior - Last Audited: 2026-11-11 19:58Z (session brainchain). **STAGING = BrainChain Office v3 building + Cortex clerk robot (`cbbd961ca`, VERIFIED 19:17Z: CI run 43083255309 green, both containers on `cbbd961ca`, `/health` `cbbd961ca`) plus follow-up pushes up to `91c12c6ed` (VERIFIED 19:58Z: CI run 43090075468 green, both containers on `91c12c6ed`): Cortex `scaleOverride: 106` (about 190 wu) and Meshy-driver fixes.** Web + one shared collider constant; no PROTOCOL change (still 132), no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (BrainChain + UsePod, staging only).
 
 Prior - Last Audited: 2026-11-11 18:01Z (session new-ville). **STAGING WEB = perf/game-load (`6ffbd4647` buildings-first hold + `161d28682` Trading Floor walk-into-the-door entry + this docs commit), VERIFIED 18:17Z: CI run 43073808224 all 8 jobs success; both containers SOURCE_COMMIT `88977b18a`; `/health` commit `88977b18a`. Staging phone profile after the change: buildings + Nori presented at 46.8 s (before: 104 s), loader still closes by the 10 s fallback at 28.6 s. Door walk-in not yet checked in a browser (DEPLOY LOG 2026-11-11 18:01Z).** Web only; no PROTOCOL change, no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
 
@@ -764,6 +766,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-11 22:09Z (session new-ville) - Trading Floor terminal, phases 1+2 (web + API, PROTOCOL 134, no migration)
+
+- **What:** founder approved the terminal mockup 2026-11-11. The Trading Floor leaves the Exchange modal for its own window with six tabs and a live rule-check log; Strategy edits the rules as five sections of managed fields over the existing `PATCH /me/params`. New read-only routes: paged closed trades (keyset `closedAt,id`, outcome and exit-reason filters, same public redaction as `/agents/:id`), an equity series on the leaderboard window rules (last point equals the stats P&L) with open-positions P&L at last mark, and owner `/me` variants. Nine MCP text tools close the events/contest/discovery/tape parity gap. Nori, orientation and the trading manual page updated (PROTOCOL 133, 134).
+- **Broke:** nothing known yet. An Opus review found 2 P2 (contest equity used other rules than the contest stats; open P&L left out take-profit proceeds) and 4 P3 (dead field, a broken doc character, polling every loaded page, small phone chart labels); all fixed before the push. Local: 226 API + 404 web tests pass, turbo build of web + API passes, coupling and doc-path gates pass. No browser or device check yet.
+- **For:** the founder (FOUNDER-REVIEW, Trading Floor terminal entry). The four tabs not in the mockup need a first look.
 
 ### 2026-11-11 19:01Z (session brainchain) - BrainChain Office v3 building + Cortex clerk robot (web + shared colliders)
 
