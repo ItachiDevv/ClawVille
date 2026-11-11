@@ -747,6 +747,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-10 18:10Z (session brainchain-office) - Cortex faces the plaza and stands on the terrain, live check PENDING
+- **What changed:** the staging browser check of `5402775ff` showed the Office in the ring as designed (door to the plaza, size like its neighbours), but the resident Cortex faced away from the plaza (an extra +PI on the VRM resident path) and stood 106 wu under the ground (feet bone at y -87; the bind-pose fit does not match this rig's retargeted idle). Fix: same facingRotY as the GLB residents; feet re-planted every 30 frames from the rendered foot bones (`getFootYMinInSpace`), then a matrix refresh and `flushSkeletonUpdates`.
+- **Review:** Codex first BLOCKING (lift after the skeleton flush; normalized bones), fixed; re-review APPROVED. Resident test 8/8, web tsc and production build exit 0 locally.
+- **Who it's for:** the founder's BrainChain Office request.
+- **SCHEMA:** unchanged (prod-migration-pending as above).
+
 ### 2026-11-10 17:30Z (session brainchain-office) - BrainChain Office moves into the ring (replaces the Salty Spitoon), PROTOCOL 129, migration 0120, live check PENDING
 - **What changed:** founder decision 2026-11-10. Ring building `api-integrations` (slot 4, ESE) now renders the Office GLB (targetMaxDim 1400, rotY -2.093, collider half 613 x 644) with resident Cortex (tinted `clytemnestra-w30k.vrm`, new VRM resident path). Cortex teaches BrainChain and keeps the full API-integrations lesson; the separate venue at (760,-3040), its guide and the `brainchain-office-world` constants are removed. The building panel shows "Enter BrainChain Office" (opens `/brainchain`). Nori, the protocol manual (PROTOCOL 129) and the hosted runtime copy name Cortex. Migration `0120_brainchain_office_ring_slot.sql` (data only) renames the `map_locations` row and the stored `building_skills` curriculum (no model call). Also: the hosted runtime probe now checks the gated protocol route correctly (commit `d580f8ee3`).
 - **Review:** Codex (E3) found one P1: the VRM resident re-measured its fit on every stream-in and drifted off the ground; fixed (fit cached per retained VRM) with a stream-out/in test. Codex otherwise found no blocker (transform, colliders, parity, migration).
