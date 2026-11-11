@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
 import { CLAWVILLE_GAME_TOOLS } from '@clawville/shared';
+import { buildPlayManual, buildProtocolManual } from '../../services/skill-protocol';
 import {
   MCP_CALLS_PER_MINUTE,
   MCP_MAX_CALL_BUDGETS,
@@ -207,7 +208,7 @@ describe('auth', () => {
     expect(answer.ok).toBe(true);
   });
 
-  test('clawville_connect returns the sessionId and tells the agent to pass it on every call', async () => {
+  test('clawville_connect returns the sessionId and tells the agent to pass it on every session tool call', async () => {
     const mcp = await initialize();
     const { answer } = await callTool('clawville_connect', { agentId: 'agent-1', identityType: 'claude-code', identityKey: 'k' }, { 'Mcp-Session-Id': mcp });
     expect(answer.ok).toBe(true);
@@ -217,7 +218,8 @@ describe('auth', () => {
     expect(answer.data.wallet).toBeUndefined();
     expect(answer.data.knowledge).toBeUndefined();
     expect(answer.next).toContain('"sessionId": "ag-new"');
-    expect(answer.next).toContain('EVERY later tool call');
+    expect(answer.next).toContain('every later session tool call');
+    expect(answer.next).toContain('NEVER pass your sessionId to clawville_dashboard or clawville_dashboard_refresh');
     expect(answer.next).toContain('clawville_docs');
     const connectReq = seen[0]!;
     expect(connectReq.headers.get('x-clawville-agent-session')).toBeNull();
@@ -563,6 +565,8 @@ describe('MCP App: clawville_dashboard view', () => {
       seen.push(req);
       const path = new URL(req.url).pathname;
       switch (path) {
+        case '/api/agent/connect':
+          return Response.json(connectBody);
         case '/api/agent/session-status':
           return Response.json({ connected: true, expiresAt: '2026-11-12T00:00:00.000Z', humanControlled: false });
         case '/api/agent/wallet':
@@ -630,8 +634,14 @@ describe('MCP App: clawville_dashboard view', () => {
     expect(json.result.capabilities.resources).toEqual({ subscribe: false, listChanged: false });
   });
 
+  const UI_CAPS = { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } };
+  async function uiToolList() {
+    const sid = await initializeWith(UI_CAPS);
+    return (await (await rpc('tools/list', undefined, { 'Mcp-Session-Id': sid })).json()) as any;
+  }
+
   test('tools/list: the view tools take only viewToken; the session tool has no view link', async () => {
-    const json = (await (await rpc('tools/list')).json()) as any;
+    const json = await uiToolList();
     const byName = new Map(json.result.tools.map((t: any) => [t.name, t]));
     const openTool = byName.get('clawville_dashboard_open') as any;
     expect(openTool._meta).toBeUndefined();
@@ -649,7 +659,7 @@ describe('MCP App: clawville_dashboard view', () => {
   });
 
   test('no tool that carries _meta.ui.resourceUri has a sessionId property', async () => {
-    const json = (await (await rpc('tools/list')).json()) as any;
+    const json = await uiToolList();
     const linked = json.result.tools.filter((t: any) => t._meta?.ui?.resourceUri || t._meta?.['ui/resourceUri']);
     expect(linked.length).toBeGreaterThan(0);
     for (const tool of linked) {
@@ -657,23 +667,49 @@ describe('MCP App: clawville_dashboard view', () => {
     }
   });
 
-  test('the app-only refresh tool is hidden only from a client that did not declare MCP Apps; clawville_dashboard is always listed', async () => {
-    const uiSid = await initializeWith({ extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } });
+  test('the app-only refresh tool is listed only for a client that declared MCP Apps; clawville_dashboard is always listed', async () => {
+    const uiSid = await initializeWith(UI_CAPS);
     const plainSid = await initializeWith({});
     const wrongShape = await initializeWith({ extensions: { 'io.modelcontextprotocol/ui': true } });
     const withUi = await listedNames({ 'Mcp-Session-Id': uiSid });
     const without = await listedNames({ 'Mcp-Session-Id': plainSid });
     const unknown = await listedNames();
-    for (const names of [withUi, unknown]) {
-      expect(names).toContain('clawville_dashboard');
-      expect(names).toContain('clawville_dashboard_refresh');
-    }
-    for (const names of [without, await listedNames({ 'Mcp-Session-Id': wrongShape })]) {
+    expect(withUi).toContain('clawville_dashboard');
+    expect(withUi).toContain('clawville_dashboard_refresh');
+    for (const names of [without, unknown, await listedNames({ 'Mcp-Session-Id': wrongShape })]) {
       expect(names).toContain('clawville_dashboard');
       expect(names).not.toContain('clawville_dashboard_refresh');
       expect(names).toContain('clawville_dashboard_open');
     }
     expect(without.length).toBe(withUi.length - 1);
+  });
+
+  test('every served sessionId instruction excludes the two view tools', async () => {
+    const texts: Record<string, string> = {};
+    texts.initialize = ((await (await rpc('initialize', { protocolVersion: '2025-06-18' })).json()) as any).result.instructions;
+    texts.entryManual = buildPlayManual('https://api.example.test');
+    texts.fullManual = buildProtocolManual('https://api.example.test');
+    for (const topic of ['mcp', 'core', 'ecosystem']) {
+      texts[`docs:${topic}`] = (await call('clawville_docs', { topic })).answer.data.markdown;
+    }
+    texts.connectAnswer = (await call('clawville_connect', { agentId: 'agent-1' })).answer.next;
+    texts.notConnected = (await open({})).answer.next;
+    const listed = await uiToolList();
+    for (const tool of listed.result.tools) {
+      if (['clawville_connect', 'clawville_dashboard', 'clawville_dashboard_refresh'].includes(tool.name)) texts[`tool:${tool.name}`] = tool.description;
+      if (tool.inputSchema.properties?.sessionId) texts.sessionIdProperty = tool.inputSchema.properties.sessionId.description;
+    }
+    // No served text tells the model to send the session on EVERY tool call.
+    for (const [where, text] of Object.entries(texts)) {
+      expect({ where, bad: /(every|EVERY) (other|later)? ?tool call/.test(text) && !/session tool call/.test(text) }).toEqual({ where, bad: false });
+    }
+    // Each text that tells the model to pass sessionId names the exclusion.
+    for (const where of ['initialize', 'entryManual', 'docs:mcp', 'connectAnswer', 'notConnected', 'tool:clawville_connect', 'sessionIdProperty']) {
+      expect({ where, excludes: /never (pass your sessionId to|on) clawville_dashboard or clawville_dashboard_refresh/i.test(texts[where] ?? '') }).toEqual({ where, excludes: true });
+    }
+    expect(texts['docs:ecosystem']).toContain('never to clawville_dashboard tools');
+    expect(texts['docs:ecosystem']).not.toContain('every other tool call');
+    for (const tool of ['tool:clawville_dashboard', 'tool:clawville_dashboard_refresh']) expect(texts[tool]).toContain('Do not pass sessionId');
   });
 
   test('resources/list, resources/templates/list, unknown and malformed resources/read', async () => {

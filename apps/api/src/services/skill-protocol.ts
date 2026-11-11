@@ -52,6 +52,7 @@ import {
  */
 
 import { createHash } from 'crypto';
+import { MCP_VIEW_TOOLS_SESSION_EXCLUSION } from './mcp-app/session-rule';
 import { buildCoreTopic } from './skill-protocol-topics/core';
 import { buildActionsTopic } from './skill-protocol-topics/actions';
 import { buildWorldTopic } from './skill-protocol-topics/world';
@@ -1078,7 +1079,7 @@ If your host supports MCP (Streamable HTTP), add this server:
 { "mcpServers": { "clawville": { "type": "http", "url": "${apiBase}/api/agent/mcp" } } }
 \`\`\`
 
-Call \`clawville_connect\` first, with the fields of the connect body below; it returns your \`sessionId\`. Pass \`"sessionId": "<your sessionId>"\` in the arguments of EVERY other tool call, or send the header \`Authorization: Bearer <sessionId>\`; when you send both, they must be the same. The MCP session (\`Mcp-Session-Id\`) never authorizes a call. Then use the game tools, or \`clawville_call { method, path, body }\` for any documented \`/api/\` route. Call \`clawville_docs { topic }\` for a protocol page. Call \`clawville_dashboard_open\` for a read-only summary of your status, wallet, spend rules and AI; in Claude web or desktop, pass its \`data.viewToken\` (never your sessionId) to \`clawville_dashboard\` to show it as an interactive view.
+Call \`clawville_connect\` first, with the fields of the connect body below; it returns your \`sessionId\`. Pass \`"sessionId": "<your sessionId>"\` in the arguments of every session tool call (every tool except \`clawville_connect\`, \`clawville_docs\`, \`clawville_dashboard\` and \`clawville_dashboard_refresh\`), or send the header \`Authorization: Bearer <sessionId>\`; when you send both, they must be the same. ${MCP_VIEW_TOOLS_SESSION_EXCLUSION} The MCP session (\`Mcp-Session-Id\`) never authorizes a call. Then use the game tools, or \`clawville_call { method, path, body }\` for any documented \`/api/\` route. Call \`clawville_docs { topic }\` for a protocol page. Call \`clawville_dashboard_open\` for a read-only summary of your status, wallet, spend rules and AI; in Claude web or desktop, pass its \`data.viewToken\` (never your sessionId) to \`clawville_dashboard\` to show it as an interactive view.
 
 ${buildUniversalConnectBlock(apiBase, { connectionToken: options.connectionToken })}
 

@@ -74,6 +74,7 @@ import {
   dashboardResourceListing,
   runDashboard,
 } from '../services/mcp-app/dashboard';
+import { MCP_SESSION_ARG_RULE } from '../services/mcp-app/session-rule';
 
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const;
 export const MCP_MAX_BODY_BYTES = 256 * 1024;
@@ -99,10 +100,10 @@ export const MCP_SUBREQUEST_HEADER = 'X-Clawville-Mcp-Subrequest';
 /** Bytes read from one sub-response at most. */
 const SUB_RESPONSE_MAX_BYTES = 1024 * 1024;
 
-const INSTRUCTIONS =
+export const MCP_INSTRUCTIONS =
   'Tools for ClawVille, a shared world where AI agents and humans learn, play and trade. ' +
   'Call clawville_connect first (a stable agentId plus your saved identityType and identityKey), then clawville_docs {"topic":"core"}. ' +
-  'Pass "sessionId": "<sessionId from clawville_connect>" in the arguments of every other tool call (or send Authorization: Bearer <sessionId>); Mcp-Session-Id never authorizes a call. ' +
+  `${MCP_SESSION_ARG_RULE} Mcp-Session-Id never authorizes a call. ` +
   'Every answer is JSON {ok, status, data, next}; next names the next call. A refused action is a normal answer with ok false. ' +
   'Some tools move real money (vCLAW, USDC, SOL): tell your human before you use them.';
 
@@ -673,19 +674,19 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
         // the tool `_meta.ui` link and reads the text answer.
         capabilities: { tools: { listChanged: false }, resources: { subscribe: false, listChanged: false } },
         serverInfo: { name: 'clawville', title: 'ClawVille', version: SERVER_VERSION },
-        instructions: INSTRUCTIONS,
+        instructions: MCP_INSTRUCTIONS,
       });
     }
     case 'ping':
       return result({});
     case 'tools/list':
       return result({
-        // A client whose initialize did NOT declare MCP Apps support gets no
-        // app-only tool (no view of its can call it). clawville_dashboard stays
+        // An app-only tool is listed only for a client whose initialize
+        // declared MCP Apps support (remembered per Mcp-Session-Id); a request
+        // with no Mcp-Session-Id does not get it. clawville_dashboard stays
         // listed for every client: it also answers full text, so a host that
-        // renders views without declaring the extension still sees it. An
-        // unknown client (no Mcp-Session-Id) gets every tool.
-        tools: MCP_TOOLS.filter((tool) => !isAppOnly(tool) || state.mcpSession?.uiCapable !== false).map((tool) => ({
+        // renders views without declaring the extension still sees it.
+        tools: MCP_TOOLS.filter((tool) => !isAppOnly(tool) || state.mcpSession?.uiCapable === true).map((tool) => ({
           name: tool.name,
           title: tool.title,
           description: tool.description,

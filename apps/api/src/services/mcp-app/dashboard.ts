@@ -25,8 +25,7 @@ import { buildDashboardViewHtml, DASHBOARD_VIEW_CSP } from './dashboard-view';
 export const DASHBOARD_OPEN_TOOL = 'clawville_dashboard_open';
 export const DASHBOARD_TOOL = 'clawville_dashboard';
 export const DASHBOARD_REFRESH_TOOL = 'clawville_dashboard_refresh';
-export const DASHBOARD_RESOURCE_URI = 'ui://clawville/dashboard';
-/** MIME type an MCP App resource must have (ext-apps RESOURCE_MIME_TYPE). */
+export const DASHBOARD_RESOURCE_URI = 'ui://clawville/dashboard';/** MIME type an MCP App resource must have (ext-apps RESOURCE_MIME_TYPE). */
 export const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 /** Legacy flat tool `_meta` key the ext-apps server helper also writes. */
 export const LEGACY_RESOURCE_URI_META_KEY = 'ui/resourceUri';

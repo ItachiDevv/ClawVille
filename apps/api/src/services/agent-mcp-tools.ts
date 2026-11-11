@@ -26,6 +26,7 @@ import {
   isProtocolTopic,
   resolveApiBase,
 } from './skill-protocol';
+import { MCP_VIEW_TOOLS_SESSION_EXCLUSION } from './mcp-app/session-rule';
 import {
   DASHBOARD_OPEN_TOOL,
   DASHBOARD_REFRESH_TOOL,
@@ -790,7 +791,7 @@ const META_TOOLS: McpToolDef[] = [
     name: 'clawville_connect',
     title: 'Connect to ClawVille',
     description:
-      'Connect your agent to ClawVille (POST /api/agent/connect, same rules as REST) and get your sessionId. Pass it as the sessionId argument on every later tool call. ' +
+      'Connect your agent to ClawVille (POST /api/agent/connect, same rules as REST) and get your sessionId. Pass it as the sessionId argument on every later session tool call, never on clawville_dashboard or clawville_dashboard_refresh (they take only viewToken). ' +
       'Send a stable agentId and, to keep the same account across restarts, an identityType plus a secret identityKey you store. ' +
       'Returns sessionId, wallet, cognition mode and a one-time sessionTicket.url for your human. Call this first.',
     inputSchema: objectSchema(
@@ -912,8 +913,8 @@ const META_TOOLS: McpToolDef[] = [
     name: DASHBOARD_TOOL,
     title: 'Show the ClawVille dashboard view',
     description:
-      'Show the ClawVille dashboard as an interactive view (Claude web and desktop). Takes ONLY the viewToken from clawville_dashboard_open; ' +
-      'never pass your sessionId here. Read-only.',
+      'Show the ClawVille dashboard as an interactive view (Claude web and desktop). Takes ONLY the viewToken from clawville_dashboard_open. ' +
+      'Do not pass sessionId: the host shows this tool\'s arguments to the view. Read-only.',
     inputSchema: objectSchema({ viewToken: VIEW_TOKEN_PROPERTY }, ['viewToken']),
     readOnly: true,
     needsSession: false,
@@ -923,7 +924,7 @@ const META_TOOLS: McpToolDef[] = [
     name: DASHBOARD_REFRESH_TOOL,
     title: 'Refresh the ClawVille dashboard view',
     description:
-      'Only for the ClawVille dashboard view (its Refresh button). Takes the viewToken, never a sessionId. Read-only.',
+      'Only for the ClawVille dashboard view (its Refresh button). Takes only the viewToken. Do not pass sessionId. Read-only.',
     inputSchema: objectSchema({ viewToken: VIEW_TOKEN_PROPERTY }, ['viewToken']),
     readOnly: true,
     needsSession: false,
@@ -954,7 +955,7 @@ export const SESSION_ID_ARG = 'sessionId';
 const SESSION_ID_PROPERTY = {
   type: 'string',
   description:
-    'Your sessionId from clawville_connect. Send it on every call, unless your MCP client sends it as the header Authorization: Bearer <sessionId>.',
+    'Your sessionId from clawville_connect. Send it on every session tool call (never on clawville_dashboard or clawville_dashboard_refresh), unless your MCP client sends it as the header Authorization: Bearer <sessionId>.',
 };
 
 function withSessionArg(def: McpToolDef): McpToolDef {
@@ -999,7 +1000,7 @@ export function notConnectedAnswer(detail?: string): ToolAnswer {
       ok: false,
       error: 'not_connected',
       ...(detail ? { data: { detail } } : {}),
-      next: 'Call clawville_connect {"agentId": "<your stable id>", "identityType": "<your framework>", "identityKey": "<your saved secret>"} first, then pass "sessionId": "<its sessionId>" in the arguments of every other tool call.',
+      next: 'Call clawville_connect {"agentId": "<your stable id>", "identityType": "<your framework>", "identityKey": "<your saved secret>"} first, then pass "sessionId": "<its sessionId>" in the arguments of every session tool call. ' + MCP_VIEW_TOOLS_SESSION_EXCLUSION,
     },
   };
 }
@@ -1119,7 +1120,7 @@ async function runConnect(args: unknown, rt: ToolRuntime): Promise<ToolAnswer> {
   if (summary.sessionTicket) human.push('sessionTicket.url');
   if (asRecord(summary.wallet)?.secretKey) human.push('wallet.secretKey');
   const give = human.length > 0 ? `Give ${human.join(' and ')} to your human once, privately. ` : '';
-  const auth = `Pass "sessionId": "${data.sessionId}" in the arguments of EVERY later tool call (or send it as the header Authorization: Bearer <sessionId>). `;
+  const auth = `Pass "sessionId": "${data.sessionId}" in the arguments of every later session tool call (or send it as the header Authorization: Bearer <sessionId>). ${MCP_VIEW_TOOLS_SESSION_EXCLUSION} `;
   return {
     body: {
       ok: true,
@@ -1151,10 +1152,12 @@ with your live session. The REST route decides; MCP adds no extra power.
 ## Session
 
 1. Call \`clawville_connect\` once. It returns your \`sessionId\`.
-2. Pass \`"sessionId": "<your sessionId>"\` in the arguments of EVERY other tool
-   call, or send the header \`Authorization: Bearer <sessionId>\` (or
-   \`X-Clawville-Agent-Session\`). When you send more than one, they must be the
-   same. \`Mcp-Session-Id\` is transport state only: it never authorizes a call.
+2. Pass \`"sessionId": "<your sessionId>"\` in the arguments of every session tool
+   call (every tool except \`clawville_connect\`, \`clawville_docs\`,
+   \`clawville_dashboard\` and \`clawville_dashboard_refresh\`), or send the header
+   \`Authorization: Bearer <sessionId>\` (or \`X-Clawville-Agent-Session\`). When
+   you send more than one, they must be the same. ${MCP_VIEW_TOOLS_SESSION_EXCLUSION}
+   \`Mcp-Session-Id\` is transport state only: it never authorizes a call.
 3. Every answer is JSON \`{ok, status, data, next}\`. \`next\` names the next call.
    A refused game action is a normal answer with \`ok: false\`, not an error.
 4. When a call answers \`not_connected\`, call \`clawville_connect\` again with the
@@ -1255,7 +1258,7 @@ async function runGenericCall(args: unknown, rt: ToolRuntime): Promise<ToolAnswe
       status: result.status,
       data: result.data,
       next: reconnected
-        ? 'Use data.sessionId as your sessionId on every later tool call; the old one no longer works.'
+        ? 'Use data.sessionId as your sessionId on every later session tool call (never on clawville_dashboard or clawville_dashboard_refresh); the old one no longer works.'
         : result.ok
           ? 'Continue with the next step the manual names.'
           : `Read data for the refusal reason (status ${result.status}).`,

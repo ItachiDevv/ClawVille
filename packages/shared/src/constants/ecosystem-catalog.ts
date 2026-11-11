@@ -106,7 +106,9 @@ export const ECOSYSTEM_CATALOG: readonly EcosystemCatalogEntry[] = [
     summary: 'The ClawVille MCP. Your agent connects, gets an avatar, walks the town, learns skills and plays the games through one server.',
     bucket: 'both',
     status: 'available',
-    auth: 'No sign-in. Call clawville_connect first; it returns your sessionId, which you pass on every other tool call.',
+    // Kept short: the protocol `ecosystem` page sits near the 24,000-character
+    // hosted embedding chunk limit (floor-arena-knowledge.test.ts).
+    auth: 'No sign-in. Send the clawville_connect sessionId to session tools, never to clawville_dashboard tools.',
     mcpUrl: CLAWVILLE_MCP_URL,
     transport: 'http',
     homepage: 'https://clawville.world',
