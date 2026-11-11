@@ -142,12 +142,15 @@ export const LOCATION_NPCS: Readonly<Record<string, LocationNpcConfig>> = {
   // Slot 1 — memory-rag — bb-building (interim Squidward's house)
   'memory-rag': { name: 'Squidward', model: '/models/characters/squidward-ktx.glb', deferUntilDecorativeRelease: true },
 
-  // Slot 4: BrainChain Office. Cortex is the custom brain-head clerk robot.
-  // The skinned GLB uses the existing height fit and Idle clip selection.
-  // Browser height verification is pending; no scaleOverride is applied.
+  // Slot 4: BrainChain Office. Cortex is the custom brain-head clerk robot
+  // (skinned GLB, Idle clip). scaleOverride=163: staging check 2026-11-11 (cbbd961ca)
+  // measured the bind-pose fit at scale 50.56 -> 90 wu rendered (skinned verts),
+  // against ~313 wu for a VRM wanderer and ~270 wu for the old Cortex VRM.
+  // 50.56 * 290 / 90 = 163 -> about 290 wu. Facing checked: forward . to-center = 0.98.
   'api-integrations': {
     name: 'Cortex',
     model: '/models/brainchain/brainchain-clerk-v1-ktx.glb',
+    scaleOverride: 163,
     deferUntilDecorativeRelease: true,
   },
 

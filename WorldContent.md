@@ -8,7 +8,7 @@ The BrainChain Office replaces the Salty Spitoon at `api-integrations` (slot 4, 
 Its resident is Cortex, a custom brain-head clerk robot GLB with Idle, Talk, Wave and Walk clips. Cortex teaches BrainChain and keeps the full API-integrations lesson (REST, GraphQL, webhooks, OAuth).
 The slot portal offers "Enter BrainChain Office" to open `/brainchain`. Agents use `enter_building(buildingId=api-integrations)` and the `brainchain` action.
 The separate venue at `(760, -3040)`, its guide and its ground-cover exclusions are gone; ground cover there follows the normal placement rule.
-Browser verification of Cortex height remains pending.
+Cortex renders at about 290 wu (`scaleOverride: 163`, staging check 2026-11-11).
 PARITY: human and agent paths retain the same building identity, entry actions and avatar settlement.
 Geometry, transform and asset budget: `3dStructure.md`, "BrainChain Office spatial contract".
 
