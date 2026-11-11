@@ -6,6 +6,18 @@
 
 
 
+### Trading Floor: walk into the front door (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game, walk your avatar to the Trading Floor (south of the ring) and into its front door.
+- **CHECK:** walking into the door takes you inside, with no click, tap or E key. Walking out and back toward town does not pull you back in.
+- **FEEDBACK:** say if the door feels right, or if the entry spot is too narrow or too wide.
+
+### /game on a phone: buildings arrive sooner after the loader closes (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game on your phone, best on mobile data, first visit or a private tab.
+- **CHECK:** after the loader closes, the ring buildings and Nori show before the wandering characters, props and land pieces.
+- **FEEDBACK:** say how long the world looks empty after the loader closes.
+
 ### /game boot splash: the loader now shows at once (session new-ville, 2026-11-11, STAGING)
 
 - **WHERE:** https://staging.clawville.world/game on your phone (best on mobile data), then on desktop.

@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-11 14:30Z (session claw2.0). **STAGING API + WEB = `1e8e53eaa` (UsePod fee payer + BrainChain fixture fix), VERIFIED 14:27Z: CI run 43035790907 all jobs success (incl. migrate); both containers SOURCE_COMMIT `1e8e53eaa`; `/health` commit `1e8e53eaa`; play manual 132.0.0; `GET /api/agent-ai/usepod/fee` answers 401 without a session; staging DB has `vendor_spend_ledger.fee_payer`, enum value `usepod-fee-payer`, both new indexes, 0 fee-wallet rows (feature OFF until the founder creates + funds it). MCP Apps P1 (`009b01d1a`) live-probed 11:06Z.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain), 0121-0121c (usepod fee payer).
+Last Audited: 2026-11-11 18:01Z (session new-ville). **STAGING WEB = perf/game-load (`6ffbd4647` buildings-first hold + `161d28682` Trading Floor walk-into-the-door entry + this docs commit), PUSHED, verification pending (DEPLOY LOG 2026-11-11 18:01Z).** Web only; no PROTOCOL change, no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
+
+Prior - Last Audited: 2026-11-11 14:30Z (session claw2.0). **STAGING API + WEB = `1e8e53eaa` (UsePod fee payer + BrainChain fixture fix), VERIFIED 14:27Z: CI run 43035790907 all jobs success (incl. migrate); both containers SOURCE_COMMIT `1e8e53eaa`; `/health` commit `1e8e53eaa`; play manual 132.0.0; `GET /api/agent-ai/usepod/fee` answers 401 without a session; staging DB has `vendor_spend_ledger.fee_payer`, enum value `usepod-fee-payer`, both new indexes, 0 fee-wallet rows (feature OFF until the founder creates + funds it). MCP Apps P1 (`009b01d1a`) live-probed 11:06Z.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain), 0121-0121c (usepod fee payer).
 
 Prior - Last Audited: 2026-11-11 11:10Z (session claw2.0). **STAGING = UsePod fee payer (`36555d06d` + this docs commit) on top of MCP Apps P1: a ClawVille hot wallet (treasury_wallets purpose `usepod-fee-payer`) pays the Solana fee of UsePod deposits; PROTOCOL 132; migrations 0121, 0121a, 0121b, 0121c (additive). Feature is OFF until the founder creates and funds the fee wallet (FOUNDER-REVIEW).** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain), 0121-0121c (usepod fee payer).
 
@@ -760,6 +762,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-11 18:01Z (session new-ville) - Buildings-first hold + Trading Floor door entry (web only)
+
+- **What:** `6ffbd4647`: on a slow link the loader's 10 s fallback dismissed it with 3 of 11 buildings in, and about 40 deferred downloads then shared the link with the building bytes (staging phone profile: buildings + Nori presented at 104 s). `decorative-release.ts` now holds the decorative release and the post-reveal stream until the buildings are presented, cap 30 s. Local prod build, phone profile: 52.7 s before, 47.5 to 49.4 s after; desktop unchanged (composite at 11.0 s). `161d28682`: walking into the Trading Floor front door enters the venue (before: prompt only; founder report). Both Codex E3 one pass, findings fixed.
+- **Broke:** nothing known. A sub-agent rewrote 4 files with CRLF line endings; caught in review and restored to LF before the commit.
+- **For:** founder (game page load on phones; Trading Floor entry). Staging phone re-measure and a browser walk-in check owed.
+- **SCHEMA:** synced for this change (no migration).
 
 ### 2026-11-11 14:30Z (session claw2.0) - Fee payer CI fix: BrainChain pg fixtures (`1e8e53eaa`)
 - **What broke:** run 43009232686 on `12827b4f3` failed "BrainChain PostgreSQL and isolated Linux fixtures": `column "fee_payer" of relation "vendor_spend_ledger" does not exist` (purchases.test.ts B2, 3 tests; purchase-solana 1 test). Root cause: the BrainChain fixtures hand-build vendor_spend_ledger from 0090 + ALTERs, so they lacked the new 0121 column that the Drizzle schema now writes. Deploy was skipped; staging stayed on `009b01d1a`.
