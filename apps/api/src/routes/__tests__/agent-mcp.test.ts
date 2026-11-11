@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from 'bun:test';
 import { Hono } from 'hono';
 import { CLAWVILLE_GAME_TOOLS } from '@clawville/shared';
 import { buildPlayManual, buildProtocolManual } from '../../services/skill-protocol';
@@ -601,12 +601,14 @@ describe('MCP App: clawville_dashboard view', () => {
     else process.env.CORS_ORIGIN = savedCors;
   });
 
+  // bun's system clock, never an assignment to Date.now: the old version saved
+  // "the real Date.now" on EVERY call, so a second call saved the first frozen
+  // stub and the restore left Date.now frozen for every later test file in the
+  // same `bun test` process (the CI route lane runs the shared route suites in
+  // one process; Studios polling deadlines then never passed).
   function freezeNow(ms: number) {
-    const real = Date.now;
-    Date.now = () => ms;
-    restoreDateNow = () => {
-      Date.now = real;
-    };
+    setSystemTime(new Date(ms));
+    restoreDateNow = () => setSystemTime();
   }
 
   async function call(name: string, args: Record<string, unknown>, headers: Record<string, string> = {}, extra: Record<string, string> = {}) {
@@ -838,9 +840,9 @@ describe('MCP App: clawville_dashboard view', () => {
     const t0 = Date.now();
     freezeNow(t0);
     const token = await newToken();
-    freezeNow(t0 + VIEW_TOKEN_TTL_MS - 1);
+    freezeNow(t0 + VIEW_TOKEN_TTL_MS - 1_000);
     expect((await view(token)).answer.ok).toBe(true);
-    freezeNow(t0 + VIEW_TOKEN_TTL_MS);
+    freezeNow(t0 + VIEW_TOKEN_TTL_MS + 1_000);
     seen.length = 0;
     expect((await refresh(token)).answer.error).toBe('view_token_invalid');
     expect(seen).toHaveLength(0);
@@ -908,4 +910,21 @@ describe('MCP App: clawville_dashboard view', () => {
     expect(answer.data.summary).toContain('your human is in control');
     expect(result.structuredContent.wallet.unavailable).toContain('404');
   });
+});
+
+// Guard (CI route lane, 2026-11-11): the shared route suites run in ONE bun
+// process, so a test that leaves Date.now frozen breaks every later file
+// (Studios polling deadlines timed out). This file must hand back a real clock.
+describe('process clock hygiene', () => {
+  test('Date.now is the native, running clock after this file', async () => {
+    expect(Date.now.toString()).toContain('[native code]');
+    const before = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(Date.now()).toBeGreaterThan(before);
+    expect(Math.abs(Date.now() - (performance.timeOrigin + performance.now()))).toBeLessThan(60_000);
+  });
+});
+
+afterAll(() => {
+  setSystemTime();
 });
