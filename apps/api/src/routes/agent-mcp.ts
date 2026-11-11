@@ -170,6 +170,12 @@ interface McpSessionEntry {
 /** Client capability key for MCP Apps (ext-apps spec; the SDK's EXTENSION_ID). */
 export const MCP_UI_EXTENSION_ID = 'io.modelcontextprotocol/ui';
 
+/** A tool only an MCP App view may call (`_meta.ui.visibility` without "model"). */
+function isAppOnly(tool: { ui?: { visibility?: Array<'model' | 'app'> } }): boolean {
+  const visibility = tool.ui?.visibility;
+  return !!visibility && !visibility.includes('model');
+}
+
 function declaresUiExtension(params: Record<string, unknown>): boolean {
   const caps = params.capabilities;
   if (!caps || typeof caps !== 'object' || Array.isArray(caps)) return false;
@@ -675,9 +681,11 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
     case 'tools/list':
       return result({
         // A client whose initialize did NOT declare MCP Apps support gets no
-        // view-linked tool (it could not render the view; clawville_dashboard_open
-        // gives it the text). An unknown client (no Mcp-Session-Id) gets them all.
-        tools: MCP_TOOLS.filter((tool) => !tool.ui || state.mcpSession?.uiCapable !== false).map((tool) => ({
+        // app-only tool (no view of its can call it). clawville_dashboard stays
+        // listed for every client: it also answers full text, so a host that
+        // renders views without declaring the extension still sees it. An
+        // unknown client (no Mcp-Session-Id) gets every tool.
+        tools: MCP_TOOLS.filter((tool) => !isAppOnly(tool) || state.mcpSession?.uiCapable !== false).map((tool) => ({
           name: tool.name,
           title: tool.title,
           description: tool.description,

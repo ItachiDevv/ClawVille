@@ -657,7 +657,7 @@ describe('MCP App: clawville_dashboard view', () => {
     }
   });
 
-  test('a client that declared MCP Apps support sees the view tools; one that did not, does not; an unknown client sees them', async () => {
+  test('the app-only refresh tool is hidden only from a client that did not declare MCP Apps; clawville_dashboard is always listed', async () => {
     const uiSid = await initializeWith({ extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } });
     const plainSid = await initializeWith({});
     const wrongShape = await initializeWith({ extensions: { 'io.modelcontextprotocol/ui': true } });
@@ -669,11 +669,11 @@ describe('MCP App: clawville_dashboard view', () => {
       expect(names).toContain('clawville_dashboard_refresh');
     }
     for (const names of [without, await listedNames({ 'Mcp-Session-Id': wrongShape })]) {
-      expect(names).not.toContain('clawville_dashboard');
+      expect(names).toContain('clawville_dashboard');
       expect(names).not.toContain('clawville_dashboard_refresh');
       expect(names).toContain('clawville_dashboard_open');
     }
-    expect(without.length).toBe(withUi.length - 2);
+    expect(without.length).toBe(withUi.length - 1);
   });
 
   test('resources/list, resources/templates/list, unknown and malformed resources/read', async () => {
