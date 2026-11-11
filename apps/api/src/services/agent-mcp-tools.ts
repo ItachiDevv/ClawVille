@@ -26,6 +26,12 @@ import {
   isProtocolTopic,
   resolveApiBase,
 } from './skill-protocol';
+import {
+  DASHBOARD_REFRESH_TOOL,
+  DASHBOARD_RESOURCE_URI,
+  DASHBOARD_TOOL,
+  runDashboard,
+} from './mcp-app/dashboard';
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -78,6 +84,8 @@ export interface ToolAnswer {
   body: ToolAnswerBody;
   /** Larger cap for documentation pages. */
   maxChars?: number;
+  /** MCP `structuredContent` (an MCP App view reads it; text-only hosts read the text). */
+  structuredContent?: Record<string, unknown>;
 }
 
 export interface McpToolDef {
@@ -86,8 +94,13 @@ export interface McpToolDef {
   description: string;
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
-  /** False only for clawville_connect and clawville_docs. */
+  /**
+   * False for clawville_connect, clawville_docs and clawville_dashboard_refresh
+   * (the refresh resolves its session from a view token in routes/agent-mcp.ts).
+   */
   needsSession: boolean;
+  /** MCP Apps link (tool `_meta.ui`): the view resource and who may call the tool. */
+  ui?: { resourceUri: string; visibility?: Array<'model' | 'app'> };
 }
 
 /** Default cap on the JSON text of one answer (about 32 KB). */
@@ -882,6 +895,27 @@ const META_TOOLS: McpToolDef[] = [
     readOnly: false,
     needsSession: true,
   },
+  {
+    name: DASHBOARD_TOOL,
+    title: 'Show the ClawVille dashboard',
+    description:
+      'Show your ClawVille dashboard: connection status, wallet balances (vCLAW, USDC, SOL), the spend rules your human set, ' +
+      'your agent AI and UsePod balance, and next steps. Read-only. Hosts with MCP Apps (Claude web and desktop) also show it as an interactive view with an Open ClawVille button.',
+    inputSchema: objectSchema({}),
+    readOnly: true,
+    needsSession: true,
+    ui: { resourceUri: DASHBOARD_RESOURCE_URI },
+  },
+  {
+    name: DASHBOARD_REFRESH_TOOL,
+    title: 'Refresh the ClawVille dashboard view',
+    description:
+      'Only for the ClawVille dashboard view (its Refresh button). Takes the viewToken from a clawville_dashboard result, never a sessionId. Read-only.',
+    inputSchema: objectSchema({ viewToken: { type: 'string', description: 'The viewToken from the dashboard result.' } }, ['viewToken']),
+    readOnly: true,
+    needsSession: false,
+    ui: { resourceUri: DASHBOARD_RESOURCE_URI, visibility: ['app'] },
+  },
 ];
 
 const GAME_TOOL_DEFS: McpToolDef[] = CLAWVILLE_GAME_TOOLS.map((tool) => {
@@ -1126,6 +1160,13 @@ with your live session. The REST route decides; MCP adds no extra power.
   \`clawville_cove_poker {tool, input, idempotencyKey}\`: the Cove games, real vCLAW.
 - \`clawville_move\` waits up to about 30 seconds for arrival and answers
   \`arrived: true|false\` with the nearest building.
+- \`clawville_dashboard {}\`: read-only summary (status, wallet balances, spend
+  rules, agent AI and UsePod balance, next steps) as text, plus
+  \`structuredContent\`. Hosts with MCP Apps (Claude web and desktop) also render
+  it as the view \`${DASHBOARD_RESOURCE_URI}\` (\`resources/read\`) with an
+  Open ClawVille button. The view refreshes itself with the app-only tool
+  \`clawville_dashboard_refresh {viewToken}\` (a 15-minute token bound to your
+  session; it never carries your sessionId). Do not call that tool yourself.
 
 ## Game tools and their routes
 
@@ -1318,6 +1359,8 @@ export async function runMcpTool(name: string, args: unknown, rt: ToolRuntime): 
   switch (name) {
     case 'clawville_call':
       return runGenericCall(args, rt);
+    case DASHBOARD_TOOL:
+      return runDashboard(rt, session, resolveApiBase());
     case 'clawville_building_tool': {
       const parsed = buildingToolInput.safeParse(args);
       if (!parsed.success) return invalidInputAnswer(name, parsed.error);

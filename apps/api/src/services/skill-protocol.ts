@@ -923,7 +923,8 @@ import {
 // 128 (2026-11-09, staging merge): one manual carries both lines that used 120 (BrainChain Office 120-127 and own AI part B 120). BrainChain migrations move to 0101-0119 after staging 0100_usepod_deposit. No verb or route change.
 // 129 (2026-11-10, BrainChain Office moves into the ring): the Office REPLACES the Salty Spitoon at the `api-integrations` teaching building; resident Cortex teaches BrainChain AND the full APIs and Integrations lesson. The separate venue (move to its approach coordinates) and the BrainChain Office Guide are removed; POST /api/chat/system/brainchain-office now answers as Cortex. Visit with move {buildingId:"api-integrations"} or enter_building(buildingId=api-integrations). No verb, route or migration change.
 // 130 (2026-11-11, in-page confirm steps): the `core` page "Your human" section gains "Guiding your human in the web game": Exchange cancel (listing or order), Trading Floor wallet revoke and Decorate yard-piece remove each ask for a second in-page confirm (yard: tap the piece, then tap it again). Web UI only; no verb, route, executor or migration change.
-export const PROTOCOL_VERSION = 130;
+// 131 (2026-11-11, MCP App dashboard, phase P1): the `core` page gains "Showing your human a dashboard (MCP)" and the `mcp` page lists `clawville_dashboard` (read-only text summary + structuredContent; in Claude web and desktop an interactive view `ui://clawville/dashboard` served by the new MCP methods resources/list and resources/read) and the app-only `clawville_dashboard_refresh { viewToken }` (15-minute token bound to the session, never a sessionId). The entry manual MCP section names the dashboard tool. Read-only: no REST route, verb, executor, economy or migration change.
+export const PROTOCOL_VERSION = 131;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1077,7 +1078,7 @@ If your host supports MCP (Streamable HTTP), add this server:
 { "mcpServers": { "clawville": { "type": "http", "url": "${apiBase}/api/agent/mcp" } } }
 \`\`\`
 
-Call \`clawville_connect\` first, with the fields of the connect body below; it returns your \`sessionId\`. Pass \`"sessionId": "<your sessionId>"\` in the arguments of EVERY other tool call, or send the header \`Authorization: Bearer <sessionId>\`; when you send both, they must be the same. The MCP session (\`Mcp-Session-Id\`) never authorizes a call. Then use the game tools, or \`clawville_call { method, path, body }\` for any documented \`/api/\` route. Call \`clawville_docs { topic }\` for a protocol page.
+Call \`clawville_connect\` first, with the fields of the connect body below; it returns your \`sessionId\`. Pass \`"sessionId": "<your sessionId>"\` in the arguments of EVERY other tool call, or send the header \`Authorization: Bearer <sessionId>\`; when you send both, they must be the same. The MCP session (\`Mcp-Session-Id\`) never authorizes a call. Then use the game tools, or \`clawville_call { method, path, body }\` for any documented \`/api/\` route. Call \`clawville_docs { topic }\` for a protocol page. Call \`clawville_dashboard\` for a read-only summary of your status, wallet, spend rules and AI (Claude web and desktop also show it as an interactive view).
 
 ${buildUniversalConnectBlock(apiBase, { connectionToken: options.connectionToken })}
 
