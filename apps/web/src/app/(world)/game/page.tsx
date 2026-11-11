@@ -15,6 +15,7 @@ import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
 import { getWorldRendererMode, useWorldRendererMode, usePixiFirstFrame, shouldReleaseWorldLoader } from '@/lib/world-renderer-mode';
 import { subscribeStageRendererFailure, getStageRendererFailure, getStageRendererFailureServerSnapshot } from '@/components/three/world-stage/stage-renderer-status';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
+import { releaseBootSplash } from '@/components/game/boot-splash';
 import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
 import { armDecorativeDeadline } from '@/lib/three/decorative-release';
 import { useBootActorCoordinator } from '@/lib/three/boot-actor';
@@ -365,6 +366,9 @@ export default function GamePage() {
   useEffect(() => {
     stampColdLoadPhaseOnce('gamePageMountedEffectAt', performance.now());
     setMounted(true);
+    // A return visit (world already activated) mounts no SeaLoadingScreen,
+    // so release the server-rendered BootSplash here as well.
+    if (worldHadActivatedOnMount.current) releaseBootSplash();
   }, []);
   // Kick off ALL heavy world assets the moment the page mounts, in parallel
   // with the group-owned stage mounting the shared world scene. Without this,

@@ -55,6 +55,7 @@ import {
 } from './resource-ledger';
 import { StageCanvasErrorBoundary } from './StageCanvasErrorBoundary';
 import { StageSlotErrorBoundary } from './StageSlotErrorBoundary';
+import { releaseBootSplash } from '@/components/game/boot-splash';
 import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import {
   getStageRendererFailure,
@@ -190,6 +191,12 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     getStageRendererFailure,
     getStageRendererFailureServerSnapshot,
   );
+  // The /game page never mounts on these paths, so it never releases the
+  // server-rendered BootSplash. Release it here so the error UI is visible.
+  const stageTransitionFailed = useStageStore((state) => state.transition?.phase === 'error');
+  useEffect(() => {
+    if (pixiFailed || unsupported2D || rendererFailure || stageTransitionFailed) releaseBootSplash();
+  }, [pixiFailed, unsupported2D, rendererFailure, stageTransitionFailed]);
   const kelpResetKey = `${kelpGeneration}:${recoveryCount}`;
   const activityResetKey = `${activityGeneration}:${recoveryCount}`;
   const coldInitIssuedRef = useRef(false);
