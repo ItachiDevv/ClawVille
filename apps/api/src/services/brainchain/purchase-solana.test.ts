@@ -46,7 +46,7 @@ beforeAll(async () => {
   await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_wallet_at timestamptz`;
   await sql`ALTER TABLE avatars ADD COLUMN IF NOT EXISTS user_id uuid`; await sql`ALTER TABLE avatars ADD COLUMN IF NOT EXISTS is_guest boolean NOT NULL DEFAULT false`;
   await sql`CREATE TABLE IF NOT EXISTS user_spend_policies(avatar_id uuid PRIMARY KEY,daily_cap_usd_cents integer,per_call_cap_usd_cents integer,allowed_vendors text[] NOT NULL,require_approval boolean NOT NULL)`;
-  for (const name of ['0109_brainchain_buyer_orders.sql', '0111_brainchain_buyer_authority.sql', '0112_brainchain_solana_buyer.sql', '0115_brainchain_solana_buyer_discovery.sql', '0090_vendor_spend_ledger.sql']) await sql.unsafe(await readFile(new URL(`../../../../../packages/database/migrations/${name}`, import.meta.url), 'utf8'));
+  for (const name of ['0109_brainchain_buyer_orders.sql', '0111_brainchain_buyer_authority.sql', '0112_brainchain_solana_buyer.sql', '0115_brainchain_solana_buyer_discovery.sql', '0090_vendor_spend_ledger.sql', '0121_usepod_fee_payer_ledger.sql']) await sql.unsafe(await readFile(new URL(`../../../../../packages/database/migrations/${name}`, import.meta.url), 'utf8'));
 });
 afterAll(async () => { if (sql) await sql.end(); });
 test.skipIf(!enabled)('actual Drizzle devnet capture preserves frozen bytes through timeout/restart and refuses a replacement', async () => {

@@ -30,6 +30,8 @@ export async function bootstrapBrainchainFixture() {
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS fee_lamports bigint`;
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS credit_status varchar(16)`;
     await sql`ALTER TABLE vendor_spend_ledger ADD COLUMN IF NOT EXISTS deposit_terms jsonb`;
+    // 0121 only adds vendor_spend_ledger.fee_payer (UsePod fee wallet); replay the real file.
+    await migration(sql, '0121_usepod_fee_payer_ledger.sql');
     await sql`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'vendor_spend_ledger_credit_status_check') THEN ALTER TABLE vendor_spend_ledger ADD CONSTRAINT vendor_spend_ledger_credit_status_check CHECK (credit_status IS NULL OR credit_status IN ('unknown', 'seen')); END IF; END $$`;
     const names = (await readdir(directory)).filter(name => /^01(?:0[1-9]|1\d)_brainchain_[a-z0-9_]+\.sql$/.test(name)).sort();
     if (names.length !== 19) throw Error('Review BrainChain fixture migration inventory');
