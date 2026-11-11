@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-11 09:13Z (MCP App dashboard, PROTOCOL_VERSION 130 -> 131, no migration).** Drift note: the `core` page gains "Showing your human a dashboard (MCP)", the `mcp` page lists `clawville_dashboard` and the app-only `clawville_dashboard_refresh`, and the entry manual MCP section names the dashboard. The hosted MCP server adds `resources/list` and `resources/read` for the view `ui://clawville/dashboard`. Read-only. No verb, partner route, signature, identity or Hatcher `[ACTION:]` executor change.
+**Last Audited: 2026-11-11 09:32Z (MCP App dashboard, PROTOCOL_VERSION 130 -> 131, no migration).** Drift note: the `core` page gains "Showing your human a dashboard (MCP)", the `mcp` page lists `clawville_dashboard_open`, the token-only view tool `clawville_dashboard` and the app-only `clawville_dashboard_refresh`, and the entry manual MCP section names both steps. The hosted MCP server adds `resources/list` and `resources/read` for the view `ui://clawville/dashboard`. Read-only. No verb, partner route, signature, identity or Hatcher `[ACTION:]` executor change.
 
 Prior **Last Audited: 2026-11-11 07:56Z (in-page confirm steps, PROTOCOL_VERSION 129 -> 130, no migration).** Drift note: the `core` page "Your human" section gains "Guiding your human in the web game": Exchange cancel, Trading Floor wallet revoke and Decorate yard-piece remove each ask for a second in-page confirm. Web UI only. No verb, partner route, signature, identity or Hatcher `[ACTION:]` executor change.
 

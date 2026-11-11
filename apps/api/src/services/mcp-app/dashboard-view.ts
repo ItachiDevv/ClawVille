@@ -7,13 +7,16 @@
  * they read the tool's text answer.
  *
  * Rules this page keeps (tests in services/__tests__/mcp-app-dashboard.test.ts):
- *   - Plain JS, no build step. The only external script is the MCP Apps SDK
- *     client from unpkg at the exact version below; the resource CSP lists
- *     only that origin (`DASHBOARD_VIEW_CSP`). No fetch / XHR / WebSocket.
+ *   - Plain JS, no build step, no external script: the MCP Apps SDK browser
+ *     client (@modelcontextprotocol/ext-apps 1.7.5, MIT) is VENDORED in
+ *     `vendor/ext-apps-1.7.5-app-with-deps.js.txt` and inlined into the page,
+ *     so the resource CSP is empty (`DASHBOARD_VIEW_CSP`). The upstream bytes
+ *     are sha256-checked before use. No fetch / XHR / WebSocket.
  *   - Every value written to the DOM goes through textContent. The page has
  *     no innerHTML, outerHTML, insertAdjacentHTML or document.write.
- *   - It never reads the tool arguments (ontoolinput): the model may pass the
- *     ClawVille sessionId as an argument, and the page has no use for it.
+ *   - It never reads the tool arguments (ontoolinput). The only argument of
+ *     the UI tool is the view token; no tool linked to this view takes a
+ *     sessionId.
  *   - Refresh calls the app-only tool `clawville_dashboard_refresh` with the
  *     short-lived view token from structuredContent (never a sessionId).
  *   - "Open ClawVille" sends `ui/open-link` (app.openLink). A `message` event
@@ -22,13 +25,60 @@
  *     the same way; any other origin or shape is ignored.
  */
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 /** Pinned MCP Apps SDK version (published 2026-07-23; the version the Claude quickstart verified). */
 export const EXT_APPS_SDK_VERSION = '1.7.5';
-export const EXT_APPS_SDK_ORIGIN = 'https://unpkg.com';
-export const EXT_APPS_SDK_URL = `${EXT_APPS_SDK_ORIGIN}/@modelcontextprotocol/ext-apps@${EXT_APPS_SDK_VERSION}/dist/src/app-with-deps.js`;
+export const EXT_APPS_SDK_SOURCE_URL = `https://unpkg.com/@modelcontextprotocol/ext-apps@${EXT_APPS_SDK_VERSION}/dist/src/app-with-deps.js`;
+/** sha256 of the upstream bundle bytes (the part after the vendor file's marker line). */
+export const EXT_APPS_SDK_SHA256 = '5bc0452b9994217df506cb505af20e97e766700513afb7d0b45d255785bb051f';
+export const EXT_APPS_VENDOR_FILE = join(import.meta.dir, 'vendor', `ext-apps-${EXT_APPS_SDK_VERSION}-app-with-deps.js.txt`);
+export const EXT_APPS_VENDOR_MARKER = '// ---- upstream bytes below ----\n';
 
-/** `_meta.ui.csp` of the resource: only the SDK origin, nothing to connect to, no frames. */
-export const DASHBOARD_VIEW_CSP = { resourceDomains: [EXT_APPS_SDK_ORIGIN] } as const;
+/** `_meta.ui.csp` of the resource: empty. The page loads nothing from outside. */
+export const DASHBOARD_VIEW_CSP = {} as const;
+
+/** The SDK names the page uses, mapped to the bundle's local identifiers. */
+const NEEDED_EXPORTS = ['App', 'applyDocumentTheme', 'applyHostStyleVariables', 'applyHostFonts'] as const;
+
+interface ExtAppsBundle {
+  code: string;
+  locals: Record<(typeof NEEDED_EXPORTS)[number], string>;
+}
+
+let cachedBundle: ExtAppsBundle | null = null;
+
+/**
+ * Splits the vendor file at its marker, checks the upstream sha256, checks the
+ * bytes cannot end the inline script element, and reads the local identifier
+ * of each needed export from the bundle's final `export{...}` clause. Fails
+ * closed (throws) on any mismatch; the result is cached.
+ */
+export function loadExtAppsBundle(file: string = EXT_APPS_VENDOR_FILE): ExtAppsBundle {
+  if (cachedBundle && file === EXT_APPS_VENDOR_FILE) return cachedBundle;
+  const raw = readFileSync(file);
+  const marker = Buffer.from(EXT_APPS_VENDOR_MARKER, 'utf8');
+  const at = raw.indexOf(marker);
+  if (at < 0) throw new Error('ext-apps vendor file: marker line missing');
+  const upstream = raw.subarray(at + marker.length);
+  const sha = createHash('sha256').update(upstream).digest('hex');
+  if (sha !== EXT_APPS_SDK_SHA256) throw new Error(`ext-apps vendor file: sha256 ${sha} does not match ${EXT_APPS_SDK_SHA256}`);
+  const code = new TextDecoder('utf-8', { fatal: true }).decode(upstream);
+  if (/<\/script|<!--|<script/i.test(code)) throw new Error('ext-apps vendor file: bytes could end the inline script');
+  const exportAt = code.lastIndexOf('export{');
+  const clause = exportAt >= 0 ? code.slice(exportAt, code.indexOf('}', exportAt)) : '';
+  const locals = {} as ExtAppsBundle['locals'];
+  for (const name of NEEDED_EXPORTS) {
+    const match = new RegExp(`[{,]([A-Za-z_$][\\w$]*) as ${name}(?=[,}]|$)`).exec(clause);
+    if (!match) throw new Error(`ext-apps vendor file: export ${name} not found`);
+    locals[name] = match[1]!;
+  }
+  const bundle = { code, locals };
+  if (file === EXT_APPS_VENDOR_FILE) cachedBundle = bundle;
+  return bundle;
+}
 
 /** Serializes the page config for a `<script type="application/json">` block. */
 function configJson(config: Record<string, unknown>): string {
@@ -43,6 +93,7 @@ function configJson(config: Record<string, unknown>): string {
 export function buildDashboardViewHtml(gameUrl: string): string {
   const gameOrigin = new URL(gameUrl).origin;
   const config = configJson({ gameUrl, gameOrigin, refreshTool: 'clawville_dashboard_refresh' });
+  const sdk = loadExtAppsBundle();
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -110,7 +161,18 @@ export function buildDashboardViewHtml(gameUrl: string): string {
 </div>
 <script type="application/json" id="cv-config">${config}</script>
 <script type="module">
-  import { App, applyDocumentTheme, applyHostStyleVariables, applyHostFonts } from "${EXT_APPS_SDK_URL}";
+/*! @modelcontextprotocol/ext-apps ${EXT_APPS_SDK_VERSION} (dist/src/app-with-deps.js), vendored.
+ * License: MIT (the MCP project is moving to Apache-2.0). Bundles zod (MIT) and
+ * @modelcontextprotocol/sdk (MIT). Copyright (c) Anthropic, PBC and the Model
+ * Context Protocol contributors. Source: ${EXT_APPS_SDK_SOURCE_URL}
+ * sha256: ${EXT_APPS_SDK_SHA256} */
+${sdk.code}
+/* ClawVille dashboard view. A block scope, so no name can clash with the bundle's top level. */
+{
+  const App = ${sdk.locals.App};
+  const applyDocumentTheme = ${sdk.locals.applyDocumentTheme};
+  const applyHostStyleVariables = ${sdk.locals.applyHostStyleVariables};
+  const applyHostFonts = ${sdk.locals.applyHostFonts};
 
   const cfg = JSON.parse(document.getElementById("cv-config").textContent);
   const $ = (id) => document.getElementById(id);
@@ -256,6 +318,7 @@ export function buildDashboardViewHtml(gameUrl: string): string {
   app.onhostcontextchanged = applyContext;
   await app.connect();
   applyContext(app.getHostContext());
+}
 </script>
 </body>
 </html>

@@ -27,10 +27,10 @@ import {
   resolveApiBase,
 } from './skill-protocol';
 import {
+  DASHBOARD_OPEN_TOOL,
   DASHBOARD_REFRESH_TOOL,
   DASHBOARD_RESOURCE_URI,
   DASHBOARD_TOOL,
-  runDashboard,
 } from './mcp-app/dashboard';
 
 // ---------------------------------------------------------------------------
@@ -783,6 +783,8 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
   ...(required.length > 0 ? { required } : {}),
 });
 
+const VIEW_TOKEN_PROPERTY = { type: 'string', description: 'The viewToken from clawville_dashboard_open (starts with cvw_).' };
+
 const META_TOOLS: McpToolDef[] = [
   {
     name: 'clawville_connect',
@@ -896,22 +898,33 @@ const META_TOOLS: McpToolDef[] = [
     needsSession: true,
   },
   {
-    name: DASHBOARD_TOOL,
-    title: 'Show the ClawVille dashboard',
+    name: DASHBOARD_OPEN_TOOL,
+    title: 'Read the ClawVille dashboard',
     description:
-      'Show your ClawVille dashboard: connection status, wallet balances (vCLAW, USDC, SOL), the spend rules your human set, ' +
-      'your agent AI and UsePod balance, and next steps. Read-only. Hosts with MCP Apps (Claude web and desktop) also show it as an interactive view with an Open ClawVille button.',
+      'Read your ClawVille dashboard as text: connection status, wallet balances (vCLAW, USDC, SOL), the spend rules your human set, ' +
+      'your agent AI and UsePod balance, and next steps. Read-only. The answer also has a 15-minute viewToken: in a host with MCP Apps ' +
+      '(Claude web or desktop) call clawville_dashboard {"viewToken": "..."} to show it as an interactive view.',
     inputSchema: objectSchema({}),
     readOnly: true,
     needsSession: true,
+  },
+  {
+    name: DASHBOARD_TOOL,
+    title: 'Show the ClawVille dashboard view',
+    description:
+      'Show the ClawVille dashboard as an interactive view (Claude web and desktop). Takes ONLY the viewToken from clawville_dashboard_open; ' +
+      'never pass your sessionId here. Read-only.',
+    inputSchema: objectSchema({ viewToken: VIEW_TOKEN_PROPERTY }, ['viewToken']),
+    readOnly: true,
+    needsSession: false,
     ui: { resourceUri: DASHBOARD_RESOURCE_URI },
   },
   {
     name: DASHBOARD_REFRESH_TOOL,
     title: 'Refresh the ClawVille dashboard view',
     description:
-      'Only for the ClawVille dashboard view (its Refresh button). Takes the viewToken from a clawville_dashboard result, never a sessionId. Read-only.',
-    inputSchema: objectSchema({ viewToken: { type: 'string', description: 'The viewToken from the dashboard result.' } }, ['viewToken']),
+      'Only for the ClawVille dashboard view (its Refresh button). Takes the viewToken, never a sessionId. Read-only.',
+    inputSchema: objectSchema({ viewToken: VIEW_TOKEN_PROPERTY }, ['viewToken']),
     readOnly: true,
     needsSession: false,
     ui: { resourceUri: DASHBOARD_RESOURCE_URI, visibility: ['app'] },
@@ -1160,13 +1173,15 @@ with your live session. The REST route decides; MCP adds no extra power.
   \`clawville_cove_poker {tool, input, idempotencyKey}\`: the Cove games, real vCLAW.
 - \`clawville_move\` waits up to about 30 seconds for arrival and answers
   \`arrived: true|false\` with the nearest building.
-- \`clawville_dashboard {}\`: read-only summary (status, wallet balances, spend
-  rules, agent AI and UsePod balance, next steps) as text, plus
-  \`structuredContent\`. Hosts with MCP Apps (Claude web and desktop) also render
-  it as the view \`${DASHBOARD_RESOURCE_URI}\` (\`resources/read\`) with an
-  Open ClawVille button. The view refreshes itself with the app-only tool
-  \`clawville_dashboard_refresh {viewToken}\` (a 15-minute token bound to your
-  session; it never carries your sessionId). Do not call that tool yourself.
+- \`clawville_dashboard_open {}\`: read-only dashboard as text (status, wallet
+  balances, spend rules, agent AI and UsePod balance, next steps) plus
+  \`data.viewToken\` (15 minutes, bound to your session, at most 5 live per
+  session). In a host with MCP Apps (Claude web and desktop), then call
+  \`clawville_dashboard {"viewToken": "<data.viewToken>"}\`: it takes ONLY the
+  token (never your sessionId) and renders the view \`${DASHBOARD_RESOURCE_URI}\`
+  (\`resources/read\`) with Refresh and Open ClawVille buttons. The view
+  refreshes itself with the app-only tool \`clawville_dashboard_refresh\`; do
+  not call that tool yourself. A terminal host can stop after the open call.
 
 ## Game tools and their routes
 
@@ -1359,8 +1374,6 @@ export async function runMcpTool(name: string, args: unknown, rt: ToolRuntime): 
   switch (name) {
     case 'clawville_call':
       return runGenericCall(args, rt);
-    case DASHBOARD_TOOL:
-      return runDashboard(rt, session, resolveApiBase());
     case 'clawville_building_tool': {
       const parsed = buildingToolInput.safeParse(args);
       if (!parsed.success) return invalidInputAnswer(name, parsed.error);

@@ -5,6 +5,7 @@ import {
   MCP_CALLS_PER_MINUTE,
   MCP_MAX_CALL_BUDGETS,
   MAX_VIEW_TOKENS,
+  MAX_VIEW_TOKENS_PER_SESSION,
   VIEW_REFRESH_PER_MINUTE,
   VIEW_TOKEN_TTL_MS,
   agentMcpRoutes,
@@ -12,6 +13,7 @@ import {
   callBudgetCountForTests,
   mintViewTokenForTests,
   viewTokenCountForTests,
+  viewTokenSessionIndexSizeForTests,
   resetMcpStateForTests,
   setMcpDispatcher,
   setMcpSessionValidatorForTests,
@@ -547,6 +549,7 @@ describe('MCP App: clawville_dashboard view', () => {
   const PROD_DOMAIN = 'fbbf4fac72ecb46c1810ee8a4f3bb886.claudemcpcontent.com';
   const STAGING_DOMAIN = 'b1bb7d1e416a979f53eac06556dc647b.claudemcpcontent.com';
   const SID = 'ag-live';
+  const AUTH = { Authorization: `Bearer ${SID}` };
   let usepodCalls = 0;
   let spendBody: Record<string, unknown>;
   let restoreDateNow: (() => void) | null = null;
@@ -602,16 +605,23 @@ describe('MCP App: clawville_dashboard view', () => {
     };
   }
 
-  async function dashboard(headers: Record<string, string> = { Authorization: `Bearer ${SID}` }) {
-    const res = await rpc('tools/call', { name: 'clawville_dashboard', arguments: {} }, headers);
+  async function call(name: string, args: Record<string, unknown>, headers: Record<string, string> = {}, extra: Record<string, string> = {}) {
+    const res = await rpc('tools/call', { name, arguments: args }, { ...headers, ...extra });
     const json = (await res.json()) as any;
     return { json, result: json.result, answer: JSON.parse(json.result.content[0].text) };
   }
+  const open = (headers: Record<string, string> = AUTH) => call('clawville_dashboard_open', {}, headers);
+  const view = (viewToken: unknown, headers: Record<string, string> = {}) => call('clawville_dashboard', { viewToken }, headers);
+  const refresh = (viewToken: unknown, headers: Record<string, string> = {}) => call('clawville_dashboard_refresh', { viewToken }, headers);
+  const newToken = async () => (await open()).answer.data.viewToken as string;
 
-  async function refresh(viewToken: unknown, headers: Record<string, string> = {}) {
-    const res = await rpc('tools/call', { name: 'clawville_dashboard_refresh', arguments: { viewToken } }, headers);
-    const json = (await res.json()) as any;
-    return { json, result: json.result, answer: JSON.parse(json.result.content[0].text) };
+  async function initializeWith(capabilities: Record<string, unknown>): Promise<string> {
+    const res = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities, clientInfo: { name: 't', version: '1' } });
+    return res.headers.get('mcp-session-id')!;
+  }
+  async function listedNames(headers: Record<string, string> = {}): Promise<string[]> {
+    const json = (await (await rpc('tools/list', undefined, headers)).json()) as any;
+    return json.result.tools.map((t: { name: string }) => t.name);
   }
 
   test('initialize declares the resources capability and keeps tools', async () => {
@@ -620,23 +630,53 @@ describe('MCP App: clawville_dashboard view', () => {
     expect(json.result.capabilities.resources).toEqual({ subscribe: false, listChanged: false });
   });
 
-  test('tools/list links the dashboard tool to the view; the refresh tool is app-only', async () => {
+  test('tools/list: the view tools take only viewToken; the session tool has no view link', async () => {
     const json = (await (await rpc('tools/list')).json()) as any;
     const byName = new Map(json.result.tools.map((t: any) => [t.name, t]));
+    const openTool = byName.get('clawville_dashboard_open') as any;
+    expect(openTool._meta).toBeUndefined();
+    expect(openTool.inputSchema.properties.sessionId).toBeDefined();
     const dash = byName.get('clawville_dashboard') as any;
     expect(dash._meta).toEqual({ ui: { resourceUri: 'ui://clawville/dashboard' }, 'ui/resourceUri': 'ui://clawville/dashboard' });
     expect(dash.annotations.readOnlyHint).toBe(true);
-    expect(dash.inputSchema.properties.sessionId).toBeDefined();
+    expect(Object.keys(dash.inputSchema.properties)).toEqual(['viewToken']);
+    expect(dash.inputSchema.required).toEqual(['viewToken']);
     const refreshTool = byName.get('clawville_dashboard_refresh') as any;
     expect(refreshTool._meta.ui).toEqual({ resourceUri: 'ui://clawville/dashboard', visibility: ['app'] });
-    expect(refreshTool.inputSchema.required).toEqual(['viewToken']);
-    expect(refreshTool.inputSchema.properties.sessionId).toBeUndefined();
-    // Every other tool stays as before: no _meta.
-    const others = json.result.tools.filter((t: any) => !t.name.startsWith('clawville_dashboard'));
-    expect(others.every((t: any) => t._meta === undefined)).toBe(true);
+    expect(Object.keys(refreshTool.inputSchema.properties)).toEqual(['viewToken']);
+    const linked = json.result.tools.filter((t: any) => t._meta !== undefined).map((t: any) => t.name).sort();
+    expect(linked).toEqual(['clawville_dashboard', 'clawville_dashboard_refresh']);
   });
 
-  test('resources/list, resources/templates/list and an unknown resources/read', async () => {
+  test('no tool that carries _meta.ui.resourceUri has a sessionId property', async () => {
+    const json = (await (await rpc('tools/list')).json()) as any;
+    const linked = json.result.tools.filter((t: any) => t._meta?.ui?.resourceUri || t._meta?.['ui/resourceUri']);
+    expect(linked.length).toBeGreaterThan(0);
+    for (const tool of linked) {
+      expect({ tool: tool.name, sessionId: 'sessionId' in (tool.inputSchema.properties ?? {}) }).toEqual({ tool: tool.name, sessionId: false });
+    }
+  });
+
+  test('a client that declared MCP Apps support sees the view tools; one that did not, does not; an unknown client sees them', async () => {
+    const uiSid = await initializeWith({ extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } });
+    const plainSid = await initializeWith({});
+    const wrongShape = await initializeWith({ extensions: { 'io.modelcontextprotocol/ui': true } });
+    const withUi = await listedNames({ 'Mcp-Session-Id': uiSid });
+    const without = await listedNames({ 'Mcp-Session-Id': plainSid });
+    const unknown = await listedNames();
+    for (const names of [withUi, unknown]) {
+      expect(names).toContain('clawville_dashboard');
+      expect(names).toContain('clawville_dashboard_refresh');
+    }
+    for (const names of [without, await listedNames({ 'Mcp-Session-Id': wrongShape })]) {
+      expect(names).not.toContain('clawville_dashboard');
+      expect(names).not.toContain('clawville_dashboard_refresh');
+      expect(names).toContain('clawville_dashboard_open');
+    }
+    expect(without.length).toBe(withUi.length - 2);
+  });
+
+  test('resources/list, resources/templates/list, unknown and malformed resources/read', async () => {
     const list = (await (await rpc('resources/list')).json()) as any;
     expect(list.result.resources).toEqual([
       expect.objectContaining({ uri: 'ui://clawville/dashboard', name: 'clawville-dashboard', mimeType: 'text/html;profile=mcp-app' }),
@@ -644,34 +684,44 @@ describe('MCP App: clawville_dashboard view', () => {
     expect(((await (await rpc('resources/templates/list')).json()) as any).result).toEqual({ resourceTemplates: [] });
     const missing = (await (await rpc('resources/read', { uri: 'ui://clawville/nope' })).json()) as any;
     expect(missing.error.code).toBe(-32002);
+    for (const params of [{}, { uri: 42 }, { uri: '' }, { uri: null }]) {
+      const bad = (await (await rpc('resources/read', params)).json()) as any;
+      expect(bad.error.code).toBe(-32602);
+    }
   });
 
   for (const [origin, base, domain, game] of [
     ['https://clawville.world', 'https://api.clawville.world', PROD_DOMAIN, 'https://clawville.world/game'],
     ['https://staging.clawville.world', 'https://api-staging.clawville.world', STAGING_DOMAIN, 'https://staging.clawville.world/game'],
   ] as const) {
-    test(`resources/read for ${base}: mimeType, ui.domain, csp, game link`, async () => {
+    test(`resources/read for ${base}: mimeType, ui.domain, empty csp, game link, inlined SDK`, async () => {
       process.env.CORS_ORIGIN = origin;
       const json = (await (await rpc('resources/read', { uri: 'ui://clawville/dashboard' })).json()) as any;
       const [item] = json.result.contents;
       expect(item.uri).toBe('ui://clawville/dashboard');
       expect(item.mimeType).toBe('text/html;profile=mcp-app');
-      expect(item._meta.ui).toEqual({ csp: { resourceDomains: ['https://unpkg.com'] }, domain });
+      expect(item._meta.ui).toEqual({ csp: {}, domain });
       expect(item.text).toContain(JSON.stringify(game));
       expect(item.text).toContain(JSON.stringify(new URL(game).origin));
+      // No script is loaded from a CDN (the source URL appears only in the license comment).
+      expect(item.text).not.toMatch(/from\s*["']https?:\/\//);
+      expect(item.text).not.toMatch(/<script[^>]*\ssrc=/i);
+      expect(item.text).toContain('sha256: 5bc0452b9994217df506cb505af20e97e766700513afb7d0b45d255785bb051f');
     });
   }
 
-  test('without a session the tool answers not_connected and no structuredContent', async () => {
-    const { result, answer } = await dashboard({});
+  test('without a session the open tool answers not_connected and mints nothing', async () => {
+    const { result, answer } = await open({});
     expect(answer.error).toBe('not_connected');
     expect(result.structuredContent).toBeUndefined();
     expect(seen).toHaveLength(0);
+    expect(viewTokenCountForTests()).toBe(0);
   });
 
-  test('CLI hosts get a full text answer; the view gets structuredContent with a view token, never the sessionId', async () => {
-    const { result, answer } = await dashboard();
+  test('open: full text for CLI hosts plus a view token; no structuredContent', async () => {
+    const { result, answer } = await open();
     expect(result.isError).toBe(false);
+    expect(result.structuredContent).toBeUndefined();
     expect(answer.ok).toBe(true);
     const summary: string = answer.data.summary;
     expect(summary).toContain('ClawVille dashboard for Kelp (agent agent-1).');
@@ -680,43 +730,67 @@ describe('MCP App: clawville_dashboard view', () => {
     expect(summary).toContain('Spend rules: not set');
     expect(summary).toContain('Agent AI: UsePod (gpt-x)');
     expect(summary).toContain('UsePod balance $0.50');
-    expect(answer.next).toContain('spend rules');
-    const sc = result.structuredContent;
-    expect(sc.summary).toBe(summary);
-    expect(sc.wallet).toMatchObject({ vclaw: 42, usdc: 1.5, sol: 0.0123, clv: null, address: 'Wa11etAddr1111' });
-    expect(sc.ownAi.usepod).toEqual({ registered: true, balanceUsdc: 0.5, active: true });
-    expect(sc.viewToken).toMatch(/^cvw_[A-Za-z0-9_-]{32}$/);
-    expect(sc.viewToken).not.toBe(SID);
-    expect(Date.parse(sc.viewTokenExpiresAt) - Date.now()).toBeGreaterThan(VIEW_TOKEN_TTL_MS - 5_000);
-    // The credential appears nowhere in the result (text or structuredContent).
+    expect(answer.data.viewToken).toMatch(/^cvw_[A-Za-z0-9_-]{32}$/);
+    expect(answer.data.viewToken).not.toBe(SID);
+    expect(Date.parse(answer.data.viewTokenExpiresAt) - Date.now()).toBeGreaterThan(VIEW_TOKEN_TTL_MS - 5_000);
+    expect(answer.next).toContain(`clawville_dashboard {"viewToken": "${answer.data.viewToken}"}`);
     expect(JSON.stringify(result)).not.toContain(SID);
-    expect(answer.data.viewToken).toBeUndefined();
-    // Every sub-request carried the caller's session header; UsePod read once.
     expect(seen.map((r) => r.headers.get('x-clawville-agent-session'))).toEqual(Array(seen.length).fill(SID));
     expect(usepodCalls).toBe(1);
     expect(viewTokenCountForTests()).toBe(1);
   });
 
-  test('two dashboard calls mint two different tokens', async () => {
-    const a = (await dashboard()).result.structuredContent.viewToken;
-    const b = (await dashboard()).result.structuredContent.viewToken;
-    expect(a).not.toBe(b);
-  });
-
-  test('refresh with a valid token re-runs the dashboard for the bound session only', async () => {
-    const token = (await dashboard()).result.structuredContent.viewToken;
+  test('clawville_dashboard with the token: text + structuredContent for the bound session, never the sessionId', async () => {
+    const token = await newToken();
     seen.length = 0;
-    const { result, answer } = await refresh(token);
+    const { result, answer } = await view(token);
     expect(answer.ok).toBe(true);
-    expect(result.structuredContent.viewToken).toBe(token);
-    expect(result.structuredContent.agent.agentId).toBe('agent-1');
+    expect(answer.data.summary).toContain('ClawVille dashboard for Kelp');
+    const sc = result.structuredContent;
+    expect(sc.summary).toBe(answer.data.summary);
+    expect(sc.wallet).toMatchObject({ vclaw: 42, usdc: 1.5, sol: 0.0123, clv: null, address: 'Wa11etAddr1111' });
+    expect(sc.ownAi.usepod).toEqual({ registered: true, balanceUsdc: 0.5, active: true });
+    expect(sc.viewToken).toBe(token);
+    expect(answer.data.viewToken).toBeUndefined();
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every((r) => r.headers.get('x-clawville-agent-session') === SID)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(SID);
   });
 
+  test('a sessionId is refused as a viewToken, on both view tools, before any read', async () => {
+    for (const tool of [view, refresh]) {
+      const { answer, result } = await tool(SID);
+      expect(answer.error).toBe('view_token_invalid');
+      expect(result.structuredContent).toBeUndefined();
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  test('a view tool refuses any argument other than viewToken (a sessionId argument included)', async () => {
+    const token = await newToken();
+    seen.length = 0;
+    for (const name of ['clawville_dashboard', 'clawville_dashboard_refresh']) {
+      const { answer, result } = await call(name, { viewToken: token, sessionId: SID });
+      expect(answer.error).toBe('invalid_input');
+      expect(answer.data.detail).toContain('sessionId');
+      expect(result.structuredContent).toBeUndefined();
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  test('refresh with a valid token re-runs the dashboard for the bound session only', async () => {
+    const token = await newToken();
+    seen.length = 0;
+    const { result, answer } = await refresh(token);
+    expect(answer.ok).toBe(true);
+    expect(result.structuredContent.viewToken).toBe(token);
+    expect(result.structuredContent.agent.agentId).toBe('agent-1');
+    expect(seen.every((r) => r.headers.get('x-clawville-agent-session') === SID)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(SID);
+  });
+
   test('unknown and malformed tokens are refused before any read', async () => {
-    for (const bad of ['cvw_' + 'A'.repeat(32), SID, 'nope', 42, null]) {
+    for (const bad of ['cvw_' + 'A'.repeat(32), 'nope', 42, null]) {
       const { answer, result } = await refresh(bad);
       expect(answer.error).toBe('view_token_invalid');
       expect(result.structuredContent).toBeUndefined();
@@ -727,44 +801,59 @@ describe('MCP App: clawville_dashboard view', () => {
   test('a token expires 15 minutes after mint', async () => {
     const t0 = Date.now();
     freezeNow(t0);
-    const token = (await dashboard()).result.structuredContent.viewToken;
+    const token = await newToken();
     freezeNow(t0 + VIEW_TOKEN_TTL_MS - 1);
-    expect((await refresh(token)).answer.ok).toBe(true);
+    expect((await view(token)).answer.ok).toBe(true);
     freezeNow(t0 + VIEW_TOKEN_TTL_MS);
     seen.length = 0;
     expect((await refresh(token)).answer.error).toBe('view_token_invalid');
     expect(seen).toHaveLength(0);
     expect(viewTokenCountForTests()).toBe(0);
+    expect(viewTokenSessionIndexSizeForTests()).toBe(0);
   });
 
   test('a token dies with its session, and a token cannot be moved to another session', async () => {
     LIVE.add('ag-other');
-    const token = (await dashboard()).result.structuredContent.viewToken;
+    const token = await newToken();
     seen.length = 0;
     const conflict = await refresh(token, { Authorization: 'Bearer ag-other' });
     expect(conflict.answer.error).toBe('conflicting_credentials');
     expect(seen).toHaveLength(0);
-    // Same session id now resolves to another agent: refused and dropped.
     AGENT_OF.set(SID, 'agent-2');
-    expect((await refresh(token)).answer.error).toBe('view_token_invalid');
+    expect((await view(token)).answer.error).toBe('view_token_invalid');
     AGENT_OF.set(SID, 'agent-1');
-    expect((await refresh(token)).answer.error).toBe('view_token_invalid');
-    // A dead session refuses a fresh token too.
-    const token2 = (await dashboard()).result.structuredContent.viewToken;
+    expect((await view(token)).answer.error).toBe('view_token_invalid');
+    const token2 = await newToken();
     LIVE.delete(SID);
     expect((await refresh(token2)).answer.error).toBe('view_token_invalid');
   });
 
-  test(`refresh is rate limited to ${VIEW_REFRESH_PER_MINUTE} per token per minute`, async () => {
-    const token = (await dashboard()).result.structuredContent.viewToken;
-    for (let i = 0; i < VIEW_REFRESH_PER_MINUTE; i += 1) expect((await refresh(token)).answer.ok).toBe(true);
+  test(`view tools are rate limited to ${VIEW_REFRESH_PER_MINUTE} per token per minute`, async () => {
+    const token = await newToken();
+    for (let i = 0; i < VIEW_REFRESH_PER_MINUTE; i += 1) expect((await (i % 2 ? view : refresh)(token)).answer.ok).toBe(true);
     expect((await refresh(token)).answer.error).toBe('rate_limited');
+  });
+
+  test(`at most ${MAX_VIEW_TOKENS_PER_SESSION} live tokens per session; that session's oldest go first`, async () => {
+    LIVE.add('ag-other');
+    const other = (await open({ Authorization: 'Bearer ag-other' })).answer.data.viewToken;
+    const tokens: string[] = [];
+    for (let i = 0; i < MAX_VIEW_TOKENS_PER_SESSION + 2; i += 1) tokens.push(await newToken());
+    expect(viewTokenCountForTests()).toBe(MAX_VIEW_TOKENS_PER_SESSION + 1);
+    expect(viewTokenSessionIndexSizeForTests()).toBe(MAX_VIEW_TOKENS_PER_SESSION + 1);
+    expect((await view(tokens[0])).answer.error).toBe('view_token_invalid');
+    expect((await view(tokens[1])).answer.error).toBe('view_token_invalid');
+    expect((await view(tokens[2])).answer.ok).toBe(true);
+    expect((await view(tokens[tokens.length - 1])).answer.ok).toBe(true);
+    // Another session's token is untouched.
+    expect((await view(other)).answer.ok).toBe(true);
   });
 
   test('the view-token map never grows past its cap', () => {
     const now = Date.now();
     for (let i = 0; i < MAX_VIEW_TOKENS + 50; i += 1) mintViewTokenForTests({ sessionId: `s${i}`, agentId: 'a' }, now);
     expect(viewTokenCountForTests()).toBeLessThanOrEqual(MAX_VIEW_TOKENS);
+    expect(viewTokenSessionIndexSizeForTests()).toBe(viewTokenCountForTests());
   });
 
   test('a configured spend policy and a failed section are both reported', async () => {
@@ -776,7 +865,8 @@ describe('MCP App: clawville_dashboard view', () => {
       if (path === '/api/agent/session-status') return Response.json({ connected: true, expiresAt: null, humanControlled: true });
       return Response.json({ error: 'nope' }, { status: 404 });
     });
-    const { result, answer } = await dashboard();
+    const token = await newToken();
+    const { result, answer } = await view(token);
     expect(answer.data.summary).toContain('Spend rules: daily cap $5.00, per call $1.00, vendors studios, ask before each payment on.');
     expect(answer.data.summary).toContain('Agent AI: Not available (status 403, ledger_capability_required).');
     expect(answer.data.summary).toContain('your human is in control');

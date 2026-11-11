@@ -11,7 +11,18 @@ import {
   gameUrlForApiBase,
   type DashboardData,
 } from '../mcp-app/dashboard';
-import { EXT_APPS_SDK_URL, buildDashboardViewHtml } from '../mcp-app/dashboard-view';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import {
+  EXT_APPS_SDK_SHA256,
+  EXT_APPS_SDK_SOURCE_URL,
+  EXT_APPS_SDK_VERSION,
+  EXT_APPS_VENDOR_FILE,
+  EXT_APPS_VENDOR_MARKER,
+  buildDashboardViewHtml,
+  loadExtAppsBundle,
+} from '../mcp-app/dashboard-view';
 
 const ROUTES = join(import.meta.dir, '..', '..', 'routes');
 const INDEX = readFileSync(join(import.meta.dir, '..', '..', 'index.ts'), 'utf8');
@@ -27,6 +38,8 @@ describe('Claude sandbox domain', () => {
     expect(dashboardResourceContent('https://api.clawville.world')._meta.ui.domain).toBe('fbbf4fac72ecb46c1810ee8a4f3bb886.claudemcpcontent.com');
     expect(dashboardResourceContent('https://api-staging.clawville.world')._meta.ui.domain).toBe('b1bb7d1e416a979f53eac06556dc647b.claudemcpcontent.com');
     expect(dashboardResourceContent('https://api.clawville.world').uri).toBe(DASHBOARD_RESOURCE_URI);
+    // The SDK is inlined: the view needs no external origin at all.
+    expect(dashboardResourceContent('https://api.clawville.world')._meta.ui.csp).toEqual({});
   });
 
   test('game URL per API base', () => {
@@ -36,26 +49,73 @@ describe('Claude sandbox domain', () => {
   });
 });
 
+describe('vendored MCP Apps SDK', () => {
+  const raw = readFileSync(EXT_APPS_VENDOR_FILE);
+  const markerAt = raw.indexOf(Buffer.from(EXT_APPS_VENDOR_MARKER, 'utf8'));
+  const header = raw.subarray(0, markerAt).toString('utf8');
+
+  test('the upstream bytes match the pinned sha256', () => {
+    expect(markerAt).toBeGreaterThan(0);
+    const upstream = raw.subarray(markerAt + Buffer.byteLength(EXT_APPS_VENDOR_MARKER));
+    expect(createHash('sha256').update(upstream).digest('hex')).toBe(EXT_APPS_SDK_SHA256);
+  });
+
+  test('the header names the source URL, version, sha256 and license', () => {
+    expect(header).toContain(EXT_APPS_SDK_SOURCE_URL);
+    expect(header).toContain(`@modelcontextprotocol/ext-apps ${EXT_APPS_SDK_VERSION}`);
+    expect(header).toContain(EXT_APPS_SDK_SHA256);
+    expect(header).toContain('License: MIT');
+    expect(header).not.toMatch(/\bA?GPL\b/);
+  });
+
+  test('line endings are never converted (hash-checked bytes)', () => {
+    const attrs = readFileSync(join(EXT_APPS_VENDOR_FILE, '..', '.gitattributes'), 'utf8');
+    expect(attrs).toContain('* -text');
+  });
+
+  test('the bundle resolves the exports the page uses and cannot end the inline script', () => {
+    const bundle = loadExtAppsBundle();
+    expect(Object.keys(bundle.locals).sort()).toEqual(['App', 'applyDocumentTheme', 'applyHostFonts', 'applyHostStyleVariables']);
+    for (const local of Object.values(bundle.locals)) expect(local).toMatch(/^[A-Za-z_$][\w$]*$/);
+    expect(bundle.code).not.toMatch(/<\/script|<!--|<script/i);
+  });
+
+  test('a changed byte fails closed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-apps-'));
+    const tampered = Buffer.from(raw);
+    tampered[tampered.length - 2] = tampered[tampered.length - 2]! ^ 1;
+    const file = join(dir, 'tampered.js.txt');
+    writeFileSync(file, tampered);
+    expect(() => loadExtAppsBundle(file)).toThrow(/sha256/);
+  });
+});
+
 describe('dashboard view HTML', () => {
   const html = buildDashboardViewHtml('https://staging.clawville.world/game');
+  // The page's own markup and script: everything except the vendored SDK bytes.
+  const own = html.replace(loadExtAppsBundle().code, '');
+
+  test('inlines the SDK once', () => {
+    expect(html.length - own.length).toBe(loadExtAppsBundle().code.length);
+  });
 
   test('has no HTML-string DOM sink and no eval', () => {
     for (const sink of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'eval(', 'new Function', 'srcdoc']) {
-      expect({ sink, found: html.includes(sink) }).toEqual({ sink, found: false });
+      expect({ sink, found: own.includes(sink) }).toEqual({ sink, found: false });
     }
-    expect(html).toContain('textContent');
+    expect(own).toContain('textContent');
   });
 
-  test('never reads the tool arguments (the model may pass the sessionId there)', () => {
-    expect(html).not.toContain('ontoolinput');
-    expect(html).not.toContain('sessionId');
+  test('never reads the tool arguments', () => {
+    expect(own).not.toContain('ontoolinput');
+    expect(own).not.toContain('sessionId');
   });
 
-  test('loads only the pinned SDK and makes no network call of its own', () => {
-    const scriptSrcs = [...html.matchAll(/https?:\/\/[^\s"'`)]+/g)].map((m) => m[0]);
-    expect(new Set(scriptSrcs.filter((u) => !u.includes('clawville.world')))).toEqual(new Set([EXT_APPS_SDK_URL]));
-    expect(EXT_APPS_SDK_URL).toMatch(/@modelcontextprotocol\/ext-apps@\d+\.\d+\.\d+\//);
-    for (const net of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'sendBeacon']) expect(html).not.toContain(net);
+  test('loads no external script and makes no network call of its own', () => {
+    expect(own).not.toMatch(/<script[^>]*\ssrc=/i);
+    expect(own).not.toMatch(/\bimport\s*[({'"]/);
+    expect(own).not.toMatch(/<link[^>]*href=/i);
+    for (const net of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'sendBeacon']) expect(own).not.toContain(net);
   });
 
   test('refresh uses the app-only tool with the view token; links go through openLink', () => {

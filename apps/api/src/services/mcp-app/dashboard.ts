@@ -1,14 +1,17 @@
 /**
  * ClawVille agent dashboard: the first MCP App (job mcp-apps-p1, 2026-11-11).
  *
- * One tool, two audiences:
- *   - `clawville_dashboard` (model-visible, needs the agent session) answers a
- *     full TEXT summary for hosts with no MCP Apps (Claude Code CLI, Codex CLI,
- *     Hermes) AND `structuredContent` with the same data for the view
- *     `ui://clawville/dashboard` (Claude web and desktop).
- *   - `clawville_dashboard_refresh` (`_meta.ui.visibility: ["app"]`) is the
- *     view's Refresh button. It takes a short-lived view token, never a
- *     sessionId; routes/agent-mcp.ts mints and resolves the token.
+ * Three tools, two steps (the host forwards a view tool's ARGUMENTS to the
+ * view, so no view-linked tool may take the sessionId):
+ *   - `clawville_dashboard_open` (model-visible, needs the agent session, NO
+ *     `_meta.ui`) answers the full TEXT dashboard for every host (Claude Code
+ *     CLI, Codex CLI, Hermes) plus a short-lived view token.
+ *   - `clawville_dashboard { viewToken }` (`_meta.ui.resourceUri`
+ *     `ui://clawville/dashboard`) answers the same text plus
+ *     `structuredContent` for the view (Claude web and desktop).
+ *   - `clawville_dashboard_refresh { viewToken }` (`_meta.ui.visibility:
+ *     ["app"]`) is the view's Refresh button.
+ *   routes/agent-mcp.ts mints and resolves the tokens.
  *
  * Read-only: every number comes from an EXISTING REST route called in-process
  * with the caller's session (the same routes a REST agent or the web wallet
@@ -19,6 +22,7 @@ import { createHash } from 'node:crypto';
 import type { SubCall, SubResult, ToolAnswer, ToolRuntime, ToolSession } from '../agent-mcp-tools';
 import { buildDashboardViewHtml, DASHBOARD_VIEW_CSP } from './dashboard-view';
 
+export const DASHBOARD_OPEN_TOOL = 'clawville_dashboard_open';
 export const DASHBOARD_TOOL = 'clawville_dashboard';
 export const DASHBOARD_REFRESH_TOOL = 'clawville_dashboard_refresh';
 export const DASHBOARD_RESOURCE_URI = 'ui://clawville/dashboard';
@@ -63,7 +67,8 @@ export function dashboardResourceContent(apiBase: string) {
     text: buildDashboardViewHtml(gameUrlForApiBase(apiBase)),
     _meta: {
       ui: {
-        csp: { resourceDomains: [...DASHBOARD_VIEW_CSP.resourceDomains] },
+        // Empty: the SDK is inlined, so the view loads and connects to nothing.
+        csp: { ...DASHBOARD_VIEW_CSP },
         domain: claudeSandboxDomain(`${apiBase}${MCP_ENDPOINT_PATH}`),
       },
     },
@@ -288,15 +293,45 @@ export function dashboardSummary(d: DashboardData): string {
   return lines.join('\n');
 }
 
-/** The tool answer: text for CLI hosts, structuredContent for the view. */
-export async function runDashboard(rt: ToolRuntime, session: ToolSession, apiBase: string): Promise<ToolAnswer> {
+export interface ViewTokenInfo {
+  token: string;
+  expiresAt: number;
+}
+
+/**
+ * The dashboard answer.
+ *   - `open` (clawville_dashboard_open, the model-visible session tool): the
+ *     full text for terminal hosts plus the view token and how to show the
+ *     view. No structuredContent and no `_meta.ui` on that tool, so the host
+ *     never opens a view whose tool input holds the sessionId.
+ *   - `view` (clawville_dashboard and its app-only refresh, both token-only):
+ *     the same text plus structuredContent for the view. Claude Code passes
+ *     structuredContent (not the text) to the model when it is present, so it
+ *     carries the summary and next steps too.
+ */
+export async function runDashboard(
+  rt: ToolRuntime,
+  session: ToolSession,
+  apiBase: string,
+  view: ViewTokenInfo,
+  mode: 'open' | 'view',
+): Promise<ToolAnswer> {
   const data = await buildDashboard(rt, session, apiBase);
   const summary = dashboardSummary(data);
+  const token = { viewToken: view.token, viewTokenExpiresAt: new Date(view.expiresAt).toISOString() };
+  if (mode === 'open') {
+    return {
+      body: {
+        ok: true,
+        status: 200,
+        data: { summary, ...data, ...token },
+        next: `${data.nextSteps.join(' ')} To show this dashboard as an interactive view in a host with MCP Apps (Claude web or desktop), call ${DASHBOARD_TOOL} {"viewToken": "${view.token}"} within 15 minutes. A terminal host does not need that call.`,
+      },
+    };
+  }
   const next = data.nextSteps.join(' ');
   return {
     body: { ok: true, status: 200, data: { summary, ...data }, next },
-    // Claude Code passes structuredContent (not the text) to the model when it
-    // is present, so it carries the summary and next steps too.
-    structuredContent: { summary, ...data, next },
+    structuredContent: { summary, ...data, next, ...token },
   };
 }

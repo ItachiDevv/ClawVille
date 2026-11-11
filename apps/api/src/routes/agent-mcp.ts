@@ -13,9 +13,11 @@
  *     tools/call, resources/list, resources/templates/list, resources/read.
  *     JSON-RPC errors -32700 / -32600 / -32601 / -32602 / -32002 (unknown resource).
  *   - MCP Apps (job mcp-apps-p1, 2026-11-11): one view resource,
- *     ui://clawville/dashboard (services/mcp-app/), linked from the
- *     clawville_dashboard tool by `_meta.ui.resourceUri`. Its app-only refresh
- *     tool takes a view token (see "MCP App view tokens" below), never a sessionId.
+ *     ui://clawville/dashboard (services/mcp-app/), linked by
+ *     `_meta.ui.resourceUri` from clawville_dashboard and the app-only
+ *     clawville_dashboard_refresh. Both take ONLY a view token minted by the
+ *     session tool clawville_dashboard_open (see "MCP App view tokens"), so no
+ *     sessionId is ever in a view tool's arguments.
  *
  * Who a call acts for (never a client-supplied agentId): the live ClawVille
  * session the CALL itself carries, as `Authorization: Bearer <sessionId>`,
@@ -63,12 +65,14 @@ import {
   type ToolSession,
 } from '../services/agent-mcp-tools';
 import {
+  DASHBOARD_OPEN_TOOL,
   DASHBOARD_REFRESH_TOOL,
   DASHBOARD_RESOURCE_URI,
   DASHBOARD_TOOL,
   LEGACY_RESOURCE_URI_META_KEY,
   dashboardResourceContent,
   dashboardResourceListing,
+  runDashboard,
 } from '../services/mcp-app/dashboard';
 
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -155,6 +159,24 @@ export function setMcpMovePollingForTests(opts: { intervalMs: number; maxMs: num
  */
 interface McpSessionEntry {
   lastUsed: number;
+  /**
+   * True when this client's initialize declared MCP Apps support
+   * (`capabilities.extensions["io.modelcontextprotocol/ui"]`). Only shapes
+   * tools/list; it never authorizes anything.
+   */
+  uiCapable: boolean;
+}
+
+/** Client capability key for MCP Apps (ext-apps spec; the SDK's EXTENSION_ID). */
+export const MCP_UI_EXTENSION_ID = 'io.modelcontextprotocol/ui';
+
+function declaresUiExtension(params: Record<string, unknown>): boolean {
+  const caps = params.capabilities;
+  if (!caps || typeof caps !== 'object' || Array.isArray(caps)) return false;
+  const ext = (caps as { extensions?: unknown }).extensions;
+  if (!ext || typeof ext !== 'object' || Array.isArray(ext)) return false;
+  const ui = (ext as Record<string, unknown>)[MCP_UI_EXTENSION_ID];
+  return !!ui && typeof ui === 'object';
 }
 
 const mcpSessions = new Map<string, McpSessionEntry>();
@@ -171,6 +193,7 @@ export function resetMcpStateForTests(): void {
   mcpSessions.clear();
   callBudgets.clear();
   viewTokens.clear();
+  tokensBySession.clear();
   lastBudgetSweep = 0;
 }
 
@@ -179,16 +202,21 @@ export function resetMcpStateForTests(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * A view token lets the dashboard view (ui://clawville/dashboard) refresh
- * itself through the app-only tool clawville_dashboard_refresh WITHOUT the
- * ClawVille sessionId ever reaching the view. clawville_dashboard mints one
- * (192 random bits) bound to the caller's live session and agentId. It lives
- * VIEW_TOKEN_TTL_MS from mint (no sliding), the refresh re-checks liveness on
- * every use, and a dead session drops it. Read-only: it can only re-run the
- * read-only dashboard for the session it is bound to.
+ * A view token lets the dashboard view (ui://clawville/dashboard) load and
+ * refresh WITHOUT the ClawVille sessionId ever reaching the view. The host
+ * forwards a tool's ARGUMENTS to its view, so the tool linked to the view
+ * (clawville_dashboard) and its app-only refresh take ONLY this token; the
+ * model-visible session tool clawville_dashboard_open (no `_meta.ui`) mints
+ * it (192 random bits) bound to the caller's live session and agentId. It
+ * lives VIEW_TOKEN_TTL_MS from mint (no sliding), every use re-checks
+ * liveness, and a dead session drops it. At most MAX_VIEW_TOKENS_PER_SESSION
+ * live tokens per agent session (that session's oldest goes first) and
+ * MAX_VIEW_TOKENS overall. Read-only: a token can only re-run the read-only
+ * dashboard for the session it is bound to.
  */
 export const VIEW_TOKEN_TTL_MS = 15 * 60 * 1000;
 export const MAX_VIEW_TOKENS = 10_000;
+export const MAX_VIEW_TOKENS_PER_SESSION = 5;
 /** Refreshes per view token per minute (each one makes 5-6 sub-requests). */
 export const VIEW_REFRESH_PER_MINUTE = 10;
 const VIEW_TOKEN_SHAPE = /^cvw_[A-Za-z0-9_-]{32}$/;
@@ -200,9 +228,18 @@ interface ViewTokenEntry {
 }
 
 const viewTokens = new Map<string, ViewTokenEntry>();
+/** sessionId -> its live tokens in mint order (at most MAX_VIEW_TOKENS_PER_SESSION). */
+const tokensBySession = new Map<string, string[]>();
 
 export function viewTokenCountForTests(): number {
   return viewTokens.size;
+}
+
+/** Index size, so a test can prove deleted tokens leave no index entries behind. */
+export function viewTokenSessionIndexSizeForTests(): number {
+  let n = 0;
+  for (const list of tokensBySession.values()) n += list.length;
+  return n;
 }
 
 /** Test seam: mint without a tool call (the map-cap test needs thousands). */
@@ -211,21 +248,47 @@ export function mintViewTokenForTests(session: ToolSession, now: number): string
 }
 
 function mintViewToken(session: ToolSession, now: number): { token: string; expiresAt: number } {
+  // Per-session cap: this session's tokens in mint order; drop the expired
+  // ones, then the oldest, until one slot is free.
+  const own = (tokensBySession.get(session.sessionId) ?? []).filter((key) => {
+    const entry = viewTokens.get(key);
+    if (entry && entry.expiresAt > now) return true;
+    viewTokens.delete(key);
+    return false;
+  });
+  while (own.length >= MAX_VIEW_TOKENS_PER_SESSION) viewTokens.delete(own.shift()!);
+  if (own.length > 0) tokensBySession.set(session.sessionId, own);
+  else tokensBySession.delete(session.sessionId);
   if (viewTokens.size >= MAX_VIEW_TOKENS) {
     for (const [key, entry] of viewTokens) {
-      if (entry.expiresAt <= now) viewTokens.delete(key);
+      if (entry.expiresAt <= now) deleteViewToken(key);
     }
     // Insertion order = mint order: drop the oldest.
     while (viewTokens.size >= MAX_VIEW_TOKENS) {
       const oldest = viewTokens.keys().next().value;
       if (oldest === undefined) break;
-      viewTokens.delete(oldest);
+      deleteViewToken(oldest);
     }
   }
   const token = `cvw_${randomBytes(24).toString('base64url')}`;
   const expiresAt = now + VIEW_TOKEN_TTL_MS;
   viewTokens.set(token, { sessionId: session.sessionId, agentId: session.agentId, expiresAt });
+  const list = tokensBySession.get(session.sessionId) ?? [];
+  list.push(token);
+  tokensBySession.set(session.sessionId, list);
   return { token, expiresAt };
+}
+
+/** Removes a token from the map and from its session's index. */
+function deleteViewToken(token: string): void {
+  const entry = viewTokens.get(token);
+  if (!entry) return;
+  viewTokens.delete(token);
+  const list = tokensBySession.get(entry.sessionId);
+  if (!list) return;
+  const rest = list.filter((key) => key !== token);
+  if (rest.length > 0) tokensBySession.set(entry.sessionId, rest);
+  else tokensBySession.delete(entry.sessionId);
 }
 
 function lookupViewToken(token: unknown, now: number): ViewTokenEntry | null {
@@ -233,7 +296,7 @@ function lookupViewToken(token: unknown, now: number): ViewTokenEntry | null {
   const entry = viewTokens.get(token);
   if (!entry) return null;
   if (entry.expiresAt <= now) {
-    viewTokens.delete(token);
+    deleteViewToken(token);
     return null;
   }
   return entry;
@@ -244,7 +307,7 @@ function viewTokenRefusedAnswer(): ToolAnswer {
     body: {
       ok: false,
       error: 'view_token_invalid',
-      next: 'This dashboard view has expired. Ask Claude to show the ClawVille dashboard again (clawville_dashboard).',
+      next: 'This viewToken is unknown or expired (a sessionId is never a viewToken). Call clawville_dashboard_open with your session for a new viewToken, then clawville_dashboard with it.',
     },
   };
 }
@@ -253,7 +316,7 @@ export function callBudgetCountForTests(): number {
   return callBudgets.size;
 }
 
-function issueMcpSession(now: number): string {
+function issueMcpSession(now: number, uiCapable: boolean): string {
   const id = randomBytes(24).toString('base64url');
   if (mcpSessions.size >= MAX_MCP_SESSIONS) {
     for (const [key, entry] of mcpSessions) {
@@ -267,7 +330,7 @@ function issueMcpSession(now: number): string {
       mcpSessions.delete(oldest);
     }
   }
-  mcpSessions.set(id, { lastUsed: now });
+  mcpSessions.set(id, { lastUsed: now, uiCapable });
   return id;
 }
 
@@ -529,6 +592,8 @@ interface RequestState {
   explicit: ExplicitCredential;
   fwd: Record<string, string>;
   clientIp: string;
+  /** The MCP session named by Mcp-Session-Id, when the request sent one. */
+  mcpSession: McpSessionEntry | null;
 }
 
 type SessionResolution =
@@ -592,7 +657,7 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
         if (!allowCall(`init:${state.clientIp}`, state.now, INITIALIZE_PER_MINUTE)) {
           return fail(-32000, 'Too many initialize calls from this address. Wait a minute.');
         }
-        state.issuedSessionId = issueMcpSession(state.now);
+        state.issuedSessionId = issueMcpSession(state.now, declaresUiExtension(params));
       }
       return result({
         protocolVersion,
@@ -609,7 +674,10 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
       return result({});
     case 'tools/list':
       return result({
-        tools: MCP_TOOLS.map((tool) => ({
+        // A client whose initialize did NOT declare MCP Apps support gets no
+        // view-linked tool (it could not render the view; clawville_dashboard_open
+        // gives it the text). An unknown client (no Mcp-Session-Id) gets them all.
+        tools: MCP_TOOLS.filter((tool) => !tool.ui || state.mcpSession?.uiCapable !== false).map((tool) => ({
           name: tool.name,
           title: tool.title,
           description: tool.description,
@@ -631,9 +699,10 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
       }
       if (message.method === 'resources/list') return result({ resources: [dashboardResourceListing()] });
       if (message.method === 'resources/templates/list') return result({ resourceTemplates: [] });
+      if (typeof params.uri !== 'string' || params.uri.length === 0) return fail(-32602, 'params.uri must be a non-empty string');
       if (params.uri !== DASHBOARD_RESOURCE_URI) {
         // MCP spec: an unknown resource is -32002.
-        return fail(-32002, `Resource not found: ${typeof params.uri === 'string' ? params.uri.slice(0, 64) : String(params.uri)}`);
+        return fail(-32002, `Resource not found: ${params.uri.slice(0, 64)}`);
       }
       return result({ contents: [dashboardResourceContent(resolveApiBase())] });
     }
@@ -656,10 +725,23 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
       if (!allowCall(`ip:${state.clientIp}`, state.now, IP_CALLS_PER_MINUTE)) return limited();
       try {
         const toolArgs = (args ?? {}) as Record<string, unknown>;
-        if (tool.name === DASHBOARD_REFRESH_TOOL) {
-          // App-only refresh: the session comes from the view token, never
-          // from an argument. Unknown, malformed or expired tokens are refused
-          // before any DB read.
+        if (tool.name === DASHBOARD_TOOL || tool.name === DASHBOARD_REFRESH_TOOL) {
+          // View-linked tools: the host forwards their arguments to the view,
+          // so they take ONLY the view token; the session comes from it.
+          // Unknown, malformed or expired tokens (a sessionId is never one)
+          // and any other argument are refused before any DB read.
+          const extra = Object.keys(toolArgs).filter((key) => key !== 'viewToken');
+          if (extra.length > 0) {
+            return answerResult({
+              body: {
+                ok: false,
+                status: 400,
+                error: 'invalid_input',
+                data: { detail: `${tool.name} takes only viewToken; remove: ${extra.slice(0, 5).join(', ')}.` },
+                next: `Call ${tool.name} {"viewToken": "<data.viewToken from clawville_dashboard_open>"}. Never send your sessionId to a view tool.`,
+              },
+            });
+          }
           const entry = lookupViewToken(toolArgs.viewToken, state.now);
           if (!entry) return answerResult(viewTokenRefusedAnswer());
           if (state.explicit.kind === 'refused') {
@@ -672,19 +754,12 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
           if (!allowCall(`sid:${entry.sessionId}`, state.now)) return limited();
           const live = await validator(entry.sessionId);
           if (!live || live.agentId !== entry.agentId) {
-            viewTokens.delete(String(toolArgs.viewToken));
+            deleteViewToken(String(toolArgs.viewToken));
             return answerResult(viewTokenRefusedAnswer());
           }
           const session: ToolSession = { sessionId: entry.sessionId, agentId: entry.agentId };
-          const answer = await runMcpTool(DASHBOARD_TOOL, {}, buildRuntime(state, session));
-          if (answer.structuredContent) {
-            answer.structuredContent = {
-              ...answer.structuredContent,
-              viewToken: toolArgs.viewToken,
-              viewTokenExpiresAt: new Date(entry.expiresAt).toISOString(),
-            };
-          }
-          return answerResult(answer);
+          const view = { token: String(toolArgs.viewToken), expiresAt: entry.expiresAt };
+          return answerResult(await runDashboard(buildRuntime(state, session), session, resolveApiBase(), view, 'view'));
         }
         const resolution = await resolveToolSession(callCredential(state.explicit, toolArgs, tool.needsSession));
         if ('refused' in resolution) {
@@ -697,16 +772,13 @@ async function dispatchMessage(entry: unknown, state: RequestState): Promise<Jso
         // The sessionId argument is a credential, not a tool input: it never
         // reaches the tool or a sub-request body.
         const { [SESSION_ID_ARG]: _credential, ...toolInput } = toolArgs;
-        const answer = await runMcpTool(tool.name, tool.needsSession ? toolInput : toolArgs, buildRuntime(state, session));
-        if (tool.name === DASHBOARD_TOOL && session && answer.structuredContent) {
-          // The view refreshes with this token; the sessionId never reaches it.
+        if (tool.name === DASHBOARD_OPEN_TOOL && session) {
+          // Text for every host plus a view token for clawville_dashboard; this
+          // tool has no `_meta.ui`, so no view ever sees its sessionId argument.
           const minted = mintViewToken(session, state.now);
-          answer.structuredContent = {
-            ...answer.structuredContent,
-            viewToken: minted.token,
-            viewTokenExpiresAt: new Date(minted.expiresAt).toISOString(),
-          };
+          return answerResult(await runDashboard(buildRuntime(state, session), session, resolveApiBase(), minted, 'open'));
         }
+        const answer = await runMcpTool(tool.name, tool.needsSession ? toolInput : toolArgs, buildRuntime(state, session));
         return answerResult(answer);
       } catch (error) {
         console.error(`[agent-mcp] tool ${tool.name} failed: ${redactBearerTokens(error instanceof Error ? error.message : String(error))}`);
@@ -801,8 +873,9 @@ agentMcpRoutes.post(
           noStore,
         );
       }
+      let mcpEntry: McpSessionEntry | null = null;
       if (headerSessionId) {
-        const mcpEntry = TOKEN_SHAPE.test(headerSessionId) ? lookupMcpSession(headerSessionId, now) : null;
+        mcpEntry = TOKEN_SHAPE.test(headerSessionId) ? lookupMcpSession(headerSessionId, now) : null;
         if (!mcpEntry) {
           // Spec: an unknown or ended session gets 404; the client initializes again.
           return c.json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Session not found. Send initialize again.' } }, 404, noStore);
@@ -816,6 +889,7 @@ agentMcpRoutes.post(
         explicit: explicitCredential(c),
         fwd: forwardedHeaders(c),
         clientIp: getClientIp({ get: (h) => c.req.header(h) ?? null }),
+        mcpSession: mcpEntry,
       };
       const replies: JsonRpcResponse[] = [];
       for (const message of messages) {
