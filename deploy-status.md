@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-11 06:30Z (session new-ville). **STAGING WEB = perf/game-load (`b9d2c5bdc` + this docs commit): server-rendered /game boot splash; web only, no PROTOCOL change, no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
+Last Audited: 2026-11-11 08:10Z (session claw2.0). **STAGING = MCP Apps P0 (`020e8402c` + this docs commit): web can be framed by Claude MCP App views (frame-ancestors + open-link bridge), every window.confirm replaced by in-page confirms, PROTOCOL 130 (manual + Nori line); no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
+
+Prior - Last Audited: 2026-11-11 06:30Z (session new-ville). **STAGING WEB = perf/game-load (`b9d2c5bdc` + this docs commit): server-rendered /game boot splash; web only, no PROTOCOL change, no migration.** PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0120 (brainchain, staging only).
 
 Prior - Last Audited: 2026-11-11 04:35Z (session claw2.0). **PROD = `50e5ce7a1` (promotion #28, PR #340: own AI part B ONLY, PROTOCOL 120, migration 0100 applied on prod).** STAGING moves: `git log -1 origin/staging` (it also holds BrainChain, PROTOCOL 128/129, migrations 0101-0120, NOT on prod). SCHEMA: prod-migration-pending: 0101-0120 (brainchain).
 
@@ -752,6 +754,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-11 08:10Z (session claw2.0) - MCP Apps P0 on staging (web + PROTOCOL 130)
+- **What changed:** `frame-ancestors` adds `https://claude.ai` and the two exact Claude sandbox hosts (sha256 of the prod / staging MCP URLs), so a Claude MCP App view can frame ClawVille. A frame bridge (active only when framed, `?embed=mcp-app`, AND an allow-listed parent origin) routes `window.open` and `target=_blank` clicks to the parent view as `clawville:open-link` messages. Every `window.confirm` (the sandbox returns false) became an in-page confirm: Exchange cancel listing/order, Trading Floor wallet revoke, yard piece remove (two taps, 400 ms gap). PROTOCOL 129 -> 130: manual core topic + Nori line on the confirm steps.
+- **What broke on the way:** Codex review 1 found the bridge activated from the URL param alone (would break Milady/uOS frames with the param) and Escape in the cancel dialog closed the whole Exchange; review 2 found the Trading Floor controller also closed the Exchange on Escape. All fixed; review 3 clean. The coupling gate failed on components/game/** without a knowledge change, so the manual + Nori line + PV bump joined the diff.
+- **Who it's for:** humans who will open ClawVille screens inside Claude (P1 view not built yet); every user of the 3 confirm flows.
+- **SCHEMA:** unchanged (prod-migration-pending: 0101-0120, brainchain).
 
 ### 2026-11-11 06:30Z (session new-ville) - /game boot splash on staging (web only)
 - **What changed:** the (world) layout server-renders `BootSplash` (`apps/web/src/components/three/world-stage/boot-splash.tsx`) on `/game`: the first frame of the sea loader (gradient, banner, "Dropping in...", 0% bar). Before, the server HTML was an empty stage, so phones painted nothing until the HUD bundle hydrated (prod probe, 4x CPU + slow 4G: first paint 9.1 s). The splash crossfades out over the live loader after the loader's entrance animation; failure UIs release it. SeaLoadingScreen is unchanged.
