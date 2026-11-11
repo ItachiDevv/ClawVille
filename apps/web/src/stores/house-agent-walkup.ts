@@ -212,7 +212,7 @@ export function chooseHouseAgentTemplate(templateId: string): void {
 export function activateHouseAgentWalkup(): boolean {
   const { index } = useHouseAgentWalkup.getState();
   if (index < 0) return false;
-  if (useGameStore.getState().exchangeOpen) return false;
+  if (useGameStore.getState().exchangeOpen || useGameStore.getState().tradingFloorOpen) return false;
   if (useHouseAgentWalkupPanel.getState().dismissedIndex === index) return false;
   const template = FLOOR_ARENA_TEMPLATES[index];
   if (!template) return false;

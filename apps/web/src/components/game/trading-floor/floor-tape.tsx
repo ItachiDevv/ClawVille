@@ -184,7 +184,7 @@ export function FloorTapeBody() {
 export default function FloorTape() {
   const isMobile = useIsMobile();
   const [mobileResolved, setMobileResolved] = useState(false);
-  const exchangeOpen = useGameStore((state) => state.exchangeOpen);
+  const exchangeOpen = useGameStore((state) => state.exchangeOpen || state.tradingFloorOpen);
   const thoughtLogOpen = useResearchStore((state) => state.thoughtLogOpen);
   const thoughtLogMinimized = useResearchStore(
     (state) => state.thoughtLogMinimized,

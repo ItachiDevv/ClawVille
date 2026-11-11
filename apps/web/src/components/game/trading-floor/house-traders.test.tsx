@@ -944,11 +944,12 @@ describe('House traders section', () => {
     expect(text).toContain('Paused by risk limit');
   });
 
-  test('links to the templates section rather than duplicating it', async () => {
+  test('points to Dashboard without an obsolete templates link', async () => {
     const host = await renderWithSlots([slot()]);
     const link = [...host.querySelectorAll('a')].find(
       (node) => node.getAttribute('href') === '#clawpump-templates',
     );
-    expect(link).toBeDefined();
+    expect(link).toBeUndefined();
+    expect(host.textContent).toContain("Open Dashboard to start your own trader.");
   });
 });

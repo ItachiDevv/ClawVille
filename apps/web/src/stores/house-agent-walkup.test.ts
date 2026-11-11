@@ -61,7 +61,7 @@ beforeEach(() => {
   useHouseAgentWalkup.setState({ index: -1, eAvailable: false });
   useHouseAgentWalkupPanel.setState({ dismissedIndex: -1, viewer: 'unknown', pendingTemplateId: null });
   useFloorArenaUi.setState({ panel: 'overview', profileAgentId: null, launchTemplateId: null, myAgent: 'unknown', launched: null });
-  useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+  useGameStore.setState({ exchangeOpen: false, tradingFloorOpen: false, exchangeTab: 'browse' });
 });
 
 afterAll(() => {
@@ -167,7 +167,7 @@ describe('activateHouseAgentWalkup (the lowest E / USE rung)', () => {
   test('otherwise runs the primary action: the launch with this template, and returns true', () => {
     setHouseAgentWalkup(1, true);
     expect(activateHouseAgentWalkup()).toBe(true);
-    expect(useGameStore.getState()).toMatchObject({ exchangeOpen: true, exchangeTab: 'floor' });
+    expect(useGameStore.getState()).toMatchObject({ tradingFloorOpen: true });
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'launch', launchTemplateId: 'runner' });
   });
 
@@ -176,7 +176,7 @@ describe('activateHouseAgentWalkup (the lowest E / USE rung)', () => {
     setHouseAgentWalkup(3, true);
     expect(activateHouseAgentWalkup()).toBe(true);
     expect(useFloorArenaUi.getState().panel).toBe('desk');
-    expect(useGameStore.getState()).toMatchObject({ exchangeOpen: true, exchangeTab: 'floor' });
+    expect(useGameStore.getState()).toMatchObject({ tradingFloorOpen: true });
     expect(storage.map.size).toBe(0);
   });
 });
@@ -186,7 +186,7 @@ describe('chooseHouseAgentTemplate', () => {
     setHouseAgentWalkupViewer('can-own');
     chooseHouseAgentTemplate('dip-hunter');
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'launch', launchTemplateId: 'dip-hunter' });
-    expect(useGameStore.getState()).toMatchObject({ exchangeOpen: true, exchangeTab: 'floor' });
+    expect(useGameStore.getState()).toMatchObject({ tradingFloorOpen: true });
   });
 
   test('a viewer who can own a trader leaves no pending key', () => {

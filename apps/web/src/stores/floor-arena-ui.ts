@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { useGameStore } from './game';
 
 /**
- * Which Trading Floor Arena panel the Exchange modal's floor tab shows, and
+ * Which Trading Floor Arena panel the Trading Floor terminal shows, and
  * what the client knows about the viewer's own arena agent.
  *
  * A store and not component state because two places outside the panel open
@@ -49,7 +49,7 @@ interface FloorArenaUiStore {
     panel: FloorArenaPanel,
     options?: { agentId?: string | null; templateId?: string | null },
   ) => void;
-  /** Opens the Exchange modal on its floor tab AND selects the panel. */
+  /** Opens the Trading Floor terminal and selects the panel. */
   openArena: (
     panel: FloorArenaPanel,
     options?: { agentId?: string | null; templateId?: string | null },
@@ -85,7 +85,7 @@ export const useFloorArenaUi = create<FloorArenaUiStore>((set, get) => ({
   openArena: (panel, options) => {
     get().showPanel(panel, options);
     const game = useGameStore.getState();
-    if (!(game.exchangeOpen && game.exchangeTab === 'floor')) game.openTradingFloor();
+    if (!game.tradingFloorOpen) game.openTradingFloor();
   },
   setLocalSeatIndex: (seatIndex) => {
     if (get().localSeatIndex !== seatIndex) set({ localSeatIndex: seatIndex });

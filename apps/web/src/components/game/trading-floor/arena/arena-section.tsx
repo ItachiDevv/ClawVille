@@ -535,6 +535,7 @@ function DiscoveryFeed({ active }: { active: boolean }) {
 }
 
 export function FloorArenaSection({
+  controlsOnly = false,
   active,
   isGuest,
   onGuestBlocked,
@@ -542,6 +543,7 @@ export function FloorArenaSection({
   active: boolean;
   isGuest: boolean;
   onGuestBlocked: () => void;
+  controlsOnly?: boolean;
 }) {
   const compact = useArenaCompact();
   const panel = useFloorArenaUi((state) => state.panel);
@@ -559,13 +561,13 @@ export function FloorArenaSection({
     useQuery({ queryKey: AUTH_ME_QUERY_KEY, queryFn: fetchAuthMe, retry: false, enabled: active && !isGuest }).data !==
     undefined;
   const me = useFloorArenaMe(active && authResolved && !isGuest);
-  const myAgent = me.data?.agent ?? null;
   // A 401 or 403 from GET /me means this viewer cannot own an arena agent yet.
   // A guest or a logged-out visitor gets the sign-up card; a signed-in account
   // with no active avatar gets the avatar card (F2, `arenaOwnerAccess`).
   const avatarRead = useArenaAvatarRead(active && authResolved && !isGuest && arenaMeUntyped403(me.error));
   const access = arenaOwnerAccess(isGuest, me.error, avatarRead);
   const cannotOwn = access !== 'owner';
+  const myAgent = cannotOwn ? null : me.data?.agent ?? null;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const firstRender = useRef(true);
 
@@ -623,7 +625,7 @@ export function FloorArenaSection({
         </div>
       );
     } else if (myAgent) {
-      body = <MyTrader me={myAgent} active={active} compact={compact} onBack={toOverview} onOpenProfile={openAgent} />;
+      body = <MyTrader controlsOnly={controlsOnly} me={myAgent} active={active} compact={compact} onBack={toOverview} onOpenProfile={openAgent} />;
     } else {
       body = (
         <LaunchTrader

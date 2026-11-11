@@ -30,6 +30,7 @@ import { requestWorldStageNavigation } from '@/components/three/world-stage/stag
 import { avatarPositionRef, useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 
+const TradingFloorTerminal = dynamic(() => import('@/components/game/trading-floor/terminal/trading-floor-terminal').then((module) => module.TradingFloorTerminal), { ssr: false });
 const ExchangeModal = dynamic(
   () => import('@/components/game/exchange-modal'),
   { ssr: false },
@@ -142,6 +143,7 @@ export default function TradingFloorPage() {
 
       {/* The Trading Floor panel — the SAME modal the sidebar opens. */}
       <ExchangeModal />
+      <TradingFloorTerminal />
 
       <TradingFloorMobileControls />
 

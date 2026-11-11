@@ -2,15 +2,10 @@
 
 import { useState } from 'react';
 import {
-  cloneFloorArenaParams,
   floorArenaTemplateById,
-  validateFloorArenaParams,
-  type FloorArenaParams,
 } from '@clawville/shared';
 
 import {
-  FloorArenaApiError,
-  floorArenaErrorCode,
   floorArenaErrorCopy,
   useFloorArenaAddons,
   useFloorArenaAgent,
@@ -18,7 +13,6 @@ import {
   useFloorArenaMyEvents,
   useFloorArenaSuggestionAction,
   usePatchFloorArenaAddons,
-  usePatchFloorArenaParams,
   usePatchFloorArenaSettings,
   useSetFloorArenaSeat,
   useSetFloorArenaStatus,
@@ -47,13 +41,11 @@ import {
   ArenaCopyField,
   ArenaMuted,
   ArenaPill,
-  ArenaStickyFooter,
   arenaButtonStyle,
   arenaCardStyle,
   arenaPrimaryButtonStyle,
   useArenaNow,
 } from './arena-kit';
-import { ArenaParamsForm } from './arena-params-form';
 import { ArenaWalletSolLine, ArenaWithdrawPanel } from './withdraw-panel';
 
 export type DeskStatus = 'trading' | 'waiting' | 'paused' | 'stopped';
@@ -141,80 +133,6 @@ function SeatBlock({ me }: { me: FloorArenaMyAgent }) {
       Sit at any desk in the Trading Floor to start trading. Your agent opens new positions only while it holds a desk;
       exits always run.
     </ArenaMuted>
-  );
-}
-
-function RulesEditor({ me, compact }: { me: FloorArenaMyAgent; compact: boolean }) {
-  const [draft, setDraft] = useState<FloorArenaParams | null>(null);
-  const [errors, setErrors] = useState<string[]>([]);
-  const [message, setMessage] = useState<string | null>(null);
-  const save = usePatchFloorArenaParams();
-
-  if (!me.params) {
-    return <ArenaMuted>Your agent's rules could not be read right now, so they cannot be edited. Try again shortly.</ArenaMuted>;
-  }
-  if (!draft) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <button
-          type="button"
-          onClick={() => {
-            setDraft(cloneFloorArenaParams(me.params!));
-            setErrors([]);
-            setMessage(null);
-          }}
-          style={{ ...arenaButtonStyle, alignSelf: 'flex-start' }}
-        >
-          Edit rules
-        </button>
-        <InlineMessage text={message} tone={FLOOR_TEXT.accent} />
-      </div>
-    );
-  }
-
-  const submit = () => {
-    const result = validateFloorArenaParams(draft);
-    if (!result.ok) {
-      setErrors(result.errors);
-      return;
-    }
-    setErrors([]);
-    save.mutate(
-      { params: result.params },
-      {
-        onSuccess: () => {
-          setDraft(null);
-          setMessage('Rules saved. They apply from the next scan.');
-        },
-        onError: (error) => {
-          if (floorArenaErrorCode(error) === 'invalid_params' && error instanceof FloorArenaApiError) {
-            setErrors(error.errors);
-          }
-          setMessage(floorArenaErrorCopy(error));
-        },
-      },
-    );
-  };
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="arena-rules-editor">
-      <ArenaParamsForm value={draft} onChange={setDraft} errors={errors} compact={compact} disabled={save.isPending} />
-      <InlineMessage text={message} />
-      {/* The engine freezes a position's exits when it opens (engine.ts
-          exitsOf, entry_features.exits), so a tighter stop cannot rescue a
-          position that is already open. */}
-      <ArenaMuted size={11}>
-        Changes apply to positions opened after you save. Open positions keep the exits they were opened with.
-      </ArenaMuted>
-      <ArenaStickyFooter>
-        <button type="button" onClick={() => setDraft(null)} style={arenaButtonStyle} disabled={save.isPending}>
-          Cancel
-        </button>
-        <button type="button" onClick={submit} style={arenaPrimaryButtonStyle} disabled={save.isPending}>
-          {save.isPending ? 'Saving...' : 'Save rules'}
-        </button>
-      </ArenaStickyFooter>
-    </div>
   );
 }
 
@@ -352,16 +270,18 @@ export function MyTrader({
   compact,
   onBack,
   onOpenProfile,
+  controlsOnly = false,
 }: {
   me: FloorArenaMyAgent;
   active: boolean;
   compact: boolean;
   onBack: () => void;
   onOpenProfile: (agentId: string) => void;
+  controlsOnly?: boolean;
 }) {
   const nowMs = useArenaNow(active, 30_000);
-  const profile = useFloorArenaAgent(me.id, active);
-  const events = useFloorArenaMyEvents(me.id, active);
+  const profile = useFloorArenaAgent(me.id, active && !controlsOnly);
+  const events = useFloorArenaMyEvents(me.id, active && !controlsOnly);
   const status = useSetFloorArenaStatus();
   const settings = usePatchFloorArenaSettings();
   const suggestion = useFloorArenaSuggestionAction();
@@ -373,7 +293,7 @@ export function MyTrader({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }} data-testid="arena-my-trader">
-      <ArenaBackButton onClick={onBack} />
+      {!controlsOnly && <ArenaBackButton onClick={onBack} />}
       <header style={{ ...arenaCardStyle, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
           <h3 style={{ margin: 0, color: FLOOR_TEXT.value, fontSize: 16 }}>{me.name}</h3>
@@ -385,7 +305,7 @@ export function MyTrader({
           {me.paramsVersion !== null ? ` · rules v${me.paramsVersion}` : ''}
         </ArenaMuted>
         <SeatBlock me={me} />
-        <ArenaStatsRow stats={me.stats} />
+        {!controlsOnly && <ArenaStatsRow stats={me.stats} />}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {me.status !== 'stopped' ? (
             <button
@@ -412,6 +332,7 @@ export function MyTrader({
         <InlineMessage text={message} />
       </header>
 
+      {!controlsOnly && <>
       <ArenaBlock title="Decision stream" testId="arena-desk-stream">
         <ArenaEventStream events={events.data ?? []} isLoading={events.isLoading} isError={events.isError} nowMs={nowMs} />
       </ArenaBlock>
@@ -466,6 +387,16 @@ export function MyTrader({
             ) : undefined
           }
         />
+
+      </ArenaBlock>
+
+      <ArenaBlock title="Closed trades (last 50)">
+        <ArenaClosedTrades positions={profile.data?.closedPositions ?? []} nowMs={nowMs} limit={50} />
+      </ArenaBlock>
+
+      </>}
+
+      <ArenaBlock title="Report settings">
         <label
           style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 44, marginTop: 8, cursor: 'pointer', color: FLOOR_TEXT.primary, fontSize: 12 }}
         >
@@ -483,14 +414,6 @@ export function MyTrader({
           />
           Auto-apply suggestions (each one stays inside the limits, and every change is logged publicly)
         </label>
-      </ArenaBlock>
-
-      <ArenaBlock title="Rules">
-        <RulesEditor me={me} compact={compact} />
-      </ArenaBlock>
-
-      <ArenaBlock title="Closed trades (last 50)">
-        <ArenaClosedTrades positions={profile.data?.closedPositions ?? []} nowMs={nowMs} limit={50} />
       </ArenaBlock>
 
       <ArenaBlock title="Paid add-ons">
