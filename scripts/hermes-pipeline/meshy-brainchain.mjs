@@ -68,7 +68,7 @@ async function balance() {
 }
 const lockPath = join(root, 'job.lock');
 const lockTag = `${process.pid} ${Date.now()}`;
-async function guard(kind, target) {
+async function guard(kind, target, need) {
   try {
     const fd = openSync(lockPath, 'wx'); // exclusive create: fails if any lock exists
     writeSync(fd, `${lockTag} ${kind}`); closeSync(fd);
@@ -81,6 +81,19 @@ async function guard(kind, target) {
     try { if (readFileSync(lockPath, 'utf8').startsWith(lockTag)) unlinkSync(lockPath); } catch {}
   });
   ledger = loadLedger(); // read only after the lock is held
+  const bad = ledger.jobs.filter((j) => !(Number.isFinite(j.charged ?? j.reserved) && (j.charged ?? j.reserved) >= 0));
+  if (bad.length) {
+    console.error(`refused: ${bad.length} ledger record(s) with a negative or invalid charge; reconcile ledger.json first`);
+    process.exit(5);
+  }
+  if (ledger.needsReconcile) {
+    console.error(`refused: ledger.needsReconcile is set (${ledger.needsReconcile}); check the Meshy account history, fix the charge, then remove the flag`);
+    process.exit(5);
+  }
+  if (need && !ledger[need]) {
+    console.error(`refused: no ${need} task in the ledger`);
+    process.exit(5);
+  }
   const spent = spentOf(ledger);
   const est = ESTIMATE[kind];
   const live = await balance();
@@ -113,8 +126,14 @@ async function dl(url, dest) {
 async function record(job, id) {
   const after = await balance();
   const delta = job.before - after;
-  // A refill during the job makes the delta negative or too small: keep the estimate then.
-  job.id = id; job.after = after; job.charged = delta >= job.reserved ? delta : job.reserved;
+  // A delta below the published price means a refill (or a price change) landed
+  // during the job, so the true charge is unknown. Record the price and block
+  // every further paid job until a person reconciles it from the account history.
+  job.id = id; job.after = after; job.charged = Math.max(delta, job.reserved);
+  if (delta < job.reserved) {
+    ledger.needsReconcile = `job ${id}: balance fell ${delta}, price ${job.reserved}`;
+    console.error(`WARNING: ${ledger.needsReconcile}; further paid jobs are blocked`);
+  }
   delete job.reserved; saveLedger();
   console.log(`charged ${job.charged} credits (estimate ${ESTIMATE[job.kind]}); total spent ${spentOf(ledger)} of ${CAP}`);
 }
@@ -144,9 +163,9 @@ if (cmd === 'balance') {
   if (t.thumbnail_url) await dl(t.thumbnail_url, join(out, `thumb-${id.slice(0, 8)}.png`)).catch(() => {});
   await record(job, id);
 } else if (cmd === 'rig') {
-  const meshId = ledger.robot_mesh; if (!meshId) throw new Error('no robot mesh task in ledger');
   const out = join(root, 'robot'); mkdirSync(join(out, 'anim'), { recursive: true });
-  const job = await guard('rig', 'robot');
+  const job = await guard('rig', 'robot', 'robot_mesh');
+  const meshId = ledger.robot_mesh;
   const r = await req('POST', '/rigging', { input_task_id: meshId, height_meters: 1.9 });
   const id = r.result; job.id = id; ledger.robot_rig = id; saveLedger();
   const t = await poll(`/rigging/${id}`);
@@ -157,10 +176,11 @@ if (cmd === 'balance') {
   if (b.running_glb_url) await dl(b.running_glb_url, join(out, 'anim', 'run.glb'));
   await record(job, id);
 } else if (cmd === 'anim') {
-  const rigId = ledger.robot_rig; const actionId = Number(a4);
-  if (!rigId || !a3 || Number.isNaN(actionId)) throw new Error('usage: anim robot <slot> <action_id> (after rig)');
+  const actionId = Number(a4);
+  if (!a3 || Number.isNaN(actionId)) throw new Error('usage: anim robot <slot> <action_id> (after rig)');
   const out = join(root, 'robot', 'anim'); mkdirSync(out, { recursive: true });
-  const job = await guard('anim', `robot:${a3}`);
+  const job = await guard('anim', `robot:${a3}`, 'robot_rig');
+  const rigId = ledger.robot_rig;
   const r = await req('POST', '/animations', { rig_task_id: rigId, action_id: actionId });
   const id = r.result; job.id = id; saveLedger();
   const t = await poll(`/animations/${id}`);
