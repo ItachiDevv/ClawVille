@@ -50,7 +50,7 @@ const root = resolve('apps/web/public/models/brainchain-candidates');
 mkdirSync(root, { recursive: true });
 const ledgerPath = join(root, 'ledger.json');
 const loadLedger = () => (existsSync(ledgerPath) ? JSON.parse(readFileSync(ledgerPath, 'utf8')) : { jobs: [] });
-let ledger = loadLedger();
+let ledger = { jobs: [] }; // paid commands load it only after the lock (guard)
 const spentOf = (l) => l.jobs.reduce((sum, j) => sum + (j.charged ?? j.reserved ?? 0), 0);
 const saveLedger = () => writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -126,11 +126,13 @@ async function dl(url, dest) {
 async function record(job, id) {
   const after = await balance();
   const delta = job.before - after;
-  // A delta below the published price means a refill (or a price change) landed
-  // during the job, so the true charge is unknown. Record the price and block
-  // every further paid job until a person reconciles it from the account history.
+  // Any delta other than the published price means a refill, a top-up or a price
+  // change landed during the job, so the true charge is unknown. Record the larger
+  // value and block every further paid job until a person reconciles it from the
+  // account history. Residual limit: a price rise exactly cancelled by a refill in
+  // the same window reads as the published price; the balance API cannot show it.
   job.id = id; job.after = after; job.charged = Math.max(delta, job.reserved);
-  if (delta < job.reserved) {
+  if (delta !== job.reserved) {
     ledger.needsReconcile = `job ${id}: balance fell ${delta}, price ${job.reserved}`;
     console.error(`WARNING: ${ledger.needsReconcile}; further paid jobs are blocked`);
   }
@@ -147,7 +149,7 @@ const MESH = {
 const [cmd, target, a3, a4] = process.argv.slice(2);
 if (cmd === 'balance') {
   const live = await balance();
-  console.log(`balance ${live} | spent ${spentOf(ledger)} of cap ${CAP}`);
+  console.log(`balance ${live} | spent ${spentOf(loadLedger())} of cap ${CAP}`);
 } else if (cmd === 'mesh') {
   if (!MESH[target] || !a3) throw new Error('usage: mesh <building|robot> <viewsDir>');
   const views = ['front', 'back', 'side', '3q'].map((v) => join(resolve(a3), `${target === 'building' ? 'bldg' : 'robot'}-${v}.png`)).filter(existsSync);
