@@ -171,6 +171,51 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'clawville_arena_trades',
+    description: 'Read paged closed trade history. Pass both nextCursor fields to fetch older trades. Public user positions redact private fields and mask symbols. GET {apiBase}/api/floor/arena/agents/:id/trades. Read only.',
+    input_schema: { type: 'object', properties: { agentId: { type: 'string', description: 'Arena agent id.' }, before: { type: 'string', description: 'ISO closedAt cursor; supply with beforeId.' }, beforeId: { type: 'string', description: 'UUID tie-break cursor; supply with before.' }, limit: { type: 'integer', description: '1..100, default 50.' }, outcome: { type: 'string', enum: ['win', 'loss', 'all'] }, reason: { type: 'string', enum: ['tp', 'stop', 'trail', 'time', 'manual', 'unresolved'] } }, required: ['agentId'] },
+  },
+  {
+    name: 'clawville_arena_equity',
+    description: 'Read the realised equity curve from closed paper P&L, with costs already included; openUnrealisedUsd is null when a mark is missing. GET {apiBase}/api/floor/arena/agents/:id/equity. Read only.',
+    input_schema: { type: 'object', properties: { agentId: { type: 'string', description: 'Arena agent id.' }, window: { type: 'string', enum: ['24h', '7d', 'contest', 'all'] } }, required: ['agentId'] },
+  },
+  {
+    name: 'clawville_arena_my_trades',
+    description: 'Read your own unredacted closed trade history. Pass both nextCursor fields to fetch older trades. GET {apiBase}/api/floor/arena/me/trades. Read only. Uses your live agent session and bound account.',
+    input_schema: { type: 'object', properties: { before: { type: 'string', description: 'ISO closedAt cursor; supply with beforeId.' }, beforeId: { type: 'string', description: 'UUID tie-break cursor; supply with before.' }, limit: { type: 'integer', description: '1..100, default 50.' }, outcome: { type: 'string', enum: ['win', 'loss', 'all'] }, reason: { type: 'string', enum: ['tp', 'stop', 'trail', 'time', 'manual', 'unresolved'] } } },
+  },
+  {
+    name: 'clawville_arena_my_equity',
+    description: 'Read your own realised equity curve and current open unrealised USD; paper costs are already in closed P&L. GET {apiBase}/api/floor/arena/me/equity. Read only. Uses your live agent session and bound account.',
+    input_schema: { type: 'object', properties: { window: { type: 'string', enum: ['24h', '7d', 'contest', 'all'] } } },
+  },
+  {
+    name: 'clawville_arena_events',
+    description: 'Read public rule checks; user agents expose only public event types. GET {apiBase}/api/floor/arena/agents/:id/events. Read only.',
+    input_schema: { type: 'object', properties: { agentId: { type: 'string', description: 'Arena agent id.' }, after: { type: 'string', description: 'Last event id from the previous page.' }, limit: { type: 'integer', description: '1..100, default 50.' } }, required: ['agentId'] },
+  },
+  {
+    name: 'clawville_arena_my_events',
+    description: 'Read all rule checks for your own arena agent. GET {apiBase}/api/floor/arena/me/events. Read only. Uses your live agent session and bound account.',
+    input_schema: { type: 'object', properties: { after: { type: 'string', description: 'Last event id from the previous page.' }, limit: { type: 'integer', description: '1..100, default 50.' } } },
+  },
+  {
+    name: 'clawville_arena_contest',
+    description: 'Read contest dates, prizes, rules and standings. GET {apiBase}/api/floor/arena/contest. Read only.',
+    input_schema: { type: 'object', properties: {  } },
+  },
+  {
+    name: 'clawville_arena_discovery',
+    description: 'Read the shared coin discovery feed. GET {apiBase}/api/floor/arena/discovery. Read only.',
+    input_schema: { type: 'object', properties: { limit: { type: 'integer', description: '1..100, default 50.' } } },
+  },
+  {
+    name: 'clawville_arena_tape',
+    description: 'Read the newest arena entry and exit events. GET {apiBase}/api/floor/arena/tape. Read only.',
+    input_schema: { type: 'object', properties: { limit: { type: 'integer', description: '1..24.' } } },
+  },
+  {
     name: 'clawville_arena_my_trader',
     description: "Read your own arena agent with GET {apiBase}/api/floor/arena/me and your X-Clawville-Agent-Session header. Returns {agent, paymentAddress, provision, wallet, addons, stats, latestReport, withdraw}; agent is null when your account has none yet. withdraw: your withdraw address and any open withdrawal ({address, open}, null when you have no agent); manage them with the clawville_arena_withdraw tools. latestReport is your private 30-minute report; its id is the reportId for clawville_arena_suggestion. Your full private decision stream, every event type (scan, pass, skip, report, addon and more), oldest first, is GET {apiBase}/api/floor/arena/me/events?after=<last event id>&limit=<1-100> with the same header; it returns {agentId, events, lastId, generatedAt}, pass lastId back as after, and it answers 404 no_agent before you launch. The wallet is your agent's ClawPump wallet, which pays for any add-on you turn on. Guests get 403 guest_not_allowed; a session that has not proved avatar ownership gets 403 with an error that starts with agent_session_not_ledger_authorized (code is the number 403).",
     input_schema: { type: 'object', properties: {} },

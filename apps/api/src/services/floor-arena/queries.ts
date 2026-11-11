@@ -28,7 +28,7 @@ import {
 } from '@clawville/shared';
 // Type only: clawpump-writer imports this module at run time (isArenaClawPumpOwnedBy).
 import type { ClawPumpArenaWalletLive } from '../clawpump-writer';
-import { readArenaAggregates, toCents, type ArenaAgentAggregate, type ArenaLeaderboardWindow } from './leaderboard';
+import { closedInWindowSql, windowPnlUsdSql, type ArenaWindowBounds, readArenaAggregates, toCents, type ArenaAgentAggregate, type ArenaLeaderboardWindow } from './leaderboard';
 
 /**
  * Trading Floor Arena data access (docs/trading-floor-arena.md §4, §5).
@@ -802,6 +802,74 @@ export async function readArenaPositions(agentId: string, status: 'open' | 'clos
     ORDER BY ${order} LIMIT ${limit}
   `);
   return list.map(mapPosition);
+}
+
+/** Terminal history uses the full timestamp precision for a stable (closed_at, id) cursor. */
+export interface ArenaTradesQuery {
+  before?: string;
+  beforeId?: string;
+  limit: number;
+  outcome: 'win' | 'loss' | 'all';
+  reason?: string;
+}
+
+export async function readArenaTrades(agentId: string, query: ArenaTradesQuery, readRows: (query: SQL) => Promise<Row[]> = rows): Promise<ArenaPosition[]> {
+  const cursor = query.before && query.beforeId
+    ? sql`AND (closed_at, id) < (${query.before}::timestamptz, ${query.beforeId}::uuid)` : sql``;
+  const outcome = query.outcome === 'win' ? sql`AND pnl_usd > 0`
+    : query.outcome === 'loss' ? sql`AND pnl_usd < 0` : sql``;
+  const reason = query.reason ? sql`AND exit_reason = ${query.reason}` : sql``;
+  const list = await readRows(sql`
+    SELECT *, to_char(closed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
+    FROM floor_arena_positions
+    WHERE agent_id = ${agentId} AND status = 'closed' AND closed_at IS NOT NULL
+      ${cursor} ${outcome} ${reason}
+    ORDER BY closed_at DESC, id DESC LIMIT ${Math.min(100, Math.max(1, query.limit)) + 1}
+  `);
+  // Entry/exit fills include costs and may include partial exits. No stored column gives an exact exit price.
+  return list.map((row) => ({ ...mapPosition(row), closedAt: String(row.cursor_at) }));
+}
+
+export interface ArenaEquityData {
+  /** Cumulative window-scored P&L, including paper execution costs and contest unresolved losses. */
+  series: Array<{ closedAt: string; equityUsd: number }>;
+  /** Total P&L of open positions, including prior partial proceeds; null if any open position lacks a mark, zero if none. */
+  openPnlUsd: number | null;
+  startAt: string | null;
+}
+
+export async function readArenaEquity(agentId: string, bounds: ArenaWindowBounds, readRows: (query: SQL) => Promise<Row[]> = rows): Promise<ArenaEquityData> {
+  const inWindow = closedInWindowSql(bounds);
+  const pnlUsd = windowPnlUsdSql(bounds);
+  // Aggregate the whole selected history in SQL before bounding the response. LIMIT before SUM loses P&L.
+  const [points, open] = await Promise.all([
+    readRows(sql`
+      WITH cumulative AS (
+        SELECT id, closed_at,
+          sum(${pnlUsd}) OVER (ORDER BY closed_at, id ROWS UNBOUNDED PRECEDING) AS equity_usd,
+          ntile(500) OVER (ORDER BY closed_at, id) AS bucket
+        FROM floor_arena_positions p
+        WHERE p.agent_id = ${agentId} AND ${inWindow} AND p.closed_at IS NOT NULL
+      ), endpoints AS (
+        SELECT DISTINCT ON (bucket) bucket, id, closed_at, equity_usd,
+          min(closed_at) OVER () AS start_at
+        FROM cumulative ORDER BY bucket, closed_at DESC, id DESC
+      )
+      SELECT *, to_char(closed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS point_at,
+        to_char(start_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS first_at
+      FROM endpoints ORDER BY closed_at, id LIMIT 500
+    `),
+    readRows(sql`
+      SELECT CASE WHEN count(*) FILTER (WHERE last_mark_mult IS NULL) > 0 THEN NULL
+        ELSE coalesce(sum(realised_usd + size_usd * remaining_fraction * last_mark_mult - size_usd), 0) END AS open_pnl_usd
+      FROM floor_arena_positions WHERE agent_id = ${agentId} AND status = 'open' LIMIT 1
+    `),
+  ]);
+  return {
+    series: points.map((row) => ({ closedAt: String(row.point_at), equityUsd: toCents(num(row.equity_usd)) / 100 })),
+    openPnlUsd: numOrNull(open[0]?.open_pnl_usd),
+    startAt: bounds.closedFrom?.toISOString() ?? bounds.openedFrom?.toISOString() ?? (points[0]?.first_at ? String(points[0].first_at) : null),
+  };
 }
 
 export async function readArenaParamChanges(agentId: string, limit: number): Promise<ArenaParamChange[]> {

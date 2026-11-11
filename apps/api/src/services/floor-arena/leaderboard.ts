@@ -86,7 +86,7 @@ export function isArenaLeaderboardWindow(value: unknown): value is ArenaLeaderbo
 }
 
 export function resolveLeaderboardBounds(
-  window: ArenaLeaderboardWindow,
+  window: ArenaLeaderboardWindow | '7d',
   now: Date,
   contest: ArenaContestWindow = FLOOR_ARENA_CONTEST,
 ): ArenaWindowBounds {
@@ -97,7 +97,7 @@ export function resolveLeaderboardBounds(
     };
   }
   const plain = { openedFrom: null, openedTo: null, closedTo: null, unresolvedAsLoss: false };
-  if (window === '24h') return { ...plain, closedFrom: new Date(now.getTime() - 24 * 3_600_000) };
+  if (window === '24h' || window === '7d') return { ...plain, closedFrom: new Date(now.getTime() - (window === '24h' ? 1 : 7) * 24 * 3_600_000) };
   return { ...plain, closedFrom: null };
 }
 
@@ -218,7 +218,7 @@ type AggregateSqlRow = {
 
 /** The aggregate query: one row per agent (optionally only `agentIds`). */
 export function arenaAggregatesSql(
-  window: ArenaLeaderboardWindow,
+  window: ArenaLeaderboardWindow | '7d',
   now: Date,
   agentIds: readonly string[] | null = null,
 ): SQL {

@@ -293,7 +293,17 @@ sight was lost on expiry, the hold low was never stored and the pass/skip stream
 
 ## 5. CONTRACT — API (`apps/api/src/routes/floor-arena.ts`, mounted at `/api/floor/arena`; public GETs registered before `sessionMiddleware` like `trading-floor.ts`)
 
-**Last Audited: 2026-11-11 21:38Z (terminal phase 1, local implementation).** Drift note: the separate Trading Floor window consumes these existing routes; the Exchange no longer contains a floor tab. Dashboard selects `/me` statistics by contest, 24h or all time. Closed trades use the public profile's latest 50 positions. Owner rule checks use `/me/events`; other agents use public events. Strategy keeps `PATCH /me/params` and shared bounds. Reports keep the existing suggestion route. No new route, schema or equity source exists in phase 1.
+**Last Audited: 2026-11-11 21:51:21Z (terminal phase 2, local implementation; protocol 134).** Drift note: paged trade history and realised equity replace the terminal profile-history snapshot; no settlement or schema change.
+
+**Terminal phase 2 read contract (protocol 134).**
+
+Last Audited: 2026-11-11. Drift note: equity now follows the statistics position set and P&L; open P&L includes earlier realised proceeds.
+PARITY note: human path: terminal equity; agent path: public/owner equity REST routes and MCP tools; settlement n/a, read only. Owner reads retain bound-avatar resolution.
+- `GET /agents/:id/trades` and `GET /me/trades`: `before=<closedAt ISO>` plus `beforeId=<uuid>` must occur together; `limit=1..100` defaults to 50; `outcome=win|loss|all` defaults to all; optional `reason=tp|stop|trail|time|manual|unresolved`. Newest first by `(closedAt, id)`, strict keyset comparison, with `nextCursor: {before, beforeId}` or null. Return `before` unchanged; do not convert it through `Date`, which loses sub-millisecond precision. Win is positive P&L, loss is negative, and all includes break-even and unresolved closes. Rows include `exitReason`, `pnlUsd`, `pnlMult`, `openedAt`, `closedAt`, `sizeUsd`. `exitPriceUsd` is omitted: partial exits and paper costs prevent exact derivation from stored position columns.
+- `GET /agents/:id/equity` and `GET /me/equity`: `window=24h|7d|contest|all`, default all. Response `{agentId, window, series: [{closedAt, equityUsd}], openPnlUsd, startAt, generatedAt}`. `equityUsd` is cumulative closed `pnlUsd`; paper costs are already included, never deducted twice. The position set and P&L match leaderboard statistics: contest unresolved closes contribute `realisedUsd - sizeUsd`; other windows exclude null closed P&L. Each point has an actual close timestamp; the SQL keeps the last cumulative point of each of at most 500 ordered buckets. Empty history returns `[]`. The 24h and 7d windows reset at their start; contest selects positions opened from contest start through contest end, both inclusive, with no close-time bound. Points sort by close time. Cumulative points use the same cent rounding as statistics after summation. All starts at its first close, or null when empty.
+- `openPnlUsd` is the current sum of `realisedUsd + sizeUsd * remainingFraction * lastMarkMult - sizeUsd`, independent of the selected history window. Any missing open mark makes the aggregate null; no open positions returns zero. The UI label is "Open positions P&L, at last mark". A $20 position with $30 realised proceeds, remaining fraction 0.5 and mark 0.8 has +$18 open P&L.
+- Public trade rows use precisely the profile policy: house rows get the content mask; user rows first remove private fields with `redactArenaPositionForPublic`, then get the content mask. Owner trade rows retain their fields. Equity exposes aggregate USD only. Every public query parameter contributes to the cache key; new per-IP limiter keys isolate history and equity reads. Owner reads use the existing cookie or ledger-capable agent-session `/me` auth chain and `no-store`.
+- Text MCP tools: `clawville_arena_trades`, `clawville_arena_equity`, `clawville_arena_my_trades`, `clawville_arena_my_equity`, `clawville_arena_events`, `clawville_arena_my_events`, `clawville_arena_contest`, `clawville_arena_discovery`, `clawville_arena_tape`. These tools have no app UI metadata. The trading protocol page, Nori and shared orientation name the new reads; protocol 134 refreshes the hosted manual copy through the existing consumer.
 
 Public (60/min per IP, short cache): `GET /templates` (templates + hard rules + bounds + each house agent's live stats),
 `GET /leaderboard?window=contest|24h|all` (rows: rank, agentId, name, kind, templateId, realisedUsd, trades, wins,
@@ -1295,7 +1305,12 @@ House ClawPump agents (2026-10-16, founder go): the five house paper bots now ge
 - 2026-11-11 21:38Z: Trading Floor terminal phase 1, local implementation on `feat/tf-terminal`. The floor leaves the Exchange window. Six tabs, owner activity, bounded five-section Strategy and existing owner controls use existing hooks. Guest public views remain available. The event reader retains unknown-safe event data. Knowledge surfaces replace Exchange-tab directions; protocol is 133. No commit or deployment occurs in this task. Browser and device checks remain separate from source and test verification.
   PARITY note: human path: terminal and existing arena hooks; agent path: existing arena REST routes and tools; settlement binds to the same authenticated avatar resolver.
 
+- 2026-11-11 21:51:21Z: Terminal phase 2 adds owner/public paged closed trades, cumulative equity, nine text MCP tools and protocol 134. Terminal Trades and Dashboard consume the reads; Other agents uses public reads. Local verification only; no commit or deployment in this task.
+
 ## 8. Punch list (tracked deferrals, rule E6)
+
+**Phase 2 index deferral:** positions have `(agent_id, status)`, `(agent_id, opened_at DESC)` and `(closed_at)` indexes, but no `(agent_id, status, closed_at, id)` index. No migration was added, as requested. Every history SQL read filters by `agent_id`; trade pages limit to at most 101 rows including the next-page probe. Equity SQL returns at most 500 bucket endpoints and one aggregate open-mark row; aggregate work still grows with that agent's selected closed history. A future index needs a separate migration review.
+
 
 | # | Item | Owner condition | Review deadline |
 |---|---|---|---|

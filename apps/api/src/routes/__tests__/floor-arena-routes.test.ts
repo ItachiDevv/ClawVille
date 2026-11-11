@@ -141,6 +141,8 @@ function makeDeps() {
       reports.set(id, { ...report, suggestionState: state });
       return true;
     },
+    readTrades: async () => [],
+    readEquity: async (_id, bounds) => ({ series: [], openPnlUsd: 0, startAt: bounds.closedFrom?.toISOString() ?? bounds.openedFrom?.toISOString() ?? null }),
     readPositions: async (_agentId, status) => (status === 'closed' ? [{
       id: 'p1', mint: 'MintA', symbol: 'WIF', source: 'private:nansen-token-screener-sol', openedAt: NOW.toISOString(), sizeUsd: 20,
       tokens: 100, entryPriceUsd: 0.2, entryFillSource: 'quote', entryFeatures: { source: 'private:x', exits: {} }, paramsVersion: 1,
@@ -880,4 +882,107 @@ describe('helpers', () => {
       { path: 'exits.tp', from: [[1.1, 1]], to: [[1.2, 1]] },
     ])).toBe('Changed 2 settings: exits.stop_mult off -> 0.7; exits.tp [[1.1,1]] -> [[1.2,1]]');
   });
+});
+
+
+interface TerminalTradesBody {
+  trades: Array<{ source: string | null; entryFeatures: unknown; symbol: string | null; masked?: boolean }>;
+  nextCursor: { before: string; beforeId: string } | null;
+}
+interface TerminalEquityBody { series: Array<{ closedAt: string; equityUsd: number }>; openPnlUsd: number | null }
+
+describe('terminal history and equity', () => {
+  test('public redaction, exact cursor, limit, and cache separation', async () => {
+    const state = app();
+    await state.call('POST', '/me/launch', launchBody());
+    const queries: unknown[] = [];
+    state.deps.readTrades = async (_id, query) => {
+      queries.push(query);
+      return (await state.deps.readPositions(AGENT_ID, 'closed', 50)).map((p, i) => ({ ...p,
+        id: `00000000-0000-4000-8000-00000000000${i + 1}`, closedAt: '2026-10-01T12:00:00.123456Z' }));
+    };
+    const base = `/agents/${AGENT_ID}/trades`;
+    const first = await (await state.routes.request(`${base}?limit=1`)).json() as TerminalTradesBody;
+    expect(first.trades).toHaveLength(1);
+    expect(first.trades[0]!.source).toBe('addon');
+    expect(first.trades[0]!.entryFeatures).toBeNull();
+    expect(first.trades[0]).not.toHaveProperty('exitPriceUsd');
+    expect(first.nextCursor).toEqual({ before: '2026-10-01T12:00:00.123456Z', beforeId: '00000000-0000-4000-8000-000000000001' });
+    await state.routes.request(`${base}?limit=1`);
+    expect(queries).toHaveLength(1);
+    for (const q of ['limit=2', 'limit=1&outcome=win', 'limit=1&outcome=loss', 'limit=1&reason=stop',
+      'limit=1&before=2026-10-01T12:00:00.123456Z&beforeId=00000000-0000-4000-8000-000000000001',
+      'limit=1&before=2026-10-01T12:00:00.123456Z&beforeId=00000000-0000-4000-8000-000000000002',
+      'limit=1&before=2026-10-01T12:00:00.123455Z&beforeId=00000000-0000-4000-8000-000000000002']) {
+      expect((await state.routes.request(`${base}?${q}`)).status).toBe(200);
+    }
+    expect(queries).toHaveLength(8);
+    expect(queries[2]).toMatchObject({ outcome: 'win', limit: 1 });
+    expect(queries[4]).toMatchObject({ reason: 'stop' });
+    expect((await (await state.routes.request(`${base}?limit=100`)).json() as TerminalTradesBody).nextCursor).toBeNull();
+    state.agents.get(AGENT_ID)!.kind = 'house';
+    state.advance(6000);
+    expect((await (await state.routes.request(base)).json() as TerminalTradesBody).trades[0]!.source).toContain('private:');
+  });
+  test('query validation rejects bad bounds, filters, and incomplete cursors', async () => {
+    const { routes } = app();
+    for (const query of ['limit=0', 'limit=101', 'limit=1.5', 'limit=NaN', 'limit=', 'outcome=draw', 'reason=bad',
+      'before=2026-10-01T00:00:00Z', 'beforeId=00000000-0000-4000-8000-000000000001', 'unknown=x']) {
+      expect((await routes.request(`/agents/${AGENT_ID}/trades?${query}`)).status).toBe(400);
+    }
+    expect((await routes.request(`/agents/${AGENT_ID}/equity?window=bad`)).status).toBe(400);
+    expect((await routes.request(`/agents/${AGENT_ID}/trades`)).status).toBe(404);
+  });
+  test('owner auth and private fields stay equal for human and agent identities', async () => {
+    const state = app();
+    for (const path of ['/me/trades', '/me/equity']) expect((await state.routes.request(path)).status).toBe(401);
+    await state.call('POST', '/me/launch', launchBody());
+    state.deps.readTrades = async () => state.deps.readPositions(AGENT_ID, 'closed', 50);
+    for (const kind of ['user', 'agent']) {
+      const headers = { 'x-test-user': USER, 'x-test-kind': kind };
+      const response = await state.call('GET', '/me/trades', undefined, headers);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toContain('no-store');
+      const body = await response.json() as TerminalTradesBody;
+      expect(body.trades[0]!.source).toContain('private:');
+      expect(body.trades[0]!.entryFeatures).not.toBeNull();
+      expect((await state.call('GET', '/me/equity', undefined, headers)).status).toBe(200);
+    }
+    expect((await state.call('GET', '/me/trades', undefined, { 'x-test-user': OTHER })).status).toBe(404);
+  });
+  test('equity windows isolate caches and pass exact time boundaries', async () => {
+    const state = app();
+    await state.call('POST', '/me/launch', launchBody());
+    const calls: unknown[] = [];
+    state.deps.readEquity = async (_id, bounds) => {
+      calls.push(bounds);
+      return { series: [], startAt: null, openPnlUsd: null };
+    };
+    for (const window of ['all', '24h', '7d', 'contest']) {
+      const body = await (await state.routes.request(`/agents/${AGENT_ID}/equity?window=${window}`)).json() as TerminalEquityBody;
+      expect(body.series).toEqual([]);
+      expect(body.openPnlUsd).toBeNull();
+      await state.routes.request(`/agents/${AGENT_ID}/equity?window=${window}`);
+    }
+    expect(calls).toEqual([
+      { openedFrom: null, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: false },
+      { openedFrom: null, openedTo: null, closedFrom: new Date('2026-09-30T12:00:00.000Z'), closedTo: null, unresolvedAsLoss: false },
+      { openedFrom: null, openedTo: null, closedFrom: new Date('2026-09-24T12:00:00.000Z'), closedTo: null, unresolvedAsLoss: false },
+      { openedFrom: new Date(FLOOR_ARENA_CONTEST.startsAt), openedTo: new Date(FLOOR_ARENA_CONTEST.endsAt), closedFrom: null, closedTo: null, unresolvedAsLoss: true },
+    ]);
+  });
+});
+
+
+test('terminal reads use the real ledger gate and public symbol mask', async () => {
+  const bound = app({ auth: [fakeIdentity, requireLedgerCapableIdentity] });
+  for (const path of ['/me/trades', '/me/equity']) {
+    expect((await bound.call('GET', path, undefined, { 'x-test-user': USER, 'x-test-kind': 'agent', 'x-test-ledger': 'false' })).status).toBe(403);
+  }
+  const state = app();
+  await state.call('POST', '/me/launch', launchBody());
+  state.deps.readTrades = async () => (await state.deps.readPositions(AGENT_ID, 'closed', 50)).map(p => ({ ...p, symbol: 'n1gg3r' }));
+  const result = await (await state.routes.request(`/agents/${AGENT_ID}/trades`)).json() as TerminalTradesBody;
+  expect(result.trades[0]!.symbol).toBe('***');
+  expect(result.trades[0]!.masked).toBe(true);
 });

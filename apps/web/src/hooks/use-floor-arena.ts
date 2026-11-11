@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -15,6 +16,7 @@ import {
   type FloorArenaAgentStatus,
   type FloorArenaEventType,
   type FloorArenaExits,
+  type FloorArenaExitReason,
   type FloorArenaParams,
   type FloorArenaProvisionState,
   type FloorArenaSuggestion,
@@ -1273,4 +1275,77 @@ export function useFloorArenaSuggestionAction() {
 
 export function usePatchFloorArenaSettings() {
   return useArenaMutation((input: { autoApplySuggestions: boolean }) => request('PATCH', '/me/settings', input));
+}
+
+export type FloorArenaEquityWindow = FloorArenaLeaderboardWindow | '7d';
+export type FloorArenaTradeOutcome = 'all' | 'win' | 'loss';
+export interface FloorArenaTradesCursor { before: string; beforeId: string }
+export interface FloorArenaTradesPage { trades: FloorArenaPositionView[]; nextCursor: FloorArenaTradesCursor | null }
+export interface FloorArenaEquityView {
+  series: Array<{ closedAt: string; equityUsd: number }>;
+  openPnlUsd: number | null;
+  startAt: string | null;
+}
+/** Safari accepts millisecond precision; cursor text must retain database precision. */
+export function parseArenaTimestamp(value: string): number {
+  return Date.parse(value.replace(/(\.\d{3})\d+(?=Z|[+-]\d{2}:\d{2}$)/, '$1'));
+}
+function realTimestamp(value: unknown): string | null {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(parseArenaTimestamp(value)) ? value : null;
+}
+export function readTradesPage(value: unknown): FloorArenaTradesPage {
+  const row = record(value) ?? {};
+  const cursor = record(row.nextCursor);
+  const before = realTimestamp(cursor?.before);
+  const beforeId = str(cursor?.beforeId);
+  return {
+    trades: list(row.trades, readPosition).filter((trade) => trade.status === 'closed'),
+    nextCursor: before && beforeId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(beforeId) ? { before, beforeId } : null,
+  };
+}
+export function readEquity(value: unknown): FloorArenaEquityView {
+  const row = record(value) ?? {};
+  return {
+    series: list(row.series, (value) => {
+      const point = record(value);
+      const closedAt = realTimestamp(point?.closedAt);
+      const equityUsd = num(point?.equityUsd);
+      return closedAt && equityUsd !== null ? { closedAt, equityUsd } : null;
+    }),
+    openPnlUsd: num(row.openPnlUsd),
+    startAt: realTimestamp(row.startAt),
+  };
+}
+export function useFloorArenaTrades(agentId: string | null, options: {
+  owner?: boolean; enabled?: boolean; outcome?: FloorArenaTradeOutcome; reason?: FloorArenaExitReason; limit?: number;
+} = {}) {
+  const { owner = false, enabled = true, outcome = 'all', reason, limit = 50 } = options;
+  return useInfiniteQuery({
+    queryKey: ['floor-arena', owner ? 'my-trades' : 'trades', agentId, outcome, reason ?? '', limit],
+    initialPageParam: null as FloorArenaTradesCursor | null,
+    queryFn: async ({ pageParam }) => {
+      const query = new URLSearchParams({ limit: String(limit), outcome });
+      if (reason) query.set('reason', reason);
+      if (pageParam) { query.set('before', pageParam.before); query.set('beforeId', pageParam.beforeId); }
+      return readTradesPage(await request('GET', `${owner ? '/me' : `/agents/${encodeURIComponent(agentId!)}`}/trades?${query}`));
+    },
+    getNextPageParam: (page) => page.nextCursor,
+    enabled: enabled && agentId !== null,
+    staleTime: PROFILE_POLL_MS,
+    refetchInterval: (query) => (query.state.data?.pages.length ?? 0) <= 1 ? PROFILE_POLL_MS : false,
+    refetchIntervalInBackground: false,
+    retry: noRetryOnRefusal,
+  });
+}
+export function useFloorArenaEquity(agentId: string | null, range: FloorArenaEquityWindow, options: { owner?: boolean; enabled?: boolean } = {}) {
+  const { owner = false, enabled = true } = options;
+  return useQuery({
+    queryKey: ['floor-arena', owner ? 'my-equity' : 'equity', agentId, range],
+    queryFn: async () => readEquity(await request('GET', `${owner ? '/me' : `/agents/${encodeURIComponent(agentId!)}`}/equity?window=${range}`)),
+    enabled: enabled && agentId !== null,
+    staleTime: PROFILE_POLL_MS,
+    refetchInterval: PROFILE_POLL_MS,
+    refetchIntervalInBackground: false,
+    retry: noRetryOnRefusal,
+  });
 }

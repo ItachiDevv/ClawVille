@@ -2,7 +2,7 @@
 
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import { FLOOR_ARENA_EVENT_TYPES } from '@clawville/shared';
-import { type FloorArenaEventView, type FloorArenaAgentStats, type FloorArenaLeaderboardWindow, type FloorArenaStatsByWindow } from '@/hooks/use-floor-arena';
+import { type FloorArenaEventView, type FloorArenaAgentStats, type FloorArenaLeaderboardWindow, type FloorArenaStatsByWindow, type FloorArenaEquityWindow } from '@/hooks/use-floor-arena';
 import { isoAgo, signedUsd } from '../arena/arena-format';
 
 export const terminalButton: CSSProperties = { minHeight: 44, padding: '8px 14px', borderRadius: 8, borderWidth: 1, borderStyle: 'solid', borderColor: '#2f5bb5', background: '#00226e', color: '#F8F0D8', font: '600 14px Barlow, sans-serif', cursor: 'pointer' };
@@ -18,9 +18,9 @@ export function statsForWindow(stats: FloorArenaStatsByWindow, window: FloorAren
   return window === '24h' ? stats.last24h : stats[window];
 }
 
-export function TerminalWindowPicker({ value, onChange }: { value: FloorArenaLeaderboardWindow; onChange: (value: FloorArenaLeaderboardWindow) => void }) {
+export function TerminalWindowPicker<T extends FloorArenaEquityWindow>({ value, onChange, windows }: { value: T; onChange: (value: T) => void; windows?: readonly T[] }) {
   return <div aria-label="Stats window" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-    {(['contest', '24h', 'all'] as const).map((item) => <button key={item} type="button" aria-pressed={value === item} onClick={() => onChange(item)} style={{ ...terminalButton, ...(value === item ? { background: '#F8D038', color: '#1a0f05', borderColor: '#F8D038' } : {}) }}>{item === 'contest' ? 'Contest' : item === '24h' ? '24 hours' : 'All time'}</button>)}
+    {(windows ?? ['contest', '24h', 'all'] as T[]).map((item) => <button key={item} type="button" aria-pressed={value === item} onClick={() => onChange(item)} style={{ ...terminalButton, ...(value === item ? { background: '#F8D038', color: '#1a0f05', borderColor: '#F8D038' } : {}) }}>{item === 'contest' ? 'Contest' : item === '24h' ? '24 hours' : item === '7d' ? '7 days' : 'All time'}</button>)}
   </div>;
 }
 
