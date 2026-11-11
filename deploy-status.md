@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-10 08:24Z (session brainchain-office). **STAGING API + WEB = `c571bedba` (BrainChain Office, PROTOCOL 128, migrations 0101-0119 applied on staging): run 42780011947 all jobs success; both containers report SOURCE_COMMIT `c571bedba`; `/health` commit `c571bedba`; public play manual serves 128.0.0; browser shows /game world and the /brainchain panel with no console errors.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
+Last Audited: 2026-11-11 00:35Z (session brainchain-office). **STAGING API + WEB = `55910beb8` (BrainChain Office replaces the Salty Spitoon at ring building `api-integrations`; resident Cortex; PROTOCOL 129; migration 0120 applied on staging): CI run 42927893429 all jobs success; both containers report SOURCE_COMMIT `55910beb8` (the web rolling update first failed with "pull access denied" after the image export; a solo web redeploy finished 00:25Z); `/health` ok; the DB row reads BrainChain Office and the stored curriculum names Cortex; browser: the Office stands in the ring with its door to the plaza, Cortex faces the plaza with feet on the ground, the building panel shows "Enter BrainChain Office" and it opens `/brainchain`.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain), 0120_brainchain_office_ring_slot.sql.
+
+Prior - Last Audited: 2026-11-10 08:24Z (session brainchain-office). **STAGING API + WEB = `c571bedba` (BrainChain Office, PROTOCOL 128, migrations 0101-0119 applied on staging): run 42780011947 all jobs success; both containers report SOURCE_COMMIT `c571bedba`; `/health` commit `c571bedba`; public play manual serves 128.0.0; browser shows /game world and the /brainchain panel with no console errors.** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql, 0101-0119 (brainchain).
 
 Prior - Last Audited: 2026-11-10 01:33Z (session claw2.0). **STAGING API + WEB = `d81d5d472` (own AI part B: agent wallet deposit into its UsePod balance; PROTOCOL 120; migration 0100 applied on staging).** PROD = `7dc9a0001` (promotion #27). SCHEMA: prod-migration-pending: 0100_usepod_deposit.sql.
 
@@ -750,6 +752,8 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ### 2026-11-10 18:10Z (session brainchain-office) - Cortex faces the plaza and stands on the terrain, live check PENDING
 - **What changed:** the staging browser check of `5402775ff` showed the Office in the ring as designed (door to the plaza, size like its neighbours), but the resident Cortex faced away from the plaza (an extra +PI on the VRM resident path) and stood 106 wu under the ground (feet bone at y -87; the bind-pose fit does not match this rig's retargeted idle). Fix: same facingRotY as the GLB residents; feet re-planted every 30 frames from the rendered foot bones (`getFootYMinInSpace`), then a matrix refresh and `flushSkeletonUpdates`.
 - **Review:** Codex first BLOCKING (lift after the skeleton flush; normalized bones), fixed; re-review APPROVED. Resident test 8/8, web tsc and production build exit 0 locally.
+- **Verified on staging (2026-11-11 00:30Z):** both containers `55910beb8` after a solo web redeploy (the first web rolling update failed: "pull access denied" for the just-built image; known buildkit export pattern). Browser: Cortex faces the plaza (facing group rotY -2.093) with raw feet at 0-12 wu in group space (lift 98.4 applied); the building panel's "Enter BrainChain Office" opens `/brainchain`.
+- **NOT verified:** phone/iPad sizes of the building panel, Iris Xe FPS.
 - **Who it's for:** the founder's BrainChain Office request.
 - **SCHEMA:** unchanged (prod-migration-pending as above).
 
