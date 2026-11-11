@@ -55,7 +55,7 @@ import {
 } from './resource-ledger';
 import { StageCanvasErrorBoundary } from './StageCanvasErrorBoundary';
 import { StageSlotErrorBoundary } from './StageSlotErrorBoundary';
-import { releaseBootSplash } from '@/components/game/boot-splash';
+import { releaseBootSplash } from './boot-splash';
 import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import {
   getStageRendererFailure,

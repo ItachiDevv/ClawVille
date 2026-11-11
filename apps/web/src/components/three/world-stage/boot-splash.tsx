@@ -13,19 +13,23 @@ import { usePathname } from 'next/navigation';
  * profile).
  *
  * Fix: this component is part of the (world) route-group layout, so its
- * markup is in the server HTML. It draws the same static frame as
- * `SeaLoadingScreen` (ocean gradient, banner, "Dropping in...", empty bar).
- * It holds no state and runs no effects. It sits above the stage
- * transition cover until the handoff. It hides through CSS when
- * `releaseBootSplash()` sets `data-cv-boot-splash="done"` on <html>:
- *   - `SeaLoadingScreen` calls it in a layout effect, so the live loader
- *     replaces the splash in the same frame (the live loader skips its
- *     fade-in entrance when it takes over from the splash);
- *   - the /game page calls it on mount, which covers a return visit where
- *     the world scene already ran and no loader mounts.
- * React never removes or mutates the splash node itself, so reconciliation
- * stays safe. The attribute stays set for the life of the document, so a
- * later client-side visit to /game never shows the splash again.
+ * markup is in the server HTML. It draws the same static frame as the first
+ * state of `SeaLoadingScreen` (ocean gradient, banner, "Dropping in...",
+ * empty bar, 0% row, dots), with the logo at the same position. It holds no
+ * state and runs no effects. It sits at z 10000, above the stage transition
+ * cover and the live loader, and hides through CSS when
+ * `releaseBootSplash()` sets `data-cv-boot-splash="done"` on <html>.
+ *
+ * Handoff (called from the /game page, which mounts `SeaLoadingScreen`):
+ *   - `releaseBootSplashAfterLoaderEntrance()` keeps the splash on top while
+ *     the live loader plays its fade-in entrance underneath, and releases
+ *     on the loader's `claw-logo-enter` animationend (1.5 s fallback). The
+ *     loader is then in the same final frame, so the swap is not visible.
+ *   - a return visit (world scene already ran, no loader) releases at once.
+ * `WorldStageRoot` releases it on every failure UI that replaces the page.
+ * React never removes or mutates the splash node itself. The attribute
+ * stays set for the life of the document, so a later client-side visit to
+ * /game never shows the splash again.
  */
 export const BOOT_SPLASH_ID = 'cv-boot-splash';
 const DONE_ATTR = 'data-cv-boot-splash';
@@ -41,6 +45,31 @@ export function isBootSplashShowing(): boolean {
 export function releaseBootSplash(): void {
   if (typeof document === 'undefined') return;
   document.documentElement.setAttribute(DONE_ATTR, 'done');
+}
+
+/** Name of the SeaLoadingScreen logo-block entrance keyframes (last to end). */
+const LOADER_ENTRANCE_ANIMATION = 'claw-logo-enter';
+const LOADER_ENTRANCE_FALLBACK_MS = 1500;
+
+/**
+ * Release the splash once the live loader has finished its entrance. Returns
+ * a cleanup that releases at once, so an unmount can never leave the splash
+ * on screen.
+ */
+export function releaseBootSplashAfterLoaderEntrance(): () => void {
+  if (!isBootSplashShowing()) return () => {};
+  let timer = 0;
+  const onAnimationEnd = (event: AnimationEvent) => {
+    if (event.animationName === LOADER_ENTRANCE_ANIMATION) finish();
+  };
+  function finish() {
+    window.clearTimeout(timer);
+    document.removeEventListener('animationend', onAnimationEnd);
+    releaseBootSplash();
+  }
+  document.addEventListener('animationend', onAnimationEnd);
+  timer = window.setTimeout(finish, LOADER_ENTRANCE_FALLBACK_MS);
+  return finish;
 }
 
 export function BootSplash() {

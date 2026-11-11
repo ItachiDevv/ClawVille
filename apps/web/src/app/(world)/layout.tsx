@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { WorldStageRoot } from '@/components/three/world-stage/WorldStageRoot';
 import { WorldPresence } from '@/components/three/world-stage/WorldPresence';
-import { BootSplash } from '@/components/game/boot-splash';
+import { BootSplash } from '@/components/three/world-stage/boot-splash';
 
 export const dynamic = 'force-dynamic';
 

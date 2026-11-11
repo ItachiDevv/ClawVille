@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { isBootSplashShowing, releaseBootSplash } from './boot-splash';
 import { useGameStore } from '@/stores/game';
 import { createVisibilityFuse } from './visibility-fuse';
 import {
@@ -104,11 +103,6 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
   const [visible, setVisible]       = useState(true);
   const [fading, setFading]         = useState(false);
   const [slow, setSlow]             = useState(false);
-  // Take over from the server-rendered BootSplash in the same frame: when the
-  // splash is on screen, skip the fade-in entrance (it would show the stage
-  // under a half-transparent overlay) and hide the splash before paint.
-  const [fromSplash] = useState(isBootSplashShowing);
-  useLayoutEffect(() => { releaseBootSplash(); }, []);
   /**
    * Progress in [0, 1]. Composite signal so the bar tracks the user's
    * actual wait, not just network downloads. Rewritten 2026-05-31, bands
@@ -525,8 +519,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
           pointerEvents: fading ? 'none' : 'all',
           overflow: 'hidden',
           background: 'linear-gradient(180deg, #060e1f 0%, #0a1628 30%, #0d2137 65%, #0e2d45 100%)',
-          animation: fromSplash ? undefined : 'claw-bg-reveal 0.3s ease-out forwards',
-          opacity: fromSplash ? 1 : 0,
+          animation: 'claw-bg-reveal 0.3s ease-out forwards',
+          opacity: 0,
         }}
       >
         {/* ── Depth light shafts ─────────────────────────────────────── */}
@@ -726,8 +720,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             alignItems: 'center',
             gap: '14px',
             // Fade up into view at 300ms
-            animation: fromSplash ? undefined : 'claw-logo-enter 0.5s 0.3s ease-out both',
-            opacity: fromSplash ? 1 : 0,
+            animation: 'claw-logo-enter 0.5s 0.3s ease-out both',
+            opacity: 0,
           }}
         >
           {/* Logo */}

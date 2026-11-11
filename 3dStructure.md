@@ -1,6 +1,6 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-11-11 05:30Z (/game boot splash).** Drift note: the (world) layout now server-renders `apps/web/src/components/game/boot-splash.tsx` on `/game`, a static copy of the SeaLoadingScreen first frame, so phones paint before the HUD bundle hydrates (local phone profile: first paint about 8.3 s to 1.1 s; see the BOOT_CORE_PRESENTED bullet). Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; the Office GLB now stands at `api-integrations` with resident Cortex, and the separate venue is removed (section "BrainChain Office spatial contract"). Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry and navigation).** Drift note: the office adds prop colliders without a teaching-building slot. Client navigation now spans the full 704-tile world and includes actual prop footprints. The previous 360-tile planner could not reach the Office or eastern ring buildings. The renderer now mounts a post-reveal Office prop and a guide that reuses the loaded lobster plush model. Actual-world visual verification remains pending.
+**Last Audited: 2026-11-11 05:30Z (/game boot splash).** Drift note: the (world) layout now server-renders `apps/web/src/components/three/world-stage/boot-splash.tsx` on `/game`, a static copy of the SeaLoadingScreen first frame, so phones paint before the HUD bundle hydrates (local phone profile: first paint about 8.3 s to 1.1 s; see the BOOT_CORE_PRESENTED bullet). Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; the Office GLB now stands at `api-integrations` with resident Cortex, and the separate venue is removed (section "BrainChain Office spatial contract"). Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry and navigation).** Drift note: the office adds prop colliders without a teaching-building slot. Client navigation now spans the full 704-tile world and includes actual prop footprints. The previous 360-tile planner could not reach the Office or eastern ring buildings. The renderer now mounts a post-reveal Office prop and a guide that reuses the loaded lobster plush model. Actual-world visual verification remains pending.
 
 ### BrainChain Office spatial contract (2026-11-10: ring slot 4)
 
@@ -392,22 +392,23 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   through the deferred-warm queue (`requiresDeferredAttach` state table).
   The possessed demo body moved OUT of ArenaNpcs into `perf:boot-actor`
   (`BootActorNpcBody`).
-- **Boot splash** (`boot-splash.tsx`, 2026-11-11): the /game page renders
-  `null` until its mount effect, and `WorldStageRoot` renders route children
-  only after `stageReady`, so the server HTML used to be an empty stage. The
-  (world) layout now renders `BootSplash` (client component, server-rendered,
-  `/game` only): the SeaLoadingScreen first frame (gradient, banner,
-  "Dropping in...", empty bar, 0% row, dots) at z 10000, above the stage
-  transition cover. It hides by CSS when `releaseBootSplash()` sets
-  `data-cv-boot-splash="done"` on `<html>`. Callers: SeaLoadingScreen (layout
-  effect; it then skips its fade-in entrance, so the handoff is one frame with
-  the logo at the same position), the /game page mount on a return visit, and
-  `WorldStageRoot` on Pixi failure, unsupported 2D, renderer failure or a
-  stage transition error. React never removes the node. Measured on a local
-  prod build against the staging API: phone profile (4x CPU, slow 4G) splash
-  at 1.0-1.3 s vs live loader at 8.2-8.9 s; no uncovered frame at 9 sizes
-  (390x844 to 1568x900, portrait and landscape); desktop first paint
-  1580 ms to 312-672 ms.
+- **Boot splash** (`boot-splash.tsx` in `world-stage/`, 2026-11-11): the
+  /game page renders `null` until its mount effect, and `WorldStageRoot`
+  renders route children only after `stageReady`, so the server HTML used
+  to be an empty stage. The (world) layout now renders `BootSplash` (client
+  component, server-rendered, `/game` only): the SeaLoadingScreen first frame
+  (gradient, banner, "Dropping in...", empty bar, 0% row, dots, logo at the
+  same position) at z 10000, above the stage transition cover and the live
+  loader. It hides by CSS when `releaseBootSplash()` sets
+  `data-cv-boot-splash="done"` on `<html>`. The /game page releases it after
+  SeaLoadingScreen's `claw-logo-enter` animationend (1.5 s fallback), so the
+  loader plays its entrance hidden and the swap is not visible; a return
+  visit releases at once. `WorldStageRoot` releases it on Pixi failure,
+  unsupported 2D, renderer failure or a stage transition error. React never
+  removes the node. SeaLoadingScreen is unchanged. Measured on a local prod
+  build against the staging API: phone profile (4x CPU, slow 4G) splash at
+  1.0-1.3 s vs live loader at 8.2-8.9 s; desktop first paint 1580 ms to
+  312-672 ms.
 - **BOOT_CORE_PRESENTED** (`decorative-release.ts`): render-proven milestone
   — chained scene `onAfterRender` (world slot active + world camera + epoch
   qualified), 2 consecutive qualifying frames, predicate WITHOUT the sea
