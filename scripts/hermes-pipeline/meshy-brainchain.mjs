@@ -4,9 +4,15 @@
 //
 // Spend guard (owner rule: the cap is enforced in code):
 //   - MESHY_CREDIT_CAP is REQUIRED. No default; the script refuses without it.
-//   - The first paid call records the account balance in ledger.json as the start.
-//   - Before every paid POST the script reads the live balance and refuses when
-//     (start - live) + this job's estimate > cap.
+//   - Spend = the sum of the job records in ledger.json. A job is reserved at
+//     its estimate BEFORE its POST; after it finishes the record holds the real
+//     charge (balance before - after). A job that fails after its POST keeps its
+//     reservation, so an uncertain charge still counts.
+//   - The cap never uses the raw balance change: a monthly refill or a credit
+//     pack would otherwise give back spending room.
+//   - Before every paid POST the script refuses when spend + estimate > cap.
+//   - One paid job at a time: the lock is created atomically (exclusive create)
+//     and only its owner removes it.
 //
 // Usage (run from the repo root):
 //   MESHY_CREDIT_CAP=1000 node scripts/hermes-pipeline/meshy-brainchain.mjs balance
@@ -17,13 +23,12 @@
 // Output: apps/web/public/models/brainchain-candidates/<target>/ (candidates only;
 // nothing is wired into the world until the founder signs off).
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, openSync, closeSync, writeSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 const API = 'https://api.meshy.ai/openapi/v1';
 // Per-job estimates from Meshy's price list (multi-image textured = 30, rig = 5,
-// animation = 3). The live balance check is the real guard; the estimate only
-// refuses a job that would cross the cap.
+// animation = 3). The reservation uses these; the record then holds the real charge.
 const ESTIMATE = { mesh: 30, rig: 5, anim: 3 };
 
 const CAP = Number(process.env.MESHY_CREDIT_CAP);
@@ -44,7 +49,9 @@ const H = { Authorization: `Bearer ${loadKey()}`, 'Content-Type': 'application/j
 const root = resolve('apps/web/public/models/brainchain-candidates');
 mkdirSync(root, { recursive: true });
 const ledgerPath = join(root, 'ledger.json');
-const ledger = existsSync(ledgerPath) ? JSON.parse(readFileSync(ledgerPath, 'utf8')) : { jobs: [] };
+const loadLedger = () => (existsSync(ledgerPath) ? JSON.parse(readFileSync(ledgerPath, 'utf8')) : { jobs: [] });
+let ledger = loadLedger();
+const spentOf = (l) => l.jobs.reduce((sum, j) => sum + (j.charged ?? j.reserved ?? 0), 0);
 const saveLedger = () => writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,26 +66,32 @@ async function balance() {
   if (typeof r.balance !== 'number') throw new Error(`unexpected balance shape: ${Object.keys(r)}`);
   return r.balance;
 }
-// One paid job at a time: two concurrent runs both rewrite ledger.json and one
-// record is lost (seen 2026-11-11). The lock is removed when the process exits.
 const lockPath = join(root, 'job.lock');
-async function guard(kind) {
-  if (existsSync(lockPath)) {
+const lockTag = `${process.pid} ${Date.now()}`;
+async function guard(kind, target) {
+  try {
+    const fd = openSync(lockPath, 'wx'); // exclusive create: fails if any lock exists
+    writeSync(fd, `${lockTag} ${kind}`); closeSync(fd);
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
     console.error(`refused: another paid job holds ${lockPath} (${readFileSync(lockPath, 'utf8')}); delete it only if no job runs`);
     process.exit(4);
   }
-  writeFileSync(lockPath, `${process.pid} ${kind} ${new Date().toISOString()}`);
-  process.on('exit', () => { try { unlinkSync(lockPath); } catch {} });
-  const live = await balance();
-  if (ledger.start === undefined) { ledger.start = live; ledger.cap = CAP; saveLedger(); }
-  const spent = ledger.start - live;
+  process.on('exit', () => {
+    try { if (readFileSync(lockPath, 'utf8').startsWith(lockTag)) unlinkSync(lockPath); } catch {}
+  });
+  ledger = loadLedger(); // read only after the lock is held
+  const spent = spentOf(ledger);
   const est = ESTIMATE[kind];
+  const live = await balance();
   console.log(`balance ${live} | spent ${spent} of cap ${CAP} | next ${kind} ~${est}`);
   if (spent + est > CAP) {
     console.error(`refused: ${kind} would take spend to ~${spent + est}, above cap ${CAP}`);
     process.exit(3);
   }
-  return live;
+  const job = { kind, target, reserved: est, before: live, at: new Date().toISOString() };
+  ledger.cap = CAP; ledger.jobs.push(job); saveLedger();
+  return job;
 }
 async function poll(path) {
   for (let i = 0; i < 200; i++) {
@@ -97,11 +110,13 @@ async function dl(url, dest) {
   writeFileSync(dest, buf);
   console.log(`saved ${dest} (${(buf.length / 1048576).toFixed(2)} MB)`);
 }
-async function record(kind, target, before, id) {
+async function record(job, id) {
   const after = await balance();
-  ledger.jobs.push({ kind, target, id, before, after, charged: before - after, at: new Date().toISOString() });
-  saveLedger();
-  console.log(`charged ${before - after} credits (estimate ${ESTIMATE[kind]}); total spent ${ledger.start - after} of ${CAP}`);
+  const delta = job.before - after;
+  // A refill during the job makes the delta negative or too small: keep the estimate then.
+  job.id = id; job.after = after; job.charged = delta >= job.reserved ? delta : job.reserved;
+  delete job.reserved; saveLedger();
+  console.log(`charged ${job.charged} credits (estimate ${ESTIMATE[job.kind]}); total spent ${spentOf(ledger)} of ${CAP}`);
 }
 
 const dataUri = (p) => `data:image/png;base64,${readFileSync(p).toString('base64')}`;
@@ -113,45 +128,45 @@ const MESH = {
 const [cmd, target, a3, a4] = process.argv.slice(2);
 if (cmd === 'balance') {
   const live = await balance();
-  console.log(`balance ${live}${ledger.start !== undefined ? ` | spent ${ledger.start - live} of cap ${CAP}` : ''}`);
+  console.log(`balance ${live} | spent ${spentOf(ledger)} of cap ${CAP}`);
 } else if (cmd === 'mesh') {
   if (!MESH[target] || !a3) throw new Error('usage: mesh <building|robot> <viewsDir>');
   const views = ['front', 'back', 'side', '3q'].map((v) => join(resolve(a3), `${target === 'building' ? 'bldg' : 'robot'}-${v}.png`)).filter(existsSync);
   if (views.length < 2) throw new Error(`need >=2 views in ${a3}, found ${views.length}`);
   const out = join(root, target); mkdirSync(out, { recursive: true });
-  const before = await guard('mesh');
+  const job = await guard('mesh', target);
   const body = { ...MESH[target], image_urls: views.map(dataUri), should_texture: true, enable_pbr: true, image_enhancement: true, remove_lighting: true, target_formats: ['glb'] };
   const r = await req('POST', '/multi-image-to-3d', body);
-  const id = r.result; console.log(`mesh task ${id} with ${views.length} views`);
+  const id = r.result; job.id = id; console.log(`mesh task ${id} with ${views.length} views`);
   ledger[`${target}_mesh`] = id; saveLedger();
   const t = await poll(`/multi-image-to-3d/${id}`);
   await dl(t.model_urls.glb, join(out, `mesh-${id.slice(0, 8)}.glb`));
   if (t.thumbnail_url) await dl(t.thumbnail_url, join(out, `thumb-${id.slice(0, 8)}.png`)).catch(() => {});
-  await record('mesh', target, before, id);
+  await record(job, id);
 } else if (cmd === 'rig') {
   const meshId = ledger.robot_mesh; if (!meshId) throw new Error('no robot mesh task in ledger');
   const out = join(root, 'robot'); mkdirSync(join(out, 'anim'), { recursive: true });
-  const before = await guard('rig');
+  const job = await guard('rig', 'robot');
   const r = await req('POST', '/rigging', { input_task_id: meshId, height_meters: 1.9 });
-  const id = r.result; ledger.robot_rig = id; saveLedger();
+  const id = r.result; job.id = id; ledger.robot_rig = id; saveLedger();
   const t = await poll(`/rigging/${id}`);
   const o = t.result || {};
   await dl(o.rigged_character_glb_url, join(out, 'rigged.glb'));
   const b = o.basic_animations || {};
   if (b.walking_glb_url) await dl(b.walking_glb_url, join(out, 'anim', 'walk.glb'));
   if (b.running_glb_url) await dl(b.running_glb_url, join(out, 'anim', 'run.glb'));
-  await record('rig', 'robot', before, id);
+  await record(job, id);
 } else if (cmd === 'anim') {
   const rigId = ledger.robot_rig; const actionId = Number(a4);
   if (!rigId || !a3 || Number.isNaN(actionId)) throw new Error('usage: anim robot <slot> <action_id> (after rig)');
   const out = join(root, 'robot', 'anim'); mkdirSync(out, { recursive: true });
-  const before = await guard('anim');
+  const job = await guard('anim', `robot:${a3}`);
   const r = await req('POST', '/animations', { rig_task_id: rigId, action_id: actionId });
-  const id = r.result;
+  const id = r.result; job.id = id; saveLedger();
   const t = await poll(`/animations/${id}`);
   const o = t.result || {};
   await dl(o.animation_glb_url, join(out, `${a3}.glb`));
-  await record('anim', `robot:${a3}`, before, id);
+  await record(job, id);
 } else {
   console.error('usage: balance | mesh <building|robot> <viewsDir> | rig robot | anim robot <slot> <action_id>');
   process.exit(1);
