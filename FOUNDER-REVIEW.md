@@ -897,6 +897,12 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## WORLD / 3D
 
+### BrainChain Office v3 building + Cortex robot (session brainchain, 2026-11-11, STAGING)
+
+- **Where:** `https://staging.clawville.world/game` on a desktop. Walk to ring slot 4 (east-south-east of the plaza), the BrainChain Office.
+- **Look at:** the new orbit-sculpture building with the large pink vortex entrance (glowing pink seams and spiral), and Cortex, the brain-head clerk robot in front of it (idle animation). Walk all the way round the building.
+- **Feedback wanted:** building size against its neighbours (it is wider and lower than the old Office: 1400 wide, about 1000 high); Cortex height and facing; whether the vortex glow is strong enough or should also spin (a moving spiral is a follow-up); the robot name (still "Cortex").
+
 ### October 6: seabed decorations are back (staging)
 
 - **Session:** tradeLead3, 2026-10-06.

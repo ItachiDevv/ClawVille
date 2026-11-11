@@ -763,6 +763,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-11 19:40Z (session brainchain) - BrainChain Office v3 building + Cortex clerk robot (web + shared colliders)
+
+- **What:** founder 2026-11-11 custom BrainChain art (Meshy, 194 of a 1,000-credit cap). Ring slot 4 `api-integrations` renders `brainchain-office-v3-ktx.glb` (orbit sculpture, large vortex entrance, pink glow from an emissive mask; 12k tris, 1.24 MB) and resident Cortex is `brainchain-clerk-v1-ktx.glb` (brain-head clerk robot, 24 joints, Idle/Talk/Wave/Walk; 12k tris, 0.99 MB). Colliders 613 x 644 -> 679 x 735 in both tables. The VRM resident path (only Cortex used it) is deleted. New filenames, no `?v=`; `sw.js` roster entry swapped with CACHE_VERSION kept at v13. No PROTOCOL change, no migration. Also: `scripts/hermes-pipeline/meshy-brainchain.mjs` (credit cap in code; Codex review fixed an atomic-lock gap and a refill gap) and `scripts/brainchain/build-office-v3.mjs`.
+- **Broke:** nothing known yet. Codex first bumped `sw.js` to v14 (would evict every cached asset for every returning player); reverted in review. Local R3F tests cannot run in this worktree's install (two React copies; unchanged R3F tests fail the same way); CI runs them.
+- **Verify (pending):** CI gates, both containers SOURCE_COMMIT, `/health`, browser check of the Office and Cortex height/facing at slot 4.
+- **For:** founder (BrainChain partnership look). FOUNDER-REVIEW entry under WORLD / 3D.
+- **SCHEMA:** synced for this change (no migration).
+
 ### 2026-11-11 18:01Z (session new-ville) - Buildings-first hold + Trading Floor door entry (web only)
 
 - **What:** `6ffbd4647`: on a slow link the loader's 10 s fallback dismissed it with 3 of 11 buildings in, and about 40 deferred downloads then shared the link with the building bytes (staging phone profile: buildings + Nori presented at 104 s). `decorative-release.ts` now holds the decorative release and the post-reveal stream until the buildings are presented, cap 30 s. Local prod build, phone profile: 52.7 s before, 47.5 to 49.4 s after; desktop unchanged (composite at 11.0 s). `161d28682`: walking into the Trading Floor front door enters the venue (before: prompt only; founder report). Both Codex E3 one pass, findings fixed.
