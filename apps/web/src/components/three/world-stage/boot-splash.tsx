@@ -17,7 +17,7 @@ import { usePathname } from 'next/navigation';
  * state of `SeaLoadingScreen` (ocean gradient, banner, "Dropping in...",
  * empty bar, 0% row, dots), with the logo at the same position. It holds no
  * state and runs no effects. It sits at z 10000, above the stage transition
- * cover and the live loader, and hides through CSS when
+ * cover and the live loader, and fades out (400 ms) through CSS when
  * `releaseBootSplash()` sets `data-cv-boot-splash="done"` on <html>.
  *
  * Handoff (called from the /game page, which mounts `SeaLoadingScreen`):
@@ -91,7 +91,10 @@ export function BootSplash() {
         background: 'linear-gradient(180deg, #060e1f 0%, #0a1628 30%, #0d2137 65%, #0e2d45 100%)',
       }}
     >
-      <style>{`html[${DONE_ATTR}="done"] #${BOOT_SPLASH_ID}{display:none}`}</style>
+      {/* Crossfade out (the live loader underneath adds its water line,
+          bubbles and lobster); hidden at once when the attribute is set
+          before this node renders, as on a client-side return visit. */}
+      <style>{`#${BOOT_SPLASH_ID}{transition:opacity 400ms ease-out,visibility 0s linear 400ms}html[${DONE_ATTR}="done"] #${BOOT_SPLASH_ID}{opacity:0;visibility:hidden}`}</style>
       <div
         style={{
           position: 'absolute',

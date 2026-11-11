@@ -399,7 +399,7 @@ when the whole world has loaded. Local measured: reveal 9.7s -> ~3.0s guest /
   component, server-rendered, `/game` only): the SeaLoadingScreen first frame
   (gradient, banner, "Dropping in...", empty bar, 0% row, dots, logo at the
   same position) at z 10000, above the stage transition cover and the live
-  loader. It hides by CSS when `releaseBootSplash()` sets
+  loader. It fades out (400 ms) by CSS when `releaseBootSplash()` sets
   `data-cv-boot-splash="done"` on `<html>`. The /game page releases it after
   SeaLoadingScreen's `claw-logo-enter` animationend (1.5 s fallback), so the
   loader plays its entrance hidden and the swap is not visible; a return
