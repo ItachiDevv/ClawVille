@@ -142,7 +142,11 @@ describe('evaluateSellQuote and the mark fallback', () => {
       .toMatchObject({ ok: true, quotedUsd: 0.05 });
     const withMark = evaluateSellQuote(sellQuote('0.05'), { ...REQ, referencePriceUsd: 1 }, COSTS);
     expect(withMark).toMatchObject({ ok: false, reason: 'quote_far_below_mark' });
-    expect((withMark as { fill?: unknown }).fill).toBeUndefined();
+    // 2026-11-12 (FEAR): a far-below-mark refusal carries its evaluated fill (after the sell haircut), so the engine can
+    // book it as quote_confirmed when the quote is sane against the entry price and the mark is disputed.
+    if (withMark.ok || !withMark.fill) throw new Error('expected a carried fill');
+    expect(withMark.fill.quotedUsd).toBe(0.05);
+    expect(withMark.fill.proceedsUsd).toBeCloseTo(0.04975, 9);
   });
 
   test('a quote more than 35% ABOVE the mark refuses (contest integrity)', () => {
