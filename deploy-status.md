@@ -787,6 +787,7 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 - **WHY SAFE:** the web polls these routes at most 12, 20 (provisioning) and 6 times a minute. Human and agent share the per-IP bucket.
 - **REVIEW:** Codex round 1 BLOCKING (four 137 pins; limiter after auth), round 2 APPROVE (pins fixed; the limiter placement matches the existing owner reads).
 - **WHAT BROKE:** run 43207403404 failed `floor-arena-knowledge.test.ts` "no chunk nears the embedding input limit": the new manual line made the Trading Arena hosted-runtime chunk 24,012 chars (cap 24,000). Nothing deployed. Fix: the line was shortened by 134 chars, same meaning. Lesson: check that chunk test before adding manual text to the trading page.
+- **WHAT BROKE (2):** run 43208778480 (`a011f6257`) failed the coupling rule `protected-partner-surface-updates-spec-and-harness`: a push range that touches the manual must also change `docs/hatcher-integration-spec.md`. Fix: a dated Last Audited line in the spec.
 - **NOT VERIFIED YET:** CI and the staging flip of the fix.
 - **SCHEMA:** synced (no migration). PROTOCOL 138 granted by claw2.0 (claw2.0 moves to 139+).
 - **PARITY:** human path: Trading Floor terminal reads `/me*`; agent path: the same routes and `clawville_arena_my_*` tools; both share the per-IP bucket.

@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-12 11:12Z (arena owner-read limit, PROTOCOL_VERSION 137 -> 138, no migration).** Drift note: the `trading` page says owner reads (`GET /me`, `/me/trades`, `/me/equity`, `/me/events`, `/me/withdrawals`) allow 60 requests a minute per IP for each route, then 429 `rate_limited`. No wire change for partners.
+**Last Audited: 2026-11-12 11:30Z (arena owner-read limit, manual line shortened; PROTOCOL_VERSION stays 138, no wire change).** Drift note: the `trading` page line now reads "Each `GET /me*` read: 60 a minute per IP, then 429." The first wording made the Trading Arena hosted-runtime chunk 12 chars over the 24,000 embedding cap.
+
+Prior **Last Audited: 2026-11-12 11:12Z (arena owner-read limit, PROTOCOL_VERSION 137 -> 138, no migration).** Drift note: the `trading` page says owner reads (`GET /me`, `/me/trades`, `/me/equity`, `/me/events`, `/me/withdrawals`) allow 60 requests a minute per IP for each route, then 429 `rate_limited`. No wire change for partners.
 
 Prior **Last Audited: 2026-11-12 (Office interior phase 1, PROTOCOL_VERSION 136 -> 137).** Drift note: humans enter the Office interior through the vortex. Stations open the existing Office controls. Cortex stands inside and outside. No wire change: actions, parameters, sessions, signing, custody, settlement and leaderboard rules remain unchanged. The version refreshes hosted manual knowledge. Mandate 5 remains unchanged. Staging verification remains pending.
 
