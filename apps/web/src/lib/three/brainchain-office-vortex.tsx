@@ -13,7 +13,8 @@ import { OFFICE_VORTEX_MODEL, stepOfficeDoorEdge, consumeOfficeLocomotion, type 
 function createSpiralTexture(): THREE.CanvasTexture | null {
   if (typeof document === 'undefined') return null;
   const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 512;
-  const context = canvas.getContext('2d')!;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
   const pixels = context.createImageData(512, 512);
   for (let y = 0; y < 512; y++) for (let x = 0; x < 512; x++) {
     const dx = (x - 255.5) / 255.5, dy = (y - 255.5) / 255.5;
@@ -29,9 +30,16 @@ function createSpiralTexture(): THREE.CanvasTexture | null {
   const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
-const geometry = new THREE.CircleGeometry(OFFICE_VORTEX_MODEL.radius, 64);
-const material = new THREE.MeshBasicMaterial({ map: createSpiralTexture(), transparent: true,
-  depthWrite: false, blending: THREE.NormalBlending, toneMapped: false });
+// Built on first render, not at import: test environments (happy-dom) have no
+// 2D canvas context, and importing this file must never touch the DOM.
+let geometry: THREE.CircleGeometry | null = null;
+let material: THREE.MeshBasicMaterial | null = null;
+function vortexResources(): { geometry: THREE.CircleGeometry; material: THREE.MeshBasicMaterial } {
+  if (!geometry) geometry = new THREE.CircleGeometry(OFFICE_VORTEX_MODEL.radius, 64);
+  if (!material) material = new THREE.MeshBasicMaterial({ map: createSpiralTexture(), transparent: true,
+    depthWrite: false, blending: THREE.NormalBlending, toneMapped: false });
+  return { geometry, material };
+}
 
 /** Lives under the same pivot, yaw, visibility and stream attachment as the GLB. */
 export function BrainchainOfficeVortex({ scale, attached }: { scale: number; attached: boolean }) {
@@ -49,7 +57,8 @@ export function BrainchainOfficeVortex({ scale, attached }: { scale: number; att
       openBrainchainOffice('walk-in');
     }
   });
-  return <mesh ref={mesh} geometry={geometry} material={material} dispose={null}
+  const resources = vortexResources();
+  return <mesh ref={mesh} geometry={resources.geometry} material={resources.material} dispose={null}
     position={[OFFICE_VORTEX_MODEL.x * scale, OFFICE_VORTEX_MODEL.y * scale, OFFICE_VORTEX_MODEL.z * scale]}
     scale={scale} />;
 }
