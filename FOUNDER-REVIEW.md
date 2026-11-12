@@ -1062,7 +1062,7 @@ Last Audited: 2026-11-12 11:55Z. Drift note: on staging since `28310b109`; props
 
 Founder verdict 2026-11-12: "The size looks great" (room, sculpture, pods and Cortex at the sizes in `3dStructure.md`). Do not resize them again without a new founder request.
 At https://staging.clawville.world/game, walk through the Office vortex without chat.
-Check the four pods, task board and receipts wall. Each prompt must open the correct Office tab. (Claude checked the desk prompt, Escape and both vortex directions on staging.)
+Claude checked on staging `512faf76e` (headless Chrome, 11:50Z to 12:10Z): the desk opens Learn, a pod opens Worker setup, the task board opens Work status, the receipts wall opens Earnings, Escape closes each, and both vortex directions work.
 Check Talk to Cortex, Close and movement freeze. Check Back to town placement.
 Check the same panel in 2D. Check touch controls and prompts on phones and iPads, in both orientations.
 Feedback wanted: station spacing, portal appearance, text contrast and frame rate on your laptop.
