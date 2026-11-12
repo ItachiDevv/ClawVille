@@ -216,9 +216,11 @@ export const DECORATION_GLBS: readonly string[] = [
  * The pavilion gets a `?v=2` cache-bust because its texture-resize pass
  * (1024→512) mutated the file in place; without the query bump Cloudflare's
  * 7-day edge cache would keep serving the old 8.7 MB version.
+ * 2026-11-12: the pavilion moved to a NEW file name (-nonorm-256-ktx, 256 px
+ * textures, 2.99 MB → 1.34 MB) instead of a ?v= bump.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
-  '/models/quest-bounty-pavilion-nonorm-ktx.glb',
+  '/models/quest-bounty-pavilion-nonorm-256-ktx.glb',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
   '/models/shisha-oasis-mo-ktx.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
