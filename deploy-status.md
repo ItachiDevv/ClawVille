@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-12 04:45Z (session new-ville). **STAGING WEB = `1f0e72aa6` emote hotbar hidden on /game (founder order 2026-11-11) on top of the Trading Floor terminal (`87234632f`), VERIFIED 04:38Z: CI run 43154370778 success; both containers SOURCE_COMMIT `1f0e72aa6`; `/health` commit `1f0e72aa6`; no live /game chunk holds the hotbar label (0 of 39); headless /game load renders the world (DEPLOY LOG 2026-11-12 04:45Z).** Web only; no PROTOCOL change, no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
+Last Audited: 2026-11-12 05:55Z (session new-ville). **STAGING WEB = `4cc3aba71` world stage starts with shadows off (no boot shader rebuild), on top of `249c11d6f` (which deployed session trading's `94c489354` arena scoring commit, NOT docs-only: trading fixes forward), VERIFIED 05:45Z: CI run 43161768880 success; both containers SOURCE_COMMIT `4cc3aba71`; `/health` commit `4cc3aba71`; headless desktop /game renders the world as before (DEPLOY LOG 2026-11-12 05:55Z).** Web only; no PROTOCOL change, no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
+
+Prior - Last Audited: 2026-11-12 04:45Z (session new-ville). **STAGING WEB = `1f0e72aa6` emote hotbar hidden on /game (founder order 2026-11-11) on top of the Trading Floor terminal (`87234632f`), VERIFIED 04:38Z: CI run 43154370778 success; both containers SOURCE_COMMIT `1f0e72aa6`; `/health` commit `1f0e72aa6`; no live /game chunk holds the hotbar label (0 of 39); headless /game load renders the world (DEPLOY LOG 2026-11-12 04:45Z).** Web only; no PROTOCOL change, no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
 
 Prior - Last Audited: 2026-11-11 22:09Z (session new-ville). **STAGING = Trading Floor terminal phases 1+2 (`11e475784`, `023be7e27`, `879c422c2` + this docs commit) on top of `baf896371`: the Trading Floor opens its own window (Dashboard, Trades, Decisions, Strategy, Reports, Other agents); new read routes `/api/floor/arena/agents/:id/trades`, `/agents/:id/equity`, `/me/trades`, `/me/equity`; nine MCP arena read tools; PROTOCOL 134; no migration.** VERIFIED 22:29Z (`87234632f`): CI run 43110152171 all 8 jobs success; both containers healthy on image `87234632f`; `/health` commit `87234632f`. First push `8fc548bd7` did NOT deploy (gates failed on one stale PROTOCOL 132 pin in `agent-paid-surface.test.ts`; fixed in `87234632f`). PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
 
@@ -768,6 +770,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-12 05:55Z (session new-ville) - world stage shadows off at boot (web only)
+
+- **What:** the world appearance turned `shadowMap.enabled` on at boot; R3F's stage `<Canvas>` (no `shadows` prop) set it back to false at its next configure (~4.7 s desktop). No world light casts a shadow, so nothing changed on screen, but the flip changed three r185's TSL environment key and the boot warm-up shaders were rebuilt (and again on each world re-entry). `WorldStageRoot.tsx` world appearance now `shadows: false`. Local prod build, desktop, 2 runs each: 128 -> 109 TSL builds per cold /game load, no flip. Phone + tablet profiles already had shadows off: no change there. Codex read-only review: cause + no-visual-change confirmed light by light; its one block (3dStructure.md note) fixed in the commit. An earlier Codex patch (-10 builds via geometry clones + Number.MIN_VALUE material values) was measured and NOT shipped (extra code for a small gain).
+- **Broke:** nothing known. Web tsc clean; all 18 world-stage test files pass one by one (3 fail only when run together: the known cross-file jsdom leak). Push held only 4cc3aba71 (checked `origin/staging..HEAD`). claw2.0 + trading told before the push and at the flip.
+- **Correction:** my 04:45Z entry called the `249c11d6f` push docs-only. It was not: it shipped session trading's unreviewed local commit `94c489354` from the shared `.worktrees/tf-terminal`. Trading fixes forward. Root cause: I pushed HEAD without listing `origin/staging..HEAD`.
+- **SCHEMA:** prod-migration-pending: 0101-0121c (unchanged).
 
 ### 2026-11-12 04:45Z (session new-ville) - emote hotbar hidden on /game (web only)
 
