@@ -61,6 +61,10 @@ export interface RefusalEvent {
   quoteMult: number | null;
   /** mark price / entry price at the refusal */
   markMult: number | null;
+  /** Computed in PostgreSQL at full precision: at <= closed_at + interval '120 seconds' (the loader sets it). */
+  inGrace?: boolean;
+  /** Computed in PostgreSQL at full precision: at <= closed_at (the loader sets it). */
+  beforeClose?: boolean;
 }
 
 export interface ExitEvent {
@@ -99,13 +103,16 @@ export interface PositionInput {
 /**
  * The rescore quote: the last 'quote_far_below_mark' refusal logged before the close. "Before" means an id lower
  * than the closing exit event (both tables share one id sequence) and a time no later than closed_at + grace;
- * without an exit event, a time no later than closed_at.
+ * without an exit event, a time no later than closed_at. The loader computes both time tests in PostgreSQL at full
+ * (microsecond) precision (inGrace / beforeClose); the millisecond compare is only the fallback for rows without them.
  */
 export function selectRescoreQuote(refusals: readonly RefusalEvent[], closedAtMs: number, closingExitId: number | null): RefusalEvent | null {
   let best: RefusalEvent | null = null;
   for (const r of refusals) {
     if (r.refusal !== 'quote_far_below_mark') continue;
-    if (closingExitId !== null ? (r.id >= closingExitId || r.atMs > closedAtMs + CLOSE_GRACE_MS) : r.atMs > closedAtMs) continue;
+    const inGrace = r.inGrace ?? r.atMs <= closedAtMs + CLOSE_GRACE_MS;
+    const beforeClose = r.beforeClose ?? r.atMs <= closedAtMs;
+    if (closingExitId !== null ? (r.id >= closingExitId || !inGrace) : !beforeClose) continue;
     if (best === null || r.id > best.id) best = r;
   }
   return best;
@@ -347,6 +354,8 @@ export interface RescoreRow {
   closingJson: ExitCasJson | null;
   quote: RefusalEvent | null;
   quoteCas: QuoteCasText | null;
+  /** Every exit_quote_refused event of the position the loader read (for the dry-run report). */
+  refusals: RefusalEvent[];
   flags: RowFlag[];
   rescore: Rescore | null;
   allowed: boolean;
@@ -421,6 +430,23 @@ export async function applyRows(exec: Exec, rows: readonly RescoreRow[], atIso: 
     if ((await refusalMatch('live')).length !== 1 && (await refusalMatch('archive')).length !== 1) {
       throw new Error(`refusal event ${qc.id} of position ${c.input.id} changed or is gone; transaction rolled back`);
     }
+    // No refusal of this position may sit between the selected one and the closing exit event (same cutoff as the
+    // selection). Closed positions never receive new refusal events (the engine writes them only in executeExit, for
+    // status='open' rows), so this check plus the in-transaction plan recompute covers a selection that would change.
+    const later = await exec`
+      SELECT id FROM floor_arena_events
+      WHERE type = 'skip' AND data->>'reason' = 'exit_quote_refused' AND data->>'positionId' = ${c.input.id}
+        AND id > ${qc.id} AND id < ${closing.id}
+        AND at <= ${c.cas.closedAtText}::text::timestamptz + interval '120 seconds'
+      UNION ALL
+      SELECT id FROM floor_arena_events_archive
+      WHERE type = 'skip' AND data->>'reason' = 'exit_quote_refused' AND data->>'positionId' = ${c.input.id}
+        AND id > ${qc.id} AND id < ${closing.id}
+        AND at <= ${c.cas.closedAtText}::text::timestamptz + interval '120 seconds'
+      LIMIT 1`;
+    if (later.length !== 0) {
+      throw new Error(`position ${c.input.id} has a refusal newer than ${qc.id} before exit event ${closing.id}; transaction rolled back`);
+    }
     const summary = newSummary(c, rescoredOn);
     if (summary === null || closing.summary === undefined) throw new Error(`position ${c.input.id}: no summary to rewrite; nothing written`);
     const audit = positionRescorePayload({ atIso, old: c.old, rescore: r, quote, exitEventId: closing.id, flags: c.flags });
@@ -490,7 +516,8 @@ export async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): 
   if (positions.length === 0) return { candidates: [], shallow: [] };
   const ids = positions.map((p) => p.id);
   const fromAt = new Date(Math.min(...positions.map((p) => p.opened_at.getTime())));
-  const toAt = new Date(Math.max(...positions.map((p) => p.closed_at.getTime())) + CLOSE_GRACE_MS);
+  // The window only narrows the scan (index on at); +1 s covers the millisecond Date. The exact cutoff is in SQL below.
+  const toAt = new Date(Math.max(...positions.map((p) => p.closed_at.getTime())) + CLOSE_GRACE_MS + 1_000);
   // The archive CHECK allows only pass / skip, so its half returns nothing today; it is read so a change that archives
   // exit rows makes the row refuse (exit_event_archived) instead of failing the apply UPDATE.
   const exitRows = await sql<{
@@ -507,14 +534,21 @@ export async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): 
            data->>'proceedsUsd', data->>'fraction', data->>'pnlUsd', data->>'pnlMult', data->>'fillPriceUsd'
     FROM floor_arena_events_archive
     WHERE type = 'exit' AND at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz AND data->>'positionId' = ANY(${ids}::text[])`;
-  const refusalRows = await sql<{ id: string; at: Date; at_text: string; q_text: string | null; m_text: string | null; data: Record<string, unknown> }[]>`
-    SELECT id::text, at, at::text AS at_text, data->>'quoteMult' AS q_text, data->>'markMult' AS m_text, data FROM floor_arena_events
-    WHERE type = 'skip' AND at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz
-      AND data->>'reason' = 'exit_quote_refused' AND data->>'positionId' = ANY(${ids}::text[])
+  const refusalRows = await sql<{
+    id: string; at: Date; at_text: string; q_text: string | null; m_text: string | null; data: Record<string, unknown>;
+    in_grace: boolean; before_close: boolean;
+  }[]>`
+    SELECT e.id::text, e.at, e.at::text AS at_text, e.data->>'quoteMult' AS q_text, e.data->>'markMult' AS m_text, e.data,
+           (e.at <= p.closed_at + interval '120 seconds') AS in_grace, (e.at <= p.closed_at) AS before_close
+    FROM floor_arena_events e JOIN floor_arena_positions p ON p.id::text = e.data->>'positionId'
+    WHERE e.type = 'skip' AND e.at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz
+      AND e.data->>'reason' = 'exit_quote_refused' AND e.data->>'positionId' = ANY(${ids}::text[])
     UNION ALL
-    SELECT id::text, at, at::text, data->>'quoteMult', data->>'markMult', data FROM floor_arena_events_archive
-    WHERE type = 'skip' AND at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz
-      AND data->>'reason' = 'exit_quote_refused' AND data->>'positionId' = ANY(${ids}::text[])`;
+    SELECT a.id::text, a.at, a.at::text, a.data->>'quoteMult', a.data->>'markMult', a.data,
+           (a.at <= p.closed_at + interval '120 seconds'), (a.at <= p.closed_at)
+    FROM floor_arena_events_archive a JOIN floor_arena_positions p ON p.id::text = a.data->>'positionId'
+    WHERE a.type = 'skip' AND a.at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz
+      AND a.data->>'reason' = 'exit_quote_refused' AND a.data->>'positionId' = ANY(${ids}::text[])`;
   const exitsBy = new Map<string, ExitEvent[]>();
   const exitJson = new Map<number, ExitCasJson>();
   for (const r of exitRows) {
@@ -537,7 +571,10 @@ export async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): 
     seen.add(r.id);
     const pid = String(r.data.positionId);
     const list = refusalsBy.get(pid) ?? [];
-    list.push({ id: num(r.id), atMs: r.at.getTime(), refusal: strOrNull(r.data.refusal), quoteMult: numOrNull(r.data.quoteMult), markMult: numOrNull(r.data.markMult) });
+    list.push({
+      id: num(r.id), atMs: r.at.getTime(), refusal: strOrNull(r.data.refusal), quoteMult: numOrNull(r.data.quoteMult),
+      markMult: numOrNull(r.data.markMult), inGrace: r.in_grace === true, beforeClose: r.before_close === true,
+    });
     refusalCas.set(num(r.id), {
       id: num(r.id), atText: r.at_text,
       quoteMult: r.q_text, markMult: r.m_text,
@@ -563,7 +600,7 @@ export async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): 
       input, agentName: p.name, old: { pnlUsd: p.pnl_usd, pnlMult: p.pnl_mult, realisedUsd: p.realised_usd },
       cas: { sizeUsd: p.size_usd, tokens: p.tokens, entryPriceUsd: p.entry_price_usd, remainingFraction: p.remaining_fraction, closedAtText: p.closed_at_text },
       exits, closing, closingJson: closing ? exitJson.get(closing.id) ?? null : null,
-      quote, quoteCas: quote ? refusalCas.get(quote.id) ?? null : null, flags, rescore,
+      quote, quoteCas: quote ? refusalCas.get(quote.id) ?? null : null, refusals, flags, rescore,
       allowed: rescore !== null && closing !== null && exitJson.has(closing.id) && quote !== null && refusalCas.has(quote.id)
         && rowAllowed(flags, include),
     };
@@ -628,6 +665,9 @@ function printReport(cands: readonly Row[], shallow: readonly Row[], totals: Map
   const sum = (list: readonly Row[]) => list.reduce((s, c) => s + (c.rescore ? c.rescore.newPnlUsd - c.input.pnlUsd : 0), 0);
   console.log(`\nrows this run changes: ${allowed.length} (old ${signedUsd(allowed.reduce((s, c) => s + c.input.pnlUsd, 0))}, delta ${signedUsd(sum(allowed))}); blocked or not included: ${cands.length - allowed.length}`);
   console.log(`plan: rows=${allowed.length} hash=${planHash(cands)}`);
+  const laterHits = allowed.filter((c) => c.refusals.some((r) => r.id > c.quote!.id && r.id < c.closing!.id && (r.inGrace ?? true)));
+  console.log(`rows with a refusal (any kind) after the selected one and before the exit, the apply would abort on: ${laterHits.length}`
+    + (laterHits.length ? ` (${laterHits.map((c) => c.input.id).join(', ')})` : ''));
   console.log('\nexit events rewritten (id, current summary, new summary):');
   for (const c of allowed) {
     console.log(`  ${tokenLabel(c.input.symbol, c.input.mint)} pos=${c.input.id} exit_event=${c.closing!.id}`);
