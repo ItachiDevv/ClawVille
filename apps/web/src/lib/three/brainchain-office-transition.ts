@@ -34,13 +34,16 @@ export function openBrainchainOffice(source: 'button' | 'walk-in' = 'button'): b
   return true;
 }
 
-/** Match the Cove's human-driven modes, and exclude all modal/activity owners. */
+/** Match the Cove's human-driven modes, and exclude all modal/activity owners.
+ * `menuOpen` is NOT a blocker: the desktop sidebar keeps it true all the time
+ * (sidebar-menu.tsx), so it would block every desktop walk-in (staging 2026-11-12).
+ * On mobile the full-screen menu stops movement, and entry needs real locomotion. */
 export function canWalkIntoBrainchainOffice(): boolean {
   const s = useGameStore.getState();
   return (s.controlMode === 'player' || s.controlMode === 'npc')
     && !s.avatarIsAutonomous && !s.movementFrozen && !s.warpTarget
     && !s.currentPortalBuildingId && !s.activityLobbyId && !useActivityStore.getState().roomId
-    && !s.chatOpen && !s.guideChatOpen && !s.menuOpen && !s.settingsModalOpen
+    && !s.chatOpen && !s.guideChatOpen && !s.settingsModalOpen
     && !s.walletLinkModalOpen && !s.cosmeticDrawerOpen && !s.locationConfigModalOpen
     && !s.inventoryOpen && !s.shopOpen && !s.activityFeedOpen && !s.agentConnectModalOpen
     && !s.skillBuilderOpen && !s.landOfficeOpen && !s.worldMapOpen && !s.questBoardOpen

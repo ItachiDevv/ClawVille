@@ -19,7 +19,7 @@ describe('BrainChain local door guards', () => {
   });
   test('frozen movement, portals, activities and independent modals block entry', () => {
     for (const field of ['movementFrozen', 'settingsModalOpen', 'walletLinkModalOpen', 'inventoryOpen',
-      'shopOpen', 'menuOpen', 'cosmeticDrawerOpen', 'locationConfigModalOpen', 'agentConnectModalOpen',
+      'shopOpen', 'cosmeticDrawerOpen', 'locationConfigModalOpen', 'agentConnectModalOpen',
       'skillBuilderOpen', 'landOfficeOpen', 'worldMapOpen', 'questBoardOpen', 'bountyBoardOpen',
       'exchangeOpen', 'tradingFloorOpen', 'leaderboardOpen', 'arenaSettingsOpen'] as const) {
       useGameStore.setState({ [field]: true }); expect(canWalkIntoBrainchainOffice()).toBe(false);
@@ -28,6 +28,9 @@ describe('BrainChain local door guards', () => {
     useGameStore.setState({ currentPortalBuildingId: 'api-integrations' }); expect(canWalkIntoBrainchainOffice()).toBe(false);
     useGameStore.setState({ currentPortalBuildingId: null }); useActivityStore.setState({ roomId: 'test-room' });
     expect(canWalkIntoBrainchainOffice()).toBe(false);
+  });
+  test('the always-open desktop sidebar (menuOpen) does not block entry', () => {
+    useGameStore.setState({ menuOpen: true }); expect(canWalkIntoBrainchainOffice()).toBe(true);
   });
   test('return placement also updates the actual possessed local body', () => {
     const saved = useNpcStore.getState().npcs;
