@@ -1,5 +1,9 @@
 import type { Metadata } from 'next';
-import { BrainchainOffice } from '@/components/brainchain/brainchain-office';
+import { BrainchainInteriorPage } from '@/components/brainchain/brainchain-interior-page';
+import { Geist, Fragment_Mono } from 'next/font/google';
+
+const geist = Geist({ subsets: ['latin'], variable: '--font-geist' });
+const fragmentMono = Fragment_Mono({ weight: '400', subsets: ['latin'], variable: '--font-fragment-mono' });
 
 export const metadata: Metadata = {
   title: 'BrainChain Office | ClawVille',
@@ -7,5 +11,5 @@ export const metadata: Metadata = {
 };
 
 export default function BrainchainOfficePage() {
-  return <BrainchainOffice />;
+  return <div className={`${geist.variable} ${fragmentMono.variable}`} style={{ height: '100%' }}><BrainchainInteriorPage /></div>;
 }

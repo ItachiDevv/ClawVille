@@ -1,6 +1,12 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-11-12 04:51Z (Trading Floor Arena P&L periods: table `floor_arena_periods`, migration `0122_floor_arena_periods.sql`, exit reason `reset`, window `period` as the default of every arena read, admin routes `POST /api/admin/floor-arena/period/reset` and `GET /api/admin/floor-arena/period`).** Drift note: the arena section had no period, the leaderboard defaulted to `contest` and equity to `all`; trades had no window.
+**Last Audited: 2026-11-12 (Office interior phase 1, protocol 137).** Drift note: /brainchain uses a separate 3D stage scene with the existing Office panel. No API contract changes.
+
+The /brainchain route uses the persistent world stage, like /trading-floor. Its Office window reuses existing tab components and data paths. The 2D or unavailable-stage path renders the same panel full-screen. Interior coordinates never become town presence positions. Agents retain enter_building(buildingId=api-integrations), the brainchain action and clawville_brainchain. Protocol 137 refreshes generated manual knowledge through existing installation and consumption paths.
+
+PARITY: human path: Office stations or the 2D panel; agent path: existing BrainChain action/tool; private state binds to the existing avatar resolver.
+
+Prior **Last Audited: 2026-11-12 04:51Z (Trading Floor Arena P&L periods: table `floor_arena_periods`, migration `0122_floor_arena_periods.sql`, exit reason `reset`, window `period` as the default of every arena read, admin routes `POST /api/admin/floor-arena/period/reset` and `GET /api/admin/floor-arena/period`).** Drift note: the arena section had no period, the leaderboard defaulted to `contest` and equity to `all`; trades had no window.
 
 Prior **Last Audited: 2026-11-11 09:42Z (UsePod fee wallet re-review: the deposit reply splits the chosen `feePayer` from `feeCharged`; `keypair-vault` wipes its key copy when `Keypair.fromSecretKey` throws).** Drift note: the reply field `feePaidBy` read as a charged fee also for ambiguous rows; it is replaced by `feePayer` + `feeCharged`.
 

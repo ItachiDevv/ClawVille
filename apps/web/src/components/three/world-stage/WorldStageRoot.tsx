@@ -21,6 +21,9 @@ import {
   type WorldStageScene,
 } from './WorldStageCanvas';
 import { getWorldRendererMode, useWorldRendererMode, selectWorldRendererMode, reloadWorldRenderer, isStageSceneAvailable } from '@/lib/world-renderer-mode';
+import { needsBrainchainPanelFallback, retireBrainchainFallbackRequest } from './brainchain-stage-fallback';
+import { useBrainchainInteriorStore } from '@/components/brainchain/brainchain-interior-store';
+import { BRAINCHAIN_CAMERA_FAR, BRAINCHAIN_PLAYER_SPAWN, BRAINCHAIN_BACKGROUND, BRAINCHAIN_FOG } from '@/lib/three/brainchain/brainchain-room';
 import { StageTransition } from './StageTransition';
 import {
   requestStageScene,
@@ -76,6 +79,7 @@ import {
   TRADING_FLOOR_ROOM,
 } from '@/lib/three/trading-floor/trading-floor-room';
 import {
+  BRAINCHAIN_SCENE_ID,
   ACTIVITY_SCENE_ID,
   COVE_SCENE_ID,
   KELP_SCENE_ID,
@@ -133,6 +137,7 @@ const LazyStageHostedKelpScene = lazy(() =>
 const LazyStageHostedTradingFloorScene = lazy(
   () => import('./StageHostedTradingFloorScene'),
 );
+const LazyStageHostedBrainchainScene = lazy(() => import('./StageHostedBrainchainScene'));
 const LazyStageHostedActivityScene = lazy(
   () => import('./StageHostedActivityScene'),
 );
@@ -145,7 +150,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   const rendererMode = useWorldRendererMode();
   const [rendererHandoff, setRendererHandoff] = useState(false);
   const [pixiFailed, setPixiFailed] = useState(false);
-  const unsupported2D = rendererMode === '2d' && sceneIdForPathname(pathname) !== WORLD_SCENE_ID;
+  const unsupported2D = rendererMode === '2d' && pathname !== '/brainchain' && sceneIdForPathname(pathname) !== WORLD_SCENE_ID;
   const router = useRouter();
   const searchParams = useSearchParams();
   const [stageReady, setStageReady] = useState(false);
@@ -194,6 +199,15 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   // The /game page never mounts on these paths, so it never releases the
   // server-rendered BootSplash. Release it here so the error UI is visible.
   const stageTransitionFailed = useStageStore((state) => state.transition?.phase === 'error');
+  const brainchainFailed = useBrainchainInteriorStore((state) => state.failed);
+  const brainchainFallback = needsBrainchainPanelFallback(pathname, rendererMode, !!rendererFailure, brainchainFailed, stageTransitionFailed);
+  useEffect(() => {
+    if (!brainchainFallback) return;
+    // The DOM fallback has no scene to acknowledge. Retire any failed warm
+    // request before hiding the transition; returning to town requests it anew.
+    if (stageTransitionFailed) useBrainchainInteriorStore.getState().fail();
+    retireBrainchainFallbackRequest();
+  }, [brainchainFallback, stageTransitionFailed]);
   useEffect(() => {
     if (pixiFailed || unsupported2D || rendererFailure || stageTransitionFailed) releaseBootSplash();
   }, [pixiFailed, unsupported2D, rendererFailure, stageTransitionFailed]);
@@ -312,7 +326,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       settleIssue(landing.issue.id);
     }
 
-    if (pixiFailed) {
+    if (pixiFailed || brainchainFallback) {
       displayedPathRef.current = pathname;
       setDisplayedChildren(children); setDisplayedPathname(pathname);
       return;
@@ -377,6 +391,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     searchParams,
     stageReady,
     pixiFailed,
+    brainchainFallback,
   ]);
 
   useEffect(() => {
@@ -427,7 +442,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       const targetPathname = stagePathnameFromHref(navigation.to);
       const sceneId = sceneIdForPathname(targetPathname);
       const targetDestinationKey = stageDestinationKey(targetPathname);
-      if (!sceneId || !targetDestinationKey || !isStageSceneAvailable(sceneId)) return false;
+      if (!sceneId || !targetDestinationKey) return false;
+      if ((targetPathname === '/brainchain' && (getWorldRendererMode() === '2d' || getStageRendererFailure())) || brainchainFallback) { commitStageNavigation(navigation); return true; }
+      if (!isStageSceneAvailable(sceneId)) return false;
       if (pixiFailed) { commitStageNavigation(navigation); return true; }
       const state = useStageStore.getState();
       if (sceneId === ACTIVITY_SCENE_ID) {
@@ -470,7 +487,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       };
       return true;
     });
-  }, [commitStageNavigation, stageReady, pixiFailed]);
+  }, [commitStageNavigation, stageReady, pixiFailed, brainchainFallback]);
 
   useEffect(() => {
     const parked = navigationRef.current;
@@ -776,6 +793,24 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         ),
       },
       {
+        sceneId: BRAINCHAIN_SCENE_ID,
+        camera: {
+          fov: 60, near: 1, far: BRAINCHAIN_CAMERA_FAR,
+          position: [BRAINCHAIN_PLAYER_SPAWN.x, 300, BRAINCHAIN_PLAYER_SPAWN.z + 520],
+          lookAt: [0, 180, 0],
+        },
+        appearance: { background: BRAINCHAIN_BACKGROUND, fog: BRAINCHAIN_FOG, shadows: false },
+        capabilities: {
+          jump: false, verticalSwim: false, sprint: true, emotes: false,
+          interact: true, clickPath: false, cameraOrbitKeys: true, cameraOrbitDrag: true,
+        },
+        content: <Suspense fallback={null}>
+          <StageSlotErrorBoundary resetKey="brainchain" onRuntimeError={useBrainchainInteriorStore.getState().fail}>
+            <LazyStageHostedBrainchainScene />
+          </StageSlotErrorBoundary>
+        </Suspense>,
+      },
+      {
         sceneId: ACTIVITY_SCENE_ID,
         overlayOpaque: true,
         camera: {
@@ -853,7 +888,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
-      {rendererFailure && rendererMode === '3d' && (
+      {rendererFailure && rendererMode === '3d' && pathname !== '/brainchain' && (
         <div
           role="alert"
           className="absolute inset-0 z-50 flex items-center justify-center bg-[#07131d] p-6"
@@ -922,7 +957,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
-      {!unsupported2D && !pixiFailed && !(rendererFailure && rendererMode === '3d') && <StageTransition
+      {!brainchainFallback && !unsupported2D && !pixiFailed && !(rendererFailure && rendererMode === '3d') && <StageTransition
         timeoutMs={45_000}
         onOpaque={handleTransitionOpaque}
       />}

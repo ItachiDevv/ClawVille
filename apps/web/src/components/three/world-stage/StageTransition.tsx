@@ -21,6 +21,7 @@ const STAGE_SCENE_KIND_BY_ID = {
   kelp: 'kelp',
   'trading-floor': 'trading-floor',
   activity: 'activity',
+  brainchain: 'brainchain',
 } as const;
 
 interface StageTransitionProps {

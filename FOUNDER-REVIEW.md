@@ -1054,3 +1054,17 @@ Session: brainchain-office. Environment: https://staging.clawville.world/game af
 Look at: the Office building in the ring (size, door facing the plaza), the new resident "Cortex" (a tinted existing VRM, placeholder name), the "Enter BrainChain Office" button in the building panel, and chat with Cortex (BrainChain plus the old API-integrations lesson).
 Feedback wanted: is "Cortex" the right name and look? Is the tint too strong or too weak? Real phone/iPad view of the building panel button.
 
+
+
+### WORLD / 3D: BrainChain Office interior phase 1 (2026-11-12, local source)
+
+Last Audited: 2026-11-12. Drift note: the Office now has a room instead of a full-page-only 3D route.
+
+Claude must review and deploy this source before staging review. No local build or test ran for this change.
+At https://staging.clawville.world/game, walk through the Office vortex without chat. Inspect the round room, sea windows, orbit ribbons and pink sculpture.
+Check Cortex outside and behind the desk. She has a larger body at both positions.
+Check the desk, four pods, task board and receipts wall. Each prompt must open the correct Office tab.
+Check Talk to Cortex, Escape, Close and movement freeze. Check the vortex exit and Back to town placement.
+Check the same panel in 2D. Check touch controls and prompts on phones and iPads, in both orientations.
+Feedback wanted: room scale, station spacing, Cortex size, portal appearance, text contrast and frame rate.
+Runtime draw calls, lights, WebGPU, WebGL and real-device visuals require staging evidence.

@@ -23,7 +23,7 @@ const SECTIONS = [
   { id: 'earnings', label: 'Earnings' },
   { id: 'recovery', label: 'Recovery' },
 ] as const;
-type SectionId = (typeof SECTIONS)[number]['id'];
+export type SectionId = (typeof SECTIONS)[number]['id'];
 const STATE_LABELS = {
   available: 'Available', 'source-present': 'Code exists', 'not-verified': 'Not verified',
   unavailable: 'Unavailable', planned: 'Not connected',
@@ -86,7 +86,7 @@ function Teacher() {
     }
   }
 
-  return <aside className={styles.teacher} aria-labelledby="office-guide-heading">
+  return <aside id="office-teacher" tabIndex={-1} className={styles.teacher} aria-labelledby="office-guide-heading">
     <div className={styles.eyebrow}>Your teacher</div>
     <h2 id="office-guide-heading">Ask Cortex</h2>
     <p>Understand a task, review the setup steps, or ask what your agent needs next.</p>
@@ -105,11 +105,12 @@ function Teacher() {
   </aside>;
 }
 
-export function BrainchainOffice() {
+export function BrainchainOffice({ initialSection = 'learn', windowed = false, onClose }: { initialSection?: SectionId; windowed?: boolean; onClose?: () => void } = {}) {
   const router = useRouter();
   const isMobile = useIsMobile();
-  const [section, setSection] = useState<SectionId>('learn');
+  const [section, setSection] = useState<SectionId>(initialSection);
   const tabs = useRef<HTMLDivElement>(null);
+  useEffect(() => { setSection(initialSection); }, [initialSection]);
   const knowledge = useQuery({
     queryKey: ['brainchain-office', 'knowledge'],
     queryFn: ({ signal }) => readOffice<OfficeKnowledge>('knowledge', signal),
@@ -151,9 +152,10 @@ export function BrainchainOffice() {
     tabs.current?.querySelector<HTMLButtonElement>(`#office-tab-${selected.id}`)?.focus();
   }
 
-  return <div className={styles.page} data-touch={isMobile}>
+  return <div className={styles.page} data-touch={isMobile} data-windowed={windowed}>
     <a className={styles.skipLink} href="#office-content">Skip to Office content</a>
     <header className={styles.header}>
+      {windowed && <button type="button" className={styles.outlineButton} onClick={onClose} aria-label="Close Office">Close Office</button>}
       <Link href="/" className={styles.home}>ClawVille <span>/ Partner offices</span></Link>
       <Link href="/game" onClick={returnToTown} className={styles.townLink}>Back to town <span aria-hidden="true">↗</span></Link>
     </header>
@@ -180,7 +182,7 @@ export function BrainchainOffice() {
           <section id="office-content" className={styles.content} role="tabpanel" aria-labelledby={`office-tab-${section}`} tabIndex={0}>
             {knowledge.isLoading ? <p role="status">Load the reviewed Office curriculum...</p> : knowledge.isError ? <div role="alert"><h2>The curriculum is unavailable</h2><p>{knowledge.error.message}</p><button className={styles.primaryButton} type="button" onClick={() => void knowledge.refetch()}>Load the curriculum again</button></div> : <>
               <p className={styles.small}>Reviewed {knowledge.data?.reviewedAt} · Curriculum {knowledge.data?.version}</p>
-              {section === 'learn' && <><h2>Useful work starts with clear expectations.</h2><p>Learn what BrainChain does, what a worker needs, and which information can become public.</p><Curriculum sections={curriculum.filter((item) => ['purpose', 'worker', 'safety', 'history'].includes(item.id))} /></>}
+              {section === 'learn' && <><h2>Useful work starts with clear expectations.</h2><button className={styles.outlineButton} type="button" onClick={() => { const teacher = document.getElementById('office-question') ?? document.getElementById('office-teacher'); teacher?.scrollIntoView({ block: 'center' }); teacher?.focus(); }}>Talk to Cortex</button><p>Learn what BrainChain does, what a worker needs, and which information can become public.</p><Curriculum sections={curriculum.filter((item) => ['purpose', 'worker', 'safety', 'history'].includes(item.id))} /></>}
               {section === 'setup' && <><h2>Prepare a test worker.</h2><p>These steps are for an authorized operator in a separate environment. Test tokens have no cash value.</p><OfficeAccount mode="install" /><Curriculum sections={curriculum.filter((item) => ['networks', 'practice'].includes(item.id))} /><Capability capability={capability('hosted_worker')} /></>}
               {section === 'work' && <><h2>Your agent&apos;s work, with evidence.</h2><OfficeAccount mode="workers" /><div className={styles.notice}><h3>Task history is not available yet.</h3><p>Use the worker status command in your test environment to inspect its current record.</p></div><p>A worker record needs the correct network, worker identity, task reference, delivery, grade, and settlement receipt.</p><Capability capability={capability('hosted_worker')} /><Capability capability={capability('testnet_practice')} /></>}
               {section === 'hire' && <><h2>Give outside work a clear brief.</h2><p>Specify the facts, output format, quality levels, and deadline. Submit only information you can make public.</p><OfficePurchases /><Capability capability={capability('solana_task_purchase')} /><Curriculum sections={curriculum.filter((item) => item.id === 'payments')} /></>}

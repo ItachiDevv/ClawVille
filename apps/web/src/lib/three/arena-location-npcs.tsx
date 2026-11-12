@@ -1,5 +1,6 @@
 'use client';
 
+import { CORTEX_SCALE, CORTEX_MAX_HEIGHT, npcRenderedHeightLimit } from './brainchain-cortex-size';
 import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useState, type ReactElement, type RefObject } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
@@ -97,6 +98,8 @@ type NpcModelConfig = {
   /** Per-model scale override used when computeNormalizedScale returns a
    *  value outside [NPC_SCALE_CLAMP_MIN, NPC_SCALE_CLAMP_MAX] (broken bbox). */
   scaleOverride?: number;
+  /** Layer-2 ceiling override. Only Cortex opts in; other residents retain 201 wu. */
+  maxRenderedHeight?: number;
   /** Extra Y-axis rotation (radians) added on top of facingRotY.
    *  Use when a GLB is authored with a non-standard forward axis (+X instead of +Z). */
   rotYOffset?: number;
@@ -146,12 +149,15 @@ export const LOCATION_NPCS: Readonly<Record<string, LocationNpcConfig>> = {
   // (skinned GLB, Idle clip). Staging checks 2026-11-11: the default bind-pose fit
   // gave scale 50.56 -> 90 wu rendered (cbbd961ca). scaleOverride 163 was then cut
   // by NpcMesh's Layer-2 HARD_MAX (201 wu bbox) to 105.9 -> 182 wu rendered
-  // (eb7e3711d), in line with the GLB cast (Pearl 175 wu). 106 sets that size
-  // directly so it no longer relies on the safety net. Faces the plaza (0.98).
+  // (eb7e3711d), in line with the GLB cast (Pearl 175 wu). The prior override
+  // 106 matched that baseline. Faces the plaza (0.98).
+  // 2026-11-12: 134 = 106 * 230 / 182 (rounded). Cortex alone permits a
+  // 260 wu conservative bind-pose box; expected Idle height is 230 wu.
   'api-integrations': {
     name: 'Cortex',
     model: '/models/brainchain/brainchain-clerk-v1-ktx.glb',
-    scaleOverride: 106,
+    scaleOverride: CORTEX_SCALE,
+    maxRenderedHeight: CORTEX_MAX_HEIGHT,
     deferUntilDecorativeRelease: true,
   },
 
@@ -611,7 +617,7 @@ const NpcMesh = memo(function NpcMesh({
       _locRenderedBbox.setFromObject(groupRef.current);
       if (!_locRenderedBbox.isEmpty()) {
         const renderedH = _locRenderedBbox.max.y - _locRenderedBbox.min.y;
-        const HARD_MAX = 201;
+        const HARD_MAX = npcRenderedHeightLimit(modelCfg.model, modelCfg.maxRenderedHeight);
         if (renderedH > HARD_MAX) {
           const scaledSubGroup = groupRef.current.children[0]; // the [npcScale,npcScale,npcScale] group
           if (scaledSubGroup) {

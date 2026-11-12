@@ -2,7 +2,7 @@
 // Build the BrainChain Office v3 world assets from the raw Meshy outputs
 // (founder 2026-11-11: orbit-sculpture building + brain-head clerk robot).
 //
-//   node scripts/brainchain/build-office-v3.mjs building <raw.glb> <out.glb>
+//   node scripts/brainchain/build-office-v3.mjs <building|sculpture|pod|desk> <raw.glb> <out.glb>
 //   node scripts/brainchain/build-office-v3.mjs robot <rigged.glb> <animDir> <out.glb>
 //
 // Both targets:
@@ -30,13 +30,17 @@ import { createHash } from 'node:crypto';
 const BUDGET = {
   building: { tris: 12_000, bytes: 1.6 * 1024 * 1024 },
   robot: { tris: 12_000, bytes: 1.6 * 1024 * 1024 },
+  // Interior props (founder 2026-11-12). Same glow mask: the pink paint glows.
+  sculpture: { tris: 8_000, bytes: 1.0 * 1024 * 1024 },
+  pod: { tris: 6_000, bytes: 0.9 * 1024 * 1024 },
+  desk: { tris: 5_000, bytes: 0.9 * 1024 * 1024 },
 };
 const CLIPS = [['idle', 'Idle'], ['talk', 'Talk'], ['wave', 'Wave'], ['walk', 'Walk']];
 
 const [target, input, a3, a4] = process.argv.slice(2);
 const output = target === 'robot' ? a4 : a3;
 if (!BUDGET[target] || !input || !output || (target === 'robot' && !a3)) {
-  throw new Error('usage: building <raw.glb> <out.glb> | robot <rigged.glb> <animDir> <out.glb>');
+  throw new Error('usage: <building|sculpture|pod|desk> <raw.glb> <out.glb> | robot <rigged.glb> <animDir> <out.glb>');
 }
 const work = resolve('.brainchain-work/office-v3', target);
 mkdirSync(work, { recursive: true });
@@ -91,7 +95,9 @@ for (const t of [material.getNormalTexture(), material.getMetallicRoughnessTextu
 material.setNormalTexture(null).setMetallicRoughnessTexture(null).setOcclusionTexture(null)
   .setMetallicFactor(0).setRoughnessFactor(0.8);
 
-const { data, info } = await sharp(baseTex.getImage()).resize(1024, 1024).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+// toColourspace: Meshy prop JPEGs fail the raw read without an explicit sRGB space
+// (libvips "colourspace: parameter space not set").
+const { data, info } = await sharp(baseTex.getImage()).toColourspace("srgb").resize(1024, 1024).removeAlpha().raw().toBuffer({ resolveWithObject: true });
 const glow = Buffer.alloc(data.length);
 let glowPixels = 0;
 for (let i = 0; i < data.length; i += 3) {

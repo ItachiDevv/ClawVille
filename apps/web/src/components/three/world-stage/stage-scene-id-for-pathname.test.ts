@@ -36,7 +36,7 @@ afterAll(() => {
 describe('stage pathname identity', () => {
   test.each([
     ['/game', 'world'],
-    ['/brainchain', 'world'],
+    ['/brainchain', 'brainchain'],
     ['/cove', 'cove'],
     ['/kelp', 'kelp'],
     ['/trading-floor', 'trading-floor'],

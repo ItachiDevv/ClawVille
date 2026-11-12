@@ -1,14 +1,14 @@
 export const WORLD_SCENE_ID = 'world';
 export const COVE_SCENE_ID = 'cove';
 export const KELP_SCENE_ID = 'kelp';
+export const BRAINCHAIN_SCENE_ID = 'brainchain';
 export const TRADING_FLOOR_SCENE_ID = 'trading-floor';
 export const ACTIVITY_SCENE_ID = 'activity';
 export const NAV_NONCE_PARAM = '__wsnav';
 
 export function sceneIdForPathname(pathname: string): string | null {
   if (pathname === '/game') return WORLD_SCENE_ID;
-  // The Office is a DOM service desk over the retained world, not a new Canvas.
-  if (pathname === '/brainchain') return WORLD_SCENE_ID;
+  if (pathname === '/brainchain') return BRAINCHAIN_SCENE_ID;
   if (pathname === '/cove') return COVE_SCENE_ID;
   if (pathname === '/kelp') return KELP_SCENE_ID;
   if (pathname === '/trading-floor') return TRADING_FLOOR_SCENE_ID;

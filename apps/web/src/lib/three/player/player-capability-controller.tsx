@@ -145,7 +145,7 @@ function runPlayerControllerFrame(
   rawDelta: number,
 ): void {
   if (isWorldInputBlocked()) { resetPlayerKeys(); resetPlayerTouch(); }
-  if (isWorldFrameBlocked()) { config.onDirection?.('idle'); return; }
+  if (isWorldFrameBlocked(config.sceneId)) { config.onDirection?.('idle'); return; }
   const facingOverride = config.consumeFacingOverride?.();
   if (facingOverride != null) runtime.facing = facingOverride;
   config.space.readPosition(frameStartPosition);

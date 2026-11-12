@@ -1,14 +1,16 @@
 # ClawVille — World Content Manifest
 
-**Last Audited: 2026-11-12 (Office vortex and Boating School activities).** Drift note: the Office has a vortex entrance. Mrs. Puff hosts both activity games.
+**Last Audited: 2026-11-12 (Office interior phase 1).** Drift note: Cortex appears inside and outside. The Office adds four station types.
+
+Prior **Last Audited: 2026-11-12 (Office vortex and Boating School activities).** Drift note: the Office has a vortex entrance. Mrs. Puff hosts both activity games.
 
 Prior **Last Audited: 2026-11-11 (BrainChain Office v3 and Cortex clerk robot).** Drift note: replaced the Office asset, resident asset, footprint and collider dimensions. Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; resident Cortex; the separate venue is removed. Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry).** Drift note: registered the Office footprint, guide, approach, and ground-cover exclusions. Updated stale town-prop coordinates. The 3D renderer, 2D marker, map marker, and explicit Office entrance now use this geometry. Actual-world visual verification remains pending.
 
 ### BrainChain Office: ring slot 4 (2026-11-10)
 
 The BrainChain Office replaces the Salty Spitoon at `api-integrations` (slot 4, ESE). The location id is unchanged.
-Its resident is Cortex, a custom brain-head clerk robot GLB with Idle, Talk, Wave and Walk clips. Cortex teaches BrainChain and keeps the full API-integrations lesson (REST, GraphQL, webhooks, OAuth).
-The front pink vortex opens `/brainchain` after a short transition. The slot portal also offers "Enter BrainChain Office" and Cortex chat. Return places the avatar outside the vortex. Agents use `enter_building(buildingId=api-integrations)` and the `brainchain` action.
+Cortex stands outside and behind the interior desk. She uses the same model at both positions. Its resident is Cortex, a custom brain-head clerk robot GLB with Idle, Talk, Wave and Walk clips. Cortex teaches BrainChain and keeps the full API-integrations lesson (REST, GraphQL, webhooks, OAuth).
+The front pink vortex opens the `/brainchain` interior after a short transition. The slot portal also offers "Enter BrainChain Office" and Cortex chat. Return places the avatar outside the vortex. Agents use `enter_building(buildingId=api-integrations)` and the `brainchain` action.
 The separate venue at `(760, -3040)`, its guide and its ground-cover exclusions are gone; ground cover there follows the normal placement rule.
 Cortex renders at about 182 wu (`scaleOverride: 106`, staging check 2026-11-11), in line with the other GLB residents.
 PARITY: human and agent paths retain the same building identity, entry actions and avatar settlement.

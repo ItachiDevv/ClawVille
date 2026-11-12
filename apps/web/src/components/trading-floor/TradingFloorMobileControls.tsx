@@ -7,13 +7,16 @@ import {
   setPlayerTouchCamera,
   setPlayerTouchMove,
 } from '@/lib/three/player/player-input';
-import { activateTradingFloorUse } from '@/lib/three/trading-floor/trading-floor-interior';
 import {
   BAND_BOTTOM_CSS,
   BAND_HEIGHT_CSS,
   TOUCH_LAYOUT,
   USE_BUTTON_BOTTOM_CSS,
 } from './trading-floor-touch-layout';
+
+const activateTradingFloorUse = () => {
+  void import('@/lib/three/trading-floor/trading-floor-interior').then((scene) => scene.activateTradingFloorUse());
+};
 
 /**
  * Touch controls for the Trading Floor interior.
@@ -32,7 +35,7 @@ import {
  * produces.
  */
 
-export default function TradingFloorMobileControls() {
+export default function TradingFloorMobileControls({ onUse = activateTradingFloorUse, accent = '#5ae2ff', foreground = '#bff4ff', showUse = true }: { onUse?: () => void; accent?: string; foreground?: string; showUse?: boolean } = {}) {
   const isMobile = useIsMobile();
   const movementZone = useRef<HTMLDivElement>(null);
   const cameraZone = useRef<HTMLDivElement>(null);
@@ -49,7 +52,7 @@ export default function TradingFloorMobileControls() {
         mode: 'static',
         position: { left: '80px', bottom: '80px' },
         size: 120,
-        color: '#5ae2ff',
+        color: accent,
         restOpacity: 0.9,
         fadeTime: 100,
       });
@@ -58,7 +61,7 @@ export default function TradingFloorMobileControls() {
         mode: 'static',
         position: { right: '80px', bottom: '80px' },
         size: 120,
-        color: '#bff4ff',
+        color: foreground,
         restOpacity: 0.82,
         fadeTime: 100,
       });
@@ -88,7 +91,7 @@ export default function TradingFloorMobileControls() {
       setPlayerTouchMove(0, 0);
       setPlayerTouchCamera(0, 0);
     };
-  }, [isMobile]);
+  }, [isMobile, accent, foreground]);
 
   if (!isMobile) return null;
 
@@ -108,7 +111,7 @@ export default function TradingFloorMobileControls() {
       {/* Interact — the touch equivalent of E. Anchored to the TOP of the
           joystick band so it can never overlap a zone, then clamped so its own
           top stays on screen. */}
-      <button
+      {showUse && <button
         type="button"
         aria-label="Interact"
         // The SAME action the keyboard E edge runs, not a re-implementation of
@@ -117,7 +120,7 @@ export default function TradingFloorMobileControls() {
         // two-case copy, which made the founder's "go up and sit at" request
         // unreachable on every phone and iPad.
         onClick={() => {
-          activateTradingFloorUse();
+          onUse();
         }}
         style={{
           position: 'fixed',
@@ -129,14 +132,14 @@ export default function TradingFloorMobileControls() {
           borderRadius: '50%',
           border: '1.5px solid rgba(90,226,255,0.6)',
           background: 'rgba(6,18,30,0.86)',
-          color: '#bff4ff',
+          color: foreground,
           font: '700 15px monospace',
           letterSpacing: '0.05em',
           touchAction: 'manipulation',
         }}
       >
         USE
-      </button>
+      </button>}
       <div
         style={{
           position: 'fixed',
