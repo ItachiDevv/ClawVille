@@ -5,7 +5,7 @@ import { FLOOR_ARENA_CONTEST, FLOOR_ARENA_PAPER_COSTS } from '../../../../packag
 import {
   CONTEST_WINDOW, DEEP_LOW_OF_MARK, RESCORE_REASON, SELL_HAIRCUT_PCT, closingExit, exitEventPatch, formatMult, isShallowLow, parseArgs,
   positionRescorePayload, quoteOfMark, quoteProceedsUsd, rescorePosition, rescoredExitSummary, round6, round9, rowAllowed,
-  rowFlags, selectRescoreQuote, tokenLabel, applyRows, checkPlan, planHash, planLines,
+  rowFlags, selectRescoreQuote, tokenLabel, applyRows, checkPlan, loadRows, planHash, planLines,
   type Exec, type ExitEvent, type IncludableFlag, type PositionInput, type RefusalEvent, type RescoreRow,
 } from './rescore-mark-over-low-quote';
 
@@ -264,10 +264,15 @@ function fearRow(over: Partial<RescoreRow> = {}): RescoreRow {
   return {
     input: FEAR, agentName: 'Late Bloomer',
     old: { pnlUsd: '4005.12107', pnlMult: '201.2560535', realisedUsd: '4025.12107' },
-    cas: { sizeUsd: '20', tokens: '378283.96474407', entryPriceUsd: '0.00005287033515557844', remainingFraction: '0' },
+    cas: {
+      sizeUsd: '20', tokens: '378283.96474407', entryPriceUsd: '0.00005287033515557844', remainingFraction: '0',
+      closedAtText: '2026-11-02 22:23:47.562+00',
+    },
     exits: [FEAR_EXIT], closing: FEAR_EXIT,
-    closingJson: { proceedsUsd: '4025.1210697601578', fraction: '1', pnlUsd: '4005.12107' },
-    quote: FEAR_QUOTE, flags: [], rescore: rescorePosition(FEAR, FEAR_EXIT, 0.9213274), allowed: true,
+    closingJson: { proceedsUsd: '4025.1210697601578', fraction: '1', pnlUsd: '4005.12107', pnlMult: '201.2560535', fillPriceUsd: '0.01083' },
+    quote: FEAR_QUOTE,
+    quoteCas: { id: 253304, atText: '2026-11-02 22:23:48.788+00', quoteMult: '0.9213274', markMult: '204.8407669089139' },
+    flags: [], rescore: rescorePosition(FEAR, FEAR_EXIT, 0.9213274), allowed: true,
     ...over,
   };
 }
@@ -284,10 +289,12 @@ function fakeExec(results: unknown[][]): { exec: Exec; calls: Call[] } {
   return { exec: fn, calls };
 }
 
-const FEAR_PLAN_LINE = '2c4259d7-4ba2-45d2-b95e-414bc80caa87|253305|4005.12107|4025.12107|-1.665585';
+const FEAR_PLAN_LINE = '2c4259d7-4ba2-45d2-b95e-414bc80caa87|253305|4005.12107|4025.12107|-1.665585|253304|0.9213274|204.8407669089139';
+/** Queue for one fully matching row: refusal re-read (live), position UPDATE, exit-event UPDATE. */
+const OK = (): unknown[][] => [[{ id: 253304 }], [{ id: FEAR.id }], [{ id: 253305 }]];
 
 describe('plan hash', () => {
-  it('one line per changed row: position | exit event | old pnl | old realised | new pnl', () => {
+  it('one line per changed row: position | exit event | old pnl | old realised | new pnl | refusal id | quoteMult | markMult', () => {
     expect(planLines([fearRow()])).toEqual([FEAR_PLAN_LINE]);
     expect(planHash([fearRow()])).toBe(createHash('sha256').update(FEAR_PLAN_LINE).digest('hex'));
   });
@@ -307,37 +314,139 @@ describe('plan hash', () => {
     expect(() => checkPlan(moved, 1, hash)).toThrow('but the current plan is');
     expect(() => checkPlan([], 1, hash)).toThrow('--confirm=1 but 0 rows');
   });
+  it('a different selected refusal (id, quoteMult or markMult) makes a different plan', () => {
+    const hash = planHash([fearRow()]);
+    const qc = fearRow().quoteCas!;
+    for (const quoteCas of [{ ...qc, id: 253303 }, { ...qc, quoteMult: '0.92' }, { ...qc, markMult: '204.84' }]) {
+      expect(() => checkPlan([fearRow({ quoteCas })], 1, hash)).toThrow('but the current plan is');
+    }
+  });
 });
 
 describe('applyRows CAS', () => {
   const at = '2026-11-12T07:00:00.000Z';
-  it('compares every math input and old value on the position, and every replaced value on the exit event', async () => {
-    const { exec, calls } = fakeExec([[{ id: FEAR.id }], [{ id: 253305 }]]);
+  it('re-reads the selected refusal FOR SHARE and checks reason, refusal, position, quoteMult, markMult and at', async () => {
+    const { exec, calls } = fakeExec(OK());
     expect(await applyRows(exec, [fearRow()], at, '2026-11-12')).toBe(1);
+    const q = calls[0]!;
+    for (const part of ['FROM floor_arena_events\n', "type = 'skip'", 'at = $::text::timestamptz', "data->>'reason' = 'exit_quote_refused'",
+      "data->>'refusal' = 'quote_far_below_mark'", "data->>'positionId' = $", "(data->>'quoteMult')::numeric IS NOT DISTINCT FROM $::numeric",
+      "(data->>'markMult')::numeric IS NOT DISTINCT FROM $::numeric", 'FOR SHARE']) expect(q.text).toContain(part);
+    for (const v of [253304, '2026-11-02 22:23:48.788+00', FEAR.id, '0.9213274', '204.8407669089139']) expect(q.values).toContain(v);
+  });
+  it('binds microsecond timestamps as text, never as a bare $::timestamptz (postgres.js would truncate them to ms)', async () => {
+    const row = fearRow({ quoteCas: { ...fearRow().quoteCas!, atText: '2026-10-11 21:42:46.754843+00' } });
+    const { exec, calls } = fakeExec(OK());
+    await applyRows(exec, [row], at, '2026-11-12');
+    for (const c of calls) expect(c.text).not.toMatch(/\$::timestamptz/);
+    expect(calls[0]!.values).toContain('2026-10-11 21:42:46.754843+00');
+  });
+  it('a refusal moved to the archive still matches there', async () => {
+    const { exec, calls } = fakeExec([[], [{ id: 253304 }], [{ id: FEAR.id }], [{ id: 253305 }]]);
+    expect(await applyRows(exec, [fearRow()], at, '2026-11-12')).toBe(1);
+    expect(calls[1]!.text).toContain('FROM floor_arena_events_archive');
+    expect(calls[1]!.text).toContain('FOR SHARE');
+  });
+  it('a changed or missing refusal aborts before any UPDATE', async () => {
+    const { exec, calls } = fakeExec([[], []]);
+    await expect(applyRows(exec, [fearRow()], at, '2026-11-12')).rejects.toThrow('refusal event 253304 of position');
     expect(calls.length).toBe(2);
-    const pos = calls[0]!;
+    expect(calls.some((c) => c.text.includes('UPDATE'))).toBe(false);
+  });
+  it('compares every math input and old value on the position, closed_at included', async () => {
+    const { exec, calls } = fakeExec(OK());
+    await applyRows(exec, [fearRow()], at, '2026-11-12');
+    const pos = calls[1]!;
     for (const part of ["status = 'closed'", "exit_fill_source = 'mark_fallback'", 'pnl_usd = $::numeric', 'pnl_mult IS NOT DISTINCT FROM $::numeric',
       'realised_usd = $::numeric', 'size_usd = $::numeric', 'tokens = $::numeric', 'entry_price_usd = $::numeric',
-      'remaining_fraction = $::numeric', "NOT (COALESCE(entry_features, '{}'::jsonb) ? 'rescore')"]) expect(pos.text).toContain(part);
-    for (const v of [FEAR.id, '4005.12107', '201.2560535', '4025.12107', '20', '378283.96474407', '0.00005287033515557844', '0']) expect(pos.values).toContain(v);
-    const ex = calls[1]!;
-    for (const part of ["type = 'exit'", "data->>'positionId' = $", "data->>'fillSource' = 'mark_fallback'",
-      "data->'proceedsUsd' IS NOT DISTINCT FROM $::jsonb", "data->'fraction' IS NOT DISTINCT FROM $::jsonb",
-      "data->'pnlUsd' IS NOT DISTINCT FROM $::jsonb", 'summary = $', "NOT (data ? 'rescoredFrom')"]) expect(ex.text).toContain(part);
-    for (const v of [253305, FEAR.id, '4025.1210697601578', '1', '4005.12107', FEAR_OLD_SUMMARY]) expect(ex.values).toContain(v);
+      'remaining_fraction = $::numeric', 'closed_at = $::text::timestamptz', "NOT (COALESCE(entry_features, '{}'::jsonb) ? 'rescore')"]) expect(pos.text).toContain(part);
+    for (const v of [FEAR.id, '4005.12107', '201.2560535', '4025.12107', '20', '378283.96474407', '0.00005287033515557844', '0',
+      '2026-11-02 22:23:47.562+00']) expect(pos.values).toContain(v);
+  });
+  it('the exit-event CAS covers every key the patch writes (derived from the patch object)', async () => {
+    const { exec, calls } = fakeExec(OK());
+    await applyRows(exec, [fearRow()], at, '2026-11-12');
+    const ex = calls[2]!;
+    const patchKeys = Object.keys(exitEventPatch({
+      exit: FEAR_EXIT, rescore: fearRow().rescore!, quoteMult: 0.9213274, entryPriceUsd: FEAR_ENTRY, atIso: at, quoteEventId: 253304,
+    }));
+    expect(patchKeys.length).toBeGreaterThan(0);
+    for (const key of patchKeys) {
+      const numeric = `(data->>'${key}')::numeric IS NOT DISTINCT FROM $::numeric`;
+      const covered = ex.text.includes(numeric) || ex.text.includes(`data->>'${key}' = 'mark_fallback'`) || ex.text.includes(`NOT (data ? '${key}')`);
+      expect({ key, covered }).toEqual({ key, covered: true });
+    }
+    for (const part of ["type = 'exit'", "data->>'positionId' = $", "(data->>'fraction')::numeric IS NOT DISTINCT FROM $::numeric", 'summary = $']) {
+      expect(ex.text).toContain(part);
+    }
+    // No bound value is compared as jsonb (a postgres.js string bound as $n::jsonb is a JSON string, never a number).
+    expect(ex.text).not.toMatch(/\$::jsonb\s*(AND|$)/);
+    for (const v of [253305, FEAR.id, '4025.1210697601578', '1', '4005.12107', '201.2560535', '0.01083', FEAR_OLD_SUMMARY]) expect(ex.values).toContain(v);
   });
   it('a changed position row (CAS miss) aborts before the exit event is touched', async () => {
-    const { exec, calls } = fakeExec([[]]);
+    const { exec, calls } = fakeExec([[{ id: 253304 }], []]);
     await expect(applyRows(exec, [fearRow()], at, '2026-11-12')).rejects.toThrow('CAS failed on position');
-    expect(calls.length).toBe(1);
+    expect(calls.length).toBe(2);
   });
   it('a changed exit event (CAS miss) aborts', async () => {
-    const { exec } = fakeExec([[{ id: FEAR.id }], []]);
+    const { exec } = fakeExec([[{ id: 253304 }], [{ id: FEAR.id }], []]);
     await expect(applyRows(exec, [fearRow()], at, '2026-11-12')).rejects.toThrow('CAS failed on exit event 253305');
   });
   it('rows the run does not change are never written', async () => {
     const { exec, calls } = fakeExec([]);
     expect(await applyRows(exec, [fearRow({ allowed: false })], at, '2026-11-12')).toBe(0);
     expect(calls.length).toBe(0);
+  });
+});
+
+describe('loadRows binds timestamps as ISO text', () => {
+  it('passes the event time window as `${iso}::timestamptz`, never a bare Date', async () => {
+    const position = {
+      id: FEAR.id, agent_id: FEAR.agentId, kind: 'house', name: 'Late Bloomer', symbol: 'FEAR', mint: FEAR.mint,
+      opened_at: new Date(FEAR.openedAtMs), closed_at: new Date(FEAR.closedAtMs), size_usd: '20', tokens: '378283.96474407',
+      entry_price_usd: '0.00005287033515557844', realised_usd: '4025.12107', pnl_usd: '4005.12107', pnl_mult: '201.2560535',
+      remaining_fraction: '0', closed_at_text: '2026-11-02 22:23:47.562+00',
+    };
+    const { exec, calls } = fakeExec([[position], [], []]);
+    const out = await loadRows(exec as unknown as Parameters<typeof loadRows>[0], new Set());
+    expect(out.candidates).toEqual([]);
+    expect(calls.length).toBe(3);
+    for (const c of calls) for (const v of c.values) expect(v instanceof Date).toBe(false);
+    for (const c of calls.slice(1)) {
+      expect(c.text).toContain('at BETWEEN $::timestamptz AND $::timestamptz');
+      expect(c.values).toContain(new Date(FEAR.openedAtMs).toISOString());
+      expect(c.values).toContain(new Date(FEAR.closedAtMs + 120_000).toISOString());
+    }
+  });
+});
+
+describe('exit-event CAS on the real stored shape (staging event 211119)', () => {
+  // Staging 2026-11-12: event 211119 (ZCYBERLEEK, position 1e847886-...) as stored. The first staging apply failed its
+  // exit CAS because `$n::jsonb` bound "22.170298402581356" as a JSON string while the stored value is a JSON number.
+  const STORED_DATA = {
+    leg: null, holdS: 958, closed: true, pnlUsd: 2.170298, reason: 'time', pnlMult: 1.1085149, fraction: 1, markMult: 1.119712040534412,
+    fillSource: 'mark_fallback', positionId: '1e847886-bf6f-4458-bb40-5a77e9dc67ba', proceedsUsd: 22.170298402581356, fillPriceUsd: 0.00004524,
+    remainingFraction: 0,
+  };
+  // What `data->>'key'` returns for those values (read on staging): numeric text.
+  const ARROW_TEXT = { proceedsUsd: '22.170298402581356', fraction: '1', pnlUsd: '2.170298', pnlMult: '1.1085149', fillPriceUsd: '0.00004524' };
+  it('binds the ->> numeric texts and compares them as numeric', async () => {
+    const exit: ExitEvent = {
+      id: 211119, atMs: 0, fraction: STORED_DATA.fraction, proceedsUsd: STORED_DATA.proceedsUsd, fillSource: 'mark_fallback', closed: true,
+      summary: 'Sold 100% of ZCYBERLEEK at 1.12x (time cap) for $22.17 via mark fallback (no usable sell quote). Closed: P&L +$2.17 (+10.9%).',
+      reason: 'time', leg: null, stopKind: null, fillPriceUsd: STORED_DATA.fillPriceUsd, pnlUsd: STORED_DATA.pnlUsd, pnlMult: STORED_DATA.pnlMult,
+    };
+    const input: PositionInput = { ...FEAR, id: STORED_DATA.positionId, symbol: 'ZCYBERLEEK', realisedUsd: 22.170298, pnlUsd: 2.170298 };
+    const row = fearRow({
+      input, exits: [exit], closing: exit, closingJson: ARROW_TEXT,
+      old: { pnlUsd: '2.170298', pnlMult: '1.1085149', realisedUsd: '22.170298' },
+      rescore: rescorePosition(input, exit, 0.1158),
+    });
+    const { exec, calls } = fakeExec([[{ id: 1 }], [{ id: input.id }], [{ id: 211119 }]]);
+    expect(await applyRows(exec, [row], '2026-11-12T07:00:00.000Z', '2026-11-12')).toBe(1);
+    const ex = calls[2]!;
+    for (const v of Object.values(ARROW_TEXT)) expect(ex.values).toContain(v);
+    // Each bound text is numerically equal to the stored JSON number (the numeric compare in SQL is exact).
+    for (const [key, text] of Object.entries(ARROW_TEXT)) expect(Number(text)).toBe(STORED_DATA[key as keyof typeof ARROW_TEXT]);
   });
 });

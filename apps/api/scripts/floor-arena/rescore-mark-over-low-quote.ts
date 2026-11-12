@@ -311,13 +311,30 @@ export interface PositionCasText {
   tokens: string;
   entryPriceUsd: string;
   remainingFraction: string;
+  /** closed_at::text (full precision; the selection of the quote depends on it). */
+  closedAtText: string;
 }
 
-/** Exact jsonb text (data->'key'::text) of the exit event values the patch replaces, compared by the exit-event CAS. */
+/**
+ * The exit event values the patch replaces, read as data->>'key' (numeric text, NULL for a JSON null or a missing key)
+ * and compared by the exit-event CAS as numeric. Staging apply 2026-11-12 (event 211119): a postgres.js string bound
+ * as `$n::jsonb` arrives as a JSON STRING ("22.17..."), never equal to the stored JSON number, so a jsonb compare
+ * can never match.
+ */
 export interface ExitCasJson {
   proceedsUsd: string | null;
   fraction: string | null;
   pnlUsd: string | null;
+  pnlMult: string | null;
+  fillPriceUsd: string | null;
+}
+
+/** The selected refusal event as stored (->> texts, at::text), re-read FOR SHARE and re-checked inside the apply. */
+export interface QuoteCasText {
+  id: number;
+  atText: string;
+  quoteMult: string | null;
+  markMult: string | null;
 }
 
 export interface RescoreRow {
@@ -329,16 +346,23 @@ export interface RescoreRow {
   closing: ExitEvent | null;
   closingJson: ExitCasJson | null;
   quote: RefusalEvent | null;
+  quoteCas: QuoteCasText | null;
   flags: RowFlag[];
   rescore: Rescore | null;
   allowed: boolean;
 }
 type Row = RescoreRow;
 
-/** One plan line per row the run changes: position id | exit event id | old pnl_usd | old realised_usd | new pnl_usd. */
+/**
+ * One plan line per row the run changes: position id | exit event id | old pnl_usd | old realised_usd | new pnl_usd |
+ * refusal event id | its quoteMult | its markMult (the stored ->> texts).
+ */
 export function planLines(rows: readonly RescoreRow[]): string[] {
   return rows.filter((r) => r.allowed)
-    .map((r) => [r.input.id, String(r.closing?.id ?? ''), r.old.pnlUsd, r.old.realisedUsd, String(r.rescore?.newPnlUsd ?? '')].join('|'))
+    .map((r) => [
+      r.input.id, String(r.closing?.id ?? ''), r.old.pnlUsd, r.old.realisedUsd, String(r.rescore?.newPnlUsd ?? ''),
+      String(r.quoteCas?.id ?? ''), r.quoteCas?.quoteMult ?? '', r.quoteCas?.markMult ?? '',
+    ].join('|'))
     .sort();
 }
 
@@ -373,6 +397,30 @@ export async function applyRows(exec: Exec, rows: readonly RescoreRow[], atIso: 
     const closing = c.closing!;
     const j = c.closingJson!;
     const quote = c.quote!;
+    const qc = c.quoteCas!;
+    // The selected refusal must be unchanged (live table, else archive), and stays locked until the commit.
+    // Timestamps bind as ::text::timestamptz: postgres.js serializes a $n inferred as timestamptz through a JS Date,
+    // which drops the microseconds (staging 2026-11-12: refusal 211099 at .754843 was bound as .754 and never matched).
+    const refusalMatch = (table: 'live' | 'archive') => table === 'live'
+      ? exec`
+        SELECT id FROM floor_arena_events
+        WHERE id = ${qc.id} AND type = 'skip' AND at = ${qc.atText}::text::timestamptz
+          AND data->>'reason' = 'exit_quote_refused' AND data->>'refusal' = 'quote_far_below_mark'
+          AND data->>'positionId' = ${c.input.id}
+          AND (data->>'quoteMult')::numeric IS NOT DISTINCT FROM ${qc.quoteMult}::numeric
+          AND (data->>'markMult')::numeric IS NOT DISTINCT FROM ${qc.markMult}::numeric
+        FOR SHARE`
+      : exec`
+        SELECT id FROM floor_arena_events_archive
+        WHERE id = ${qc.id} AND type = 'skip' AND at = ${qc.atText}::text::timestamptz
+          AND data->>'reason' = 'exit_quote_refused' AND data->>'refusal' = 'quote_far_below_mark'
+          AND data->>'positionId' = ${c.input.id}
+          AND (data->>'quoteMult')::numeric IS NOT DISTINCT FROM ${qc.quoteMult}::numeric
+          AND (data->>'markMult')::numeric IS NOT DISTINCT FROM ${qc.markMult}::numeric
+        FOR SHARE`;
+    if ((await refusalMatch('live')).length !== 1 && (await refusalMatch('archive')).length !== 1) {
+      throw new Error(`refusal event ${qc.id} of position ${c.input.id} changed or is gone; transaction rolled back`);
+    }
     const summary = newSummary(c, rescoredOn);
     if (summary === null || closing.summary === undefined) throw new Error(`position ${c.input.id}: no summary to rewrite; nothing written`);
     const audit = positionRescorePayload({ atIso, old: c.old, rescore: r, quote, exitEventId: closing.id, flags: c.flags });
@@ -386,6 +434,7 @@ export async function applyRows(exec: Exec, rows: readonly RescoreRow[], atIso: 
         AND realised_usd = ${c.old.realisedUsd}::numeric AND size_usd = ${c.cas.sizeUsd}::numeric
         AND tokens = ${c.cas.tokens}::numeric AND entry_price_usd = ${c.cas.entryPriceUsd}::numeric
         AND remaining_fraction = ${c.cas.remainingFraction}::numeric
+        AND closed_at = ${c.cas.closedAtText}::text::timestamptz
         AND NOT (COALESCE(entry_features, '{}'::jsonb) ? 'rescore')
       RETURNING id`;
     if (updated.length !== 1) throw new Error(`CAS failed on position ${c.input.id}; transaction rolled back`);
@@ -395,9 +444,11 @@ export async function applyRows(exec: Exec, rows: readonly RescoreRow[], atIso: 
       SET data = data || ${exec.json(patch)}::jsonb, summary = ${summary}
       WHERE id = ${closing.id} AND type = 'exit' AND data->>'positionId' = ${c.input.id}
         AND data->>'fillSource' = 'mark_fallback'
-        AND data->'proceedsUsd' IS NOT DISTINCT FROM ${j.proceedsUsd}::jsonb
-        AND data->'fraction' IS NOT DISTINCT FROM ${j.fraction}::jsonb
-        AND data->'pnlUsd' IS NOT DISTINCT FROM ${j.pnlUsd}::jsonb
+        AND (data->>'proceedsUsd')::numeric IS NOT DISTINCT FROM ${j.proceedsUsd}::numeric
+        AND (data->>'fraction')::numeric IS NOT DISTINCT FROM ${j.fraction}::numeric
+        AND (data->>'pnlUsd')::numeric IS NOT DISTINCT FROM ${j.pnlUsd}::numeric
+        AND (data->>'pnlMult')::numeric IS NOT DISTINCT FROM ${j.pnlMult}::numeric
+        AND (data->>'fillPriceUsd')::numeric IS NOT DISTINCT FROM ${j.fillPriceUsd}::numeric
         AND summary = ${closing.summary}
         AND NOT (data ? 'rescoredFrom')
       RETURNING id`;
@@ -424,14 +475,15 @@ function strOrNull(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise<{ candidates: Row[]; shallow: Row[] }> {
+export async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise<{ candidates: Row[]; shallow: Row[] }> {
   const positions = await sql<{
     id: string; agent_id: string; kind: string; name: string; symbol: string | null; mint: string;
     opened_at: Date; closed_at: Date; size_usd: string; tokens: string; entry_price_usd: string;
-    realised_usd: string; pnl_usd: string; pnl_mult: string | null; remaining_fraction: string;
+    realised_usd: string; pnl_usd: string; pnl_mult: string | null; remaining_fraction: string; closed_at_text: string;
   }[]>`
     SELECT p.id, p.agent_id, a.kind, a.name, p.symbol, p.mint, p.opened_at, p.closed_at, p.size_usd::text, p.tokens::text,
-           p.entry_price_usd::text, p.realised_usd::text, p.pnl_usd::text, p.pnl_mult::text, p.remaining_fraction::text
+           p.entry_price_usd::text, p.realised_usd::text, p.pnl_usd::text, p.pnl_mult::text, p.remaining_fraction::text,
+           p.closed_at::text AS closed_at_text
     FROM floor_arena_positions p JOIN floor_arena_agents a ON a.id = p.agent_id
     WHERE p.status = 'closed' AND p.exit_fill_source = 'mark_fallback' AND p.pnl_usd IS NOT NULL
     ORDER BY p.closed_at`;
@@ -443,24 +495,25 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
   // exit rows makes the row refuse (exit_event_archived) instead of failing the apply UPDATE.
   const exitRows = await sql<{
     id: string; at: Date; summary: string; data: Record<string, unknown>; src: string;
-    j_proceeds: string | null; j_fraction: string | null; j_pnl: string | null;
+    j_proceeds: string | null; j_fraction: string | null; j_pnl: string | null; j_pnl_mult: string | null; j_fill_price: string | null;
   }[]>`
     SELECT id::text, at, summary, data, 'live' AS src,
-           (data->'proceedsUsd')::text AS j_proceeds, (data->'fraction')::text AS j_fraction, (data->'pnlUsd')::text AS j_pnl
+           data->>'proceedsUsd' AS j_proceeds, data->>'fraction' AS j_fraction, data->>'pnlUsd' AS j_pnl,
+           data->>'pnlMult' AS j_pnl_mult, data->>'fillPriceUsd' AS j_fill_price
     FROM floor_arena_events
     WHERE type = 'exit' AND data->>'positionId' = ANY(${ids}::text[])
     UNION ALL
     SELECT id::text, at, summary, data, 'archive' AS src,
-           (data->'proceedsUsd')::text, (data->'fraction')::text, (data->'pnlUsd')::text
+           data->>'proceedsUsd', data->>'fraction', data->>'pnlUsd', data->>'pnlMult', data->>'fillPriceUsd'
     FROM floor_arena_events_archive
-    WHERE type = 'exit' AND at BETWEEN ${fromAt} AND ${toAt} AND data->>'positionId' = ANY(${ids}::text[])`;
-  const refusalRows = await sql<{ id: string; at: Date; data: Record<string, unknown> }[]>`
-    SELECT id::text, at, data FROM floor_arena_events
-    WHERE type = 'skip' AND at BETWEEN ${fromAt} AND ${toAt}
+    WHERE type = 'exit' AND at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz AND data->>'positionId' = ANY(${ids}::text[])`;
+  const refusalRows = await sql<{ id: string; at: Date; at_text: string; q_text: string | null; m_text: string | null; data: Record<string, unknown> }[]>`
+    SELECT id::text, at, at::text AS at_text, data->>'quoteMult' AS q_text, data->>'markMult' AS m_text, data FROM floor_arena_events
+    WHERE type = 'skip' AND at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz
       AND data->>'reason' = 'exit_quote_refused' AND data->>'positionId' = ANY(${ids}::text[])
     UNION ALL
-    SELECT id::text, at, data FROM floor_arena_events_archive
-    WHERE type = 'skip' AND at BETWEEN ${fromAt} AND ${toAt}
+    SELECT id::text, at, at::text, data->>'quoteMult', data->>'markMult', data FROM floor_arena_events_archive
+    WHERE type = 'skip' AND at BETWEEN ${fromAt.toISOString()}::timestamptz AND ${toAt.toISOString()}::timestamptz
       AND data->>'reason' = 'exit_quote_refused' AND data->>'positionId' = ANY(${ids}::text[])`;
   const exitsBy = new Map<string, ExitEvent[]>();
   const exitJson = new Map<number, ExitCasJson>();
@@ -474,9 +527,10 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
       fillPriceUsd: numOrNull(r.data.fillPriceUsd), pnlUsd: numOrNull(r.data.pnlUsd), pnlMult: numOrNull(r.data.pnlMult),
     });
     exitsBy.set(pid, list);
-    exitJson.set(num(r.id), { proceedsUsd: r.j_proceeds, fraction: r.j_fraction, pnlUsd: r.j_pnl });
+    exitJson.set(num(r.id), { proceedsUsd: r.j_proceeds, fraction: r.j_fraction, pnlUsd: r.j_pnl, pnlMult: r.j_pnl_mult, fillPriceUsd: r.j_fill_price });
   }
   const refusalsBy = new Map<string, RefusalEvent[]>();
+  const refusalCas = new Map<number, QuoteCasText>();
   const seen = new Set<string>();
   for (const r of refusalRows) {
     if (seen.has(r.id)) continue; // a row mid-prune can sit in both tables for one statement
@@ -484,6 +538,10 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
     const pid = String(r.data.positionId);
     const list = refusalsBy.get(pid) ?? [];
     list.push({ id: num(r.id), atMs: r.at.getTime(), refusal: strOrNull(r.data.refusal), quoteMult: numOrNull(r.data.quoteMult), markMult: numOrNull(r.data.markMult) });
+    refusalCas.set(num(r.id), {
+      id: num(r.id), atText: r.at_text,
+      quoteMult: r.q_text, markMult: r.m_text,
+    });
     refusalsBy.set(pid, list);
   }
   const candidates: Row[] = [];
@@ -503,9 +561,11 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
     const rescore = closing && quote && quote.quoteMult !== null && quote.quoteMult > 0 ? rescorePosition(input, closing, quote.quoteMult) : null;
     const row: Row = {
       input, agentName: p.name, old: { pnlUsd: p.pnl_usd, pnlMult: p.pnl_mult, realisedUsd: p.realised_usd },
-      cas: { sizeUsd: p.size_usd, tokens: p.tokens, entryPriceUsd: p.entry_price_usd, remainingFraction: p.remaining_fraction },
-      exits, closing, closingJson: closing ? exitJson.get(closing.id) ?? null : null, quote, flags, rescore,
-      allowed: rescore !== null && closing !== null && exitJson.has(closing.id) && rowAllowed(flags, include),
+      cas: { sizeUsd: p.size_usd, tokens: p.tokens, entryPriceUsd: p.entry_price_usd, remainingFraction: p.remaining_fraction, closedAtText: p.closed_at_text },
+      exits, closing, closingJson: closing ? exitJson.get(closing.id) ?? null : null,
+      quote, quoteCas: quote ? refusalCas.get(quote.id) ?? null : null, flags, rescore,
+      allowed: rescore !== null && closing !== null && exitJson.has(closing.id) && quote !== null && refusalCas.has(quote.id)
+        && rowAllowed(flags, include),
     };
     if (isShallowLow(quote)) shallow.push({ ...row, allowed: false });
     else candidates.push(row);
