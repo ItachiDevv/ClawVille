@@ -367,6 +367,12 @@ export const FLOOR_ARENA_PAPER_COSTS = deepFreeze({
   mark_fallback_pool_fee_pct: 1.25,
 } as const);
 
+/** D4 (2026-11-12, measured on 130 prod positions): a sell quote refused far below a FRESH DexScreener mark at or
+ *  under this fraction of that mark disputes the mark (`markDisputed`): the mark never books for that exit history;
+ *  a confirmed low quote books (`quote_confirmed`), else the exit closes `unresolved`. No transient glitch was ever
+ *  this deep (0 of 103 episodes); deep lows were real collapses under a frozen mark. The rescore script mirrors it. */
+export const FLOOR_ARENA_DEEP_LOW_OF_MARK = 0.2;
+
 export interface FloorArenaContest {
   id: 'arena-week-1';
   name: string;
@@ -957,8 +963,9 @@ export interface FloorArenaPeriod {
 export const FLOOR_ARENA_ENTRY_FILL_SOURCES = deepFreeze(['quote'] as const);
 export type FloorArenaEntryFillSource = (typeof FLOOR_ARENA_ENTRY_FILL_SOURCES)[number];
 
-/** `quote_confirmed`: with no fresh mark, a sell quote below 0.5x the reference price was refused 3+ times
- *  over at least 45 s, and the exit then filled at that latest quote (D4 hardening). */
+/** `quote_confirmed`: with no fresh mark (a sell quote below 0.5x the reference price) or with a disputed fresh mark
+ *  (a quote at or under `FLOOR_ARENA_DEEP_LOW_OF_MARK` of it), low quotes were refused at least 2 times in a row over
+ *  at least 45 s, and the exit then filled at that latest quote (D4 hardening). */
 export const FLOOR_ARENA_EXIT_FILL_SOURCES = deepFreeze(['quote', 'mark_fallback', 'quote_confirmed', 'unresolved'] as const);
 export type FloorArenaExitFillSource = (typeof FLOOR_ARENA_EXIT_FILL_SOURCES)[number];
 
@@ -1066,7 +1073,8 @@ export function buildFloorArenaWithdrawAddressMessage(input: {
  *  pause after a low quote does not move it). `runStartedAt` = start of the current failure run (the
  *  3-failures-over-45-s mark fallback counts from it). `streakStartedAt` = first low quote of the
  *  current low streak (the 45-s low-quote confirmation window). Engine only: `ExitRun` in engine.ts adds an
- *  optional `markDisputed: true` (2026-11-12, a quote under 0.5x the fresh mark disputed it; see engine.ts). */
+ *  optional `markDisputed: true` (2026-11-12, a quote at or under
+ *  `FLOOR_ARENA_DEEP_LOW_OF_MARK` of the fresh mark disputed it; see engine.ts). */
 export interface FloorArenaExitRun {
   firstFailureAt: string;
   runStartedAt: string;
