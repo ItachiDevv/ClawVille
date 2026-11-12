@@ -15,7 +15,7 @@ import {
 } from './filters';
 import {
   ARENA_MARK_MAX_AGE_MS, ARENA_POSITION_USD, ARENA_POST_EXIT_TAIL_MS, DEFAULT_PAPER_COSTS, latestSnapshotMarks,
-  markFallbackProceeds, quoteBuy, quoteSell, type BuyQuoteResult, type PaperCosts, type SellQuoteResult, type SnapshotMark,
+  markFallbackProceeds, quoteBuy, quoteSell, type BuyQuoteResult, type PaperCosts, type SellFill, type SellQuoteResult, type SnapshotMark,
 } from './pricing';
 import { CHAIN_SNAPSHOT_MAX_AGE_MS, entryVerdictStatus, type EntryVerdict } from './chain-checks';
 import { fireJevArenaEntry } from './jev-entry';
@@ -241,11 +241,12 @@ export function freshBookingAllowed(decidedFresh: boolean, decisionAtMs: number 
 /**
  * Codex r11: an unconfirmed TP still records a LOW quote (below 0.5x the mark / reference) in the failure run, so a
  * later D4 can never book a stale mark (sawLow). A quote merely below the TP multiple, or no quote, changes nothing.
- * Returns the run to persist, or null.
+ * disputesMark (quoteDisputesMark) also marks the fresh mark as disputed (FEAR 2026-11-02: the lows came through
+ * TP skips). Returns the run to persist, or null.
  */
-export function tpSkipRunUpdate(prev: FloorArenaExitRun | null, quoteRefusal: string | null, nowMs: number): FloorArenaExitRun | null {
+export function tpSkipRunUpdate(prev: ExitRun | null, quoteRefusal: string | null, nowMs: number, disputesMark = false): ExitRun | null {
   if (quoteRefusal === null || classifyExitAttempt(quoteRefusal) !== 'low') return null;
-  return advanceExitRun(prev, 'low', nowMs);
+  return advanceExitRun(prev, 'low', nowMs, disputesMark);
 }
 
 /**
@@ -296,15 +297,32 @@ function risingPeakSet(peakMult: number) {
  *   sawLow           a low quote was seen for this position: the stale-price fallback never books until a usable
  *                    price books the exit or it closes as unresolved; it survives pauses (Codex r6 #1);
  *   lastAttemptAt    a pause of > 5 min since the last attempt (the trigger stopped firing) restarts the run
- *                    (failures, streak). Without a low quote it starts a whole new history.
+ *                    (failures, streak). Without a low quote it starts a whole new history;
+ *   markDisputed     (optional, written only when true; 2026-11-12) a quote under 0.5x the FRESH mark but at least
+ *                    0.5x the entry price was seen (quoteDisputesMark): the fresh mark is not believed, so the mark
+ *                    fallback never books for this history; only a confirmed quote books, else 'unresolved' at
+ *                    30 min. Survives pauses like sawLow. Stored rows without it read as not disputed.
  */
-export type ExitRun = FloorArenaExitRun;
+export type ExitRun = FloorArenaExitRun & { markDisputed?: true };
 export type ExitAttempt = 'low' | 'no_quote' | 'other_refusal';
 export const CONFIRM_LOW_QUOTES = 2;
 export const LOW_QUOTE_MAX_GAP_MS = 5 * 60_000;
 export const EXIT_RUN_GAP_MS = 5 * 60_000;
 /** Codex r5 #1: a run with no bookable price for this long closes the position as 'unresolved' (no P&L). */
 export const EXIT_UNRESOLVED_AFTER_MS = 30 * 60_000;
+
+/**
+ * 2026-11-12 (FEAR, house:late-bloomer 2026-11-02: the mark said 204x, every quote said 0.92x of entry, and the time
+ * exit booked the mark: +$4,005 fake). A quote refused far below a FRESH mark is either an outage (near-zero quote,
+ * Codex r2 #5: book the mark) or a bad mark (the quote is sane against the entry price: never book the mark).
+ */
+export const DISPUTED_MARK_MIN_QUOTE_OF_ENTRY = 0.5;
+
+export function quoteDisputesMark(quote: SellQuoteResult, entryPriceUsd: number): boolean {
+  if (quote.ok || quote.reason !== 'quote_far_below_mark' || !(entryPriceUsd > 0)) return false;
+  const price = quote.fill?.priceUsd ?? quote.quotedPriceUsd;
+  return price !== undefined && Number.isFinite(price) && price >= entryPriceUsd * DISPUTED_MARK_MIN_QUOTE_OF_ENTRY;
+}
 
 export function classifyExitAttempt(reason: string): ExitAttempt {
   if (reason === 'quote_far_below_reference' || reason === 'quote_far_below_mark') return 'low';
@@ -326,17 +344,18 @@ export function parseExitRun(raw: unknown): ExitRun | null {
   const okInt = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v >= 0;
   if (!okIso(r.firstFailureAt, false) || !okIso(r.runStartedAt, false) || !okIso(r.streakStartedAt ?? null, true)
     || !okIso(r.lastLowAt ?? null, true) || !okIso(r.lastAttemptAt, false) || !okInt(r.failures) || !okInt(r.lowCount)
-    || typeof r.sawLow !== 'boolean') {
+    || typeof r.sawLow !== 'boolean' || (r.markDisputed !== undefined && typeof r.markDisputed !== 'boolean')) {
     return null;
   }
   return {
     firstFailureAt: r.firstFailureAt!, runStartedAt: r.runStartedAt!, streakStartedAt: r.streakStartedAt ?? null,
     failures: r.failures!, lowCount: r.lowCount!, sawLow: r.sawLow, lastLowAt: r.lastLowAt ?? null, lastAttemptAt: r.lastAttemptAt!,
+    ...(r.markDisputed === true ? { markDisputed: true as const } : {}),
   };
 }
 
-/** One failed sell attempt applied to the run (pure). */
-export function advanceExitRun(prev: ExitRun | null, attempt: ExitAttempt, nowMs: number): ExitRun {
+/** One failed sell attempt applied to the run (pure). disputesMark counts only on a 'low' attempt. */
+export function advanceExitRun(prev: ExitRun | null, attempt: ExitAttempt, nowMs: number, disputesMark = false): ExitRun {
   const nowIso = new Date(nowMs).toISOString();
   const fresh: ExitRun = {
     firstFailureAt: nowIso, runStartedAt: nowIso, streakStartedAt: null, failures: 0, lowCount: 0, sawLow: false,
@@ -361,9 +380,10 @@ export function advanceExitRun(prev: ExitRun | null, attempt: ExitAttempt, nowMs
     lowCount = 0;
     streakStartedAt = null;
   }
+  const markDisputed = run.markDisputed === true || (attempt === 'low' && disputesMark);
   return {
     firstFailureAt: run.firstFailureAt, runStartedAt: run.runStartedAt, streakStartedAt, failures: run.failures + 1,
-    lowCount, sawLow, lastLowAt, lastAttemptAt: nowIso,
+    lowCount, sawLow, lastLowAt, lastAttemptAt: nowIso, ...(markDisputed ? { markDisputed: true as const } : {}),
   };
 }
 
@@ -371,7 +391,9 @@ export type D4Outcome = { kind: 'book'; priceUsd: number; source: ExitFillSource
 
 /**
  * The D4 decision after a failed sell attempt (pure; exported for tests). null = keep retrying.
- *   fresh mark: 3 failures over >= 45 s of the current run -> the mark (mark_fallback);
+ *   fresh mark: 3 failures over >= 45 s of the current run -> the mark (mark_fallback), UNLESS the history disputes the
+ *     mark (run.markDisputed): then only 'quote_confirmed' books, by the same rule as below (the caller passes a low
+ *     quote only when it disputes the mark, i.e. >= 0.5x of entry), else 'unresolved' at 30 min; never the mark;
  *   no fresh mark: 'quote_confirmed' ONLY when THIS attempt returned a low quote (currentLowQuotePrice), the streak
  *     holds >= 2 lows (each <= 5 min after the previous) and >= 45 s passed since the streak's first low; the fill is
  *     this attempt's quote (never a cached one);
@@ -392,20 +414,48 @@ export function d4Decision(input: {
   const runStartMs = isoMs(run.runStartedAt) ?? nowMs;
   const runSpanOk = nowMs - runStartMs >= EXIT_FALLBACK_AFTER_MS;
   const countOk = run.failures >= EXIT_FALLBACK_AFTER_FAILURES;
-  if (input.freshMarkPrice !== null) {
+  const streakMs = isoMs(run.streakStartedAt);
+  const lowPrice = input.currentLowQuotePrice;
+  const lowConfirmed = lowPrice !== null && run.lowCount >= CONFIRM_LOW_QUOTES && streakMs !== null
+    && nowMs - streakMs >= EXIT_FALLBACK_AFTER_MS;
+  if (input.freshMarkPrice !== null && run.markDisputed === true) {
+    if (lowConfirmed) return { kind: 'book', priceUsd: lowPrice, source: 'quote_confirmed' };
+    if (nowMs - firstMs >= EXIT_UNRESOLVED_AFTER_MS) return { kind: 'unresolved' };
+  } else if (input.freshMarkPrice !== null) {
     if (countOk && runSpanOk) return { kind: 'book', priceUsd: input.freshMarkPrice, source: 'mark_fallback' };
   } else {
-    const streakMs = isoMs(run.streakStartedAt);
-    if (input.currentLowQuotePrice !== null && run.lowCount >= CONFIRM_LOW_QUOTES && streakMs !== null
-      && nowMs - streakMs >= EXIT_FALLBACK_AFTER_MS) {
-      return { kind: 'book', priceUsd: input.currentLowQuotePrice, source: 'quote_confirmed' };
-    }
+    if (lowConfirmed) return { kind: 'book', priceUsd: lowPrice, source: 'quote_confirmed' };
     if (!run.sawLow && countOk && runSpanOk && input.staleFallbackPrice !== null) {
       return { kind: 'book', priceUsd: input.staleFallbackPrice, source: 'mark_fallback' };
     }
     if (nowMs - firstMs >= EXIT_UNRESOLVED_AFTER_MS) return { kind: 'unresolved' };
   }
   return null;
+}
+
+/**
+ * executeExit's D4 step for a refused sell quote (pure; exported for tests). The low quote that may book as
+ * 'quote_confirmed' is THIS attempt's evaluated fill (after the sell haircut): a far-below-reference quote (no fresh
+ * mark), or a far-below-mark quote that disputes the mark (quoteDisputesMark). A near-zero quote under a fresh mark
+ * is never a fill source (Codex r2 #5).
+ */
+export function d4AfterFailedQuote(input: {
+  prevRun: ExitRun | null;
+  quote: Exclude<SellQuoteResult, SellFill>;
+  entryPriceUsd: number;
+  freshMarkPrice: number | null;
+  staleFallbackPrice: number | null;
+  nowMs: number;
+}): { run: ExitRun; currentLow: SellFill | null; d4: D4Outcome } {
+  const { quote, nowMs } = input;
+  const disputes = quoteDisputesMark(quote, input.entryPriceUsd);
+  const run = advanceExitRun(input.prevRun, classifyExitAttempt(quote.reason), nowMs, disputes);
+  const currentLow = quote.fill && (quote.reason === 'quote_far_below_reference' || disputes) ? quote.fill : null;
+  const d4 = d4Decision({
+    freshMarkPrice: input.freshMarkPrice, currentLowQuotePrice: currentLow?.priceUsd ?? null, run, nowMs,
+    staleFallbackPrice: input.staleFallbackPrice,
+  });
+  return { run, currentLow, d4 };
 }
 
 // ---------------------------------------------------------------- candidates (pure)
@@ -1844,7 +1894,9 @@ async function executeExit(
           },
         });
       }
-      const lowRun = tpSkipRunUpdate(parseExitRun(position.exitRun), quote.ok ? null : quote.reason, nowMs);
+      const lowRun = tpSkipRunUpdate(
+        parseExitRun(position.exitRun), quote.ok ? null : quote.reason, nowMs, quoteDisputesMark(quote, state.entryPriceUsd),
+      );
       if (lowRun) {
         const written = await db.update(floorArenaPositions)
           .set({ exitQuoteFailures: lowRun.failures, exitRun: lowRun })
@@ -1864,12 +1916,11 @@ async function executeExit(
     fillPrice = quote.priceUsd;
   } else {
     await emitExitRefusal(position, state, trigger, quote, markMult, nowMs);
-    const run = advanceExitRun(parseExitRun(position.exitRun), classifyExitAttempt(quote.reason), nowMs);
-    const currentLow = quote.reason === 'quote_far_below_reference' && quote.fill ? quote.fill : null;
-    const d4 = d4Decision({
+    const { run, currentLow, d4 } = d4AfterFailedQuote({
+      prevRun: parseExitRun(position.exitRun),
+      quote,
+      entryPriceUsd: state.entryPriceUsd,
       freshMarkPrice,
-      currentLowQuotePrice: currentLow?.priceUsd ?? null,
-      run,
       nowMs,
       // Stale fallback when no sell quote exists at all: the newest known mark, else the entry DS price.
       staleFallbackPrice: known?.priceUsd

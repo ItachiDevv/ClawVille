@@ -5,15 +5,15 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
 import {
-  advanceExitRun, applyExitFill, chainCheckCandidateMints, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
+  advanceExitRun, applyExitFill, chainCheckCandidateMints, classifyExitAttempt, combineFillSource, d4AfterFailedQuote, d4Decision,decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
   ENTRY_STATEMENT_TIMEOUT_MS, ENTRY_TX_TIMEOUT_MS, exitSummary, freshBookingAllowed, insertTimeGate, keepNewerMark, openPosition,
   tryOpenPosition, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
-  quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
+  quoteDisputesMark, quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
   breakevenMarkMult, liquidityBelow, liquidityShadowCrossings, LIQ_SHADOW_THRESHOLDS, recordLiquidityShadow,
   type ExitLiquidity, type ExitTrigger, type LiqShadowDeps,
 } from './engine';
-import { markFallbackProceeds } from './pricing';
+import { DEFAULT_PAPER_COSTS, evaluateSellQuote, markFallbackProceeds, tokensToRaw, USDC_MINT, type SellQuoteResult } from './pricing';
 import type { ArenaEventInput } from './events';
 import { ARENA_CONTEST_FINAL_GRACE_MS } from './contest';
 import type { FloorArenaFeatures } from './filters';
@@ -465,6 +465,165 @@ describe('D4 sell-quote failures (persisted exit_run, Codex r4 #1 + r5)', () => 
     expect(fill.realisedUsd).toBe(0);
     expect(fill.pnlUsd).toBe(-20);
     expect(fill.pnlMult).toBe(0);
+  });
+});
+
+describe('D4 with a disputed fresh mark (FEAR, prod 2026-11-02; real evaluateSellQuote -> d4AfterFailedQuote)', () => {
+  // house:late-bloomer, position 2c4259d7: entry 0.0000529, the mark said 204x, every sell quote said ~0.92x of entry.
+  const QMINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  const ENTRY = 0.0000529;
+  const TOKENS = 20 / ENTRY;
+  const AMOUNT_RAW = tokensToRaw(TOKENS, 6)!;
+  const SPIKE = 204 * ENTRY;
+  const SANE = 0.92 * ENTRY;
+  const HAIRCUT = DEFAULT_PAPER_COSTS.sell_haircut_pct;
+  function sellAt(priceUsd: number, markPriceUsd: number | null, referencePriceUsd: number | null = null): SellQuoteResult {
+    return evaluateSellQuote({
+      status: 'quoted', input: { mint: QMINT, amount: String(TOKENS), rawAmount: AMOUNT_RAW, decimals: 6 },
+      output: { mint: USDC_MINT, amount: String(TOKENS * priceUsd), rawAmount: '1', decimals: 6 }, slippageBps: 300, priceImpactPct: '0.01',
+    }, { mint: QMINT, tokens: TOKENS, amountRaw: AMOUNT_RAW, markPriceUsd, referencePriceUsd });
+  }
+  const NO_QUOTE: SellQuoteResult = { ok: false, reason: 'quote_failed', detail: 'timeout' };
+  type QStep = { t: number; quote: SellQuoteResult; mark: number | null; tp?: boolean };
+  type QOut = 'tp_hold' | 'quote' | { d4: D4Outcome; proceedsUsd: number | null };
+  /** The executeExit wiring, pure: a TP step goes through tpSkipRunUpdate, an exit step through d4AfterFailedQuote.
+   *  The only state between steps is the stored jsonb copy. */
+  function drive(steps: QStep[], stale: number | null = null): { out: QOut[]; stored: unknown } {
+    let stored: unknown = null;
+    const out = steps.map((s): QOut => {
+      const nowMs = T0 + s.t * 1000;
+      if (s.tp) {
+        const lowRun = tpSkipRunUpdate(parseExitRun(stored), s.quote.ok ? null : s.quote.reason, nowMs, quoteDisputesMark(s.quote, ENTRY));
+        if (lowRun) stored = JSON.parse(JSON.stringify(lowRun));
+        return 'tp_hold';
+      }
+      if (s.quote.ok) return 'quote';
+      const r = d4AfterFailedQuote({
+        prevRun: parseExitRun(stored), quote: s.quote, entryPriceUsd: ENTRY, freshMarkPrice: s.mark, staleFallbackPrice: stale, nowMs,
+      });
+      stored = JSON.parse(JSON.stringify(r.run));
+      const proceedsUsd = r.d4?.kind === 'book'
+        ? (r.d4.source === 'quote_confirmed' && r.currentLow ? r.currentLow.proceedsUsd : markFallbackProceeds(TOKENS, r.d4.priceUsd))
+        : null;
+      return { d4: r.d4, proceedsUsd };
+    });
+    return { out, stored };
+  }
+  const exitAt = (t: number, quote: SellQuoteResult, mark: number | null = SPIKE): QStep => ({ t, quote, mark });
+  const confirmedAt = (priceUsd: number): D4Outcome => ({ kind: 'book', source: 'quote_confirmed', priceUsd: expect.closeTo(priceUsd, 12) });
+  const d4Of = (o: QOut) => (o as { d4: D4Outcome }).d4;
+
+  test('the wire: a FEAR quote is refused quote_far_below_mark, carries its fill and disputes the mark', () => {
+    const q = sellAt(SANE, SPIKE);
+    expect(q).toMatchObject({ ok: false, reason: 'quote_far_below_mark' });
+    if (q.ok || !q.fill) throw new Error('expected a carried fill');
+    expect(q.fill.priceUsd).toBeCloseTo(SANE, 12);
+    expect(quoteDisputesMark(q, ENTRY)).toBe(true);
+  });
+
+  test('(a) FEAR replay: TP held on the quote for 10 min, the time exit books the 0.92x quote (quote_confirmed), never the 204x mark', () => {
+    const steps: QStep[] = [];
+    for (let t = 20; t < 600; t += 10) steps.push({ t, quote: sellAt(SANE, SPIKE), mark: SPIKE, tp: true });
+    steps.push(exitAt(600, sellAt(SANE, SPIKE)));
+    const { out } = drive(steps);
+    expect(out.slice(0, -1).every((o) => o === 'tp_hold')).toBe(true);
+    const last = out.at(-1) as { d4: D4Outcome; proceedsUsd: number };
+    expect(last.d4).toEqual(confirmedAt(SANE));
+    // the booked quote pays the sell haircut like any quote fill (D3): ~ $20 x 0.92 x 0.995, a loss, not +$4,005
+    expect(last.proceedsUsd).toBeCloseTo(TOKENS * SANE * (1 - HAIRCUT / 100), 6);
+    expect(last.proceedsUsd).toBeLessThan(20);
+  });
+
+  test('(a) FEAR replay, time exit quote fails once: a TP-primed history never books the 204x mark', () => {
+    const steps: QStep[] = [];
+    for (let t = 20; t < 600; t += 10) steps.push({ t, quote: sellAt(SANE, SPIKE), mark: SPIKE, tp: true });
+    steps.push(exitAt(600, NO_QUOTE), exitAt(610, sellAt(SANE, SPIKE)));
+    const { out } = drive(steps);
+    expect(d4Of(out.at(-2)!)).toBeNull();
+    expect(d4Of(out.at(-1)!)).toEqual(confirmedAt(SANE));
+  });
+
+  test('(a) without TP primes: sane lows confirm after >= 2 lows over >= 45 s; the spiked mark never books', () => {
+    const { out } = drive([0, 10, 20, 44, 45].map((t) => exitAt(t, sellAt(SANE, SPIKE))));
+    expect(out.slice(0, 4).map(d4Of)).toEqual([null, null, null, null]);
+    expect(d4Of(out[4]!)).toEqual(confirmedAt(SANE));
+  });
+
+  test('(a) a sane low disputes the mark for the rest of the history: a later no-quote or drift attempt never books the mark', () => {
+    const { out, stored } = drive([
+      exitAt(0, sellAt(SANE, SPIKE)), exitAt(10, sellAt(SANE, SPIKE)),
+      exitAt(45, NO_QUOTE), exitAt(60, NO_QUOTE),                       // 4 failures over 60 s: the old code booked 204x here
+      exitAt(70, sellAt(SPIKE * 1.5, SPIKE)), exitAt(80, NO_QUOTE),       // drift resets the low streak; still no mark
+      exitAt(90, sellAt(SANE, SPIKE)), exitAt(134, sellAt(SANE, SPIKE)),   // new streak 90 -> 134 s: 44 s, not yet
+      exitAt(135, sellAt(SANE, SPIKE)),
+    ]);
+    const d4s = out.map(d4Of);
+    expect(d4s.slice(0, 8)).toEqual([null, null, null, null, null, null, null, null]);
+    expect(d4s[8]).toEqual(confirmedAt(SANE));
+    expect(parseExitRun(stored)?.markDisputed).toBe(true);
+  });
+
+  test('(a) disputed mark and only near-zero quotes after it: never books; unresolved 30 min after the first failure', () => {
+    const steps: QStep[] = [exitAt(0, sellAt(SANE, SPIKE))];
+    for (let t = 60; t <= 1800; t += 60) steps.push(exitAt(t, t % 120 === 0 ? sellAt(0.001 * ENTRY, SPIKE) : NO_QUOTE));
+    const d4s = drive(steps).out.map(d4Of);
+    expect(d4s.slice(0, -1).every((d) => d === null)).toBe(true);
+    expect(d4s.at(-1)).toEqual({ kind: 'unresolved' });
+  });
+
+  test('(a) the entry floor is 0.5x of entry, inclusive; a stale-branch low never disputes the mark', () => {
+    expect(quoteDisputesMark(sellAt(0.5 * ENTRY, SPIKE), ENTRY)).toBe(true);
+    expect(quoteDisputesMark(sellAt(0.4999 * ENTRY, SPIKE), ENTRY)).toBe(false);
+    expect(quoteDisputesMark(sellAt(SANE, 1.0 * ENTRY), ENTRY)).toBe(false);          // passes the mark: no refusal
+    expect(quoteDisputesMark(sellAt(0.001 * ENTRY, null, ENTRY), ENTRY)).toBe(false);   // far below reference
+    expect(quoteDisputesMark(NO_QUOTE, ENTRY)).toBe(false);
+    const { stored } = drive([exitAt(0, sellAt(0.3 * ENTRY, null, ENTRY), null)]);
+    expect(parseExitRun(stored)?.markDisputed).toBeUndefined();
+  });
+
+  test('(b) outage: fresh mark ~1.0x, near-zero quotes refused far below mark -> mark_fallback after 3 failures over 45 s (unchanged)', () => {
+    const MARK = 1.0 * ENTRY;
+    const { out, stored } = drive([0, 10, 20, 45].map((t) => exitAt(t, sellAt(0.001 * ENTRY, MARK), MARK)));
+    expect(out.slice(0, 3).map(d4Of)).toEqual([null, null, null]);
+    const last = out[3] as { d4: D4Outcome; proceedsUsd: number };
+    expect(last.d4).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+    expect(last.proceedsUsd).toBeCloseTo(markFallbackProceeds(TOKENS, MARK), 9);
+    expect(parseExitRun(stored)?.markDisputed).toBeUndefined();
+  });
+
+  test('(c) drift refusals and no-quote attempts with a fresh mark -> mark_fallback (unchanged)', () => {
+    const MARK = 2 * ENTRY;
+    const drift = drive([0, 10, 20, 45].map((t) => exitAt(t, sellAt(MARK * 1.5, MARK), MARK))).out;
+    expect(d4Of(drift[0]!)).toBeNull();
+    expect(d4Of(drift[3]!)).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+    const failed = drive([0, 10, 20, 45].map((t) => exitAt(t, NO_QUOTE, MARK))).out;
+    expect(d4Of(failed[3]!)).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+  });
+
+  test('(d) stale branch through the same wiring: a far-below-reference low books quote_confirmed (unchanged)', () => {
+    const LOW = 0.2 * ENTRY;
+    const d4s = drive([0, 45].map((t) => exitAt(t, sellAt(LOW, null, ENTRY), null)), ENTRY).out.map(d4Of);
+    expect(d4s[0]).toBeNull();
+    expect(d4s[1]).toEqual(confirmedAt(LOW));
+  });
+
+  test('(e) a TP is still judged on the quote: the FEAR quote never confirms a TP, a quote at the TP multiple does', () => {
+    expect(tpConfirmedByQuote(quotedTpMultiple(SANE, ENTRY), 2)).toBe(false);
+    expect(tpConfirmedByQuote(quotedTpMultiple(2 * ENTRY, ENTRY), 2)).toBe(true);
+  });
+
+  test('stored rows: markDisputed survives the jsonb round trip and a pause; an old row without it parses as not disputed', () => {
+    const disputed = advanceExitRun(null, 'low', T0, true);
+    expect(disputed.markDisputed).toBe(true);
+    expect(parseExitRun(JSON.parse(JSON.stringify(disputed)))).toEqual(disputed);
+    expect(advanceExitRun(disputed, 'no_quote', T0 + 6 * 60_000).markDisputed).toBe(true);
+    expect(advanceExitRun(disputed, 'low', T0 + 10_000, false).markDisputed).toBe(true);
+    // a no-quote attempt cannot dispute the mark, whatever the caller passes
+    expect(advanceExitRun(null, 'no_quote', T0, true).markDisputed).toBeUndefined();
+    const old = { ...advanceExitRun(null, 'low', T0) };
+    expect('markDisputed' in old).toBe(false);
+    expect(parseExitRun(JSON.parse(JSON.stringify(old)))).toEqual(old);
+    expect(parseExitRun({ ...old, markDisputed: 'yes' })).toBeNull();
   });
 });
 
