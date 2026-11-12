@@ -5,7 +5,7 @@ import {
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import {
-  cloneFloorArenaParams, diffFloorArenaParams, FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_RANK_BY_LABELS,
+  cloneFloorArenaParams, diffFloorArenaParams, FLOOR_ARENA_DEEP_LOW_OF_MARK, FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_RANK_BY_LABELS,
   FLOOR_ARENA_TEMPLATE_VERSION, floorArenaTemplateById, validateFloorArenaParams, type FloorArenaExitRun,
   type FloorArenaExitReason, type FloorArenaExits, type FloorArenaParams,
 } from '@clawville/shared';
@@ -256,8 +256,8 @@ export function freshBookingAllowed(decidedFresh: boolean, decisionAtMs: number 
 /**
  * Codex r11: an unconfirmed TP still records a LOW quote (below 0.5x the mark / reference) in the failure run, so a
  * later D4 can never book a stale mark (sawLow). A quote merely below the TP multiple, or no quote, changes nothing.
- * disputesMark (quoteDisputesMark) also marks the fresh mark as disputed (FEAR 2026-11-02: the lows came through
- * TP skips). Returns the run to persist, or null.
+ * disputesMark (quoteDisputesMark: the quote is at or under 0.2x of the fresh mark) also marks the fresh mark as
+ * disputed (FEAR 2026-11-02: the lows came through TP skips). Returns the run to persist, or null.
  */
 export function tpSkipRunUpdate(prev: ExitRun | null, quoteRefusal: string | null, nowMs: number, disputesMark = false): ExitRun | null {
   if (quoteRefusal === null || classifyExitAttempt(quoteRefusal) !== 'low') return null;
@@ -313,10 +313,10 @@ function risingPeakSet(peakMult: number) {
  *                    price books the exit or it closes as unresolved; it survives pauses (Codex r6 #1);
  *   lastAttemptAt    a pause of > 5 min since the last attempt (the trigger stopped firing) restarts the run
  *                    (failures, streak). Without a low quote it starts a whole new history;
- *   markDisputed     (optional, written only when true; 2026-11-12) a quote under 0.5x the FRESH mark but at least
- *                    0.5x the entry price was seen (quoteDisputesMark): the fresh mark is not believed, so the mark
- *                    fallback never books for this history; only a confirmed quote books, else 'unresolved' at
- *                    30 min. Survives pauses like sawLow. Stored rows without it read as not disputed.
+ *   markDisputed     (optional, written only when true; 2026-11-12) a quote at or under 0.2x of the FRESH mark was
+ *                    seen (quoteDisputesMark): the fresh mark is not believed, so the mark fallback never books for
+ *                    this history; only a confirmed quote books, else 'unresolved' at 30 min. Survives pauses like
+ *                    sawLow. Stored rows without it read as not disputed.
  */
 export type ExitRun = FloorArenaExitRun & { markDisputed?: true };
 export type ExitAttempt = 'low' | 'no_quote' | 'other_refusal';
@@ -327,16 +327,18 @@ export const EXIT_RUN_GAP_MS = 5 * 60_000;
 export const EXIT_UNRESOLVED_AFTER_MS = 30 * 60_000;
 
 /**
- * 2026-11-12 (FEAR, house:late-bloomer 2026-11-02: the mark said 204x, every quote said 0.92x of entry, and the time
- * exit booked the mark: +$4,005 fake). A quote refused far below a FRESH mark is either an outage (near-zero quote,
- * Codex r2 #5: book the mark) or a bad mark (the quote is sane against the entry price: never book the mark).
+ * 2026-11-12 depth rule (measured on 130 prod positions with a quote_far_below_mark refusal). A sell quote refused far
+ * below a FRESH mark at or under FLOOR_ARENA_DEEP_LOW_OF_MARK (0.2x) of that mark disputes the mark: no transient
+ * glitch was ever that deep (0 of 103 episodes; the 3 real glitches lasted at most 11 s), while deep lows were real
+ * collapses under a frozen DexScreener mark (a dead pump.fun curve pair; quotes ~0.043x of entry = the PumpSwap floor)
+ * or a spiked mark (FEAR, 204x over quotes at 0.92x of entry: +$4,005 fake). A shallow low (0.2x-0.5x of the mark)
+ * never disputes: it keeps today's mark fallback. The price is the quoted price before the sell haircut. No fresh mark
+ * (freshMarkPrice null) never disputes.
  */
-export const DISPUTED_MARK_MIN_QUOTE_OF_ENTRY = 0.5;
-
-export function quoteDisputesMark(quote: SellQuoteResult, entryPriceUsd: number): boolean {
-  if (quote.ok || quote.reason !== 'quote_far_below_mark' || !(entryPriceUsd > 0)) return false;
+export function quoteDisputesMark(quote: SellQuoteResult, freshMarkPriceUsd: number | null): boolean {
+  if (quote.ok || quote.reason !== 'quote_far_below_mark' || freshMarkPriceUsd === null || !(freshMarkPriceUsd > 0)) return false;
   const price = quote.fill?.priceUsd ?? quote.quotedPriceUsd;
-  return price !== undefined && Number.isFinite(price) && price >= entryPriceUsd * DISPUTED_MARK_MIN_QUOTE_OF_ENTRY;
+  return price !== undefined && Number.isFinite(price) && price <= freshMarkPriceUsd * FLOOR_ARENA_DEEP_LOW_OF_MARK;
 }
 
 export function classifyExitAttempt(reason: string): ExitAttempt {
@@ -408,7 +410,8 @@ export type D4Outcome = { kind: 'book'; priceUsd: number; source: ExitFillSource
  * The D4 decision after a failed sell attempt (pure; exported for tests). null = keep retrying.
  *   fresh mark: 3 failures over >= 45 s of the current run -> the mark (mark_fallback), UNLESS the history disputes the
  *     mark (run.markDisputed): then only 'quote_confirmed' books, by the same rule as below (the caller passes a low
- *     quote only when it disputes the mark, i.e. >= 0.5x of entry), else 'unresolved' at 30 min; never the mark;
+ *     quote only when it disputes the mark, i.e. at or under 0.2x of the fresh mark), else 'unresolved' at 30 min;
+ *     never the mark;
  *   no fresh mark: 'quote_confirmed' ONLY when THIS attempt returned a low quote (currentLowQuotePrice), the streak
  *     holds >= 2 lows (each <= 5 min after the previous) and >= 45 s passed since the streak's first low; the fill is
  *     this attempt's quote (never a cached one);
@@ -451,19 +454,18 @@ export function d4Decision(input: {
 /**
  * executeExit's D4 step for a refused sell quote (pure; exported for tests). The low quote that may book as
  * 'quote_confirmed' is THIS attempt's evaluated fill (after the sell haircut): a far-below-reference quote (no fresh
- * mark), or a far-below-mark quote that disputes the mark (quoteDisputesMark). A near-zero quote under a fresh mark
- * is never a fill source (Codex r2 #5).
+ * mark), or a far-below-mark quote that disputes the mark (quoteDisputesMark, at or under 0.2x of the fresh mark). A
+ * shallow low under a fresh mark (above 0.2x, below 0.5x) is never a fill source.
  */
 export function d4AfterFailedQuote(input: {
   prevRun: ExitRun | null;
   quote: Exclude<SellQuoteResult, SellFill>;
-  entryPriceUsd: number;
   freshMarkPrice: number | null;
   staleFallbackPrice: number | null;
   nowMs: number;
 }): { run: ExitRun; currentLow: SellFill | null; d4: D4Outcome } {
   const { quote, nowMs } = input;
-  const disputes = quoteDisputesMark(quote, input.entryPriceUsd);
+  const disputes = quoteDisputesMark(quote, input.freshMarkPrice);
   const run = advanceExitRun(input.prevRun, classifyExitAttempt(quote.reason), nowMs, disputes);
   const currentLow = quote.fill && (quote.reason === 'quote_far_below_reference' || disputes) ? quote.fill : null;
   const d4 = d4Decision({
@@ -474,14 +476,18 @@ export function d4AfterFailedQuote(input: {
 }
 
 /**
- * Codex review of 94c489354: the failure run is written only when D4 keeps retrying (d4 === null). When D4 decides a
- * booking or an 'unresolved' close and the write is then rejected (a newer mark, a mark that aged past 60 s, or a lost
- * CAS), the attempt's run is dropped. If THIS attempt was the first to dispute the mark, dropping it lets the next
- * attempt book the disputed mark (mark_fallback). Returns the run to persist after such a rejection (only when it newly
- * sets markDisputed), else null: every other rejected attempt keeps today's behaviour (nothing written).
+ * Codex review of 94c489354 (+ 2026-11-12 sawLow): the failure run is written only when D4 keeps retrying (d4 ===
+ * null). When D4 decides a booking or an 'unresolved' close and the write is then rejected (a newer mark, a mark that
+ * aged past 60 s, or a lost CAS), the attempt's run is dropped. If THIS attempt newly set a guard, dropping it lets the
+ * next attempt book a price the guard forbids: a new markDisputed -> the disputed mark (mark_fallback); a new sawLow
+ * (the first low, under a fresh undisputed mark) -> the stale price on the no-fresh-mark branch. Returns the run to
+ * persist after such a rejection (only when it newly sets markDisputed or sawLow), else null: every other rejected
+ * attempt keeps today's behaviour (nothing written).
  */
-export function disputedRunAfterRejectedBooking(stored: ExitRun | null, run: ExitRun): ExitRun | null {
-  return run.markDisputed === true && stored?.markDisputed !== true ? run : null;
+export function runToKeepAfterRejectedBooking(stored: ExitRun | null, run: ExitRun): ExitRun | null {
+  const newlyDisputed = run.markDisputed === true && stored?.markDisputed !== true;
+  const newlySawLow = run.sawLow && stored?.sawLow !== true;
+  return newlyDisputed || newlySawLow ? run : null;
 }
 
 // ---------------------------------------------------------------- candidates (pure)
@@ -1934,7 +1940,7 @@ async function executeExit(
         });
       }
       const lowRun = tpSkipRunUpdate(
-        parseExitRun(position.exitRun), quote.ok ? null : quote.reason, nowMs, quoteDisputesMark(quote, state.entryPriceUsd),
+        parseExitRun(position.exitRun), quote.ok ? null : quote.reason, nowMs, quoteDisputesMark(quote, freshMarkPrice),
       );
       if (lowRun) {
         const written = await db.update(floorArenaPositions)
@@ -1949,8 +1955,9 @@ async function executeExit(
   let proceedsUsd: number;
   let fillSource: ExitFillSource;
   let fillPrice: number | null;
-  // Set when this failed attempt newly disputes the mark; written if the booking below is rejected (Codex, 94c489354).
-  let disputedRun: ExitRun | null = null;
+  // Set when this failed attempt newly sets markDisputed or sawLow; written if the booking below is rejected
+  // (Codex, 94c489354; sawLow 2026-11-12).
+  let keptRun: ExitRun | null = null;
   if (quote.ok) {
     proceedsUsd = quote.proceedsUsd;
     fillSource = 'quote';
@@ -1961,7 +1968,6 @@ async function executeExit(
     const { run, currentLow, d4 } = d4AfterFailedQuote({
       prevRun,
       quote,
-      entryPriceUsd: state.entryPriceUsd,
       freshMarkPrice,
       nowMs,
       // Stale fallback when no sell quote exists at all: the newest known mark, else the entry DS price.
@@ -1975,10 +1981,10 @@ async function executeExit(
         .returning({ id: floorArenaPositions.id });
       return written.length > 0 ? { kind: 'quote_failed' } : { kind: 'lost_race' };
     }
-    disputedRun = disputedRunAfterRejectedBooking(prevRun, run);
+    keptRun = runToKeepAfterRejectedBooking(prevRun, run);
     if (d4.kind === 'unresolved') {
       const closed = await closeUnresolved(position, state, trigger, run, writtenMark, decisionAtMs, now);
-      if (closed.kind === 'lost_race' && disputedRun) await persistDisputedRun(position, disputedRun);
+      if (closed.kind === 'lost_race' && keptRun) await persistKeptRun(position, keptRun);
       return closed;
     }
     // quote_confirmed books THIS attempt's quote (after the sell cost); mark_fallback books tokens x price - cost.
@@ -2038,17 +2044,18 @@ async function executeExit(
     return true;
   });
   if (!updated) {
-    if (disputedRun) await persistDisputedRun(position, disputedRun);
+    if (keptRun) await persistKeptRun(position, keptRun);
     return { kind: 'lost_race' };
   }
   return { kind: 'filled', closed: fill.closed, source: fillSource };
 }
 
 /**
- * Codex review of 94c489354: after a rejected booking, keep the new markDisputed flag. Same compare-and-swap as the
- * d4 === null write (row still open, exit_run unchanged); a no-op when another writer changed the row.
+ * Codex review of 94c489354 (+ 2026-11-12 sawLow): after a rejected booking, keep a newly set markDisputed or sawLow.
+ * Same compare-and-swap as the d4 === null write (row still open, exit_run unchanged); a no-op when another writer
+ * changed the row.
  */
-async function persistDisputedRun(position: FloorArenaPositionRow, run: ExitRun): Promise<void> {
+async function persistKeptRun(position: FloorArenaPositionRow, run: ExitRun): Promise<void> {
   await db.update(floorArenaPositions)
     .set({ exitQuoteFailures: run.failures, exitRun: run })
     .where(and(eq(floorArenaPositions.id, position.id), eq(floorArenaPositions.status, 'open'), exitRunUnchanged(position)));

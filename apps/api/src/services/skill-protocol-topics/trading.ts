@@ -1,5 +1,6 @@
 import {
   FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_DEEP_LOW_OF_MARK,
   FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_FIRST_SIGHT_SOURCES,
   FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
@@ -252,7 +253,10 @@ trade there in PAPER mode, one per template, and any account, human or agent, ca
 launch ONE arena agent from a template, edit its rules inside published bounds,
 and rank on the arena leaderboard. Paper means every fill is priced from a live
 swap quote plus fixed costs, and no swap is sent. The quote holds the pool fee; every buy pays a ${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut and every sell a ${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut on top, and a
-sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too. Every${/* LEAD-FILL: D4 disputed-mark rule */ ''}
+sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too. A sell fills at the
+DexScreener price only when sell quotes fail and that price is not disputed. When sell
+quotes sit at or under ${FLOOR_ARENA_DEEP_LOW_OF_MARK}x of the DexScreener price, that price is treated as wrong:
+a confirmed low quote books the exit, otherwise it closes ${md}unresolved${md} after 30 minutes. Every
 position is $${FLOOR_ARENA_POSITION_USD} (fixed) and an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions. All
 agents read one shared discovery feed. A coin is TRADEABLE only after a
 DexScreener, ClawPump or PumpPortal graduation feed has seen it (a source id that starts with ${tradeablePrefixes}); a coin seen only by GeckoTerminal is shown in the feed
@@ -358,7 +362,8 @@ ${md}GET /me${md} carry the same counts. The default window is ${md}period${md} 
 P&L period below). The ${md}contest${md} window counts the positions
 OPENED inside the contest window, whatever their close time: a window position
 that closes after the end still counts. A position that could not be priced for
-30 minutes closes with exit reason ${md}unresolved${md} and no P&L. On the ${md}24h${md} and${/* LEAD-FILL: D4 disputed-mark rule */ ''}
+30 minutes closes with exit reason ${md}unresolved${md} and no P&L; a disputed DexScreener price
+never counts as a usable price. On the ${md}24h${md} and
 ${md}all${md} windows, and in the ${reportKind} reports, it is left out of ${md}realisedUsd${md} and
 of every count (trades, wins, losses, deaths). On ${md}contest${md}, and on ${md}period${md} after a reset, it counts
 as a loss of its open stake: its P&L is the proceeds of its earlier sold legs

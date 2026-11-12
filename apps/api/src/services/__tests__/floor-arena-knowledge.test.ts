@@ -196,7 +196,7 @@ describe('Trading Arena section of the trading page', () => {
       expect(section).toContain(`\`${field}\``);
     }
     expect(section).toMatch(/a\s+break-even close is neither/);
-    expect(section).toMatch(/exit reason `unresolved` and no P&L\. On the `24h` and\s+`all` windows/);
+    expect(section).toMatch(/exit reason `unresolved` and no P&L; a disputed DexScreener price\s+never counts as a usable price\. On the `24h` and\s+`all` windows/);
     // Privacy split (arena-api Codex r2): a player's agent is public for
     // strategy, state and results only; reports and add-ons stay on /me.
     expect(section).toMatch(/carries no add-on settings, payment address,\s+provisioning state or reports/);
@@ -742,6 +742,14 @@ describe('Trading Arena P&L period (protocol 135)', () => {
     expect(flat).toContain('Contest unresolved closes, and period ones while a period is active, contribute realisedUsd - sizeUsd.');
     // The LEAD-FILL markers are source comments only: they never reach the served text.
     expect(buildProtocolManual(API)).not.toContain('LEAD-FILL');
+  });
+
+  test('the manual states the D4 disputed-price rule (0.2x of the DexScreener price, 2026-11-12)', () => {
+    const flat = arenaSection().replace(/\s+/g, ' ');
+    expect(flat).toContain('A sell fills at the DexScreener price only when sell quotes fail and that price is not disputed.');
+    expect(flat).toContain('When sell quotes sit at or under 0.2x of the DexScreener price, that price is treated as wrong: a confirmed low quote books the exit, otherwise it closes `unresolved` after 30 minutes.');
+    expect(flat).toContain('closes with exit reason `unresolved` and no P&L; a disputed DexScreener price never counts as a usable price.');
+    expect(readFileSync(join(import.meta.dir, '..', 'skill-protocol-topics', 'trading.ts'), 'utf8')).not.toContain('LEAD-FILL');
   });
 
   test('tools carry the period window, the period default and the reset reason', () => {

@@ -6,6 +6,7 @@ import {
   FLOOR_ARENA_AGENT_KINDS,
   FLOOR_ARENA_AGENT_STATUSES,
   FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_DEEP_LOW_OF_MARK,
   FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_ENTRY_FILL_SOURCES,
   FLOOR_ARENA_EVENT_TYPES,
@@ -320,6 +321,8 @@ describe('floor arena static tables', () => {
 
   test('paper costs, add-on catalog and add-on caps', () => {
     expect(FLOOR_ARENA_PAPER_COSTS).toEqual({ buy_haircut_pct: 1.0, sell_haircut_pct: 0.5, mark_fallback_pool_fee_pct: 1.25 });
+    // D4 disputed mark (2026-11-12): a fresh-mark sell quote at or under 0.2x of the mark disputes it.
+    expect(FLOOR_ARENA_DEEP_LOW_OF_MARK).toBe(0.2);
     expect(FLOOR_ARENA_ADDONS.map((addon) => addon.id)).toEqual([
       'nansen-token-screener-sol',
       'nansen-smart-money-dex-trades-sol',
