@@ -653,7 +653,12 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
             near: CURRENT_WORLD_DEVICE_PROFILE.fogNear,
             far: CURRENT_WORLD_DEVICE_PROFILE.fogFar,
           },
-          shadows: CURRENT_WORLD_DEVICE_PROFILE.shadows,
+          // Shadows OFF (2026-11-12): no world light casts a shadow, and R3F's
+          // <Canvas> (no `shadows` prop) resets shadowMap.enabled to false on its
+          // next configure (~4.7 s on desktop). Turning it on here only flipped
+          // the TSL environment key, so the boot warm-up built ~30 shaders that
+          // were rebuilt right after the flip. No visual change.
+          shadows: false,
         },
         content: (
           <Suspense fallback={null}>
