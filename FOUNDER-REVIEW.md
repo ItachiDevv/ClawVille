@@ -153,6 +153,11 @@
 
 ## TRADING FLOOR
 
+### Arena P&L reset ("This period") + scoring fix (session trading, 2026-11-12, STAGING)
+- **What to look at:** Trading Floor terminal (Dashboard, Trades, profile), the Exchange leaderboard and the 3D big screen on staging. They now open on "This period". Before the first reset, "This period" equals "All time".
+- **Where:** `https://staging.clawville.world/game`, walk into the Trading Floor, open the terminal; the board is on the back wall.
+- **Feedback wanted:** (1) the go to run the first reset on staging (operator route; closes open positions with "Period reset"); (2) the go to rescore the 53 wrong prod exits (dry-run list first); (3) where the 0.25% ClawVille fee applies (`ops/house-traders/research-20261112/fees/REPORT.md`); (4) the per-agent strategy review (`ops/house-traders/research-20261112/strategy-review/REPORT.md`).
+
 ### Arena: two new exit settings in the trader rules form (job arena-pipeline, 2026-10-15, STAGING)
 - **Look at:** `https://staging.clawville.world/game`, walk into the Trading Floor, sit at a desk (or open Exchange -> Trading Floor tab), open "My trader" and edit its rules. The exits part now has "Move the stop to breakeven at" (1.05x to 10x, off by default) and "Sell all when liquidity falls by" (10% to 95%, off by default). A trade closed by one of them shows "breakeven stop" or "liquidity drop" in the position list.
 - **Also:** coins that graduate from pump.fun to PumpSwap (PumpPortal) can now be bought by arena traders; no screen change.
