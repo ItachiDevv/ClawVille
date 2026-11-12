@@ -1010,6 +1010,8 @@ export function createFloorArenaRoutes(
   }
 
   routes.get('/me', async (c) => {
+    const blocked = limited(c, 'me');
+    if (blocked) return blocked;
     return c.json(await meBody(await myAgent(c), deps.now()));
   });
 
@@ -1039,6 +1041,8 @@ export function createFloorArenaRoutes(
   // passes, skips, add-on calls, provisioning, reports. Same cursor contract as
   // the public /agents/:id/events. Never cached (noStorePrivate on /me/*).
   routes.get('/me/events', async (c) => {
+    const blocked = limited(c, 'my-events');
+    if (blocked) return blocked;
     const query = eventsQuerySchema.safeParse({ after: c.req.query('after'), limit: c.req.query('limit') });
     if (!query.success) return c.json({ error: 'after must be an event id; limit 1..100.', code: 'invalid_query' }, 400);
     const agent = await myAgent(c);
@@ -1512,6 +1516,8 @@ export function createFloorArenaRoutes(
   });
 
   routes.get('/me/withdrawals', async (c) => {
+    const blocked = limited(c, 'my-withdrawals');
+    if (blocked) return blocked;
     const query = withdrawListQuerySchema.safeParse({ limit: c.req.query('limit') });
     if (!query.success) return c.json({ error: 'limit must be 1..50.', code: 'invalid_query' }, 400);
     const agent = await myAgent(c);

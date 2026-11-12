@@ -931,7 +931,8 @@ import {
 // 135 (2026-11-12, arena P&L reset): arena boards, equity and MCP tools gain the `period` window (default; trades opened since the last founder reset, all time still kept) and exit reason `reset` ("Period reset"): at a reset the engine closes every older open position through the normal exit path.
 // 136 (2026-11-12): both activity portals belong to the Boating School; Office vortex and portal entry retain Cortex access.
 // 137 (2026-11-12): Office interior stations and Cortex inside/outside; no action or partner wire change.
-export const PROTOCOL_VERSION = 137;
+// 138 (2026-11-12, arena owner-read limit): the `trading` page says owner reads (GET /me, /me/trades, /me/equity, /me/events, /me/withdrawals) allow 60 requests a minute per IP for each route, then 429 rate_limited. GET /me, /me/events and /me/withdrawals had no limit before. No verb, executor or migration change.
+export const PROTOCOL_VERSION = 138;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

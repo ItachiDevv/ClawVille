@@ -207,12 +207,12 @@ function makeDeps() {
   };
 }
 
-function app(options: { auth?: MiddlewareHandler[]; writeMax?: number } = {}) {
+function app(options: { auth?: MiddlewareHandler[]; writeMax?: number; publicMax?: number } = {}) {
   const state = makeDeps();
   const routes = createFloorArenaRoutes(state.deps, {
     auth: options.auth ?? [fakeIdentity],
     limiters: {
-      public: () => createRateLimiter({ maxPerWindow: 1_000 }),
+      public: () => createRateLimiter({ maxPerWindow: options.publicMax ?? 1_000 }),
       write: () => createRateLimiter({ maxPerWindow: options.writeMax ?? 1_000 }),
       launch: () => createRateLimiter({ maxPerWindow: options.writeMax ?? 1_000 }),
     },
@@ -743,6 +743,16 @@ describe('authed arena routes', () => {
       for (const line of source.split('\n').filter((text) => text.includes("from '../services/clawpump-writer'"))) {
         expect(line.startsWith('import type ') || line.trimEnd() === "import { arenaDestinationProblem, formatAtomicAmount } from '../services/clawpump-writer';").toBe(true);
       }
+    }
+  });
+
+  test('owner reads GET /me, /me/events and /me/withdrawals are rate limited per IP, one bucket per route', async () => {
+    const { call } = app({ publicMax: 1 });
+    for (const path of ['/me', '/me/events', '/me/withdrawals']) {
+      expect((await call('GET', path)).status).not.toBe(429);
+      const limited = await call('GET', path, undefined, { 'x-test-user': USER, 'x-test-kind': 'agent' });
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toMatchObject({ code: 'rate_limited' });
     }
   });
 

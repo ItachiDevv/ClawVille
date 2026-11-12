@@ -781,6 +781,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-12 11:20Z (session trading) - Arena owner-read limit on staging (PROTOCOL 138, no migration)
+
+- **WHAT:** `GET /api/floor/arena/me`, `/me/events` and `/me/withdrawals` now use the public 60/min/IP limiter, one bucket per route, like `/me/trades` and `/me/equity`. The `trading` manual page says so. Found by the E5 audit of promotion #29 (pre-existing gap).
+- **WHY SAFE:** the web polls these routes at most 12, 20 (provisioning) and 6 times a minute. Human and agent share the per-IP bucket.
+- **REVIEW:** Codex round 1 BLOCKING (four 137 pins; limiter after auth), round 2 APPROVE (pins fixed; the limiter placement matches the existing owner reads).
+- **NOT VERIFIED YET:** CI and the staging flip.
+- **SCHEMA:** synced (no migration). PROTOCOL 138 granted by claw2.0 (claw2.0 moves to 139+).
+- **PARITY:** human path: Trading Floor terminal reads `/me*`; agent path: the same routes and `clawville_arena_my_*` tools; both share the per-IP bucket.
+
 ### 2026-11-12 11:08Z (session trading) - Promotion #29 ON PROD (`f87ec1734`, PR #341, arena-only, PROTOCOL 135, migration 0122), VERIFIED; prod P&L reset done
 
 - **WHAT:** release branch `release/arena-periods` from master `50e5ce7a1` with cherry-picks of the arena commits only: Trading Floor terminal phases 1 and 2, the D4 disputed-mark and deep-low rules, the P&L periods with the operator reset, and the rescore script. Every arena-only file was byte-equal to staging `5e92e85fd`.
