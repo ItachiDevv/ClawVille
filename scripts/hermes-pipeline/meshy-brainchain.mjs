@@ -16,7 +16,7 @@
 //
 // Usage (run from the repo root):
 //   MESHY_CREDIT_CAP=1000 node scripts/hermes-pipeline/meshy-brainchain.mjs balance
-//   MESHY_CREDIT_CAP=1000 node scripts/hermes-pipeline/meshy-brainchain.mjs mesh <building|robot> <viewsDir>
+//   MESHY_CREDIT_CAP=1000 node scripts/hermes-pipeline/meshy-brainchain.mjs mesh <building|robot|sculpture|pod|desk> <viewsDir>
 //   MESHY_CREDIT_CAP=1000 node scripts/hermes-pipeline/meshy-brainchain.mjs rig robot
 //   MESHY_CREDIT_CAP=1000 node scripts/hermes-pipeline/meshy-brainchain.mjs anim robot <slot> <action_id>
 //
@@ -144,6 +144,10 @@ const dataUri = (p) => `data:image/png;base64,${readFileSync(p).toString('base64
 const MESH = {
   building: { ai_model: 'meshy-6', topology: 'triangle', target_polycount: 30000, symmetry_mode: 'auto', should_remesh: true },
   robot: { ai_model: 'meshy-6', topology: 'quad', target_polycount: 40000, symmetry_mode: 'on', should_remesh: true, pose_mode: 'a-pose' },
+  // Interior props (founder 2026-11-12: interior approved, up to the remaining cap).
+  sculpture: { ai_model: 'meshy-6', topology: 'triangle', target_polycount: 20000, symmetry_mode: 'auto', should_remesh: true },
+  pod: { ai_model: 'meshy-6', topology: 'triangle', target_polycount: 20000, symmetry_mode: 'on', should_remesh: true },
+  desk: { ai_model: 'meshy-6', topology: 'triangle', target_polycount: 15000, symmetry_mode: 'on', should_remesh: true },
 };
 
 const [cmd, target, a3, a4] = process.argv.slice(2);
@@ -151,8 +155,8 @@ if (cmd === 'balance') {
   const live = await balance();
   console.log(`balance ${live} | spent ${spentOf(loadLedger())} of cap ${CAP}`);
 } else if (cmd === 'mesh') {
-  if (!MESH[target] || !a3) throw new Error('usage: mesh <building|robot> <viewsDir>');
-  const views = ['front', 'back', 'side', '3q'].map((v) => join(resolve(a3), `${target === 'building' ? 'bldg' : 'robot'}-${v}.png`)).filter(existsSync);
+  if (!MESH[target] || !a3) throw new Error(`usage: mesh <${Object.keys(MESH).join('|')}> <viewsDir>`);
+  const views = ['front', 'back', 'side', '3q'].map((v) => join(resolve(a3), `${target === 'building' ? 'bldg' : target}-${v}.png`)).filter(existsSync);
   if (views.length < 2) throw new Error(`need >=2 views in ${a3}, found ${views.length}`);
   const out = join(root, target); mkdirSync(out, { recursive: true });
   const job = await guard('mesh', target);
@@ -190,6 +194,6 @@ if (cmd === 'balance') {
   await dl(o.animation_glb_url, join(out, `${a3}.glb`));
   await record(job, id);
 } else {
-  console.error('usage: balance | mesh <building|robot> <viewsDir> | rig robot | anim robot <slot> <action_id>');
+  console.error('usage: balance | mesh <building|robot|sculpture|pod|desk> <viewsDir> | rig robot | anim robot <slot> <action_id>');
   process.exit(1);
 }
