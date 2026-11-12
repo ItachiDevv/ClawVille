@@ -1,7 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import type { MoneyOperatorContext } from '../../middleware/money-operator-only';
-import type { ArenaPeriodRecord } from '../../services/floor-arena/period';
+import {
+  ARENA_PERIOD_RESET_LOCK_KEY,
+  resetArenaPeriod,
+  type ArenaPeriodRecord,
+  type ArenaPeriodTransact,
+} from '../../services/floor-arena/period';
 import {
   ARENA_PERIOD_RESET_MIN_GAP_MS,
   adminFloorArenaRoutes,
@@ -11,8 +18,10 @@ import {
 } from '../admin-floor-arena';
 
 /**
- * D35 period reset routes (docs/trading-floor-arena.md §5). Fake deps only: the route inserts a period row and
- * writes no position (the engine leader closes the old positions with exit reason 'reset').
+ * D35 period reset routes (docs/trading-floor-arena.md §5). No DB: the route runs the REAL resetArenaPeriod against a
+ * fake transaction seam (a fake table, a fake per-transaction DB now() and a fake advisory lock that blocks like
+ * pg_advisory_xact_lock until the holder's transaction ends). The real SQL runs on PGlite in period.test.ts. The route
+ * inserts a period row and writes no position (the engine leader closes the old positions with exit reason 'reset').
  */
 
 const NOW = new Date('2026-11-12T04:35:07.123Z');
@@ -21,23 +30,74 @@ function periodAt(startsAt: Date, id = arenaPeriodId(startsAt)): ArenaPeriodReco
   return { id, name: 'Season 2', startsAt, reason: 'fresh board', createdBy: 'admin:op-1', createdAt: startsAt };
 }
 
-function harness(opts: { active?: ArenaPeriodRecord | null; insertError?: unknown; openBefore?: number } = {}) {
-  const calls: string[] = [];
+const dialect = new PgDialect();
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+/**
+ * The fake transaction seam. Each transaction takes its DB now() from `dbNows` (in start order, else NOW), sees the
+ * COMMITTED rows plus its own, and commits its inserts only when `fn` resolves. `lock: false` makes the advisory lock
+ * a no-op (the code before the fix had no lock at all).
+ */
+function fakeDb(opts: { rows?: ArenaPeriodRecord[]; dbNows?: Date[]; lock?: boolean; insertError?: unknown } = {}) {
+  const committed: ArenaPeriodRecord[] = [...(opts.rows ?? [])];
+  const statements: string[] = [];
   const inserts: Array<{ id: string; name: string; reason: string; createdBy: string }> = [];
+  const dbNows = [...(opts.dbNows ?? [])];
+  let lockTail: Promise<void> = Promise.resolve();
+  const transact: ArenaPeriodTransact = async (fn) => {
+    const txNow = dbNows.shift() ?? NOW;
+    const staged: ArenaPeriodRecord[] = [];
+    const held: { release: (() => void) | null } = { release: null };
+    const tx = {
+      execute: async (statement: SQL) => {
+        await tick();
+        const query = dialect.sqlToQuery(statement);
+        statements.push(query.sql.replace(/\s+/g, ' ').trim());
+        if (query.sql.includes('pg_advisory_xact_lock')) {
+          expect(query.params).toEqual([String(ARENA_PERIOD_RESET_LOCK_KEY)]);
+          if (opts.lock === false) return [];
+          const before = lockTail;
+          lockTail = new Promise<void>((resolve) => { held.release = resolve; });
+          await before;
+          return [];
+        }
+        if (query.sql.includes('SELECT now() AS db_now')) {
+          const starts = [...committed, ...staged].map((p) => p.startsAt.getTime());
+          return [{ db_now: txNow, newest_start: starts.length > 0 ? new Date(Math.max(...starts)) : null }];
+        }
+        if (query.sql.includes('INSERT INTO floor_arena_periods')) {
+          const [id, name, reason, createdBy] = query.params as string[];
+          inserts.push({ id: id!, name: name!, reason: reason!, createdBy: createdBy! });
+          if (opts.insertError) throw opts.insertError;
+          staged.push({ id: id!, name: name!, startsAt: txNow, reason: reason!, createdBy: createdBy!, createdAt: txNow });
+          return [{ id, name, starts_at: txNow, reason, created_by: createdBy, created_at: txNow }];
+        }
+        throw new Error(`unexpected statement: ${query.sql}`);
+      },
+    };
+    try {
+      const result = await fn(tx as never);
+      committed.push(...staged);
+      return result;
+    } finally {
+      held.release?.();
+    }
+  };
+  return { transact, committed, statements, inserts };
+}
+
+function harness(opts: { active?: ArenaPeriodRecord | null; insertError?: unknown; openBefore?: number; lock?: boolean; dbNows?: Date[] } = {}) {
+  const calls: string[] = [];
   const counts: Date[] = [];
-  let active = opts.active ?? null;
+  const fake = fakeDb({ rows: opts.active ? [opts.active] : [], insertError: opts.insertError, lock: opts.lock, dbNows: opts.dbNows });
   const deps: AdminArenaPeriodDeps = {
-    readActive: async (now?: Date) => { calls.push(`read:${now?.toISOString() ?? 'none'}`); return active; },
-    insert: async (input) => {
-      calls.push('insert');
-      inserts.push(input);
-      if (opts.insertError) throw opts.insertError;
-      active = periodAt(NOW, input.id);
-      return active;
+    readActive: async () => { calls.push('read'); return opts.active ?? null; },
+    reset: async (input) => {
+      calls.push('reset');
+      try { return await resetArenaPeriod(input, fake.transact); } finally { calls.push('tx_end'); }
     },
     invalidateCache: () => { calls.push('invalidate'); },
     countOpenBefore: async (startsAt) => { calls.push('count'); counts.push(startsAt); return opts.openBefore ?? 3; },
-    now: () => NOW,
   };
   const app = new Hono<MoneyOperatorContext>();
   app.use('*', async (c, next) => { c.set('moneyOperatorId', 'op-1'); await next(); });
@@ -45,7 +105,7 @@ function harness(opts: { active?: ArenaPeriodRecord | null; insertError?: unknow
   const post = async (body: unknown, raw?: string) => app.request('/period/reset', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: raw ?? JSON.stringify(body),
   });
-  return { app, post, calls, inserts, counts };
+  return { app, post, calls, inserts: fake.inserts, counts, fake };
 }
 
 describe('admin arena period routes (D35)', () => {
@@ -83,9 +143,35 @@ describe('admin arena period routes (D35)', () => {
       openPositionsToClose: 7,
     });
     expect(inserts).toEqual([{ id: 'period-20261112T043507Z', name: 'Season 2', reason: 'fresh board', createdBy: 'admin:op-1' }]);
-    // the cache is cleared before the 60 s check and after the insert; the count uses the inserted start
-    expect(calls).toEqual(['invalidate', `read:${NOW.toISOString()}`, 'insert', 'invalidate', 'count']);
+    // the cache is cleared after the transaction ends; the count uses the inserted start (the DB now())
+    expect(calls).toEqual(['reset', 'tx_end', 'invalidate', 'count']);
     expect(counts).toEqual([NOW]);
+  });
+
+  test('Codex fecd02004: the lock, the DB-time check and the insert run in that order, in one transaction', async () => {
+    const { post, fake } = harness();
+    expect((await post({ name: 'x', reason: 'y' })).status).toBe(200);
+    expect(fake.statements.map((q) => q.slice(0, 40))).toEqual([
+      'SELECT pg_advisory_xact_lock($1::bigint)',
+      'SELECT now() AS db_now, (SELECT max(star',
+      'INSERT INTO floor_arena_periods (id, nam',
+    ]);
+    expect(fake.statements[2]).toContain('now()'); // starts_at = the DB now(), never process time
+  });
+
+  test('Codex fecd02004: two concurrent resets across a second boundary -> exactly one 200 and one 409', async () => {
+    // The waiter's transaction started EARLIER (DB now 0.5 s before the winner's start): a negative gap is too recent.
+    const { post, fake } = harness({ dbNows: [new Date(NOW.getTime() + 500), NOW] });
+    const responses = await Promise.all([post({ name: 'a', reason: 'r' }), post({ name: 'b', reason: 'r' })]);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    const refused = responses.find((r) => r.status === 409)!;
+    expect(((await refused.json()) as { code: string }).code).toBe('period_too_recent');
+    expect(fake.committed).toHaveLength(1);
+    // Without the lock (the code before the fix) both requests read no period and both insert.
+    const unlocked = harness({ lock: false, dbNows: [new Date('2026-11-12T04:35:07.900Z'), new Date('2026-11-12T04:35:08.100Z')] });
+    const both = await Promise.all([unlocked.post({ name: 'a', reason: 'r' }), unlocked.post({ name: 'b', reason: 'r' })]);
+    expect(both.map((r) => r.status)).toEqual([200, 200]);
+    expect(unlocked.fake.committed).toHaveLength(2);
   });
 
   test('POST /period/reset: 409 period_too_recent while the active period is < 60 s old; allowed at 60 s', async () => {
@@ -104,6 +190,7 @@ describe('admin arena period routes (D35)', () => {
     expect(response.status).toBe(409);
     expect(((await response.json()) as { code: string }).code).toBe('period_too_recent');
     expect(dup.calls.at(-1)).toBe('invalidate');
+    expect(dup.fake.committed).toEqual([]); // the failed transaction committed nothing
     const wrapped = harness({ insertError: Object.assign(new Error('query failed'), { cause: { code: '23505' } }) });
     expect((await wrapped.post({ name: 'x', reason: 'y' })).status).toBe(409);
     const broken = harness({ insertError: new Error('connection lost') });

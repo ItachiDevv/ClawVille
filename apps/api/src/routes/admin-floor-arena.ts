@@ -20,11 +20,11 @@ import {
   type ArenaWithdrawalRecord,
 } from '../services/floor-arena/queries';
 import {
-  insertArenaPeriod,
   invalidateArenaPeriodCache,
   readActiveArenaPeriod,
+  resetArenaPeriod,
   toPublicPeriod,
-  type ArenaPeriodRecord,
+  type ArenaPeriodResetResult,
 } from '../services/floor-arena/period';
 import { describeChanges } from './floor-arena';
 
@@ -109,16 +109,16 @@ adminFloorArenaRoutes.route('/', createAdminArenaWithdrawRoutes());
 
 // ─── Arena period (D35, P&L reset). Inserts a period row only; never a position write. ────
 
-/** A new period is refused while the active one is younger than this. */
+/** A new period is refused while the newest one is younger than this (DB time, under the reset lock). */
 export const ARENA_PERIOD_RESET_MIN_GAP_MS = 60_000;
 
 export interface AdminArenaPeriodDeps {
   readActive: typeof readActiveArenaPeriod;
-  insert: typeof insertArenaPeriod;
+  /** The serialized check + insert (one transaction under the reset advisory lock; DB now()). */
+  reset: (input: Parameters<typeof resetArenaPeriod>[0]) => Promise<ArenaPeriodResetResult>;
   invalidateCache: typeof invalidateArenaPeriodCache;
   /** Open positions opened before `startsAt`: the ones the engine leader's exit tick closes with reason 'reset'. */
   countOpenBefore: (startsAt: Date) => Promise<number>;
-  now: () => Date;
 }
 
 async function countOpenPositionsBefore(startsAt: Date): Promise<number> {
@@ -131,10 +131,9 @@ async function countOpenPositionsBefore(startsAt: Date): Promise<number> {
 
 export const defaultAdminArenaPeriodDeps: AdminArenaPeriodDeps = {
   readActive: readActiveArenaPeriod,
-  insert: insertArenaPeriod,
+  reset: (input) => resetArenaPeriod(input),
   invalidateCache: invalidateArenaPeriodCache,
   countOpenBefore: countOpenPositionsBefore,
-  now: () => new Date(),
 };
 
 const PERIOD_TOO_RECENT = { error: 'The active period started less than 60 s ago. Wait and retry.', code: 'period_too_recent' } as const;
@@ -173,26 +172,27 @@ export function createAdminArenaPeriodRoutes(deps: AdminArenaPeriodDeps = defaul
     if (!parsed.success) {
       return c.json({ error: 'Body must be { name: 1..60 chars, reason: 1..280 chars }.', code: 'invalid_body' }, 400);
     }
-    // The 10 s period cache must not hide a period another process just started.
-    deps.invalidateCache();
-    const now = deps.now();
-    const active = await deps.readActive(now);
-    if (active && now.getTime() - active.startsAt.getTime() < ARENA_PERIOD_RESET_MIN_GAP_MS) return c.json(PERIOD_TOO_RECENT, 409);
-    let period: ArenaPeriodRecord;
+    // Codex review of fecd02004: the 60 s check and the insert run in ONE transaction under a fixed advisory lock,
+    // against the DB now(), so two concurrent resets (any process) give exactly one period.
+    let result: ArenaPeriodResetResult;
     try {
-      period = await deps.insert({
-        id: arenaPeriodId(now),
+      result = await deps.reset({
         name: parsed.data.name,
         reason: parsed.data.reason,
         createdBy: `admin:${c.get('moneyOperatorId')}`,
+        minGapMs: ARENA_PERIOD_RESET_MIN_GAP_MS,
+        idFor: arenaPeriodId,
       });
     } catch (error) {
-      // Two resets in the same second share the id (or the start): the first one won.
+      // Backstop: the UNIQUE id / starts_at refuses a duplicate the lock should already have refused.
       if (isUniqueViolation(error)) return c.json(PERIOD_TOO_RECENT, 409);
       throw error;
     } finally {
+      // After the commit (or the rollback): this process reads the new period at once.
       deps.invalidateCache();
     }
+    if (!result.ok) return c.json(PERIOD_TOO_RECENT, 409);
+    const { period } = result;
     // Single writer: no position write here. The engine leader's exit tick closes these with reason 'reset'.
     const openPositionsToClose = await deps.countOpenBefore(period.startsAt);
     return c.json({ ok: true, period: toPublicPeriod(period), openPositionsToClose });

@@ -11,7 +11,9 @@ import {
   invalidateArenaPeriodCache,
   mapArenaPeriodRow,
   readActiveArenaPeriod,
+  resetArenaPeriod,
   toPublicPeriod,
+  type ArenaPeriodTransact,
 } from './period';
 
 // Real PostgreSQL (in-memory PGlite, the existing plugin dependency); never reads DATABASE_URL.
@@ -116,5 +118,39 @@ describe('active period', () => {
     expect(mapArenaPeriodRow(undefined)).toBeNull();
     expect(mapArenaPeriodRow({ id: 'x', name: 'n', starts_at: 'not a date', reason: 'r', created_by: 'a', created_at: new Date() })).toBeNull();
     expect(mapArenaPeriodRow({ id: 'x', name: null, starts_at: new Date(), reason: 'r', created_by: 'a', created_at: new Date() })).toBeNull();
+  });
+});
+
+describe('resetArenaPeriod on real SQL (PGlite: one connection, so the lock is not contended here; the concurrent case is the fake-lock test in admin-floor-arena-period.test.ts)', () => {
+  // One real transaction per call, like db.transaction.
+  const transact: ArenaPeriodTransact = async (fn) => {
+    await database.exec('BEGIN');
+    try {
+      const result = await fn(executor!);
+      await database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      await database.exec('ROLLBACK');
+      throw error;
+    }
+  };
+  const input = (name: string, minGapMs = 60_000) => ({
+    name, reason: 'r', createdBy: 'admin:op', minGapMs, idFor: (at: Date) => `period-${at.getTime()}`,
+  });
+
+  test('locks, checks the newest start against the DB now(), inserts at now(); a second reset inside 60 s is period_too_recent', async () => {
+    await database.query('DELETE FROM floor_arena_periods');
+    const first = await resetArenaPeriod(input('A'), transact);
+    if (!first.ok) throw new Error('expected the first reset to insert');
+    expect(first.period.id).toBe(`period-${first.period.startsAt.getTime()}`); // the id comes from the DB now()
+    expect(await resetArenaPeriod(input('B'), transact)).toEqual({ ok: false, code: 'period_too_recent' });
+    expect((await database.query('SELECT count(*)::int AS n FROM floor_arena_periods')).rows).toEqual([{ n: 1 }]);
+    // a row that starts AFTER the DB now() (a negative gap) is too recent too
+    await database.query(`INSERT INTO floor_arena_periods (id, name, starts_at, reason, created_by)
+      VALUES ('future', 'F', now() + interval '1 hour', 'r', 'admin')`);
+    expect(await resetArenaPeriod(input('C', 0), transact)).toEqual({ ok: false, code: 'period_too_recent' });
+    await database.query(`DELETE FROM floor_arena_periods WHERE id = 'future'`);
+    const later = await resetArenaPeriod(input('D', 0), transact);
+    expect(later.ok).toBe(true);
   });
 });

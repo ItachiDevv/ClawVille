@@ -346,7 +346,7 @@ export interface ArenaParamChangeWrite {
 export interface ArenaAnalysisStore {
   /** Agents that are due or nearly due; the tick applies the exact rules. */
   listCandidates(now: Date): Promise<ArenaAnalysisCandidate[]>;
-  /** Newest closed trades first, at most `limit`. */
+  /** Newest closed trades first, at most `limit`; never a 'reset' close (D35: left out in SQL, before the limit). */
   loadClosedTrades(agentId: string, limit: number): Promise<ArenaClosedTrade[]>;
   countOpened(agentId: string, from: Date, to: Date): Promise<number>;
   countOpen(agentId: string): Promise<number>;
@@ -1631,14 +1631,14 @@ async function analyseAgent(
   const periodStart = arenaPeriodStart(candidate, now);
   const periodEnd = now;
 
-  const [loadedTrades, entries, openPositions] = await Promise.all([
+  // D35: the store leaves out 'reset' closes in SQL, before the limit
+  // (loadClosedTrades), so they never reach the report, the observations, the
+  // model, the suggestions, the tuner or auto-apply.
+  const [trades, entries, openPositions] = await Promise.all([
     store.loadClosedTrades(agent.id, ARENA_LIFETIME_TRADE_LIMIT),
     store.countOpened(agent.id, periodStart, periodEnd),
     store.countOpen(agent.id),
   ]);
-  // D35: 'reset' closes never reach the report, the observations, the model,
-  // the suggestions, the tuner or auto-apply.
-  const trades = loadedTrades.filter(isStrategyTrade);
   const periodTrades = trades.filter(
     (t) => t.closedAt.getTime() > periodStart.getTime() && t.closedAt.getTime() <= periodEnd.getTime(),
   );
@@ -1656,7 +1656,7 @@ async function analyseAgent(
       paramsVersions: [...new Set(periodTrades.map((t) => t.paramsVersion))].sort((a, b) => a - b),
     },
     currentParams: computeArenaTradeStats(currentTrades),
-    lifetime: { ...computeArenaTradeStats(trades), truncated: loadedTrades.length >= ARENA_LIFETIME_TRADE_LIMIT },
+    lifetime: { ...computeArenaTradeStats(trades), truncated: trades.length >= ARENA_LIFETIME_TRADE_LIMIT },
     observations: [],
     suggestionCheck: { llm: 'skipped' },
   };
