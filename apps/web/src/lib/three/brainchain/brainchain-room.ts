@@ -17,14 +17,15 @@ export const BRAINCHAIN_STATIONS = Object.freeze([
 ] as const);
 /** Hero model replacement envelope: bottom-centred origin, front +Z, world-unit fit. */
 export const BRAINCHAIN_PROP_BOUNDS = Object.freeze({
-  sculpture: { width: 700, height: 540, depth: 460 },
-  pod: { width: 360, height: 380, depth: 320 },
+  // 2026-11-12 staging look: the room read empty, so the centrepiece is ~1.85x and pods 1.3x.
+  sculpture: { width: 1300, height: 1000, depth: 860 },
+  pod: { width: 470, height: 500, depth: 420 },
   desk: { width: 820, height: 160, depth: 390 },
 });
 export const BRAINCHAIN_SOLIDS = Object.freeze([
-  { x: 0, z: 0, halfX: 400, halfZ: 300 },
+  { x: 0, z: 0, halfX: 660, halfZ: 440 },
   { x: -1140, z: 1000, halfX: 410, halfZ: 195 },
-  ...BRAINCHAIN_STATIONS.slice(1, 5).map(s => ({ x: s.x, z: s.z, halfX: 250, halfZ: 250 })),
+  ...BRAINCHAIN_STATIONS.slice(1, 5).map(s => ({ x: s.x, z: s.z, halfX: 280, halfZ: 280 })),
   { x: 1990, z: -180, halfX: 100, halfZ: 500 },
   { x: 540, z: -1900, halfX: 500, halfZ: 100 },
 ]);

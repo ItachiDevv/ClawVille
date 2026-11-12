@@ -29,14 +29,14 @@ The exit and Back to town use the existing outside placement and scene transitio
 | Receipts wall | 540, -1780 | Earnings |
 
 The nearest station within 460 wu supplies the DOM prompt. Recovery stays inside the Office window.
-The centre sculpture has a 400 x 300 wu collider half-size. The desk half-size is 410 x 195 wu.
-Each pod has a 250 x 250 wu collider half-size. The board and receipts wall have shallow wall colliders.
+The centre sculpture has a 660 x 440 wu collider half-size. The desk half-size is 410 x 195 wu.
+Each pod has a 280 x 280 wu collider half-size. The board and receipts wall have shallow wall colliders.
 Collision checks include the player radius and split movement into steps of at most 32 wu.
 The initial camera sits at (0, 300, 2120), inside the room. The camera arm shortens before walls and station solids. The room uses a void background and distance fog.
 
 Hero props share fixed anchors and replacement envelopes. Since 2026-11-12 each path points to a Meshy model: `apps/web/public/models/brainchain/brainchain-sculpture-v1-ktx.glb` (0.70 MB), `brainchain-pod-v1-ktx.glb` (0.79 MB, one model drawn at 4 anchors) and `brainchain-desk-v1-ktx.glb` (0.83 MB). `scripts/brainchain/build-office-v3.mjs` built them (budgets 8,000 / 6,000 / 5,000 triangles; base colour plus the pink glow mask as emissive; UASTC KTX2). Meshy models face +Z, so the desk turns 180 degrees to face the room. A null path falls back to the procedural placeholder. Meshy spend for the props: 120 credits (the first desk had a monitor on a long arm behind the counter and was replaced).
-The sculpture envelope is 700 x 540 x 460 wu. The desk envelope is 820 x 160 x 390 wu.
-Each pod envelope is 360 x 380 x 320 wu. Model origins sit at bottom centre, with the front along +Z.
+The sculpture envelope is 1300 x 1000 x 860 wu (enlarged on 2026-11-12 after the first staging look: the room read empty). The desk envelope is 820 x 160 x 390 wu.
+Each pod envelope is 470 x 500 x 420 wu. Model origins sit at bottom centre, with the front along +Z.
 The replacement path constant preserves these footprints and anchors. The sculpture uses a shallow depth to fit its envelope.
 The receipts plane sits at z=-1900, inside the wall.
 Board textures contain titles and short labels only. They contain no invented task, receipt or balance data.
