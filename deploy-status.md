@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-12 10:10Z (session brainchain). **STAGING API + WEB = `c599fb2c2` BrainChain Office walk-in 3D interior phase 1 + bigger Cortex (PROTOCOL 137, no migration) + `1fb2befa6` Meshy prop targets, on top of `5e92e85fd` (the `menuOpen` door fix: CI run 43188677845 green after one rerun of a flaky Solana SDK fixture test, both containers `5e92e85fd` healthy). PUSHED, NOT YET VERIFIED (CI, SOURCE_COMMIT, browser check pending).** PROD = `50e5ce7a1` (promotion #28) unchanged; session trading is promoting an arena-only release branch from master (BrainChain excluded).
+Last Audited: 2026-11-12 11:08Z (session trading). **PROD API + WEB = `f87ec1734` (promotion #29, PR #341, arena-only release), VERIFIED 11:05Z: both prod containers `f87ec1734`, `/health` commit `f87ec1734`, migration `0122_floor_arena_periods.sql` applied 10:59:44Z, PROTOCOL 135. Prod P&L reset done 11:06:11Z (period `period-20261112T110611Z` "Fresh start 2026-11-12"); the 1 open position closed with reason `reset` at 11:06:23Z (-$0.66). Browser: the prod Trading Floor board shows every house agent at $0.00, "REALISED, PERIOD", no console errors.** STAGING = merge of master #29 into staging; its tree equals the previous staging head `28310b109` (BrainChain interior phase 1, PROTOCOL 137), so no staging code changes. SCHEMA: prod-migration-pending: `0101`-`0121c` (BrainChain, UsePod fee wallet; staging-only by owner decision).
+
+Prior - Last Audited: 2026-11-12 10:10Z (session brainchain). **STAGING API + WEB = `c599fb2c2` BrainChain Office walk-in 3D interior phase 1 + bigger Cortex (PROTOCOL 137, no migration) + `1fb2befa6` Meshy prop targets, on top of `5e92e85fd` (the `menuOpen` door fix: CI run 43188677845 green after one rerun of a flaky Solana SDK fixture test, both containers `5e92e85fd` healthy). PUSHED, NOT YET VERIFIED (CI, SOURCE_COMMIT, browser check pending).** PROD = `50e5ce7a1` (promotion #28) unchanged; session trading is promoting an arena-only release branch from master (BrainChain excluded).
 
 Prior - Last Audited: 2026-11-12 08:27Z (session brainchain). **STAGING API + WEB = `8b561a08c` BrainChain Office spinning vortex door + Bumper Shells moved to Mrs. Puff's Boating School (PROTOCOL 136, no migration) + `4e69235ef` partner-spec note, on top of new-ville's `738801b5f`. Runs 43183219377 (web gate) and 43184055412 (coupling) FAILED, nothing deployed; `255bc90a8` deployed: CI run 43184821660 all jobs success, both containers `255bc90a8` healthy, `/health` `255bc90a8`. Browser check (headless Chrome on itachi222, 60 FPS, guest NPC mode): vortex mesh present and spinning; walk-in did NOT fire on desktop because the always-visible sidebar keeps `menuOpen` true and the door gate refused it; with `menuOpen` forced false the walk crossed the trigger and opened `/brainchain`, and Back to town placed the avatar at depth 650 with no re-entry. The `menuOpen` gate fix is the next push.** PROD = `50e5ce7a1` (promotion #28) unchanged.
 
@@ -778,6 +780,17 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-12 11:08Z (session trading) - Promotion #29 ON PROD (`f87ec1734`, PR #341, arena-only, PROTOCOL 135, migration 0122), VERIFIED; prod P&L reset done
+
+- **WHAT:** release branch `release/arena-periods` from master `50e5ce7a1` with cherry-picks of the arena commits only: Trading Floor terminal phases 1 and 2, the D4 disputed-mark and deep-low rules, the P&L periods with the operator reset, and the rescore script. Every arena-only file was byte-equal to staging `5e92e85fd`.
+- **LEFT OUT (owners said not ready):** BrainChain Office (0101-0120), MCP Apps P0/P1, UsePod fee wallet (0121-0121c), new-ville web items. Prod PROTOCOL jumps 120 -> 135; 121-132 are staging-only numbers.
+- **GATES:** Codex review of the release diff: VERDICT APPROVE. CI gates on the PR: 4/4 green. E6 on staging: `agent-onboarding-smoke.ts` 14/14 PASS, `hosted-skill-runtime-probe.ts` 16/16 PASS (mock gateways, no paid calls). E5 adversarial audit on staging: PASS (54 agent-vs-public pairs identical; admin period routes 401 for anonymous and agent; bad window and cursor values 400, never 500).
+- **RESET PATH TEST:** a second staging period (`period-20261112T104634Z`, 10:46:34Z) closed 4 open positions with reason `reset` 12 s later. On prod the reset closed 1 Dip Hunter position the same way.
+- **WHAT BROKE:** nothing. CI `deploy` reported success about 5 min before the containers flipped (normal Coolify build time); the flip was confirmed by SOURCE_COMMIT, not by the CI result.
+- **AUDIT FOLLOW-UPS (minor, pre-existing):** `GET /api/floor/arena/me`, `/me/events` and `/me/withdrawals` have no per-IP limiter (fix next on staging). The leaderboard reads the first `window` value; trades and equity read the last one.
+- **SCHEMA:** prod-migration-pending: `0101`-`0121c` (staging-only by owner decision). 0122 applied on prod.
+- **PARITY:** human path: Trading Floor terminal + arena board (period window); agent path: arena REST routes + `clawville_arena_*` tools; settlement binds to the same authenticated avatar resolver.
 
 ### 2026-11-12 10:10Z (session brainchain) - BrainChain Office walk-in 3D interior phase 1 + bigger Cortex (PROTOCOL 137)
 
