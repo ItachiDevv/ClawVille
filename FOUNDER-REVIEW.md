@@ -708,6 +708,11 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## HUD
 
+### Emote bar hidden on /game (session new-ville, 2026-11-12, STAGING)
+- **What:** the 4-slot emote bar (and its 1-4 hotkeys) no longer shows on /game, on founder order ("just hide it": bad spot, not working right). The component file stays for a later fix. Agents still emote through their own action path.
+- **Where:** https://staging.clawville.world/game with an emote equipped: no bar above the chat, and the email-verify banner is no longer covered.
+- **Feedback wanted:** confirm it is gone; say where emotes should go when they come back.
+
 ### Phone game menu: bigger tap targets (staging)
 - **What:** on phones and tablets every row in the game menu (gear button) and the "Create Agent"
   button are now at least 44 px tall (they were 40.5 px and 27 px). Desktop is unchanged.

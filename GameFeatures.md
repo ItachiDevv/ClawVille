@@ -1,6 +1,7 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-11 21:38Z (Trading Floor terminal phase 1, local implementation; protocol 133).** Drift note: the Trading Floor has its own window; the Exchange contains only listings and orders.
+**Last Audited: 2026-11-12 04:20Z (emote hotbar hidden on /game).** Drift note: founder order 2026-11-11: `apps/web/src/app/(world)/game/page.tsx` no longer mounts `EmoteHotbar` (bad spot, not working right); its 1-4 hotkeys go with it. The component stays in `apps/web/src/components/game/emote-hotbar.tsx` until it is fixed and placed again. PARITY: human-only HUD change; the agent emote path is unchanged. Humans can still equip emotes in the Wardrobe but have no trigger on /game until the bar returns.
+Prior **Last Audited: 2026-11-11 21:38Z (Trading Floor terminal phase 1, local implementation; protocol 133).** Drift note: the Trading Floor has its own window; the Exchange contains only listings and orders.
 
 Prior **Last Audited: 2026-11-11 17:53Z (Trading Floor walk-into-the-door entry).** Drift note: walking into the Trading Floor front door now enters the venue; before, it only showed the prompt (§17g item 2).
 Prior **Last Audited: 2026-11-11 09:42Z (UsePod fee receipt: "paid" only for a fee the chain charged).** Drift note: the receipt said "paid the network fee" also for an ambiguous deposit.
