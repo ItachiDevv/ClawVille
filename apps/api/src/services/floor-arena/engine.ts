@@ -289,17 +289,17 @@ export function runAfterRejectedUsableQuote(stored: ExitRun | null): ExitRun | n
 }
 
 /**
- * Codex round 3 #3: an accepted PARTIAL sale (a TP leg) leaves a remaining position, so it keeps the sticky guards of
- * the history it sold under: markDisputed (the mark stays disbelieved; mark_fallback never books it) and sawLow (the
- * stale price never books). The counters, both streaks and the 30-min clock restart at the sale. Null (exit_run NULL)
- * when the run held neither guard; a full close always writes NULL (the caller).
+ * Codex round 3 #3 (+ round 4 #2): an accepted PARTIAL sale (a TP leg) of a DISPUTED history leaves a remaining
+ * position that must not book the disputed mark: the new run keeps markDisputed and sawLow (always set with it); the
+ * counters, both streaks and the 30-min clock restart at the sale. An undisputed history writes exit_run NULL, as
+ * before 94c489354 (a partial sale changes nothing there). A full close always writes NULL (the caller).
  */
 export function runAfterPartialFill(run: ExitRun | null, nowMs: number): ExitRun | null {
-  if (!run || (run.markDisputed !== true && !run.sawLow)) return null;
+  if (run?.markDisputed !== true) return null;
   const nowIso = new Date(nowMs).toISOString();
   return {
     firstFailureAt: nowIso, runStartedAt: nowIso, streakStartedAt: null, failures: 0, lowCount: 0, sawLow: run.sawLow,
-    lastLowAt: null, lastAttemptAt: nowIso, ...(run.markDisputed === true ? { markDisputed: true as const } : {}),
+    lastLowAt: null, lastAttemptAt: nowIso, markDisputed: true,
   };
 }
 
@@ -579,21 +579,6 @@ export function d4AfterFailedQuote(input: {
     staleFallbackPrice: input.staleFallbackPrice,
   });
   return { run, currentLow, d4 };
-}
-
-/**
- * Codex review of 94c489354 (+ 2026-11-12 sawLow): the failure run is written only when D4 keeps retrying (d4 ===
- * null). When D4 decides a booking or an 'unresolved' close and the write is then rejected (a newer mark, a mark that
- * aged past 60 s, or a lost CAS), the attempt's run is dropped. If THIS attempt newly set a guard, dropping it lets the
- * next attempt book a price the guard forbids: a new markDisputed -> the disputed mark (mark_fallback); a new sawLow
- * (the first low, under a fresh undisputed mark) -> the stale price on the no-fresh-mark branch. Returns the run to
- * persist after such a rejection (only when it newly sets markDisputed or sawLow), else null: every other rejected
- * attempt keeps today's behaviour (nothing written).
- */
-export function runToKeepAfterRejectedBooking(stored: ExitRun | null, run: ExitRun): ExitRun | null {
-  const newlyDisputed = run.markDisputed === true && stored?.markDisputed !== true;
-  const newlySawLow = run.sawLow && stored?.sawLow !== true;
-  return newlyDisputed || newlySawLow ? run : null;
 }
 
 // ---------------------------------------------------------------- candidates (pure)
@@ -2051,8 +2036,8 @@ async function executeExit(
       // A usable quote (merely under the TP) is a price, not a failure: only a refused quote closes as unresolved.
       if (!quote.ok && skipRun && tpSkipUnresolved(skipRun, freshMarkPrice, nowMs)) {
         const closed = await closeUnresolved(position, state, trigger, skipRun, writtenMark, decisionAtMs, now);
-        const kept = lowRun ? runToKeepAfterRejectedBooking(storedRun, lowRun) : null;
-        if (closed.kind === 'lost_race' && kept) await persistKeptRun(position, kept);
+        // Codex round 4 #1: a rejected close keeps THIS skip's run (a new low, or a drift that ended the deep streak).
+        if (closed.kind === 'lost_race' && lowRun) await persistKeptRun(position, lowRun);
         return closed;
       }
       if (lowRun) {
@@ -2068,8 +2053,9 @@ async function executeExit(
   let proceedsUsd: number;
   let fillSource: ExitFillSource;
   let fillPrice: number | null;
-  // Written if the booking below is rejected: a failed attempt that newly sets markDisputed or sawLow (Codex,
-  // 94c489354; sawLow 2026-11-12), or a usable quote that ends a stored deep streak (Codex round 3 #2).
+  // Written if the booking below is rejected (Codex round 4 #1, replacing the 94c489354 newly-set-guard rule): THIS
+  // attempt's run, so a rejection drops nothing the attempt learned (a new guard, a new low, an ended deep streak); for
+  // a usable quote, the stored run with its deep streak ended (Codex round 3 #2), else nothing.
   let keptRun: ExitRun | null = null;
   // The run the booking sold under: a partial sale keeps its sticky guards (Codex round 3 #3).
   let guardRun: ExitRun | null;
@@ -2099,7 +2085,7 @@ async function executeExit(
         .returning({ id: floorArenaPositions.id });
       return written.length > 0 ? { kind: 'quote_failed' } : { kind: 'lost_race' };
     }
-    keptRun = runToKeepAfterRejectedBooking(prevRun, run);
+    keptRun = run;
     guardRun = run;
     if (d4.kind === 'unresolved') {
       const closed = await closeUnresolved(position, state, trigger, run, writtenMark, decisionAtMs, now);
@@ -2170,9 +2156,9 @@ async function executeExit(
 }
 
 /**
- * Codex review of 94c489354 (+ 2026-11-12 sawLow): after a rejected booking, keep a newly set markDisputed or sawLow.
- * Same compare-and-swap as the d4 === null write (row still open, exit_run unchanged); a no-op when another writer
- * changed the row.
+ * After a rejected booking or a rejected unresolved close (Codex 94c489354, round 4 #1): write the attempt's run with
+ * the same compare-and-swap as the d4 === null write (row still open, exit_run unchanged); a no-op when another writer
+ * changed the row. The caller then returns lost_race.
  */
 async function persistKeptRun(position: FloorArenaPositionRow, run: ExitRun): Promise<void> {
   await db.update(floorArenaPositions)
