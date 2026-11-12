@@ -21,9 +21,12 @@ import {
   computeArenaTradeStats,
   evaluateArenaSuggestion,
   houseTunableRanges,
+  isStrategyTrade,
   parseArenaAnalysisReply,
   runArenaAnalysisTickWith,
   tradeJudgedAt,
+  tunerSampleSize,
+  tunerTrades,
   type ArenaAnalysisAgent,
   type ArenaAnalysisCandidate,
   type ArenaAnalysisStore,
@@ -274,6 +277,18 @@ describe('Trading Arena analysis stats', () => {
     ]);
     expect(stats).toMatchObject({ trades: 1, wins: 1, losses: 0, deaths: 0, severe: 0, realisedUsd: 2 });
     expect(stats.exits.other).toBe(0);
+  });
+
+  test('D35: a period-reset close counts nowhere (stats, tuner sample, tuner trades)', () => {
+    const reset = trade({ pnlMult: 0.4, exitReason: 'reset' });
+    const kept = trade({ pnlMult: 1.1 });
+    expect(isStrategyTrade(reset)).toBe(false);
+    expect(isStrategyTrade(kept)).toBe(true);
+    const stats = computeArenaTradeStats([kept, reset]);
+    expect(stats).toMatchObject({ trades: 1, wins: 1, losses: 0, deaths: 0, severe: 0, realisedUsd: 2 });
+    expect(stats.exits.other).toBe(0);
+    expect(tunerSampleSize([kept, reset])).toBe(1);
+    expect(tunerTrades([kept, reset])).toEqual([kept]);
   });
 
   test('an empty set reports zero trades and null ratios', () => {
@@ -688,6 +703,21 @@ describe('Trading Arena analysis tick', () => {
     summary: 'Eight of ten trades hit +10%; two coins under 35 minutes old died.',
     observations: ['Both deaths were coins 30 to 35 minutes old.'],
     suggestion: { path, to, reason: 'Both deaths sit in the 30m-2h age bucket.' },
+  });
+
+  test('D35: period-reset closes never reach the report, the model or the tuner', async () => {
+    const a = agent();
+    const resets = Array.from({ length: 30 }, () => trade({ pnlMult: 0.3, exitReason: 'reset' }));
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: [...tunerSplitTrades(), ...resets] } });
+    const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
+    await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    const report = store.reports[0]!;
+    // the same numbers as the run with no reset closes (24 trades, 5 deaths, the same tuner change)
+    expect(report.stats.period).toMatchObject({ trades: 24, deaths: 5 });
+    expect(report.stats.currentParams.trades).toBe(24);
+    expect(report.stats.lifetime.trades).toBe(24);
+    expect(store.changes[0]?.changes).toEqual([{ path: 'filters.age_min_s', from: 1_800, to: 3_000 }]);
+    expect(JSON.stringify(calls)).not.toContain('reset');
   });
 
   test('a house agent is tuned by CODE (the model proposal is ignored) and the change is logged publicly', async () => {

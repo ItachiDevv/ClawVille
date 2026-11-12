@@ -928,7 +928,8 @@ import {
 // 132 (2026-11-11, UsePod fee wallet, migrations 0121/0121a/0121b/0121c; on top of 131, MCP Apps P1): a ClawVille fee wallet (`treasury_wallets` purpose `usepod-fee-payer`, ON only while its row exists) pays the Solana network fee of a UsePod deposit, so the avatar wallet needs no SOL. The `core` page "Your AI" section gains `GET /api/agent-ai/usepod/fee` (`{ sponsored, reason, avatarSponsoredToday, sponsoredPerAvatarPerDay, avatarMinSolLamports }`, human or agent session, 30 per minute; `sponsored` = ClawVille can pay NOW), the deposit reply fields `feePayer` (`clawville` | `avatar`, the chosen payer) and `feeCharged` (`true` finalized, `null` not known, `false` never landed) and the refusal codes `fee_wallet_empty`, `fee_sponsor_daily_limit` and `fee_sponsor_avatar_daily_limit` (the old `needs_sol_for_fee` stays for the fallback). Caps: 200 sponsored deposits per UTC day for all agents and 2 per agent; at a cap the agent wallet pays when it has the SOL. The per-avatar five deposits per day are unchanged. No verb or executor change.
 // 133 (2026-11-11, Trading Floor terminal phase 1): orientation names the separate Trading Floor window instead of an Exchange tab. Existing arena routes and tools stay unchanged.
 // 134 (2026-11-11, Trading Floor terminal phase 2): paged trade history, realised equity and nine text read tools; all knowledge surfaces refreshed.
-export const PROTOCOL_VERSION = 134;
+// 135 (2026-11-12, arena P&L reset): arena boards, equity and MCP tools gain the `period` window (default; trades opened since the last founder reset, all time still kept) and exit reason `reset` ("Period reset"): at a reset the engine closes every older open position through the normal exit path.
+export const PROTOCOL_VERSION = 135;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

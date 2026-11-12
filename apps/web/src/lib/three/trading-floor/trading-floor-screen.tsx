@@ -109,9 +109,10 @@ function createSurface(): ScreenSurface | null {
 export function TradingFloorScreen({ active }: { active: boolean }) {
   const houseBoard = useFloorArenaHouseBoard(active);
   const contest = useFloorArenaContest(active);
-  // Page B (founder order 2026-10-02): the contest leaderboard, the same query
-  // key the Exchange panel uses, as the pre-P15 board read it.
-  const leaderboard = useFloorArenaLeaderboard('contest', active);
+  // Page B (founder order 2026-10-02): the period leaderboard (arena P&L reset,
+  // 2026-11-12), the same query key the Exchange panel and the terminal use.
+  // Its `period` field also picks page A's P&L window.
+  const leaderboard = useFloorArenaLeaderboard('period', active);
   const [pageTick, setPageTick] = useState(0);
   const meshRef = useRef<THREE.Mesh>(null);
 

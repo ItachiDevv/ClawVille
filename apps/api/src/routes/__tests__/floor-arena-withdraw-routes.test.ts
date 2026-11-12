@@ -148,6 +148,7 @@ function makeDeps(store: ReturnType<typeof makeStore>): FloorArenaRouteDeps {
     readTape: async () => [],
     readStats: async () => new Map(),
     readLeaderboard: async () => [],
+    readPeriod: async () => null,
     readContest: async () => { throw new Error('unused'); },
     readAddonStats: async () => [],
     readWalletBalance: async () => ({ agentId: 'cp-agent-1', walletAddress: SOURCE_WALLET, sol: 0.012, usdc: 1.5, updatedAt: NOW.toISOString() }),

@@ -7,7 +7,8 @@ import { FLOOR_ARENA_TEMPLATES } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useFloorArenaUi } from '@/stores/floor-arena-ui';
 import { FINGERPRINT_STORAGE_KEY } from '@/lib/fingerprint';
-import { filterRuleChecks, statsForWindow } from './terminal-parts';
+import { filterRuleChecks, floorArenaWindowLabel, statsForWindow } from './terminal-parts';
+import { exitReasonOptionLabel } from './terminal-history';
 import { floorArenaKeys, readEvent, readStatsByWindow } from '@/hooks/use-floor-arena';
 
 const dom = new Window({ url: 'http://localhost/game' });
@@ -19,6 +20,7 @@ let failedMe = false;
 let refusedMe = 0;
 let requests: string[] = [];
 let history = false;
+let activePeriod: { id: string; name: string; startsAt: string } | null = null;
 let Component: typeof import('./trading-floor-terminal').TradingFloorTerminal;
 let createRoot: typeof import('react-dom/client').createRoot;
 const originals = new Map<string, PropertyDescriptor | undefined>();
@@ -46,7 +48,7 @@ beforeEach(() => {
   for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Node', 'MutationObserver', 'IS_REACT_ACT_ENVIRONMENT', 'fetch']) originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   for (const [key, value] of Object.entries({ window: dom, document: dom.document, navigator: dom.navigator, HTMLElement: dom.HTMLElement, Element: dom.Element, Node: dom.Node, MutationObserver: dom.MutationObserver, IS_REACT_ACT_ENVIRONMENT: true })) Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
   dom.localStorage.setItem(FINGERPRINT_STORAGE_KEY, '0123456789abcdef0123456789abcdef');
-  guest = false; failedMe = false; refusedMe = 0; requests = []; history = false;
+  guest = false; failedMe = false; refusedMe = 0; requests = []; history = false; activePeriod = null;
   client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, gcTime: 0 } } });
   host = document.createElement('div'); document.body.append(host);
   useFloorArenaUi.getState().resetIdentity();
@@ -58,12 +60,12 @@ beforeEach(() => {
     else if (url.endsWith('/arena/me')) {
       if (refusedMe) return Response.json({ error: 'refused', code: 'guest_not_allowed' }, { status: refusedMe });
       if (failedMe) return Response.json({ error: 'unavailable' }, { status: 503 });
-      body = { agent, stats: { contest: { realisedUsd: -9, trades: 4 }, last24h: { realisedUsd: 2, trades: 1 }, all: { realisedUsd: -7, trades: 5 } }, latestReport: null };
+      body = { agent, stats: { period: { realisedUsd: -9, trades: 4 }, contest: { realisedUsd: -11, trades: 6 }, last24h: { realisedUsd: 2, trades: 1 }, all: { realisedUsd: -7, trades: 5 } }, latestReport: null };
     } else if (url.includes('/events')) body = { events: [{ id: '1', type: 'skip', summary: 'Rule threshold failed', data: { reason: 'threshold' } }] };
     else if (url.includes('/trades?')) body = history ? { trades: [{ id: url.includes('before=') ? 'second' : 'first', mint: 'mint', symbol: url.includes('before=') ? 'SECOND' : 'FIRST', status: 'closed', pnlUsd: 3, closedAt: '2026-11-11T12:00:00Z' }], nextCursor: url.includes('before=') ? null : { before: '2026-11-11T12:00:00.123456Z', beforeId: '00000000-0000-4000-8000-000000000001' } } : { trades: [], nextCursor: null };
     else if (url.includes('/equity?')) body = { series: [], openPnlUsd: null, startAt: null };
     else if (url.includes('/agents/')) body = { agent: { ...agent, id: 'public-agent', name: 'Public trader' }, openPositions: [], closedPositions: [] };
-    else if (url.includes('/leaderboard')) body = { rows: [{ agentId: 'public-agent', name: 'Public trader', rank: 1, realisedUsd: 3, trades: 2 }] };
+    else if (url.includes('/leaderboard')) body = { window: 'period', period: activePeriod, rows: [{ agentId: 'public-agent', name: 'Public trader', rank: 1, realisedUsd: 3, trades: 2 }] };
     else if (url.includes('/house-traders')) body = { slots: [] };
     return Response.json(body);
   }) as typeof fetch;
@@ -91,7 +93,11 @@ describe('Trading Floor terminal', () => {
   });
   test('owner navigates all six tabs with real data and separate public events', async () => {
     await render();
+    // The default window is the active period ("All trades" while no period exists), never the ended contest.
     expect(host.textContent).toContain('-$9.00');
+    expect(host.textContent).not.toContain('-$11.00');
+    expect(host.textContent).toContain('All trades');
+    expect(host.textContent).not.toContain('Contest');
     await click('24 hours'); expect(host.textContent).toContain('+$2.00');
     await click('Trades'); expect(host.textContent).toContain('Closed trades');
     await click('Decisions'); expect(host.textContent).toContain('Decisions: rule checks');
@@ -112,13 +118,15 @@ describe('Trading Floor terminal', () => {
   test('owner history loads another cursor page and filters reset pagination', async () => {
     history = true;
     await render();
-    expect(requests.some((url) => url.includes('/arena/me/equity?window=contest'))).toBe(true);
+    expect(requests.some((url) => url.includes('/arena/me/equity?window=period'))).toBe(true);
+    expect(requests.some((url) => url.includes('window=contest'))).toBe(false);
     expect(host.textContent).toContain('No closed trades in this window');
     await click('7 days');
     expect(requests.some((url) => url.includes('/arena/me/equity?window=7d'))).toBe(true);
     await click('Trades');
     expect(host.textContent).toContain('FIRST');
-    const tradesQuery = client.getQueryCache().find({ queryKey: ['floor-arena', 'my-trades', agent.id, 'all', '', 50] })!;
+    const tradesQuery = client.getQueryCache().find({ queryKey: ['floor-arena', 'my-trades', agent.id, 'period', 'all', '', 50] })!;
+    expect(requests.some((url) => url.includes('/arena/me/trades?') && url.includes('window=period'))).toBe(true);
     const interval = (tradesQuery.options as unknown as { refetchInterval: (query: typeof tradesQuery) => number | false }).refetchInterval;
     expect(interval(tradesQuery)).toBeGreaterThan(0);
     await click('Load more');
@@ -130,10 +138,14 @@ describe('Trading Floor terminal', () => {
     expect(requests.at(-1)).toContain('outcome=win');
     expect(requests.at(-1)).not.toContain('before=');
     expect(host.textContent).not.toContain('SECOND');
-    const filteredQuery = client.getQueryCache().find({ queryKey: ['floor-arena', 'my-trades', agent.id, 'win', '', 50] })!;
+    const filteredQuery = client.getQueryCache().find({ queryKey: ['floor-arena', 'my-trades', agent.id, 'period', 'win', '', 50] })!;
     expect(interval(filteredQuery)).toBeGreaterThan(0);
     const reason = host.querySelector<HTMLSelectElement>('[aria-label="Trade exit reason"]')!;
     await act(async () => { reason.value = 'stop'; reason.dispatchEvent(new dom.Event('change', { bubbles: true }) as unknown as Event); }); await flush();
+    expect(requests.at(-1)).toContain('reason=stop');
+    expect([...reason.querySelectorAll('option')].map((option) => [option.value, option.textContent])).toContainEqual(['reset', 'Period reset']);
+    await click('All time');
+    expect(requests.at(-1)).toContain('window=all');
     expect(requests.at(-1)).toContain('reason=stop');
   });
   test('guests see sign-in and public agents without owner requests', async () => {
@@ -173,10 +185,30 @@ describe('Trading Floor terminal', () => {
     expect(useGameStore.getState().tradingFloorOpen).toBe(true);
     expect(host.querySelector('[data-testid="guest-upsell-panel"]')).toBeNull();
   });
+  test('with an active period the window buttons name its start', async () => {
+    activePeriod = { id: 'period-20261111T120000Z', name: 'Fresh start', startsAt: '2026-11-11T12:00:00.000Z' };
+    await render();
+    const labels = [...host.querySelectorAll('[aria-label="Stats window"]')].map((group) => [...group.querySelectorAll('button')].map((button) => button.textContent));
+    expect(labels[0]![0]).toMatch(/^This period · since .+/);
+    expect(labels[0]!.slice(1)).toEqual(['24 hours', 'All time']);
+    expect(labels[1]!.slice(1)).toEqual(['24 hours', '7 days', 'All time']);
+  });
+  test('window labels and the reset exit reason', () => {
+    expect(floorArenaWindowLabel('period', undefined)).toBe('This period');
+    expect(floorArenaWindowLabel('period', null)).toBe('All trades');
+    const since = floorArenaWindowLabel('period', { id: 'p', name: 'p', startsAt: '2026-11-12T09:30:00.123456Z' });
+    expect(since).toStartWith('This period · since ');
+    expect(since).toBe(`This period · since ${new Date('2026-11-12T09:30:00.123Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`);
+    expect(['24h', '7d', 'all', 'contest'].map((window) => floorArenaWindowLabel(window as '24h', null))).toEqual(['24 hours', '7 days', 'All time', 'Contest']);
+    expect(exitReasonOptionLabel('reset')).toBe('Period reset');
+    expect(exitReasonOptionLabel('stop')).toBe('stop');
+  });
   test('windows preserve missing numbers and rule filters preserve data', () => {
-    const stats = readStatsByWindow({ contest: { realisedUsd: -3 }, last24h: { trades: 2 } });
+    const stats = readStatsByWindow({ contest: { realisedUsd: -3 }, last24h: { trades: 2 }, period: { realisedUsd: 4 } });
     expect(statsForWindow(stats, '24h').realisedUsd).toBeNull();
     expect(statsForWindow(stats, 'contest').realisedUsd).toBe(-3);
+    expect(statsForWindow(stats, 'period').realisedUsd).toBe(4);
+    expect(statsForWindow(readStatsByWindow({}), 'period').realisedUsd).toBeNull();
     const event = readEvent({ id: '7', type: 'skip', data: { cause: 'liquidity' } })!;
     expect(filterRuleChecks([event], 'skip')[0]?.data).toEqual({ cause: 'liquidity' });
     expect(filterRuleChecks([event], 'entry')).toEqual([]);

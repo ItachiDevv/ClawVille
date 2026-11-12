@@ -3,7 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { FLOOR_ARENA_HOUSE_AGENTS, type FloorArenaAgentStatus } from '@clawville/shared';
 
-import { FloorArenaApiError, readStatsByWindow, type FloorArenaStatsByWindow } from '@/hooks/use-floor-arena';
+import { FloorArenaApiError, readPeriod, readStatsByWindow, type FloorArenaPeriodView, type FloorArenaStatsByWindow } from '@/hooks/use-floor-arena';
 
 // P15 T1: the web hook of GET /api/floor/arena/house-board, the five house-agent
 // columns of the Trading Floor big screen (ops/house-traders/arena-review/P15_PLAN_2026-10-02.md §1).
@@ -73,6 +73,8 @@ export interface FloorArenaHouseBoardAgentView {
 export interface FloorArenaHouseBoardView {
   agents: FloorArenaHouseBoardAgentView[];
   contest: { startsAt: string | null; endsAt: string | null };
+  /** The active P&L period that each `stats.period` counts from; null when none exists or the wire sent none. */
+  period: FloorArenaPeriodView | null;
   generatedAt: string | null;
 }
 
@@ -189,6 +191,7 @@ export function readHouseBoard(body: unknown): FloorArenaHouseBoardView {
   return {
     agents,
     contest: { startsAt: str(contest?.startsAt), endsAt: str(contest?.endsAt) },
+    period: readPeriod(root.period),
     generatedAt: str(root.generatedAt),
   };
 }

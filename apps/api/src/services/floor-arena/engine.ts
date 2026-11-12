@@ -7,7 +7,7 @@ import postgres from 'postgres';
 import {
   cloneFloorArenaParams, diffFloorArenaParams, FLOOR_ARENA_HOUSE_AGENTS, FLOOR_ARENA_RANK_BY_LABELS,
   FLOOR_ARENA_TEMPLATE_VERSION, floorArenaTemplateById, validateFloorArenaParams, type FloorArenaExitRun,
-  type FloorArenaExits, type FloorArenaParams,
+  type FloorArenaExitReason, type FloorArenaExits, type FloorArenaParams,
 } from '@clawville/shared';
 import {
   firstTradeableSource, hasTradeableSource, passesFilters, rankCandidates, withinDiscoveryWindow,
@@ -25,6 +25,7 @@ import {
   formatAge, formatPrice, formatSignedUsd, formatUsdCompact, tokenLabel, writeArenaEvent, writeArenaEvents,
   type ArenaEventInput,
 } from './events';
+import { readActiveArenaPeriod, type ArenaPeriodRecord } from './period';
 
 /**
  * The paper engine (docs/trading-floor-arena.md D3, D4, D6, D7; §6).
@@ -32,6 +33,7 @@ import {
  * ranked candidates of the shared feed plus their private add-on mints, $20 each, at a ClawPump quote.
  * Exit tick (10 s): EVERY open position (seated or not) is marked on DexScreener and exits on TP legs, stop,
  * trail or the time cap, filled at a ClawPump sell quote; after 3 failed quotes over >= 45 s at the mark (D4).
+ * D35: a position opened before the active arena period's start exits with reason 'reset' (operator P&L reset).
  * Restart-safe: all position state is in the DB; per-agent errors never stop other agents.
  */
 
@@ -67,7 +69,9 @@ export interface ExitState {
   realisedUsd: number;
 }
 
-export type ExitReason = 'tp' | 'stop' | 'trail' | 'time';
+/** The reasons a trigger can carry (the shared exit reasons minus 'manual', which the engine never sets, and
+ *  'unresolved', which is a close outcome, not a trigger). D35 'reset' = the operator started a new arena period. */
+export type ExitReason = Exclude<FloorArenaExitReason, 'manual' | 'unresolved'>;
 export type ExitFillSource = 'quote' | 'mark_fallback' | 'quote_confirmed';
 /**
  * Phase 3b: which stop fired. exit_reason stays 'stop' in the DB (its CHECK constraint and every reader are
@@ -153,6 +157,17 @@ export function decideExitTrigger(
     return { reason: 'time', fraction: state.remainingFraction, leg: null };
   }
   return null;
+}
+
+/**
+ * D35 (period reset): a position opened before the active period's start closes with reason 'reset', the whole
+ * remaining fraction, before every other trigger (TP, stop, trail, time) and with no TP-quote confirmation. It books
+ * through executeExit like any exit (sell quote, D4 fallbacks incl. the disputed-mark rule, 'unresolved', paper costs).
+ * periodStartMs null = no active period: never fires. A position opened at or after the start is never reset.
+ */
+export function resetExitTrigger(state: ExitState, periodStartMs: number | null): ExitTrigger | null {
+  if (periodStartMs === null || state.remainingFraction <= EPS) return null;
+  return state.openedAtMs < periodStartMs ? { reason: 'reset', fraction: state.remainingFraction, leg: null } : null;
 }
 
 export interface ExitFillResult {
@@ -458,6 +473,17 @@ export function d4AfterFailedQuote(input: {
   return { run, currentLow, d4 };
 }
 
+/**
+ * Codex review of 94c489354: the failure run is written only when D4 keeps retrying (d4 === null). When D4 decides a
+ * booking or an 'unresolved' close and the write is then rejected (a newer mark, a mark that aged past 60 s, or a lost
+ * CAS), the attempt's run is dropped. If THIS attempt was the first to dispute the mark, dropping it lets the next
+ * attempt book the disputed mark (mark_fallback). Returns the run to persist after such a rejection (only when it newly
+ * sets markDisputed), else null: every other rejected attempt keeps today's behaviour (nothing written).
+ */
+export function disputedRunAfterRejectedBooking(stored: ExitRun | null, run: ExitRun): ExitRun | null {
+  return run.markDisputed === true && stored?.markDisputed !== true ? run : null;
+}
+
 // ---------------------------------------------------------------- candidates (pure)
 
 export interface ArenaCandidate {
@@ -570,7 +596,9 @@ export function topFailCodes(failCounts: Record<string, number>, n = 5): Array<[
 
 // ---------------------------------------------------------------- summaries
 
-const REASON_WORDS: Record<ExitReason, string> = { tp: 'take profit', stop: 'stop', trail: 'trailing stop', time: 'time cap' };
+const REASON_WORDS: Record<ExitReason, string> = {
+  tp: 'take profit', stop: 'stop', trail: 'trailing stop', time: 'time cap', reset: 'period reset',
+};
 const STOP_KIND_WORDS: Record<ExitStopKind, string> = { breakeven: 'breakeven stop', liq_drop: 'liquidity drop' };
 
 /** The words for a non-TP trigger; a Phase 3b stop names its kind. */
@@ -1529,6 +1557,8 @@ interface ExitDeps {
   recordingWriter?: (job: ArenaRecordingJob) => Promise<void>;
   /** Phase 3b: the liquidity shadow recorder (tests inject one). */
   liqShadow?: LiqShadowDeps;
+  /** D35: the active arena period (default readActiveArenaPeriod, 10 s cache; tests inject one). */
+  readPeriod?: (now: Date) => Promise<ArenaPeriodRecord | null>;
 }
 
 // ---------------------------------------------------------------- Phase 3b liquidity shadow (research only)
@@ -1636,6 +1666,14 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
     scheduleArenaRecording({ nowMs, points: [], troughs: [], tails: tailsAt(nowMs, []) }, recordingWriter);
     return result;
   }
+  // D35: the active period, read once per tick. A failed read resets nothing this tick (every other exit still runs);
+  // the next tick reads it again.
+  let periodStartMs: number | null = null;
+  try {
+    periodStartMs = (await (deps.readPeriod ?? readActiveArenaPeriod)(now))?.startsAt.getTime() ?? null;
+  } catch (error) {
+    console.warn('[floor-arena] period read failed, no reset this tick', error instanceof Error ? error.message.slice(0, 200) : 'error');
+  }
   const agentIds = [...new Set(positions.map((p) => p.agentId))];
   const agentRows = await db.select({ id: floorArenaAgents.id, params: floorArenaAgents.params })
     .from(floorArenaAgents).where(inArray(floorArenaAgents.id, agentIds));
@@ -1707,7 +1745,8 @@ export async function runExitTick(now: Date = new Date(), deps: ExitDeps = {}): 
           console.warn('[floor-arena] liquidity shadow failed for position', position.id, error instanceof Error ? error.message.slice(0, 200) : 'error');
         }
       }
-      const trigger = decideExitTrigger(state, exits, markMult, nowMs, liq);
+      // D35 first: a reset outranks every other trigger, so the TP re-decide below never runs for it.
+      const trigger = resetExitTrigger(state, periodStartMs) ?? decideExitTrigger(state, exits, markMult, nowMs, liq);
       if (!trigger) continue;
       seen.quote = null;
       let outcome = await executeExit(position, state, exits, trigger, known, fresh, now, exitDeps);
@@ -1910,14 +1949,17 @@ async function executeExit(
   let proceedsUsd: number;
   let fillSource: ExitFillSource;
   let fillPrice: number | null;
+  // Set when this failed attempt newly disputes the mark; written if the booking below is rejected (Codex, 94c489354).
+  let disputedRun: ExitRun | null = null;
   if (quote.ok) {
     proceedsUsd = quote.proceedsUsd;
     fillSource = 'quote';
     fillPrice = quote.priceUsd;
   } else {
     await emitExitRefusal(position, state, trigger, quote, markMult, nowMs);
+    const prevRun = parseExitRun(position.exitRun);
     const { run, currentLow, d4 } = d4AfterFailedQuote({
-      prevRun: parseExitRun(position.exitRun),
+      prevRun,
       quote,
       entryPriceUsd: state.entryPriceUsd,
       freshMarkPrice,
@@ -1933,7 +1975,12 @@ async function executeExit(
         .returning({ id: floorArenaPositions.id });
       return written.length > 0 ? { kind: 'quote_failed' } : { kind: 'lost_race' };
     }
-    if (d4.kind === 'unresolved') return closeUnresolved(position, state, trigger, run, writtenMark, decisionAtMs, now);
+    disputedRun = disputedRunAfterRejectedBooking(prevRun, run);
+    if (d4.kind === 'unresolved') {
+      const closed = await closeUnresolved(position, state, trigger, run, writtenMark, decisionAtMs, now);
+      if (closed.kind === 'lost_race' && disputedRun) await persistDisputedRun(position, disputedRun);
+      return closed;
+    }
     // quote_confirmed books THIS attempt's quote (after the sell cost); mark_fallback books tokens x price - cost.
     proceedsUsd = d4.source === 'quote_confirmed' && currentLow ? currentLow.proceedsUsd : markFallbackProceeds(tokensToSell, d4.priceUsd);
     fillSource = d4.source;
@@ -1990,8 +2037,21 @@ async function executeExit(
     }, tx);
     return true;
   });
-  if (!updated) return { kind: 'lost_race' };
+  if (!updated) {
+    if (disputedRun) await persistDisputedRun(position, disputedRun);
+    return { kind: 'lost_race' };
+  }
   return { kind: 'filled', closed: fill.closed, source: fillSource };
+}
+
+/**
+ * Codex review of 94c489354: after a rejected booking, keep the new markDisputed flag. Same compare-and-swap as the
+ * d4 === null write (row still open, exit_run unchanged); a no-op when another writer changed the row.
+ */
+async function persistDisputedRun(position: FloorArenaPositionRow, run: ExitRun): Promise<void> {
+  await db.update(floorArenaPositions)
+    .set({ exitQuoteFailures: run.failures, exitRun: run })
+    .where(and(eq(floorArenaPositions.id, position.id), eq(floorArenaPositions.status, 'open'), exitRunUnchanged(position)));
 }
 
 /**

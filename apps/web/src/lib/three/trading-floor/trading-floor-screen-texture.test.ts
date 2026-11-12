@@ -261,7 +261,7 @@ function board(data: Partial<FloorScreenData> = {}): FloorScreenData {
     phase: 'ready',
     page: 'house',
     columns: houseColumns(),
-    leaderboard: { phase: 'ready', rows: [] },
+    leaderboard: { phase: 'ready', window: 'period', rows: [] },
     window: 'contest',
     countdownLabel: 'ENDS IN 3D 15H 59M',
     clockLabel: '14:32 UTC',
@@ -1142,7 +1142,7 @@ describe('Trading Floor board — layout', () => {
     const code = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
     expect(code).toContain('useFloorArenaHouseBoard(active)');
     expect(code).toContain('useFloorArenaContest(active)');
-    expect(code).toContain("useFloorArenaLeaderboard('contest', active)");
+    expect(code).toContain("useFloorArenaLeaderboard('period', active)");
     expect(code).not.toContain('useFloorArenaTape');
     // The page comes from the clock (floorScreenPage), redrawn by a timer: no per-frame state.
     expect(code).toContain('floorScreenPage(');
@@ -1239,15 +1239,16 @@ describe('Trading Floor board — canvas sizing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Page B: the arena contest leaderboard (founder order 2026-10-02, rotation)
+// Page B: the arena period leaderboard (founder order 2026-10-02, rotation;
+// the period window since the arena P&L reset, 2026-11-12)
 // ---------------------------------------------------------------------------
 
 function leaderRow(overrides: Partial<FloorScreenLeaderRow> = {}): FloorScreenLeaderRow {
   return { rank: 1, name: 'alice trader', realisedUsd: 12.4, trades: 9, ...overrides };
 }
 
-function leaderBoard(rows: FloorScreenLeaderRow[]): Partial<FloorScreenData> {
-  return { page: 'leaderboard', leaderboard: { phase: 'ready', rows } };
+function leaderBoard(rows: FloorScreenLeaderRow[], window: 'period' | 'all' = 'period'): Partial<FloorScreenData> {
+  return { page: 'leaderboard', leaderboard: { phase: 'ready', window, rows } };
 }
 
 function worstLeaderRows(count = 12): FloorScreenLeaderRow[] {
@@ -1256,19 +1257,34 @@ function worstLeaderRows(count = 12): FloorScreenLeaderRow[] {
   );
 }
 
-describe('Trading Floor board — page B, the contest leaderboard', () => {
+describe('Trading Floor board — page B, the period leaderboard', () => {
   test('pages rotate every 15 s', () => {
     expect(FLOOR_SCREEN_PAGE_MS).toBe(15_000);
   });
 
   test('the header names the page; the countdown and the clock stay', () => {
     expect(headerTexts(draw(leaderBoard([leaderRow()])).painted)).toEqual([
-      'LEADERBOARD · CONTEST',
+      'LEADERBOARD · PERIOD',
       '14:32 UTC',
       '·',
       'ENDS IN 3D 15H 59M',
     ]);
     expect(headerTexts(draw().painted)[0]).toBe('HOUSE AGENTS · PAPER');
+  });
+
+  test('with no period the page and its footer say ALL TRADES, never CONTEST', () => {
+    const { painted } = draw({ ...leaderBoard([leaderRow()], 'all'), window: '24h' });
+    expect(headerTexts(painted)[0]).toBe('LEADERBOARD · ALL TRADES');
+    expect(footerText(painted)).toEqual(['PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, ALL TRADES']);
+    expect(footerText(draw({ ...leaderBoard([], 'all') }).painted)).toEqual([
+      'PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, ALL TRADES',
+    ]);
+  });
+
+  test('page A footer names the PERIOD window when the figures are from it', () => {
+    expect(footerText(draw({ window: 'period' }).painted)).toEqual([
+      'PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, PERIOD',
+    ]);
   });
 
   test('rows show rank, trader name, realised P&L and trades under the captions', () => {
@@ -1282,7 +1298,7 @@ describe('Trading Floor board — page B, the contest leaderboard', () => {
     const fill = (value: string) => painted.find((p) => p.kind === 'text' && p.value === value)?.fill;
     expect(fill('+$12.40')).toBe(COLOR.gain);
     expect(fill('-$5.20')).toBe(COLOR.drop);
-    expect(footerText(painted)).toEqual(['PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, CONTEST']);
+    expect(footerText(painted)).toEqual(['PAPER: $20 A POSITION, 1% BUY + 0.5% SELL COSTS. P&L = REALISED, PERIOD']);
   });
 
   test('an empty leaderboard says NO TRADERS YET, never fake rows', () => {
@@ -1293,8 +1309,8 @@ describe('Trading Floor board — page B, the contest leaderboard', () => {
   });
 
   test('before the first leaderboard data it says CONNECTING or UNAVAILABLE', () => {
-    expect(draw({ page: 'leaderboard', leaderboard: { phase: 'connecting', rows: [] } }).strings).toContain('CONNECTING TO THE ARENA');
-    expect(draw({ page: 'leaderboard', leaderboard: { phase: 'error', rows: [] } }).strings).toContain('ARENA DATA UNAVAILABLE');
+    expect(draw({ page: 'leaderboard', leaderboard: { phase: 'connecting', window: 'all', rows: [] } }).strings).toContain('CONNECTING TO THE ARENA');
+    expect(draw({ page: 'leaderboard', leaderboard: { phase: 'error', window: 'all', rows: [] } }).strings).toContain('ARENA DATA UNAVAILABLE');
   });
 
   test('a masked or unpaintable name says NAME NOT SHOWN; an address never prints; NaN prints N/A', () => {

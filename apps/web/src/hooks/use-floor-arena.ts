@@ -53,7 +53,12 @@ const ME_POLL_MS = 10_000;
 /** Faster while ClawPump provisioning is pending, so the wallet shows soon. */
 const ME_PROVISION_POLL_MS = 3_000;
 
-export type FloorArenaLeaderboardWindow = 'contest' | '24h' | 'all';
+/**
+ * 'period' (the default on every arena read) counts positions opened since the
+ * active P&L period started; with no period row it counts every position, as
+ * 'all' does. 'contest' stays for the past contest's standings.
+ */
+export type FloorArenaLeaderboardWindow = 'period' | 'contest' | '24h' | 'all';
 
 export const floorArenaKeys = {
   all: ['floor-arena'] as const,
@@ -92,11 +97,29 @@ export interface FloorArenaAgentStats {
   lastTradeAt: string | null;
 }
 
-/** The route sends every agent's stats for three windows at once. */
+/** The route sends every agent's stats for four windows at once. */
 export interface FloorArenaStatsByWindow {
   all: FloorArenaAgentStats;
   last24h: FloorArenaAgentStats;
   contest: FloorArenaAgentStats;
+  /** Positions opened since the active period started (every position when no period exists). */
+  period: FloorArenaAgentStats;
+}
+
+/**
+ * The active P&L period (a founder reset starts a new one; old trades stay
+ * under 'all'). Null when no period row exists or the wire sent none.
+ */
+export interface FloorArenaPeriodView {
+  id: string;
+  name: string;
+  startsAt: string;
+}
+
+/** One leaderboard read: its rows plus the period the 'period' window used. */
+export interface FloorArenaLeaderboardView {
+  rows: FloorArenaLeaderboardRow[];
+  period: FloorArenaPeriodView | null;
 }
 
 /**
@@ -395,7 +418,25 @@ function readStats(value: unknown): FloorArenaAgentStats {
 /** A missing window reads as unknown money (null), never as a flat $0.00. */
 export function readStatsByWindow(value: unknown): FloorArenaStatsByWindow {
   const row = record(value) ?? {};
-  return { all: readStats(row.all), last24h: readStats(row.last24h), contest: readStats(row.contest) };
+  return {
+    all: readStats(row.all),
+    last24h: readStats(row.last24h),
+    contest: readStats(row.contest),
+    period: readStats(row.period),
+  };
+}
+
+/** `period: { id, name, startsAt }`. Anything incomplete, or a start that is no time, reads as null. */
+export function readPeriod(value: unknown): FloorArenaPeriodView | null {
+  const row = record(value);
+  const id = str(row?.id);
+  const name = str(row?.name);
+  const startsAt = str(row?.startsAt);
+  return id && name && startsAt && Number.isFinite(parseArenaTimestamp(startsAt)) ? { id, name, startsAt } : null;
+}
+
+export function readLeaderboard(body: Record<string, unknown>): FloorArenaLeaderboardView {
+  return { rows: list(body.rows, readLeaderboardRow), period: readPeriod(body.period) };
 }
 
 export function readLeaderboardRow(value: unknown): FloorArenaLeaderboardRow | null {
@@ -979,18 +1020,30 @@ export function useFloorArenaTemplates(enabled: boolean) {
   });
 }
 
-export function useFloorArenaLeaderboard(range: FloorArenaLeaderboardWindow, enabled: boolean) {
-  return useQuery({
+function leaderboardQueryOptions(range: FloorArenaLeaderboardWindow, enabled: boolean) {
+  return {
     queryKey: floorArenaKeys.leaderboard(range),
-    queryFn: async () => {
-      const body = await request('GET', `/leaderboard?window=${range}`);
-      return list(body.rows, readLeaderboardRow);
-    },
+    queryFn: async (): Promise<FloorArenaLeaderboardView> =>
+      readLeaderboard(await request('GET', `/leaderboard?window=${range}`)),
     enabled,
     staleTime: FLOOR_ARENA_LEADERBOARD_POLL_MS,
     refetchInterval: FLOOR_ARENA_LEADERBOARD_POLL_MS,
     refetchIntervalInBackground: false,
-  });
+  } as const;
+}
+
+export function useFloorArenaLeaderboard(range: FloorArenaLeaderboardWindow, enabled: boolean) {
+  return useQuery(leaderboardQueryOptions(range, enabled));
+}
+
+/**
+ * The active P&L period, for window labels. It reads the 'period' leaderboard
+ * key, the one the 3D board and the Exchange leaderboard poll, so where one of
+ * them is mounted it shares that poll; elsewhere it is one small 15 s read.
+ * `data` is undefined until the first read, then the period or null.
+ */
+export function useFloorArenaPeriod(enabled: boolean) {
+  return useQuery({ ...leaderboardQueryOptions('period', enabled), select: (view: FloorArenaLeaderboardView) => view.period });
 }
 
 export function useFloorArenaAgent(agentId: string | null, enabled: boolean) {
@@ -1285,6 +1338,7 @@ export interface FloorArenaEquityView {
   series: Array<{ closedAt: string; equityUsd: number }>;
   openPnlUsd: number | null;
   startAt: string | null;
+  period: FloorArenaPeriodView | null;
 }
 /** Safari accepts millisecond precision; cursor text must retain database precision. */
 export function parseArenaTimestamp(value: string): number {
@@ -1314,17 +1368,19 @@ export function readEquity(value: unknown): FloorArenaEquityView {
     }),
     openPnlUsd: num(row.openPnlUsd),
     startAt: realTimestamp(row.startAt),
+    period: readPeriod(row.period),
   };
 }
+/** Closed trades of one window; 'period' (the route's default too) counts trades opened since the active period started. */
 export function useFloorArenaTrades(agentId: string | null, options: {
-  owner?: boolean; enabled?: boolean; outcome?: FloorArenaTradeOutcome; reason?: FloorArenaExitReason; limit?: number;
+  owner?: boolean; enabled?: boolean; window?: FloorArenaEquityWindow; outcome?: FloorArenaTradeOutcome; reason?: FloorArenaExitReason; limit?: number;
 } = {}) {
-  const { owner = false, enabled = true, outcome = 'all', reason, limit = 50 } = options;
+  const { owner = false, enabled = true, window = 'period', outcome = 'all', reason, limit = 50 } = options;
   return useInfiniteQuery({
-    queryKey: ['floor-arena', owner ? 'my-trades' : 'trades', agentId, outcome, reason ?? '', limit],
+    queryKey: ['floor-arena', owner ? 'my-trades' : 'trades', agentId, window, outcome, reason ?? '', limit],
     initialPageParam: null as FloorArenaTradesCursor | null,
     queryFn: async ({ pageParam }) => {
-      const query = new URLSearchParams({ limit: String(limit), outcome });
+      const query = new URLSearchParams({ limit: String(limit), window, outcome });
       if (reason) query.set('reason', reason);
       if (pageParam) { query.set('before', pageParam.before); query.set('beforeId', pageParam.beforeId); }
       return readTradesPage(await request('GET', `${owner ? '/me' : `/agents/${encodeURIComponent(agentId!)}`}/trades?${query}`));

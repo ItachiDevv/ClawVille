@@ -80,7 +80,7 @@ function StatsLine({ label, stats }: { label: string; stats: FloorArenaAgentStat
 export function ArenaStatsRow({ stats }: { stats: FloorArenaStatsByWindow }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }} data-testid="arena-stats">
-      <StatsLine label="Contest" stats={stats.contest} />
+      <StatsLine label="This period" stats={stats.period} />
       <StatsLine label="All time" stats={stats.all} />
     </div>
   );
@@ -232,6 +232,7 @@ const EXIT_REASON_LABEL: Record<string, string> = {
   time: 'max hold',
   manual: 'closed by hand',
   unresolved: 'no usable price for 30 min',
+  reset: 'Period reset',
 };
 /** Phase 3b: a 'stop' close names its kind when the row carries one. */
 const STOP_KIND_LABEL: Record<string, string> = { breakeven: 'breakeven stop', liq_drop: 'liquidity drop' };

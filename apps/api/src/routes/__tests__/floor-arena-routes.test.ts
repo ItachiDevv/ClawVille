@@ -22,6 +22,8 @@ import { createRateLimiter } from '../../middleware/rate-limit';
 import type { ArenaAgentRecord, ArenaEvent, ArenaReport, InsertUserAgentInput, ParamUpdateInput } from '../../services/floor-arena/queries';
 
 const NOW = new Date('2026-10-01T12:00:00Z');
+const PERIOD_A = { id: 'period-20260930T000000Z', name: 'Week A', startsAt: new Date('2026-09-30T00:00:00Z'), reason: 'reset', createdBy: 'admin', createdAt: new Date('2026-09-30T00:00:00Z') };
+const PERIOD_B = { id: 'period-20261001T110000Z', name: 'Week B', startsAt: new Date('2026-10-01T11:00:00Z'), reason: 'reset', createdBy: 'admin', createdAt: new Date('2026-10-01T11:00:00Z') };
 const USER = '00000000-0000-4000-8000-00000000000a';
 const OTHER = '00000000-0000-4000-8000-00000000000b';
 const AVATAR = '00000000-0000-4000-8000-0000000000aa';
@@ -169,6 +171,7 @@ function makeDeps() {
       type: 'exit' as const, mint: 'M', symbol: 'WIF', side: 'sell' as const, usd: 22, pnlUsd: 2, pnlMult: 1.1, reason: 'tp' as const,
     })); },
     readStats: async () => new Map(),
+    readPeriod: async () => null,
     readLeaderboard: async (window) => [{
       rank: 1, agentId: AGENT_ID, name: 'x', kind: 'user', templateId: 'genesis', realisedUsd: 1, trades: 1, wins: 1,
       losses: 0, deaths: 0, openPositions: 0, lastTradeAt: null, eligible: window === 'contest',
@@ -238,12 +241,34 @@ describe('public arena GETs', () => {
     expect(body.houseAgents.every((house) => house.seated)).toBe(true);
   });
 
-  test('leaderboard validates the window and defaults to contest', async () => {
+  test('leaderboard validates the window and defaults to period (null with no period row)', async () => {
     const { routes } = app();
     expect((await routes.request('/leaderboard?window=7d')).status).toBe(400);
-    const body = await (await routes.request('/leaderboard')).json() as { window: string; rows: Array<{ eligible: boolean }> };
-    expect(body.window).toBe('contest');
-    expect(body.rows[0]!.eligible).toBe(true);
+    const body = await (await routes.request('/leaderboard')).json() as { window: string; period: unknown; rows: Array<{ eligible: boolean }> };
+    expect(body.window).toBe('period');
+    expect(body.period).toBeNull();
+    expect(body.rows[0]!.eligible).toBe(false);
+    const contest = await (await routes.request('/leaderboard?window=contest')).json() as { window: string; period: unknown; rows: Array<{ eligible: boolean }> };
+    expect(contest.window).toBe('contest');
+    expect(contest.period).toBeNull();
+    expect(contest.rows[0]!.eligible).toBe(true);
+  });
+
+  test('leaderboard: the response carries the active period, and a new period is a new cache entry', async () => {
+    const state = app();
+    let period: typeof PERIOD_A | null = PERIOD_A;
+    const reads: Array<[string, string | null]> = [];
+    state.deps.readPeriod = async () => period;
+    state.deps.readLeaderboard = async (window, _now, p) => { reads.push([window, p?.id ?? null]); return []; };
+    const first = await (await state.routes.request('/leaderboard')).json() as { window: string; period: unknown };
+    expect(first).toMatchObject({ window: 'period', period: { id: PERIOD_A.id, name: PERIOD_A.name, startsAt: PERIOD_A.startsAt.toISOString() } });
+    await state.routes.request('/leaderboard');
+    expect(reads).toEqual([['period', PERIOD_A.id]]);
+    // A reset inside the 10 s cache: the next read uses the new period at once.
+    period = PERIOD_B;
+    const second = await (await state.routes.request('/leaderboard')).json() as { period: { id: string } };
+    expect(second.period.id).toBe(PERIOD_B.id);
+    expect(reads).toEqual([['period', PERIOD_A.id], ['period', PERIOD_B.id]]);
   });
 
   test('agent profile: 404 for a bad or unknown id, and never the owner or avatar id', async () => {
@@ -443,7 +468,7 @@ describe('authed arena routes', () => {
     const response = await call('GET', '/me');
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(await response.json()).toEqual({
-      agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, latestReport: null, withdraw: null,
+      agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, period: null, latestReport: null, withdraw: null,
     });
   });
 
@@ -970,6 +995,39 @@ describe('terminal history and equity', () => {
       { openedFrom: null, openedTo: null, closedFrom: new Date('2026-09-24T12:00:00.000Z'), closedTo: null, unresolvedAsLoss: false },
       { openedFrom: new Date(FLOOR_ARENA_CONTEST.startsAt), openedTo: new Date(FLOOR_ARENA_CONTEST.endsAt), closedFrom: null, closedTo: null, unresolvedAsLoss: true },
     ]);
+  });
+  test('equity and trades default to the period window and carry window + period', async () => {
+    const state = app();
+    await state.call('POST', '/me/launch', launchBody());
+    const equityBounds: unknown[] = [];
+    const tradeQueries: Array<Record<string, unknown>> = [];
+    state.deps.readEquity = async (_id, bounds) => { equityBounds.push(bounds); return { series: [], startAt: null, openPnlUsd: null }; };
+    state.deps.readTrades = async (_id, query) => { tradeQueries.push(query as unknown as Record<string, unknown>); return []; };
+    // No period row: the period window is identical to all.
+    const none = await (await state.routes.request(`/agents/${AGENT_ID}/equity`)).json() as { window: string; period: unknown };
+    expect(none).toMatchObject({ window: 'period', period: null });
+    expect(equityBounds[0]).toEqual({ openedFrom: null, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: false });
+    state.deps.readPeriod = async () => PERIOD_A;
+    const equity = await (await state.routes.request(`/agents/${AGENT_ID}/equity`)).json() as { window: string; period: { id: string } };
+    expect(equity.window).toBe('period');
+    expect(equity.period.id).toBe(PERIOD_A.id);
+    expect(equityBounds[1]).toEqual({ openedFrom: PERIOD_A.startsAt, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: true });
+    const trades = await (await state.routes.request(`/agents/${AGENT_ID}/trades`)).json() as { window: string; period: { id: string } };
+    expect(trades.window).toBe('period');
+    expect(trades.period.id).toBe(PERIOD_A.id);
+    expect(tradeQueries[0]!.bounds).toEqual({ openedFrom: PERIOD_A.startsAt, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: true });
+    const all = await (await state.routes.request(`/agents/${AGENT_ID}/trades?window=all`)).json() as { window: string; period: { id: string } };
+    expect(all.window).toBe('all');
+    expect(tradeQueries[1]!.bounds).toEqual({ openedFrom: null, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: false });
+    expect((await state.routes.request(`/agents/${AGENT_ID}/trades?window=bad`)).status).toBe(400);
+    for (const kind of ['user', 'agent']) {
+      const headers = { 'x-test-user': USER, 'x-test-kind': kind };
+      expect(await (await state.call('GET', '/me/equity', undefined, headers)).json()).toMatchObject({ window: 'period', period: { id: PERIOD_A.id } });
+      expect(await (await state.call('GET', '/me/trades', undefined, headers)).json()).toMatchObject({ window: 'period', period: { id: PERIOD_A.id } });
+      const me = await (await state.call('GET', '/me', undefined, headers)).json() as { period: { id: string }; stats: Record<string, unknown> };
+      expect(me.period.id).toBe(PERIOD_A.id);
+      expect(Object.keys(me.stats)).toContain('period');
+    }
   });
 });
 

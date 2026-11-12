@@ -621,6 +621,10 @@ describe('Contest rules 2, 5 and 6 and the standings after the end (D30/D31)', (
     expect(host.querySelector('[data-testid="arena-countdown"]')?.textContent).toBe(
       'The contest has ended. Standings are provisional: 2 positions opened in the window are still open, and they still count.',
     );
+    // The board opens on the period window; the standings pill belongs to the Contest window.
+    expect(host.querySelector('[data-testid="arena-leaderboard"]')?.textContent).not.toContain('Provisional');
+    const contestWindow = [...host.querySelectorAll('[aria-label="Leaderboard window"] button')].find((node) => node.textContent === 'Contest');
+    await click(contestWindow as HTMLButtonElement);
     expect(host.querySelector('[data-testid="arena-leaderboard"]')?.textContent).toContain('Provisional');
     await click(buttonByText(host, 'Contest rules'));
     expect(host.querySelector('[data-testid="arena-contest-rules"]')?.textContent).toContain('Top 10 (provisional)');

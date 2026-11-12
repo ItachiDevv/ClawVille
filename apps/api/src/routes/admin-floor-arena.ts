@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { and, db, eq, floorArenaPositions, lt, sql } from '@clawville/database';
 import {
   FLOOR_ARENA_WITHDRAW_STATES,
   diffFloorArenaParams,
@@ -18,6 +19,13 @@ import {
   updateArenaAgentParams,
   type ArenaWithdrawalRecord,
 } from '../services/floor-arena/queries';
+import {
+  insertArenaPeriod,
+  invalidateArenaPeriodCache,
+  readActiveArenaPeriod,
+  toPublicPeriod,
+  type ArenaPeriodRecord,
+} from '../services/floor-arena/period';
 import { describeChanges } from './floor-arena';
 
 /**
@@ -28,6 +36,9 @@ import { describeChanges } from './floor-arena';
  * (`floor_arena_param_changes` source 'admin' + a 'param_change' event), and the
  * P5 withdraw routes only LIST withdrawals and mark a `sent` or `unknown` one
  * `needs_review` (I8). No admin route sends a withdrawal or edits a money field.
+ * D35 period reset: `POST /period/reset` only inserts a `floor_arena_periods`
+ * row; it writes no position. The engine leader's exit tick closes every open
+ * position opened before the new start (exit reason 'reset').
  */
 
 export const adminFloorArenaRoutes = new Hono<MoneyOperatorContext>();
@@ -95,6 +106,102 @@ export function createAdminArenaWithdrawRoutes(deps: AdminArenaWithdrawDeps = de
 }
 
 adminFloorArenaRoutes.route('/', createAdminArenaWithdrawRoutes());
+
+// ─── Arena period (D35, P&L reset). Inserts a period row only; never a position write. ────
+
+/** A new period is refused while the active one is younger than this. */
+export const ARENA_PERIOD_RESET_MIN_GAP_MS = 60_000;
+
+export interface AdminArenaPeriodDeps {
+  readActive: typeof readActiveArenaPeriod;
+  insert: typeof insertArenaPeriod;
+  invalidateCache: typeof invalidateArenaPeriodCache;
+  /** Open positions opened before `startsAt`: the ones the engine leader's exit tick closes with reason 'reset'. */
+  countOpenBefore: (startsAt: Date) => Promise<number>;
+  now: () => Date;
+}
+
+async function countOpenPositionsBefore(startsAt: Date): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<string>`count(*)` })
+    .from(floorArenaPositions)
+    .where(and(eq(floorArenaPositions.status, 'open'), lt(floorArenaPositions.openedAt, startsAt)));
+  return Number(row?.n ?? 0);
+}
+
+export const defaultAdminArenaPeriodDeps: AdminArenaPeriodDeps = {
+  readActive: readActiveArenaPeriod,
+  insert: insertArenaPeriod,
+  invalidateCache: invalidateArenaPeriodCache,
+  countOpenBefore: countOpenPositionsBefore,
+  now: () => new Date(),
+};
+
+const PERIOD_TOO_RECENT = { error: 'The active period started less than 60 s ago. Wait and retry.', code: 'period_too_recent' } as const;
+
+const periodResetBody = z.object({
+  name: z.string().trim().min(1).max(60),
+  reason: z.string().trim().min(1).max(280),
+}).strict();
+
+/** `period-<UTC yyyymmddThhmmssZ>`, e.g. period-20261112T043500Z. */
+export function arenaPeriodId(at: Date): string {
+  return `period-${at.toISOString().slice(0, 19).replace(/[-:]/g, '')}Z`;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  const e = error as { code?: unknown; cause?: { code?: unknown } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
+}
+
+/** Mounted on adminFloorArenaRoutes below, so the session + moneyOperatorOnly guard runs first. Tests mount it bare. */
+export function createAdminArenaPeriodRoutes(deps: AdminArenaPeriodDeps = defaultAdminArenaPeriodDeps) {
+  const routes = new Hono<MoneyOperatorContext>();
+
+  routes.get('/period', async (c) => {
+    const period = await deps.readActive();
+    return c.json({
+      period: toPublicPeriod(period),
+      openPositionsToClose: period ? await deps.countOpenBefore(period.startsAt) : 0,
+    });
+  });
+
+  routes.post('/period/reset', async (c) => {
+    let json: unknown;
+    try { json = await c.req.json(); } catch { return c.json({ error: 'Invalid body.', code: 'invalid_body' }, 400); }
+    const parsed = periodResetBody.safeParse(json);
+    if (!parsed.success) {
+      return c.json({ error: 'Body must be { name: 1..60 chars, reason: 1..280 chars }.', code: 'invalid_body' }, 400);
+    }
+    // The 10 s period cache must not hide a period another process just started.
+    deps.invalidateCache();
+    const now = deps.now();
+    const active = await deps.readActive(now);
+    if (active && now.getTime() - active.startsAt.getTime() < ARENA_PERIOD_RESET_MIN_GAP_MS) return c.json(PERIOD_TOO_RECENT, 409);
+    let period: ArenaPeriodRecord;
+    try {
+      period = await deps.insert({
+        id: arenaPeriodId(now),
+        name: parsed.data.name,
+        reason: parsed.data.reason,
+        createdBy: `admin:${c.get('moneyOperatorId')}`,
+      });
+    } catch (error) {
+      // Two resets in the same second share the id (or the start): the first one won.
+      if (isUniqueViolation(error)) return c.json(PERIOD_TOO_RECENT, 409);
+      throw error;
+    } finally {
+      deps.invalidateCache();
+    }
+    // Single writer: no position write here. The engine leader's exit tick closes these with reason 'reset'.
+    const openPositionsToClose = await deps.countOpenBefore(period.startsAt);
+    return c.json({ ok: true, period: toPublicPeriod(period), openPositionsToClose });
+  });
+
+  return routes;
+}
+
+adminFloorArenaRoutes.route('/', createAdminArenaPeriodRoutes());
 
 const houseParamsBody = z.object({
   params: z.unknown(),
