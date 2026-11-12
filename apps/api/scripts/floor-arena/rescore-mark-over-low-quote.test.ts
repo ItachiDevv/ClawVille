@@ -1,10 +1,12 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 // Relative source import: the constants file has no imports, and this keeps the test independent of the package build.
 import { FLOOR_ARENA_CONTEST, FLOOR_ARENA_PAPER_COSTS } from '../../../../packages/shared/src/constants/floor-arena';
 import {
   CONTEST_WINDOW, DEEP_LOW_OF_MARK, RESCORE_REASON, SELL_HAIRCUT_PCT, closingExit, exitEventPatch, formatMult, isShallowLow, parseArgs,
   positionRescorePayload, quoteOfMark, quoteProceedsUsd, rescorePosition, rescoredExitSummary, round6, round9, rowAllowed,
-  rowFlags, selectRescoreQuote, tokenLabel, type ExitEvent, type IncludableFlag, type PositionInput, type RefusalEvent,
+  rowFlags, selectRescoreQuote, tokenLabel, applyRows, checkPlan, planHash, planLines,
+  type Exec, type ExitEvent, type IncludableFlag, type PositionInput, type RefusalEvent, type RescoreRow,
 } from './rescore-mark-over-low-quote';
 
 const T0 = Date.parse('2026-11-02T12:00:00Z');
@@ -237,17 +239,105 @@ describe('jsonb payloads', () => {
 
 describe('parseArgs', () => {
   it('defaults to a dry run', () => {
-    expect(parseArgs([])).toEqual({ apply: false, confirm: null, include: new Set() });
+    expect(parseArgs([])).toEqual({ apply: false, confirm: null, plan: null, include: new Set() });
   });
   it('apply needs a confirm count', () => {
     expect(() => parseArgs(['--apply'])).toThrow('--confirm');
-    expect(parseArgs(['--apply', '--confirm=12', '--include=contest,user']).confirm).toBe(12);
+    expect(() => parseArgs(['--apply', '--confirm=12'])).toThrow('--plan');
+    const plan = 'ab'.repeat(32);
+    expect(parseArgs(['--apply', '--confirm=12', `--plan=${plan}`, '--include=contest,user'])).toMatchObject({ apply: true, confirm: 12, plan });
   });
   it('rejects bad input', () => {
     expect(() => parseArgs(['--confirm=3'])).toThrow('only valid with --apply');
+    expect(() => parseArgs([`--plan=${'ab'.repeat(32)}`])).toThrow('only valid with --apply');
+    expect(() => parseArgs(['--apply', '--confirm=1', '--plan=xyz'])).toThrow('64-hex');
     expect(() => parseArgs(['--apply', '--confirm=x'])).toThrow('whole number');
     expect(() => parseArgs(['--include=no_quote'])).toThrow('unknown or blocking');
     expect(() => parseArgs(['--include=low_quote'])).toThrow('unknown or blocking');
     expect(() => parseArgs(['--yes'])).toThrow('unknown argument');
+  });
+});
+
+// ---------------------------------------------------------------- plan hash and CAS (Codex review of c3c960b69)
+
+function fearRow(over: Partial<RescoreRow> = {}): RescoreRow {
+  return {
+    input: FEAR, agentName: 'Late Bloomer',
+    old: { pnlUsd: '4005.12107', pnlMult: '201.2560535', realisedUsd: '4025.12107' },
+    cas: { sizeUsd: '20', tokens: '378283.96474407', entryPriceUsd: '0.00005287033515557844', remainingFraction: '0' },
+    exits: [FEAR_EXIT], closing: FEAR_EXIT,
+    closingJson: { proceedsUsd: '4025.1210697601578', fraction: '1', pnlUsd: '4005.12107' },
+    quote: FEAR_QUOTE, flags: [], rescore: rescorePosition(FEAR, FEAR_EXIT, 0.9213274), allowed: true,
+    ...over,
+  };
+}
+
+interface Call { text: string; values: unknown[] }
+/** A fake postgres.js transaction: records every statement and returns the queued row lists in order. */
+function fakeExec(results: unknown[][]): { exec: Exec; calls: Call[] } {
+  const calls: Call[] = [];
+  const fn = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ text: strings.join('$'), values });
+    return Promise.resolve(results.shift() ?? []);
+  }) as unknown as Exec;
+  fn.json = (value: unknown) => ({ json: value });
+  return { exec: fn, calls };
+}
+
+const FEAR_PLAN_LINE = '2c4259d7-4ba2-45d2-b95e-414bc80caa87|253305|4005.12107|4025.12107|-1.665585';
+
+describe('plan hash', () => {
+  it('one line per changed row: position | exit event | old pnl | old realised | new pnl', () => {
+    expect(planLines([fearRow()])).toEqual([FEAR_PLAN_LINE]);
+    expect(planHash([fearRow()])).toBe(createHash('sha256').update(FEAR_PLAN_LINE).digest('hex'));
+  });
+  it('ignores rows the run does not change and the row order', () => {
+    const other = fearRow({ input: { ...FEAR, id: '00000000-0000-0000-0000-000000000001' } });
+    const skipped = fearRow({ input: { ...FEAR, id: 'ffffffff-0000-0000-0000-000000000000' }, allowed: false });
+    expect(planHash([fearRow(), other, skipped])).toBe(planHash([other, fearRow()]));
+  });
+  it('checkPlan passes on the dry-run plan and aborts on a count or hash mismatch', () => {
+    const rows = [fearRow()];
+    const hash = planHash(rows);
+    expect(() => checkPlan(rows, 1, hash)).not.toThrow();
+    expect(() => checkPlan(rows, 2, hash)).toThrow('--confirm=2 but 1 rows would change');
+    expect(() => checkPlan(rows, 1, 'a'.repeat(64))).toThrow('but the current plan is');
+    // A row whose old P&L changed since the dry run makes a different plan.
+    const moved = [fearRow({ old: { pnlUsd: '4005.2', pnlMult: '201.26', realisedUsd: '4025.2' } })];
+    expect(() => checkPlan(moved, 1, hash)).toThrow('but the current plan is');
+    expect(() => checkPlan([], 1, hash)).toThrow('--confirm=1 but 0 rows');
+  });
+});
+
+describe('applyRows CAS', () => {
+  const at = '2026-11-12T07:00:00.000Z';
+  it('compares every math input and old value on the position, and every replaced value on the exit event', async () => {
+    const { exec, calls } = fakeExec([[{ id: FEAR.id }], [{ id: 253305 }]]);
+    expect(await applyRows(exec, [fearRow()], at, '2026-11-12')).toBe(1);
+    expect(calls.length).toBe(2);
+    const pos = calls[0]!;
+    for (const part of ["status = 'closed'", "exit_fill_source = 'mark_fallback'", 'pnl_usd = $::numeric', 'pnl_mult IS NOT DISTINCT FROM $::numeric',
+      'realised_usd = $::numeric', 'size_usd = $::numeric', 'tokens = $::numeric', 'entry_price_usd = $::numeric',
+      'remaining_fraction = $::numeric', "NOT (COALESCE(entry_features, '{}'::jsonb) ? 'rescore')"]) expect(pos.text).toContain(part);
+    for (const v of [FEAR.id, '4005.12107', '201.2560535', '4025.12107', '20', '378283.96474407', '0.00005287033515557844', '0']) expect(pos.values).toContain(v);
+    const ex = calls[1]!;
+    for (const part of ["type = 'exit'", "data->>'positionId' = $", "data->>'fillSource' = 'mark_fallback'",
+      "data->'proceedsUsd' IS NOT DISTINCT FROM $::jsonb", "data->'fraction' IS NOT DISTINCT FROM $::jsonb",
+      "data->'pnlUsd' IS NOT DISTINCT FROM $::jsonb", 'summary = $', "NOT (data ? 'rescoredFrom')"]) expect(ex.text).toContain(part);
+    for (const v of [253305, FEAR.id, '4025.1210697601578', '1', '4005.12107', FEAR_OLD_SUMMARY]) expect(ex.values).toContain(v);
+  });
+  it('a changed position row (CAS miss) aborts before the exit event is touched', async () => {
+    const { exec, calls } = fakeExec([[]]);
+    await expect(applyRows(exec, [fearRow()], at, '2026-11-12')).rejects.toThrow('CAS failed on position');
+    expect(calls.length).toBe(1);
+  });
+  it('a changed exit event (CAS miss) aborts', async () => {
+    const { exec } = fakeExec([[{ id: FEAR.id }], []]);
+    await expect(applyRows(exec, [fearRow()], at, '2026-11-12')).rejects.toThrow('CAS failed on exit event 253305');
+  });
+  it('rows the run does not change are never written', async () => {
+    const { exec, calls } = fakeExec([]);
+    expect(await applyRows(exec, [fearRow({ allowed: false })], at, '2026-11-12')).toBe(0);
+    expect(calls.length).toBe(0);
   });
 });

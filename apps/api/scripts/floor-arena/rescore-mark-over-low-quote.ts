@@ -7,8 +7,11 @@
  * (1 - 0.5%) (the paper quote sell cost, FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct; docs/trading-floor-arena.md D3).
  *
  *   bun run rescore-mark-over-low-quote.ts                                   # dry run (read-only transaction)
- *   bun run rescore-mark-over-low-quote.ts --apply --confirm=<rows>          # rescore, one transaction
- *   bun run rescore-mark-over-low-quote.ts --apply --confirm=<rows> --include=contest,user
+ *   bun run rescore-mark-over-low-quote.ts --apply --confirm=<rows> --plan=<hash>   # rescore, one transaction
+ *   bun run rescore-mark-over-low-quote.ts --include=contest,user                   # dry run with flags included
+ *
+ * The dry run prints the plan hash (sha256 of the rows it would change). --apply recomputes the plan inside its
+ * transaction and aborts before any write unless both the row count (--confirm) and the hash (--plan) match.
  *
  * The file is self-contained (imports only `postgres`) so it can be copied alone into the api container.
  * A flagged row is never changed unless --include names every flag it carries. Blocking flags (no_quote,
@@ -21,6 +24,7 @@
  * A second run finds nothing to change: a changed row gets exit_fill_source 'quote_confirmed', and the selection
  * reads only 'mark_fallback' rows.
  */
+import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 
 /** Mirrors FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct (asserted by the test). */
@@ -272,17 +276,22 @@ export function exitEventPatch(input: {
 export interface CliArgs {
   apply: boolean;
   confirm: number | null;
+  plan: string | null;
   include: Set<IncludableFlag>;
 }
 
 export function parseArgs(argv: readonly string[]): CliArgs {
-  const args: CliArgs = { apply: false, confirm: null, include: new Set() };
+  const args: CliArgs = { apply: false, confirm: null, plan: null, include: new Set() };
   for (const arg of argv) {
     if (arg === '--apply') args.apply = true;
     else if (arg.startsWith('--confirm=')) {
       const raw = arg.slice('--confirm='.length);
       if (!/^\d+$/.test(raw)) throw new Error(`--confirm needs a whole number, got "${raw}"`);
       args.confirm = Number(raw);
+    } else if (arg.startsWith('--plan=')) {
+      const raw = arg.slice('--plan='.length);
+      if (!/^[0-9a-f]{64}$/.test(raw)) throw new Error(`--plan needs the 64-hex plan hash the dry run prints, got "${raw}"`);
+      args.plan = raw;
     } else if (arg.startsWith('--include=')) {
       for (const name of arg.slice('--include='.length).split(',').map((s) => s.trim()).filter(Boolean)) {
         if (!(INCLUDABLE_FLAGS as readonly string[]).includes(name)) throw new Error(`--include: unknown or blocking flag "${name}" (allowed: ${INCLUDABLE_FLAGS.join(', ')})`);
@@ -291,25 +300,116 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     } else throw new Error(`unknown argument "${arg}"`);
   }
   if (args.apply && args.confirm === null) throw new Error('--apply needs --confirm=<row count>');
-  if (!args.apply && args.confirm !== null) throw new Error('--confirm is only valid with --apply');
+  if (args.apply && args.plan === null) throw new Error('--apply needs --plan=<hash> from the dry run');
+  if (!args.apply && (args.confirm !== null || args.plan !== null)) throw new Error('--confirm and --plan are only valid with --apply');
   return args;
 }
 
-// ---------------------------------------------------------------- DB side
+/** Exact DB text of every value the math reads or the audit records, compared by the position CAS. */
+export interface PositionCasText {
+  sizeUsd: string;
+  tokens: string;
+  entryPriceUsd: string;
+  remainingFraction: string;
+}
 
-type Sql = postgres.Sql | postgres.TransactionSql;
+/** Exact jsonb text (data->'key'::text) of the exit event values the patch replaces, compared by the exit-event CAS. */
+export interface ExitCasJson {
+  proceedsUsd: string | null;
+  fraction: string | null;
+  pnlUsd: string | null;
+}
 
-interface Row {
+export interface RescoreRow {
   input: PositionInput;
   agentName: string;
   old: OldPositionText;
+  cas: PositionCasText;
   exits: ExitEvent[];
   closing: ExitEvent | null;
+  closingJson: ExitCasJson | null;
   quote: RefusalEvent | null;
   flags: RowFlag[];
   rescore: Rescore | null;
   allowed: boolean;
 }
+type Row = RescoreRow;
+
+/** One plan line per row the run changes: position id | exit event id | old pnl_usd | old realised_usd | new pnl_usd. */
+export function planLines(rows: readonly RescoreRow[]): string[] {
+  return rows.filter((r) => r.allowed)
+    .map((r) => [r.input.id, String(r.closing?.id ?? ''), r.old.pnlUsd, r.old.realisedUsd, String(r.rescore?.newPnlUsd ?? '')].join('|'))
+    .sort();
+}
+
+/** sha256 over the sorted plan lines (newline-joined). The dry run prints it; --apply must name it. */
+export function planHash(rows: readonly RescoreRow[]): string {
+  return createHash('sha256').update(planLines(rows).join('\n')).digest('hex');
+}
+
+/** Throws unless the plan recomputed inside the apply transaction matches --confirm and --plan exactly. */
+export function checkPlan(rows: readonly RescoreRow[], confirm: number | null, plan: string | null): void {
+  const count = rows.filter((r) => r.allowed).length;
+  if (confirm !== count) throw new Error(`--confirm=${confirm} but ${count} rows would change; nothing written`);
+  const hash = planHash(rows);
+  if (plan !== hash) throw new Error(`--plan=${plan} but the current plan is ${hash}; nothing written`);
+}
+
+/** The subset of a postgres.js transaction the apply step uses (a fake in the tests). */
+export interface Exec {
+  (strings: TemplateStringsArray, ...values: unknown[]): PromiseLike<readonly unknown[]>;
+  json(value: unknown): unknown;
+}
+
+/**
+ * Writes the rescore of every allowed row. Each UPDATE is a CAS on every input of the math and every old value the
+ * audit records; a CAS miss throws, which rolls back the caller's transaction (nothing partial is kept).
+ */
+export async function applyRows(exec: Exec, rows: readonly RescoreRow[], atIso: string, rescoredOn: string): Promise<number> {
+  let written = 0;
+  for (const c of rows) {
+    if (!c.allowed) continue;
+    const r = c.rescore!;
+    const closing = c.closing!;
+    const j = c.closingJson!;
+    const quote = c.quote!;
+    const summary = newSummary(c, rescoredOn);
+    if (summary === null || closing.summary === undefined) throw new Error(`position ${c.input.id}: no summary to rewrite; nothing written`);
+    const audit = positionRescorePayload({ atIso, old: c.old, rescore: r, quote, exitEventId: closing.id, flags: c.flags });
+    const updated = await exec`
+      UPDATE floor_arena_positions
+      SET realised_usd = ${String(r.newRealisedUsd)}::numeric, pnl_usd = ${String(r.newPnlUsd)}::numeric,
+          pnl_mult = ${String(r.newPnlMult)}::numeric, exit_fill_source = 'quote_confirmed',
+          entry_features = COALESCE(entry_features, '{}'::jsonb) || jsonb_build_object('rescore', ${exec.json(audit)}::jsonb)
+      WHERE id = ${c.input.id} AND status = 'closed' AND exit_fill_source = 'mark_fallback'
+        AND pnl_usd = ${c.old.pnlUsd}::numeric AND pnl_mult IS NOT DISTINCT FROM ${c.old.pnlMult}::numeric
+        AND realised_usd = ${c.old.realisedUsd}::numeric AND size_usd = ${c.cas.sizeUsd}::numeric
+        AND tokens = ${c.cas.tokens}::numeric AND entry_price_usd = ${c.cas.entryPriceUsd}::numeric
+        AND remaining_fraction = ${c.cas.remainingFraction}::numeric
+        AND NOT (COALESCE(entry_features, '{}'::jsonb) ? 'rescore')
+      RETURNING id`;
+    if (updated.length !== 1) throw new Error(`CAS failed on position ${c.input.id}; transaction rolled back`);
+    const patch = exitEventPatch({ exit: closing, rescore: r, quoteMult: quote.quoteMult!, entryPriceUsd: c.input.entryPriceUsd, atIso, quoteEventId: quote.id });
+    const exitUpdated = await exec`
+      UPDATE floor_arena_events
+      SET data = data || ${exec.json(patch)}::jsonb, summary = ${summary}
+      WHERE id = ${closing.id} AND type = 'exit' AND data->>'positionId' = ${c.input.id}
+        AND data->>'fillSource' = 'mark_fallback'
+        AND data->'proceedsUsd' IS NOT DISTINCT FROM ${j.proceedsUsd}::jsonb
+        AND data->'fraction' IS NOT DISTINCT FROM ${j.fraction}::jsonb
+        AND data->'pnlUsd' IS NOT DISTINCT FROM ${j.pnlUsd}::jsonb
+        AND summary = ${closing.summary}
+        AND NOT (data ? 'rescoredFrom')
+      RETURNING id`;
+    if (exitUpdated.length !== 1) throw new Error(`CAS failed on exit event ${closing.id} of position ${c.input.id}; transaction rolled back`);
+    written += 1;
+  }
+  return written;
+}
+
+// ---------------------------------------------------------------- DB side
+
+type Sql = postgres.Sql | postgres.TransactionSql;
 
 function num(value: unknown): number {
   const n = typeof value === 'number' ? value : Number(value);
@@ -328,10 +428,10 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
   const positions = await sql<{
     id: string; agent_id: string; kind: string; name: string; symbol: string | null; mint: string;
     opened_at: Date; closed_at: Date; size_usd: string; tokens: string; entry_price_usd: string;
-    realised_usd: string; pnl_usd: string; pnl_mult: string | null;
+    realised_usd: string; pnl_usd: string; pnl_mult: string | null; remaining_fraction: string;
   }[]>`
     SELECT p.id, p.agent_id, a.kind, a.name, p.symbol, p.mint, p.opened_at, p.closed_at, p.size_usd::text, p.tokens::text,
-           p.entry_price_usd::text, p.realised_usd::text, p.pnl_usd::text, p.pnl_mult::text
+           p.entry_price_usd::text, p.realised_usd::text, p.pnl_usd::text, p.pnl_mult::text, p.remaining_fraction::text
     FROM floor_arena_positions p JOIN floor_arena_agents a ON a.id = p.agent_id
     WHERE p.status = 'closed' AND p.exit_fill_source = 'mark_fallback' AND p.pnl_usd IS NOT NULL
     ORDER BY p.closed_at`;
@@ -341,11 +441,18 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
   const toAt = new Date(Math.max(...positions.map((p) => p.closed_at.getTime())) + CLOSE_GRACE_MS);
   // The archive CHECK allows only pass / skip, so its half returns nothing today; it is read so a change that archives
   // exit rows makes the row refuse (exit_event_archived) instead of failing the apply UPDATE.
-  const exitRows = await sql<{ id: string; at: Date; summary: string; data: Record<string, unknown>; src: string }[]>`
-    SELECT id::text, at, summary, data, 'live' AS src FROM floor_arena_events
+  const exitRows = await sql<{
+    id: string; at: Date; summary: string; data: Record<string, unknown>; src: string;
+    j_proceeds: string | null; j_fraction: string | null; j_pnl: string | null;
+  }[]>`
+    SELECT id::text, at, summary, data, 'live' AS src,
+           (data->'proceedsUsd')::text AS j_proceeds, (data->'fraction')::text AS j_fraction, (data->'pnlUsd')::text AS j_pnl
+    FROM floor_arena_events
     WHERE type = 'exit' AND data->>'positionId' = ANY(${ids}::text[])
     UNION ALL
-    SELECT id::text, at, summary, data, 'archive' AS src FROM floor_arena_events_archive
+    SELECT id::text, at, summary, data, 'archive' AS src,
+           (data->'proceedsUsd')::text, (data->'fraction')::text, (data->'pnlUsd')::text
+    FROM floor_arena_events_archive
     WHERE type = 'exit' AND at BETWEEN ${fromAt} AND ${toAt} AND data->>'positionId' = ANY(${ids}::text[])`;
   const refusalRows = await sql<{ id: string; at: Date; data: Record<string, unknown> }[]>`
     SELECT id::text, at, data FROM floor_arena_events
@@ -356,6 +463,7 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
     WHERE type = 'skip' AND at BETWEEN ${fromAt} AND ${toAt}
       AND data->>'reason' = 'exit_quote_refused' AND data->>'positionId' = ANY(${ids}::text[])`;
   const exitsBy = new Map<string, ExitEvent[]>();
+  const exitJson = new Map<number, ExitCasJson>();
   for (const r of exitRows) {
     const pid = String(r.data.positionId);
     const list = exitsBy.get(pid) ?? [];
@@ -366,6 +474,7 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
       fillPriceUsd: numOrNull(r.data.fillPriceUsd), pnlUsd: numOrNull(r.data.pnlUsd), pnlMult: numOrNull(r.data.pnlMult),
     });
     exitsBy.set(pid, list);
+    exitJson.set(num(r.id), { proceedsUsd: r.j_proceeds, fraction: r.j_fraction, pnlUsd: r.j_pnl });
   }
   const refusalsBy = new Map<string, RefusalEvent[]>();
   const seen = new Set<string>();
@@ -394,7 +503,9 @@ async function loadRows(sql: Sql, include: ReadonlySet<IncludableFlag>): Promise
     const rescore = closing && quote && quote.quoteMult !== null && quote.quoteMult > 0 ? rescorePosition(input, closing, quote.quoteMult) : null;
     const row: Row = {
       input, agentName: p.name, old: { pnlUsd: p.pnl_usd, pnlMult: p.pnl_mult, realisedUsd: p.realised_usd },
-      exits, closing, quote, flags, rescore, allowed: rescore !== null && rowAllowed(flags, include),
+      cas: { sizeUsd: p.size_usd, tokens: p.tokens, entryPriceUsd: p.entry_price_usd, remainingFraction: p.remaining_fraction },
+      exits, closing, closingJson: closing ? exitJson.get(closing.id) ?? null : null, quote, flags, rescore,
+      allowed: rescore !== null && closing !== null && exitJson.has(closing.id) && rowAllowed(flags, include),
     };
     if (isShallowLow(quote)) shallow.push({ ...row, allowed: false });
     else candidates.push(row);
@@ -456,6 +567,7 @@ function printReport(cands: readonly Row[], shallow: readonly Row[], totals: Map
   const allowed = cands.filter((c) => c.allowed);
   const sum = (list: readonly Row[]) => list.reduce((s, c) => s + (c.rescore ? c.rescore.newPnlUsd - c.input.pnlUsd : 0), 0);
   console.log(`\nrows this run changes: ${allowed.length} (old ${signedUsd(allowed.reduce((s, c) => s + c.input.pnlUsd, 0))}, delta ${signedUsd(sum(allowed))}); blocked or not included: ${cands.length - allowed.length}`);
+  console.log(`plan: rows=${allowed.length} hash=${planHash(cands)}`);
   console.log('\nexit events rewritten (id, current summary, new summary):');
   for (const c of allowed) {
     console.log(`  ${tokenLabel(c.input.symbol, c.input.mint)} pos=${c.input.id} exit_event=${c.closing!.id}`);
@@ -494,34 +606,15 @@ async function main(): Promise<void> {
     await sql.begin(async (tx) => {
       const { candidates, shallow } = await loadRows(tx, args.include);
       const totals = await agentAllTime(tx, [...new Set(candidates.map((c) => c.input.agentId))]);
+      try {
+        checkPlan(candidates, args.confirm, args.plan);
+      } catch (error) {
+        printReport(candidates, shallow, totals, 'APPLY ABORTED (plan mismatch)', rescoredOn);
+        throw error;
+      }
       const toChange = candidates.filter((c) => c.allowed);
-      if (toChange.length !== args.confirm) {
-        printReport(candidates, shallow, totals, 'APPLY ABORTED (count mismatch)', rescoredOn);
-        throw new Error(`--confirm=${args.confirm} but ${toChange.length} rows would change; nothing written`);
-      }
-      for (const c of toChange) {
-        const r = c.rescore!;
-        const closing = c.closing!;
-        const quote = c.quote!;
-        const audit = positionRescorePayload({ atIso, old: c.old, rescore: r, quote, exitEventId: closing.id, flags: c.flags });
-        const updated = await tx`
-          UPDATE floor_arena_positions
-          SET realised_usd = ${String(r.newRealisedUsd)}::numeric, pnl_usd = ${String(r.newPnlUsd)}::numeric,
-              pnl_mult = ${String(r.newPnlMult)}::numeric, exit_fill_source = 'quote_confirmed',
-              entry_features = COALESCE(entry_features, '{}'::jsonb) || jsonb_build_object('rescore', ${tx.json(audit as postgres.JSONValue)}::jsonb)
-          WHERE id = ${c.input.id} AND status = 'closed' AND exit_fill_source = 'mark_fallback'
-            AND pnl_usd = ${c.old.pnlUsd}::numeric AND realised_usd = ${c.old.realisedUsd}::numeric
-          RETURNING id`;
-        if (updated.length !== 1) throw new Error(`CAS failed on position ${c.input.id}; transaction rolled back`);
-        const patch = exitEventPatch({ exit: closing, rescore: r, quoteMult: quote.quoteMult!, entryPriceUsd: c.input.entryPriceUsd, atIso, quoteEventId: quote.id });
-        const exitUpdated = await tx`
-          UPDATE floor_arena_events
-          SET data = data || ${tx.json(patch as postgres.JSONValue)}::jsonb, summary = ${newSummary(c, rescoredOn)!}
-          WHERE id = ${closing.id} AND type = 'exit' AND data->>'positionId' = ${c.input.id}
-            AND data->>'fillSource' = 'mark_fallback' AND NOT (data ? 'rescoredFrom')
-          RETURNING id`;
-        if (exitUpdated.length !== 1) throw new Error(`CAS failed on exit event ${closing.id} of position ${c.input.id}; transaction rolled back`);
-      }
+      const written = await applyRows(tx as unknown as Exec, candidates, atIso, rescoredOn);
+      if (written !== toChange.length) throw new Error(`wrote ${written} of ${toChange.length} rows; transaction rolled back`);
       printReport(candidates, shallow, totals, `APPLIED ${toChange.length} rows${includeText}`, rescoredOn);
     });
   } finally {
