@@ -1,5 +1,6 @@
 'use client';
 
+import { consumeOfficeReturnFacing, recordOfficeLocomotion } from './brainchain-office-door';
 import { dispatchWorldInteraction, updateWorldProximity } from '@/lib/world-frame-interaction';
 import { useRef, useMemo, useEffect, Suspense } from 'react';
 import { useThree } from '@react-three/fiber';
@@ -250,6 +251,7 @@ function useWorldPlayerController({
       refs.walkableY.current = clamped.groundY;
     },
     commitPosition(result: { x: number; z: number }) {
+      recordOfficeLocomotion(avatarPositionRef.x - HALF_W, avatarPositionRef.y - HALF_H, result.x, result.z);
       useGameStore.getState().setAvatarPosition(
         result.x + HALF_W,
         result.z + HALF_H,
@@ -259,6 +261,7 @@ function useWorldPlayerController({
 
   usePlayerCapabilityController({
     sceneId: 'world',
+    consumeFacingOverride: consumeOfficeReturnFacing,
     capabilities: DEFAULT_PLAYER_CAPABILITIES,
     motion,
     input,

@@ -85,6 +85,7 @@ export interface PlayerCapabilityControllerConfig {
     elapsed: number,
   ) => void;
   readonly onActivationReset?: () => void;
+  readonly consumeFacingOverride?: () => number | null;
   readonly framePriority?: number;
 }
 
@@ -145,6 +146,8 @@ function runPlayerControllerFrame(
 ): void {
   if (isWorldInputBlocked()) { resetPlayerKeys(); resetPlayerTouch(); }
   if (isWorldFrameBlocked()) { config.onDirection?.('idle'); return; }
+  const facingOverride = config.consumeFacingOverride?.();
+  if (facingOverride != null) runtime.facing = facingOverride;
   config.space.readPosition(frameStartPosition);
   config.onFrameStart?.(frameStartPosition);
 

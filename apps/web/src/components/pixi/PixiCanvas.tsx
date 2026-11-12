@@ -7,7 +7,7 @@ import { useGameLoop } from '@/lib/pixi/use-game-loop';
 import { pixiWorldScale, pixiHitSize, pixiSolidFootprint } from '@/lib/pixi/pixi-world-scale';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
-import { WORLD_CENTER_PX } from '@clawville/shared';
+import { WORLD_CENTER_PX, getBuildingFootprint } from '@clawville/shared';
 import type { AvatarSpecies } from '@clawville/shared';
 import { SPECIES_SPRITE_MAP } from '@/lib/pixi/avatar-sprites';
 import { MODEL_KEY_TO_LEGACY_SPECIES, type ModelKey } from '@/lib/three/agent-model-registry';
@@ -99,7 +99,11 @@ export default function PixiCanvas({ onFrame, onMount, onFailure }: PixiCanvasPr
       world.addChildAt(solidGraphics, 1);
       for (const zone of buildingZones) {
         const building = drawBuilding(zone.id, zone.width, zone.height);
-        const footprint = footprints.get(zone.id);
+        // Art keeps the full building envelope; only movement uses the door notch.
+        const boundsCollider = getBuildingFootprint(zone.id);
+        const footprint = boundsCollider
+          ? pixiSolidFootprint({ ...boundsCollider, kind: 'building' }, WORLD_CENTER_PX.x, WORLD_CENTER_PX.y)
+          : footprints.get(zone.id);
         if (footprint) {
           const bounds = building.getLocalBounds();
           const fit = Math.min(footprint.width / Math.max(1, bounds.width), footprint.height / Math.max(1, bounds.height));

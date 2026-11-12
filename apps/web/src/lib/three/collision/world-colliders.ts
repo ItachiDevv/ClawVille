@@ -34,6 +34,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildingZones, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { buildOfficeApproachColliders } from '@clawville/shared';
 import { NORI_WORLD_X, NORI_WORLD_Z } from '@/lib/three/town-guide-position';
 
 const HALF_W = MAP_WIDTH / 2;  // 11264 (704 × 32 / 2)
@@ -271,6 +272,12 @@ function buildColliders(): Collider2D[] {
   for (const zone of buildingZones) {
     const centerTileX = zone.x + zone.width / 2;   // zone.x + 7 (zone.width=14)
     const centerTileY = zone.y + zone.height / 2;  // zone.y + 7
+    if (zone.id === 'api-integrations') {
+      for (const wall of buildOfficeApproachColliders(centerTileX * TILE_SIZE - HALF_W, centerTileY * TILE_SIZE - HALF_H)) {
+        colliders.push({ ...wall, kind: 'building' });
+      }
+      continue;
+    }
     const extents = BUILDING_EXTENTS[zone.id];
     colliders.push({
       id: zone.id,

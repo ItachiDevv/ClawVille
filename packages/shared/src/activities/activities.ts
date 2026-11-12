@@ -226,7 +226,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
   },
   {
     id: 'bumper-shells',
-    buildingId: 'api-integrations', // BrainChain Office (replaced the Salty Spitoon 2026-11-10)
+    buildingId: 'app-publishing', // Boating School, Mrs. Puff; founder 2026-11-12
     title: 'Bumper Shells',
     tagline: 'Ram opponents off the edge. Last shell standing wins.',
     minPlayers: 4,
@@ -237,7 +237,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     // fallback already reads as intentional, and a missing file 404s
     // every lobby open + spams the console with the Image error stack.
     openclawSkill: 'Request handling under load',
-    skillBuildingMatches: ['api-integrations'],
+    skillBuildingMatches: ['app-publishing'],
     status: 'live',
     rewardConfig: BUMPER_SHELLS_REWARD_CONFIG,
   },

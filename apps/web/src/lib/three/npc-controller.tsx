@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { recordOfficeLocomotion } from './brainchain-office-door';
 import { useThree, type RootState } from '@react-three/fiber';
 import {
   useSceneActive,
@@ -366,6 +367,7 @@ export default function NpcController() {
     // speedMult>1 means shift/joystick-sprint is engaged → tell the animator to
     // play the run clip (gated by isMoving in updateMixerOnly, so a held shift
     // while standing still still reads as idle).
+    recordOfficeLocomotion(npc.x - MAP_WIDTH / 2, npc.y - MAP_HEIGHT / 2, newX - MAP_WIDTH / 2, newY - MAP_HEIGHT / 2);
     npcStore.moveNpc(possessedNpcId, newX, newY, dir, facingAngle, speedMult > 1);
     store.setAvatarPosition(newX, newY);
   }, -100);

@@ -93,6 +93,34 @@ const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * 0.92;  // ≈ 206 wu fallback
 // BUILDING_COLLISION_BUFFER in world-colliders.ts (client) — §2h same-diff rule.
 const BUILDING_COLLISION_BUFFER = 28; // wu
 
+/** Office approach: subtract only a 320 wu wide corridor along yaw -2.093.
+ * A conservative stair-step of AABBs preserves the existing 679x735 +28
+ * outer box. The corridor stops at outward depth 350, 157 wu before the
+ * vortex plane; its solid end prevents entry into the building mesh.
+ * Client and server use this same constructor. Called only during cache build.
+ */
+export function buildOfficeApproachColliders(centerX: number, centerZ: number): ServerCollider2D[] {
+  const result: ServerCollider2D[] = [];
+  const halfX = 707, halfZ = 763, nx = Math.sin(-2.093), nz = Math.cos(-2.093);
+  const add = (left: number, right: number, bottom: number, top: number) => {
+    if (right <= left) return;
+    result.push({ id: result.length === 0 ? 'api-integrations' : `api-integrations-wall-${result.length}`,
+      centerX: centerX + (left + right) / 2, centerZ: centerZ + (bottom + top) / 2,
+      halfX: (right - left) / 2, halfZ: (top - bottom) / 2 });
+  };
+  // Full rear half and conservative 64 wu rows on the approach side.
+  add(-halfX, halfX, 0, halfZ);
+  for (let bottom = -halfZ; bottom < 0; bottom += 64) {
+    const top = Math.min(0, bottom + 64);
+    const left = Math.max(-halfX, nx / nz * top - 160 / Math.abs(nz));
+    const right = Math.min(halfX, nx / nz * bottom + 160 / Math.abs(nz),
+      (350 - nz * bottom) / nx, (350 - nz * top) / nx);
+    if (left >= right) add(-halfX, halfX, bottom, top);
+    else { add(-halfX, left, bottom, top); add(right, halfX, bottom, top); }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Collider type
 // ---------------------------------------------------------------------------
@@ -253,6 +281,10 @@ function buildServerCollidersWithoutKelpPortal(): ServerCollider2D[] {
     const centerTileY = zone.y + zone.h / 2;
     const gamePxX = centerTileX * TILE_SIZE;
     const gamePxY = centerTileY * TILE_SIZE;
+    if (id === 'api-integrations') {
+      list.push(...buildOfficeApproachColliders(gamePxX - MAP_HALF, gamePxY - MAP_HALF));
+      continue;
+    }
     const extents = BUILDING_EXTENTS[id];
     list.push({
       id,
@@ -369,9 +401,22 @@ export function getServerColliders(): readonly ServerCollider2D[] {
 // AABB edge makes "near the building" reachable regardless of footprint.
 const BUILDING_COLLIDER_BY_ID: Readonly<Record<string, ServerCollider2D>> = Object.freeze(
   Object.fromEntries(
-    SERVER_COLLIDERS.filter((c) => Object.hasOwn(BUILDING_TILE_ZONES, c.id)).map((c) => [c.id, c]),
+    // Interaction gates retain the full footprint even when collision uses
+    // several walls. A doorway must not shrink the human/agent chat radius.
+    Object.entries(BUILDING_TILE_ZONES).map(([id, zone]) => [id, {
+      id,
+      centerX: (zone.x + zone.w / 2) * TILE_SIZE - MAP_HALF,
+      centerZ: (zone.y + zone.h / 2) * TILE_SIZE - MAP_HALF,
+      halfX: (BUILDING_EXTENTS[id]?.halfX ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
+      halfZ: (BUILDING_EXTENTS[id]?.halfZ ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
+    }]),
   ),
 );
+
+/** Full building bounds for interaction gates and 2D art, independent of door notches. */
+export function getBuildingFootprint(buildingId: string): Readonly<ServerCollider2D> | null {
+  return Object.hasOwn(BUILDING_COLLIDER_BY_ID, buildingId) ? BUILDING_COLLIDER_BY_ID[buildingId]! : null;
+}
 
 /**
  * Distance in GAME-PIXEL units from a game-pixel point to the EDGE of a

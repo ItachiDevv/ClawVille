@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { SPAWN_PX, WORLD_CENTER_PX, getServerColliders } from '@clawville/shared';
+import { SPAWN_PX, WORLD_CENTER_PX, getServerColliders, getBuildingFootprint } from '@clawville/shared';
 import { getAllColliders } from '../three/collision/world-colliders';
 import { findPath as clientPath } from './client-pathfinding';
 import { findPath as serverPath, isSegmentCollisionFree } from '../../../../api/src/services/pathfinding';
@@ -31,15 +31,15 @@ describe('BrainChain Office ring slot navigation', () => {
     expect(getServerColliders().some((c) => c.id.startsWith('brainchain'))).toBe(false);
   });
 
-  test('client and server agree on the Office building collider', () => {
-    const server = getServerColliders().find((c) => c.id === BRAINCHAIN_OFFICE_BUILDING_ID)!;
-    const client = getAllColliders().find((c) => c.id === BRAINCHAIN_OFFICE_BUILDING_ID)!;
-    expect(server).toBeDefined();
+  test('client and server agree on every Office wall', () => {
+    const server = getServerColliders().filter((c) => c.id.startsWith(BRAINCHAIN_OFFICE_BUILDING_ID));
+    const client = getAllColliders().filter((c) => c.id.startsWith(BRAINCHAIN_OFFICE_BUILDING_ID));
+    expect(server).toHaveLength(16);
     expect(client).toMatchObject(server);
   });
 
   test('both planners reach the Office plaza approach from spawn without crossing a collider', () => {
-    for (const collider of getAllColliders().filter((c) => c.id === BRAINCHAIN_OFFICE_BUILDING_ID)) {
+    for (const collider of [getBuildingFootprint(BRAINCHAIN_OFFICE_BUILDING_ID)!]) {
       const target = plazaApproach(collider);
       for (const planner of [clientPath, serverPath]) {
         const path = planner(SPAWN_PX.x, SPAWN_PX.y, target.x, target.y);

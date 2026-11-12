@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Suspense, Component, type ReactNode } from 'react';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
+import { BrainchainOfficeVortex } from './brainchain-office-vortex';
 import {
   BOOT_STREAM_TIER_BUILDINGS,
   ackBuildingCommit,
@@ -1053,6 +1054,7 @@ function GLBBuilding({
             Applied on top of -pivotOffsetZ. Zero for all buildings except those with explicit pivotZBias config. */}
         <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ + (config.pivotZBias ?? 0)]}>
           <primitive object={cloned} scale={buildingScale} />
+          {zone.id === 'api-integrations' && <BrainchainOfficeVortex scale={buildingScale} attached={attachmentVisible} />}
         </group>
         {/* Invisible click volume — used by entertainment buildings (cove, claw-arcade)
             that have a config.onClick handler. Sized to ~1/8 of BUILDING_TARGET_HEIGHT

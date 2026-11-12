@@ -337,7 +337,8 @@ describe('computeLeaderboardPoints', () => {
 
 describe('isFocusAligned', () => {
   it('returns true when avatar flags carry matching learningFocus', () => {
-    expect(isFocusAligned({ learningFocus: 'api-integrations' }, 'bumper-shells')).toBe(true);
+    expect(isFocusAligned({ learningFocus: 'app-publishing' }, 'bumper-shells')).toBe(true);
+    expect(isFocusAligned({ learningFocus: 'api-integrations' }, 'bumper-shells')).toBe(false);
   });
 
   it('returns false when learningFocus mismatches', () => {
@@ -380,12 +381,12 @@ describe('computeBreakdown — non-bot Bumper Shells', () => {
     expect(total).toBe(60);
   });
 
-  it('4th place + first play + focus-aligned (BrainChain Office) = 10 + 15 = 25 base/bonus, +25% = 31', () => {
+  it('4th place + first play + focus-aligned (Boating School) = 10 + 15 = 25 base/bonus, +25% = 31', () => {
     const b = computeBreakdown({
       ...baseInput,
       placement: 4,
       todayCount: 0,
-      flags: { learningFocus: 'api-integrations' },
+      flags: { learningFocus: 'app-publishing' },
     });
     expect(b.base).toBe(10);
     expect(b.firstPlayOfDayBonus).toBe(15);
@@ -403,7 +404,7 @@ describe('computeBreakdown — bots get zero everything', () => {
       scoreMs: null,
       priorBestMs: null,
       todayCount: 0,
-      flags: { learningFocus: 'api-integrations' }, // would normally bonus
+      flags: { learningFocus: 'app-publishing' }, // would normally bonus
       activityId: 'bumper-shells',
       isBot: true,
     });

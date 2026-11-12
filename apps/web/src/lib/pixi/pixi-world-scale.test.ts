@@ -25,3 +25,12 @@ test('all solid collision bounds have identical visible footprints',()=>{
  expect(stall.y+stall.height+50).toBe(11484);
  expect(tools.x-50).toBe(14213);
 });
+
+test('Office art retains its full footprint after the door collider split', () => {
+ const {getBuildingFootprint}=require('@clawville/shared');
+ const {pixiSolidFootprint}=require('./pixi-world-scale');
+ const bounds=getBuildingFootprint('api-integrations');
+ expect(bounds).toMatchObject({centerX:3616,centerZ:2080,halfX:707,halfZ:763});
+ const art=pixiSolidFootprint({...bounds,kind:'building'},11264,11264);
+ expect(art).toMatchObject({x:14173,y:12581,width:1414,height:1526});
+});

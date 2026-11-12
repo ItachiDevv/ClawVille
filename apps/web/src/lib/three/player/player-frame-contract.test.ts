@@ -124,6 +124,14 @@ describe('ordered player frame contract', () => {
     useGameStore.setState({ joystickVelocity: { x: 0, y: 0 } });
   });
 
+  test('a return facing override applies once without movement', () => {
+    let pending: number | null = -2.093;
+    const h = harness({ consumeFacingOverride: () => { const value = pending; pending = null; return value; } });
+    h.run(); expect(h.runtime.facing).toBe(-2.093);
+    h.run(); expect(h.runtime.facing).toBe(-2.093);
+    expect(h.position).toEqual({ x: 0, z: 0 });
+  });
+
   test('plain moving frame preserves the 0 through 9 hook order', () => {
     playerKeyState.w = true;
     const events: string[] = [];

@@ -196,7 +196,7 @@ const QUEST_EXTRAS: Record<TutorialQuestId, QuestExtras> = {
 
   // TIER 5
   'first-match': {
-    hint: 'Walk into the BrainChain Office (Bumper Shells) or the Boating School (Reef Race), choose Play Now, then Queue Solo.',
+    hint: 'Visit the Boating School for Bumper Shells or Reef Race. Choose Play Now, then Queue Solo.',
     condition: { type: 'counter', counterKey: 'activityMatchesPlayed', threshold: 1 },
     prerequisites: [],
   },

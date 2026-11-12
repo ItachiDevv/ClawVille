@@ -84,8 +84,8 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   // Slot 4 — ESE (cx=465, cy=417) → zone(458,410) → posX=458*32=14656, posY=410*32=13120
   // 2026-11-10 founder decision: the BrainChain Office REPLACES the Salty Spitoon
-  // here. The `id` stays `api-integrations` (books, skills, visit events, Bumper
-  // Shells, and skill folders key on it). Cortex teaches BrainChain task work AND
+  // here. The `id` stays `api-integrations` (books, skills, visit events,
+  // and skill folders key on it). Cortex teaches BrainChain task work AND
   // the full APIs and Integrations lesson. The separate Office venue is removed.
   {
     id: 'api-integrations',

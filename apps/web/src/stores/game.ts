@@ -237,7 +237,7 @@ export interface GameState {
   /**
    * Building id whose portal modal ("Learn or Play?") is open. `null`
    * when no portal is showing. Set by `enterBuilding()` when the clicked
-   * building has at least one `live` activity in `ACTIVITY_REGISTRY`;
+   * building has a `live` activity or is the BrainChain Office;
    * otherwise enterBuilding() falls through to the chat path unchanged.
    */
   currentPortalBuildingId: string | null;
@@ -992,7 +992,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // a portal-bearing building also "meets" the character behind it.
     const isNew = get().markBuildingVisited(buildingId);
     if (isNew) {
-      get().addToast('🎮', 'New activity unlocked!');
+      get().addToast('🎮', buildingId === 'api-integrations' ? 'BrainChain Office discovered!' : 'New activity unlocked!');
     }
   },
 
@@ -1018,14 +1018,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     }),
 
   enterBuilding: (locationId, characterName) => {
-    // Q2 Activity Portals — chunk #8. Buildings hosting at least one
-    // `live` activity (Bumper Shells → api-integrations, Reef Race →
-    // app-publishing at Q2 launch) divert into the BuildingPortalModal
-    // first; the chat path remains the default for the other 8.
+    // Both Boating School activities use this portal. The BrainChain Office
+    // retains its Office entry and Cortex chat cards without any activity.
     const hasLiveActivity = ACTIVITY_REGISTRY.some(
       (a) => a.buildingId === locationId && a.status === 'live',
     );
-    if (hasLiveActivity) {
+    if (hasLiveActivity || locationId === 'api-integrations') {
       get().openBuildingPortal(locationId);
       return;
     }

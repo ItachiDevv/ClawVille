@@ -3,11 +3,9 @@
 /**
  * BuildingPortalModal — the "Learn or Play?" decision modal.
  *
- * Shown when the player clicks a building that hosts at least one `live`
- * activity in `ACTIVITY_REGISTRY` (at Q2 launch: Salty Spitoon / Bumper
- * Shells, Boating School / Reef Race). Buildings without a live activity
- * skip this modal entirely — `enterBuilding()` falls through to the chat
- * path unchanged. See `apps/web/src/stores/game.ts#enterBuilding`.
+ * Shown for buildings with a live activity and for the BrainChain Office.
+ * The Boating School offers Bumper Shells and Reef Race. The Office offers
+ * its Office entry and Cortex chat cards even with no activity.
  *
  * Layout (per frontend-spec §1.4):
  *
@@ -25,7 +23,7 @@
  *
  * Ring slot 4 (`api-integrations`, the BrainChain Office since 2026-11-10) leads
  * with an "Enter BrainChain Office" card (openBrainchainOffice → the
- * `/brainchain` panel); its Learn and Play cards stay as for other buildings.
+ * `/brainchain` panel); its Learn card stays available without a Play card.
  *
  * Spec: `.claude/plans/q2-research/frontend-spec.md` §1.4.
  */

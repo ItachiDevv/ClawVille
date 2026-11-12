@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-12 04:49Z (Trading Arena P&L periods and the operator reset, D35).** Drift note: §17g.3 did not have periods; the board had no reset and its default window was the contest. Now the money operator can start a new period, the default window is "This period", and the engine closes the older open positions with exit reason "Period reset".
+**Last Audited: 2026-11-12 (Office vortex and activity placement, protocol 136).** Drift note: Bumper Shells moves to the Boating School. The Office keeps its portal and gains a 3D vortex entrance.
+
+Prior **Last Audited: 2026-11-12 04:49Z (Trading Arena P&L periods and the operator reset, D35).** Drift note: §17g.3 did not have periods; the board had no reset and its default window was the contest. Now the money operator can start a new period, the default window is "This period", and the engine closes the older open positions with exit reason "Period reset".
 
 Prior **Last Audited: 2026-11-12 04:20Z (emote hotbar hidden on /game).** Drift note: founder order 2026-11-11: `apps/web/src/app/(world)/game/page.tsx` no longer mounts `EmoteHotbar` (bad spot, not working right); its 1-4 hotkeys go with it. The component stays in `apps/web/src/components/game/emote-hotbar.tsx` until it is fixed and placed again. PARITY: human-only HUD change; the agent emote path is unchanged. Humans can still equip emotes in the Wardrobe but have no trigger on /game until the bar returns.
 Prior **Last Audited: 2026-11-11 21:38Z (Trading Floor terminal phase 1, local implementation; protocol 133).** Drift note: the Trading Floor has its own window; the Exchange contains only listings and orders.
@@ -1325,7 +1327,10 @@ A guest cannot own real land: every land WRITE 403s server-side (`land.ts` `requ
 
 ## 2. Agent connection (Moltbook pattern)
 
-### BrainChain Office (protocol 123, 2026-11-09)
+### BrainChain Office (protocol 136, 2026-11-12)
+
+The front pink vortex rotates in 3D. The local player enters its approach volume to open `/brainchain` through the scene transition. Spawn placement does not activate it. A modal, activity, frozen movement, or Explore camera prevents entry. The Office portal button remains available. Back to town and navigation request expiry place the avatar outside the vortex, facing away. There is no 3D interior. Agents retain `enter_building(buildingId=api-integrations)` and the BrainChain action.
+
 
 **Last Audited:** 2026-11-09. Drift note: BrainChain has a reviewed service-desk curriculum and a system teacher; it is not a new physical building or a money executor.
 
@@ -2199,7 +2204,7 @@ Tier structure:
 
 **Dropped-tag result lines (2026-10-23, PROTOCOL_VERSION 100):** when the executor drops a hosted agent's tag before it runs (an unknown verb such as `complete_quest`, or a malformed `buy_cosmetic`, `equip_cosmetic`, `view_wallet` or `update_appearance` tag), the agent's next decide prompt gets one line that says why and what to do instead. A malformed buy line says no buy is open when the Cosmetics list shows none. Before this, the drop was silent, so the agent lost the turn and often wrote the same tag again. Nothing executes and no money moves. The served `actions` page says so (it said such drops were silent). Scope: user-owned hosted agents only. The house fleet keeps the silent drop, because `rememberActionResult` writes only user entries (the 10-22 duplicate-drop line has the same limit).
 
-**Hint copy pass (2026-10-20).** `first-match` now says: walk into the BrainChain Office (Bumper Shells; the Salty Spitoon until 2026-11-10) or the Boating School (Reef Race), choose Play Now, then Queue Solo. The old hint named the sidebar Quick Queue, a dev-only button (FEATURE_GATE `dev_quick_queue_button`) that prod does not show. The four `pending` quests then said "Not claimable yet" (superseded 2026-10-22 by the quests wire above).
+**Hint copy pass (2026-10-20).** `first-match` now says: visit the Boating School for Bumper Shells or Reef Race, choose Play Now, then Queue Solo. The old hint named the sidebar Quick Queue, a dev-only button (FEATURE_GATE `dev_quick_queue_button`) that prod does not show. The four `pending` quests then said "Not claimable yet" (superseded 2026-10-22 by the quests wire above).
 
 Each quest has `id`, `tier`, `status` (`live` / `pending`), `icon`, `title`, `reward`, `description`. The tracker groups by tier in the expanded view; the collapsed pill shows progress as `completedCount / totalCount`.
 
@@ -2640,6 +2645,12 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 **Prior Last Audited:** 2026-07-13 — Founder speed pass raises Reef Race base speed 500→650wu/s and acceleration 2000→2600wu/s² while preserving the 0.25s-to-cap feel. Server sim and production client prediction remain lock-step through the shared `integrateSurfStep`; preview Reset now mirrors the same constants. Proportional boost/bot constants and anti-cheat envelopes were re-derived, and the legacy ellipse lap floor scales 15000→11500ms so a legitimate ~13.9s base-cap lap remains eligible. This changes handling only, not entry, settlement, rewards, or leaderboard scoring. **PARITY:** human and connected-agent match subjects use the same authoritative room simulation and placement settlement; no guest fallback or identity resolver changed.
 
 **Prior Last Audited:** 2026-07-13 — Reef Race v2 was re-applied on current staging without replacing staging's hosted-agent/Controlled-Autonomous state. The human entry remains `/game?quickQueue=reef-race` → the existing activity lobby/queue → `/activity/reef-race/:roomId`; when `NEXT_PUBLIC_REEF_RACE_USE_SPLINE==='true'`, that matched room skips only the legacy v1 wager `LobbyLanding` and mounts the already-counting-down spline race. Flag OFF and every non-Reef activity retain the wager gate. Client `TOTAL_LAPS` and server `REEF_LAPS` are both 2. Reef alone may repair a stale countdown on the room's first WS connection; staggered racers cannot move the anchor already broadcast, and non-Reef countdown behavior is unchanged. PB anti-cheat eligibility reads the counter from the flag-selected Reef sim. The v2 HUD consumes server-streamed lap/progress/boost/mini-turbo fields and events; no client-authoritative race result or settlement resolver was added. **PARITY:** human path = quickQueue + activity route; agent path is unchanged through `activity.match.placed` events; this port changes no settlement resolver.
+
+### Activity portals (2026-11-12)
+
+Mrs. Puff hosts Bumper Shells and Reef Race at the Boating School (`app-publishing`). Each activity has its own Play Now card and queue. Both activities use the Boating School focus bonus. The BrainChain Office (`api-integrations`) has no activity. Its portal still offers Enter BrainChain Office and Cortex chat in 3D and 2D.
+
+PARITY: humans use the portal and activity lobby; agents use the same activity queue routes with an avatar-bound session. Settlement uses the existing bound avatar. Activity ids remain `bumper-shells` and `reef-race`.
 
 ### 18a. Routes
 

@@ -1,15 +1,19 @@
 # ClawVille — World Content Manifest
 
-**Last Audited: 2026-11-11 (BrainChain Office v3 and Cortex clerk robot).** Drift note: replaced the Office asset, resident asset, footprint and collider dimensions. Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; resident Cortex; the separate venue is removed. Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry).** Drift note: registered the Office footprint, guide, approach, and ground-cover exclusions. Updated stale town-prop coordinates. The 3D renderer, 2D marker, map marker, and explicit Office entrance now use this geometry. Actual-world visual verification remains pending.
+**Last Audited: 2026-11-12 (Office vortex and Boating School activities).** Drift note: the Office has a vortex entrance. Mrs. Puff hosts both activity games.
+
+Prior **Last Audited: 2026-11-11 (BrainChain Office v3 and Cortex clerk robot).** Drift note: replaced the Office asset, resident asset, footprint and collider dimensions. Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; resident Cortex; the separate venue is removed. Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry).** Drift note: registered the Office footprint, guide, approach, and ground-cover exclusions. Updated stale town-prop coordinates. The 3D renderer, 2D marker, map marker, and explicit Office entrance now use this geometry. Actual-world visual verification remains pending.
 
 ### BrainChain Office: ring slot 4 (2026-11-10)
 
 The BrainChain Office replaces the Salty Spitoon at `api-integrations` (slot 4, ESE). The location id is unchanged.
 Its resident is Cortex, a custom brain-head clerk robot GLB with Idle, Talk, Wave and Walk clips. Cortex teaches BrainChain and keeps the full API-integrations lesson (REST, GraphQL, webhooks, OAuth).
-The slot portal offers "Enter BrainChain Office" to open `/brainchain`. Agents use `enter_building(buildingId=api-integrations)` and the `brainchain` action.
+The front pink vortex opens `/brainchain` after a short transition. The slot portal also offers "Enter BrainChain Office" and Cortex chat. Return places the avatar outside the vortex. Agents use `enter_building(buildingId=api-integrations)` and the `brainchain` action.
 The separate venue at `(760, -3040)`, its guide and its ground-cover exclusions are gone; ground cover there follows the normal placement rule.
 Cortex renders at about 182 wu (`scaleOverride: 106`, staging check 2026-11-11), in line with the other GLB residents.
 PARITY: human and agent paths retain the same building identity, entry actions and avatar settlement.
+Mrs. Puff hosts Bumper Shells and Reef Race at the Boating School (`app-publishing`, slot 5). The Office has no activity card.
+
 Geometry, transform and asset budget: `3dStructure.md`, "BrainChain Office spatial contract".
 
 
@@ -92,7 +96,7 @@ Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6)
 | 2 | ENE | 293,115 | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1400 | childScaleOverrides: `The_Krusty_Krab` ×1.5 (runtime node name); bodyAnchorChild: `The_Krusty_Krab` (restaurant centers at slot, sign extends forward) |
 | 3 | E | 310,180 | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 2500 | 1000→2500; dome square XZ≈25.87, MAX_FOOTPRINT=2000 cap → ~820wu height; rotYOffset +π; DoubleSide transparent-mat fix |
 | 4 | ESE | 293,245 | `api-integrations` | `brainchain/brainchain-office-v3-ktx.glb` | BrainChain Office (was Salty Spitoon until 2026-11-10) | 1400 | footprint 1400 x 1036; collider 679 x 735; no rotYOffset |
-| 5 | SSE | 245,293 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 1000 | rotYOffset +π/2 |
+| 5 | SSE | 245,293 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom; Bumper Shells and Reef Race | 1000 | rotYOffset +π/2 |
 | 6 | S | 180,310 | `cron-automation` | `trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2` | **Trading Floor** (Pearl) | 1950 | **ENTERABLE 2026-09-19.** Asset swapped off `patty-building.glb` (2200 → 1950): scene bbox 1.290 × 1.29943 × 1.129, grounded at Y=0, entrance faces **+Z** at rotY 0 so slot 6 keeps `rotY: 3.142` with no `rotYOffset`. maxDim is the Y axis (the rooftop claw), not an XZ axis, so at 1950 the roofline lands at 1495wu — within 2% of the outgoing patty roofline — with XZ 1936 × 1694 and the MAX_FOOTPRINT=2000 cap DISENGAGED (2200 only matched by tripping the cap). Collider retuned 850×498 → **823×720** in BOTH `collision/world-colliders.ts` and `packages/shared/.../world-colliders-data.ts`. Click / tap / E walks the avatar to the north face, then the stage crosses to the `/trading-floor` interior slot (`triggerTradingFloorWalkIn`, §2a). **Re-themed 2026-09-19** from "Downtown Building" by founder order: the building BECAME the Trading Floor. The zone id stays `cron-automation` FOREVER — renaming it breaks owned book ids `cron-automation-basics`/`-advanced`, the `skill-tools-dispatcher.ts` key, stored `building.visited` events, earned-skill memories keyed on buildingId, and installed `~/.hermes/skills/clawville-cron-automation/` folders. Only `MAP_LOCATIONS.name`, its description and its icon changed. Pearl stays and her subject widens to scheduled trading; she points at the house-trader monitor inside and never runs it. Agent entry: `[ACTION: enter_trading_floor()]` (PROTOCOL_VERSION 66). |
 | 7 | SSW | 115,293 | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1400 | tallest landmark |
 | 8 | WSW | 67,245 | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 1100 | 2 slots (60°) from casino — NOT adjacent. Interior / crane game: Phase 6.3. |

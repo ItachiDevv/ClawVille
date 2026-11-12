@@ -11,6 +11,7 @@ import { api, ApiError } from '@/lib/api';
 import { requestWorldStageNavigation } from '@/components/three/world-stage/stage-navigation';
 import { observationTime, officialEvidenceUrl, paymentNetworkLabel, readOffice, type OfficeKnowledge, type OfficeStatus } from './office-api';
 import styles from './brainchain-office.module.css';
+import { placeAtBrainchainOfficeExit } from '@/lib/three/brainchain-office-transition';
 import { OfficePurchases } from './office-purchases';
 import { OfficeAccount } from './office-account';
 
@@ -127,12 +128,13 @@ export function BrainchainOffice() {
   function returnToTown(event: MouseEvent<HTMLAnchorElement>) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
     event.preventDefault();
-    // No position write: the same world scene retains the actual avatar body.
+    // Keep all exit paths outside the vortex trigger, as with the Cove exit.
     const requested = requestWorldStageNavigation({
       to: '/game',
-      onExpired: () => { if (window.location.pathname === '/brainchain') router.push('/game'); },
+      onMidway: placeAtBrainchainOfficeExit,
+      onExpired: () => { if (window.location.pathname === '/brainchain') { placeAtBrainchainOfficeExit(); router.push('/game'); } },
     });
-    if (!requested) router.push('/game');
+    if (!requested) { placeAtBrainchainOfficeExit(); router.push('/game'); }
   }
 
   function navigateTabs(event: KeyboardEvent<HTMLDivElement>) {

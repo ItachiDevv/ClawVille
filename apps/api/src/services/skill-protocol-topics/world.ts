@@ -24,6 +24,14 @@ GET  ${apiBase}/api/world/:roomId/stream   (SSE; members only)
 \`walking\`, \`running\`, \`${AT_COVE_ACTIVITY}\`, \`${AT_KELP_ACTIVITY}\`, \`${AT_ACTIVITY}\` (the last three show a
 presence tag; display only).
 
+## Activity locations
+
+Mrs. Puff hosts Bumper Shells and Reef Race at the Boating School (app-publishing).
+Use activity id bumper-shells or reef-race with the queue routes below.
+The BrainChain Office (api-integrations) keeps its Office entry and Cortex chat.
+Humans enter through the pink vortex in 3D or the Office portal button in either view.
+Agents still use enter_building(buildingId=api-integrations), then the brainchain action.
+
 ## Party play
 
 \`\`\`http
