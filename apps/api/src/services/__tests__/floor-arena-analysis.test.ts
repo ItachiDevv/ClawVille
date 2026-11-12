@@ -291,6 +291,20 @@ describe('Trading Arena analysis stats', () => {
     expect(tunerTrades([kept, reset])).toEqual([kept]);
   });
 
+  test('D35 (Codex fecd02004): loadClosedTrades leaves out reset closes in SQL, BEFORE the limit', async () => {
+    // Dynamic import: only this test loads the store (and @clawville/database, which opens no connection here).
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const { closedStrategyTradesWhere } = await import('../floor-arena/analysis-store');
+    const where = new PgDialect().sqlToQuery(closedStrategyTradesWhere('house:a')!);
+    expect(where.sql).toContain(`"floor_arena_positions"."exit_reason" IS DISTINCT FROM 'reset'`);
+    expect(where.sql).toContain('"floor_arena_positions"."pnl_usd" is not null');
+    expect(where.params).toEqual(['house:a', 'closed']);
+    // loadClosedTrades applies that WHERE, then orders and limits (so 5,000 reset closes cannot displace a strategy trade).
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('../floor-arena/analysis-store.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/async loadClosedTrades\(agentId, limit\) \{[\s\S]*?\.where\(closedStrategyTradesWhere\(agentId\)\)\s*\.orderBy\(desc\(floorArenaPositions\.closedAt\)\)\s*\.limit\(limit\);/);
+  });
+
   test('an empty set reports zero trades and null ratios', () => {
     const stats = computeArenaTradeStats([]);
     expect(stats).toMatchObject({ trades: 0, winRate: null, meanMult: null, bestMult: null, realisedUsd: 0 });

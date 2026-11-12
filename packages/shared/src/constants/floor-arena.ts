@@ -1074,7 +1074,9 @@ export function buildFloorArenaWithdrawAddressMessage(input: {
  *  3-failures-over-45-s mark fallback counts from it). `streakStartedAt` = first low quote of the
  *  current low streak (the 45-s low-quote confirmation window). Engine only: `ExitRun` in engine.ts adds an
  *  optional `markDisputed: true` (2026-11-12, a quote at or under
- *  `FLOOR_ARENA_DEEP_LOW_OF_MARK` of the fresh mark disputed it; see engine.ts). */
+ *  `FLOOR_ARENA_DEEP_LOW_OF_MARK` of the fresh mark disputed it) and the optional deep-low streak
+ *  `deepLowCount` / `deepStreakStartedAt` / `lastDeepLowAt` (only these deep lows confirm a quote under a
+ *  disputed mark; see engine.ts). */
 export interface FloorArenaExitRun {
   firstFailureAt: string;
   runStartedAt: string;

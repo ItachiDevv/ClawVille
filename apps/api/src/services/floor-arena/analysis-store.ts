@@ -37,6 +37,24 @@ import {
 import type { EarnedSkillStore } from '../earned-skill-memory';
 import { rowsOf, updateArenaAgentParams } from './queries';
 
+/**
+ * The WHERE of `loadClosedTrades` (exported for the query-text test). An
+ * 'unresolved' exit (no bookable sell price for 30 min) closes with pnl NULL:
+ * it is not a win, a loss or a death, so the stats and the tuner never see it.
+ * D35 (Codex review of fecd02004): a 'reset' close is excluded HERE, before
+ * the LIMIT, so reset closes never displace strategy trades from the newest
+ * ARENA_LIFETIME_TRADE_LIMIT rows.
+ */
+export function closedStrategyTradesWhere(agentId: string) {
+  return and(
+    eq(floorArenaPositions.agentId, agentId),
+    eq(floorArenaPositions.status, 'closed'),
+    isNotNull(floorArenaPositions.pnlUsd),
+    isNotNull(floorArenaPositions.pnlMult),
+    sql`${floorArenaPositions.exitReason} IS DISTINCT FROM 'reset'`,
+  );
+}
+
 /** The Trading Floor building id; earned-skill memories are filed under it. */
 const TRADING_FLOOR_BUILDING_ID = 'cron-automation';
 
@@ -161,15 +179,7 @@ export function createArenaAnalysisStore(): ArenaAnalysisStore {
           features: floorArenaPositions.entryFeatures,
         })
         .from(floorArenaPositions)
-        .where(and(
-          eq(floorArenaPositions.agentId, agentId),
-          eq(floorArenaPositions.status, 'closed'),
-          // An 'unresolved' exit (no bookable sell price for 30 min) closes
-          // with pnl NULL: it is not a win, a loss or a death, so the stats
-          // and the tuner never see it.
-          isNotNull(floorArenaPositions.pnlUsd),
-          isNotNull(floorArenaPositions.pnlMult),
-        ))
+        .where(closedStrategyTradesWhere(agentId))
         .orderBy(desc(floorArenaPositions.closedAt))
         .limit(limit);
       return rows.map((row): ArenaClosedTrade => ({

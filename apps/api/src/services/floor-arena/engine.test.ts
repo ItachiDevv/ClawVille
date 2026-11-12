@@ -8,7 +8,7 @@ import {
   advanceExitRun, applyExitFill, chainCheckCandidateMints, runToKeepAfterRejectedBooking, resetExitTrigger, classifyExitAttempt, combineFillSource, d4AfterFailedQuote, d4Decision,decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
   ENTRY_STATEMENT_TIMEOUT_MS, ENTRY_TX_TIMEOUT_MS, exitSummary, freshBookingAllowed, insertTimeGate, keepNewerMark, openPosition,
   tryOpenPosition, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
-  quoteDisputesMark, quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
+  quoteDisputesMark, quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, tpSkipUnresolved, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
   breakevenMarkMult, liquidityBelow, liquidityShadowCrossings, LIQ_SHADOW_THRESHOLDS, recordLiquidityShadow,
   type ExitLiquidity, type ExitTrigger, type LiqShadowDeps,
@@ -488,7 +488,7 @@ describe('D4 with a disputed fresh mark (FEAR + frozen marks, prod; real evaluat
   /** reject: D4 decided a booking (or an unresolved close) but the write was rejected (a newer mark, an aged mark or a
    *  lost CAS), as executeExit sees it. */
   type QStep = { t: number; quote: SellQuoteResult; mark: number | null; tp?: boolean; reject?: boolean };
-  type QOut = 'tp_hold' | 'quote' | { d4: D4Outcome; proceedsUsd: number | null };
+  type QOut = 'tp_hold' | 'tp_unresolved' | 'quote' | { d4: D4Outcome; proceedsUsd: number | null };
   /** The executeExit wiring, pure: a TP step goes through tpSkipRunUpdate, an exit step through d4AfterFailedQuote.
    *  The only state between steps is the stored jsonb copy. The run is stored as executeExit writes it: on a retry
    *  (d4 null) always; on a REJECTED booking only what runToKeepAfterRejectedBooking returns (Codex, 94c489354).
@@ -499,7 +499,9 @@ describe('D4 with a disputed fresh mark (FEAR + frozen marks, prod; real evaluat
     const out = steps.map((s): QOut => {
       const nowMs = T0 + s.t * 1000;
       if (s.tp) {
-        const lowRun = tpSkipRunUpdate(parseExitRun(stored), s.quote.ok ? null : s.quote.reason, nowMs, quoteDisputesMark(s.quote, s.mark));
+        const storedRun = parseExitRun(stored);
+        const lowRun = tpSkipRunUpdate(storedRun, s.quote.ok ? null : s.quote.reason, nowMs, quoteDisputesMark(s.quote, s.mark));
+        if (!s.quote.ok && tpSkipUnresolved(lowRun ?? storedRun, s.mark, nowMs)) return 'tp_unresolved';
         if (lowRun) stored = JSON.parse(JSON.stringify(lowRun));
         return 'tp_hold';
       }
@@ -696,16 +698,19 @@ describe('D4 with a disputed fresh mark (FEAR + frozen marks, prod; real evaluat
     expect(tpConfirmedByQuote(quotedTpMultiple(2 * ENTRY, ENTRY), 2)).toBe(true);
   });
 
-  test('Codex 94c489354: a REJECTED quote_confirmed booking that first disputed the mark keeps the dispute; the 204x mark never books', () => {
+  test('Codex 94c489354 + fba01643f: shallow lows then a first deep low dispute the mark and decide NO booking; the 204x mark never books', () => {
     const SHALLOW = 0.3 * SPIKE;
     // shallow lows (0.3x of the mark) at 0 s and 10 s (undisputed); at 45 s a 0.92x-of-entry quote (0.0045x of the mark)
-    // disputes the mark and qualifies quote_confirmed, but a newer snapshot lands during the quote and the booking is rejected.
+    // disputes the mark. Before fba01643f's review it also qualified quote_confirmed on the shallow lows' streak (the
+    // booking 94c489354 kept the dispute for when it was rejected); now the first deep low alone confirms nothing, so the
+    // attempt retries and stores the dispute (the 'reject' flag never applies). A first dispute can still decide an
+    // 'unresolved' close: the next test covers the rejected one.
     const steps: QStep[] = [
       exitAt(0, sellAt(SHALLOW, SPIKE)), exitAt(10, sellAt(SHALLOW, SPIKE)),
       { ...exitAt(45, sellAt(SANE, SPIKE)), reject: true },
       exitAt(55, NO_QUOTE), exitAt(65, NO_QUOTE), exitAt(120, NO_QUOTE),
     ];
-    // the 45 s attempt did decide a quote_confirmed booking before the rejection
+    // the 45 s attempt decides nothing (one deep low): no booking to reject
     const before = drive(steps.slice(0, 2)).stored;
     const sane45 = sellAt(SANE, SPIKE);
     if (sane45.ok) throw new Error('expected a refused quote');
@@ -713,7 +718,7 @@ describe('D4 with a disputed fresh mark (FEAR + frozen marks, prod; real evaluat
       prevRun: parseExitRun(before), quote: sane45, freshMarkPrice: SPIKE, staleFallbackPrice: null,
       nowMs: T0 + 45_000,
     });
-    expect(at45.d4).toEqual(confirmedAt(SANE));
+    expect(at45.d4).toBeNull();
     expect(parseExitRun(before)?.markDisputed).toBeUndefined();
     const { out, stored } = drive(steps);
     expect(out.map(d4Of)).toEqual([null, null, null, null, null, null]);
@@ -777,6 +782,101 @@ describe('D4 with a disputed fresh mark (FEAR + frozen marks, prod; real evaluat
     expect('markDisputed' in old).toBe(false);
     expect(parseExitRun(JSON.parse(JSON.stringify(old)))).toEqual(old);
     expect(parseExitRun({ ...old, markDisputed: 'yes' })).toBeNull();
+  });
+
+  // Codex review of fba01643f, finding 1: under a disputed fresh mark only a streak of DEEP lows confirms a quote.
+  // Reset rule (lead decision): a shallow low, a usable quote or a drift refusal ends the deep streak; a no-quote
+  // attempt neither counts nor resets it (as the low streak, Codex r4 #1). Steps are seconds after T0.
+  const MARK1 = 1.0 * ENTRY;
+  const deepAt = (t: number, price = 0.000001 * MARK1) => exitAt(t, sellAt(price, MARK1), MARK1);
+  const shallowAt = (t: number) => exitAt(t, sellAt(0.3 * MARK1, MARK1), MARK1);
+
+  test('Codex fba01643f: shallow lows at 0 s and 10 s, then ONE deep 0.000001x quote at 45 s never books (no second deep low)', () => {
+    const steps = [shallowAt(0), shallowAt(10), deepAt(45)];
+    const { out, stored } = drive(steps);
+    expect(out.map(d4Of)).toEqual([null, null, null]); // the old engine booked quote_confirmed at 45 s here
+    const run = parseExitRun(stored)!;
+    expect(run).toMatchObject({ markDisputed: true, lowCount: 3, deepLowCount: 1, deepStreakStartedAt: new Date(T0 + 45_000).toISOString() });
+    // and the disputed mark never books later either: no quote -> nothing, unresolved 30 min after the first failure
+    const later = drive([...steps, exitAt(60, NO_QUOTE, MARK1), exitAt(1800, NO_QUOTE, MARK1)]).out.map(d4Of);
+    expect(later.slice(3)).toEqual([null, { kind: 'unresolved' }]);
+  });
+
+  test('Codex fba01643f: two deep lows over >= 45 s book quote_confirmed at the latest deep quote', () => {
+    expect(drive([deepAt(0), deepAt(44)]).out.map(d4Of)).toEqual([null, null]);
+    expect(drive([deepAt(0), deepAt(45, 0.01 * MARK1)]).out.map(d4Of)).toEqual([null, confirmedAt(0.01 * MARK1)]);
+  });
+
+  test('Codex fba01643f: deep, shallow, deep never confirms; the deep streak restarts at the second deep low', () => {
+    const { out, stored } = drive([deepAt(0), shallowAt(20), deepAt(50), deepAt(94), deepAt(95)]);
+    // 50 s: 2 deep lows in the history, 50 s apart, but the shallow low ended the streak (deepLowCount 1 at 50 s)
+    expect(out.map(d4Of)).toEqual([null, null, null, null, confirmedAt(0.000001 * MARK1)]); // 50 -> 95 s = 45 s
+    expect(parseExitRun(stored)).toMatchObject({ deepLowCount: 3, deepStreakStartedAt: new Date(T0 + 50_000).toISOString() });
+    // a drift refusal ends it the same way
+    expect(drive([deepAt(0), exitAt(20, sellAt(MARK1 * 1.5, MARK1), MARK1), deepAt(50)]).out.map(d4Of)).toEqual([null, null, null]);
+  });
+
+  test('Codex fba01643f: a no-quote attempt between deep lows neither counts nor resets the deep streak', () => {
+    const { out, stored } = drive([deepAt(0), exitAt(20, NO_QUOTE, MARK1), deepAt(45)]);
+    expect(out.map(d4Of)).toEqual([null, null, confirmedAt(0.000001 * MARK1)]);
+    expect(parseExitRun(stored)).toMatchObject({ deepLowCount: 2, deepStreakStartedAt: new Date(T0).toISOString() });
+  });
+
+  test('Codex fba01643f: TP skips: a usable quote or a drift refusal ends the deep streak, a no-quote skip keeps it', () => {
+    const tpAt = (t: number, quote: SellQuoteResult): QStep => ({ t, quote, mark: MARK1, tp: true });
+    const usable = sellAt(0.98 * MARK1, MARK1);
+    expect(usable.ok).toBe(true);
+    // deep TP skip, usable quote under the TP, deep exit at 45 s: no confirmation (the streak restarted at 45 s)
+    const sane = drive([tpAt(0, sellAt(0.000001 * MARK1, MARK1)), tpAt(20, usable), deepAt(45)]);
+    expect(d4Of(sane.out[2]!)).toBeNull();
+    expect(parseExitRun(sane.stored)).toMatchObject({ markDisputed: true, deepLowCount: 1 });
+    const drift = drive([tpAt(0, sellAt(0.000001 * MARK1, MARK1)), tpAt(20, sellAt(MARK1 * 1.5, MARK1)), deepAt(45)]);
+    expect(d4Of(drift.out[2]!)).toBeNull();
+    const noQuote = drive([tpAt(0, sellAt(0.000001 * MARK1, MARK1)), tpAt(20, NO_QUOTE), deepAt(45)]);
+    expect(d4Of(noQuote.out[2]!)).toEqual(confirmedAt(0.000001 * MARK1));
+    // a TP skip with nothing stored to end writes nothing
+    expect(tpSkipRunUpdate(null, null, T0)).toBeNull();
+    expect(tpSkipRunUpdate(advanceExitRun(null, 'low', T0), 'quote_failed', T0 + 1_000)).toBeNull();
+  });
+
+  test('Codex fba01643f: the deep streak survives the jsonb round trip; old rows and broken deep fields read as no streak; a pause ends it', () => {
+    const deep = advanceExitRun(advanceExitRun(null, 'low', T0, true), 'low', T0 + 10_000, true);
+    expect(deep).toMatchObject({ deepLowCount: 2, deepStreakStartedAt: new Date(T0).toISOString(), lastDeepLowAt: new Date(T0 + 10_000).toISOString() });
+    expect(parseExitRun(JSON.parse(JSON.stringify(deep)))).toEqual(deep);
+    const { deepLowCount: _c, deepStreakStartedAt: _s, lastDeepLowAt: _l, ...old } = deep;
+    expect(parseExitRun(old)).toEqual(old);
+    expect(parseExitRun({ ...deep, lastDeepLowAt: 'nope' })).toEqual(old);
+    expect(parseExitRun({ ...deep, deepLowCount: 0 })).toEqual(old);
+    // a pause (> 5 min since the last attempt) restarts the run and ends the deep streak, even across a no-quote attempt
+    expect(advanceExitRun(deep, 'no_quote', T0 + 10_000 + 6 * 60_000).deepLowCount).toBeUndefined();
+    expect(advanceExitRun(deep, 'low', T0 + 10_000 + 6 * 60_000, true)).toMatchObject({ deepLowCount: 1 });
+  });
+
+  // Codex review of fba01643f, finding 2: an unconfirmed TP never reaches d4Decision.
+  test('Codex fba01643f: a TP held on a disputed fresh mark with refused quotes closes unresolved 30 min after the first failure', () => {
+    // FEAR shape, no stop, long max_hold: the TP fires every 10 s on the 204x mark, every quote is refused.
+    const steps: QStep[] = [];
+    for (let t = 0; t <= 1800; t += 10) {
+      steps.push({ t, quote: t % 20 === 0 ? sellAt(SANE, SPIKE) : NO_QUOTE, mark: SPIKE, tp: true });
+    }
+    const { out } = drive(steps);
+    expect(out.slice(0, -1).every((o) => o === 'tp_hold')).toBe(true); // the old engine held here forever
+    expect(out.at(-1)).toBe('tp_unresolved');
+    // a usable quote under the TP is a price, not a failure: it holds; no fresh mark or an undisputed run holds too
+    const disputed = parseExitRun(drive(steps.slice(0, 2)).stored)!;
+    expect(disputed.markDisputed).toBe(true);
+    expect(tpSkipUnresolved(disputed, SPIKE, T0 + 1_800_000)).toBe(true);
+    expect(tpSkipUnresolved(disputed, SPIKE, T0 + 1_799_999)).toBe(false);
+    expect(tpSkipUnresolved(disputed, null, T0 + 1_800_000)).toBe(false);
+    expect(tpSkipUnresolved(advanceExitRun(null, 'low', T0), SPIKE, T0 + 1_800_000)).toBe(false);
+    expect(tpSkipUnresolved(null, SPIKE, T0 + 1_800_000)).toBe(false);
+    const usable = drive([...steps.slice(0, -1), { t: 1800, quote: sellAt(0.9 * SPIKE, SPIKE), mark: SPIKE, tp: true }]).out;
+    expect(usable.at(-1)).toBe('tp_hold');
+    // executeExit wiring: the TP skip closes with closeUnresolved (its CAS) before the run write, only on a refused quote,
+    // and keeps a newly set guard when that close is rejected
+    const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    expect(source).toContain('if (!quote.ok && skipRun && tpSkipUnresolved(skipRun, freshMarkPrice, nowMs)) {');
+    expect(source).toMatch(/tpSkipUnresolved\(skipRun, freshMarkPrice, nowMs\)\) \{\s+const closed = await closeUnresolved\(position, state, trigger, skipRun, writtenMark, decisionAtMs, now\);\s+const kept = lowRun \? runToKeepAfterRejectedBooking\(storedRun, lowRun\) : null;\s+if \(closed\.kind === 'lost_race' && kept\) await persistKeptRun\(position, kept\);\s+return closed;\s+\}\s+if \(lowRun\) \{/);
   });
 });
 

@@ -10,9 +10,10 @@ import type { FloorArenaPeriod } from '@clawville/shared';
  * positions opened at or after its start; with no row there is no period, the `period` window counts every
  * position and every public `period` field is null. `starts_at` is the DB now() of the insert.
  *
- * Read path: `readActiveArenaPeriod`, cached 10 s in process. The reset write path (admin route) inserts with
- * `insertArenaPeriod` and calls `invalidateArenaPeriodCache` after its transaction commits. Another API container
- * sees the new period within the 10 s cache.
+ * Read path: `readActiveArenaPeriod`, cached 10 s in process. The reset write path (admin route) runs
+ * `resetArenaPeriod` (one transaction under a fixed advisory lock: the 60 s check and the insert are serialized across
+ * processes) and calls `invalidateArenaPeriodCache` after the commit. Another API container reads the new period after
+ * its 10 s cache expires; worst-case public visibility (with HTTP caching): docs/trading-floor-arena.md D35.
  */
 
 export type ArenaPeriodRecord = {
@@ -27,6 +28,8 @@ export type ArenaPeriodRecord = {
 type PeriodRow = Record<string, unknown>;
 type Executor = Pick<typeof db, 'execute'>;
 type ReadRows = (query: SQL) => Promise<PeriodRow[]>;
+/** Runs `fn` inside one DB transaction (the seam tests replace). */
+export type ArenaPeriodTransact = <T>(fn: (tx: Executor) => Promise<T>) => Promise<T>;
 
 export const ARENA_PERIOD_CACHE_MS = 10_000;
 
@@ -90,6 +93,41 @@ export async function insertArenaPeriod(
   const period = mapArenaPeriodRow(list[0]);
   if (!period) throw new Error('floor_arena_periods insert returned no readable row');
   return period;
+}
+
+/** Fixed pg_advisory_xact_lock key of the period reset (one reset at a time across every API process). */
+export const ARENA_PERIOD_RESET_LOCK_KEY = 7_120_261_112_035;
+
+export type ArenaPeriodResetResult = { ok: true; period: ArenaPeriodRecord } | { ok: false; code: 'period_too_recent' };
+
+const defaultTransact: ArenaPeriodTransact = (fn) => db.transaction((tx) => fn(tx));
+
+/**
+ * D35 reset write (Codex review of fecd02004: the 60 s check and the insert were not serialized). One transaction:
+ * (1) take the fixed advisory lock in its OWN statement, so (READ COMMITTED) the next statement's snapshot is taken
+ * after the lock and sees a reset that committed while this one waited; (2) read the DB now() and the newest
+ * starts_at of ANY row (no starts_at <= now filter: now() is the transaction start, so a waiter's now() can be
+ * earlier than the winner's start; a negative gap counts as too recent); (3) insert with starts_at = now(). The id
+ * comes from the DB now() too. Returns period_too_recent inside the lock. The caller invalidates the cache after.
+ */
+export async function resetArenaPeriod(
+  input: { name: string; reason: string; createdBy: string; minGapMs: number; idFor: (dbNow: Date) => string },
+  transact: ArenaPeriodTransact = defaultTransact,
+): Promise<ArenaPeriodResetResult> {
+  return transact(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${String(ARENA_PERIOD_RESET_LOCK_KEY)}::bigint)`);
+    const [row] = rowsOf(await tx.execute<PeriodRow>(sql`
+      SELECT now() AS db_now, (SELECT max(starts_at) FROM floor_arena_periods) AS newest_start
+    `));
+    const dbNow = toDate(row?.db_now);
+    if (!dbNow) throw new Error('floor_arena_periods reset could not read the DB now()');
+    const newest = toDate(row?.newest_start);
+    if (newest && dbNow.getTime() - newest.getTime() < input.minGapMs) return { ok: false, code: 'period_too_recent' };
+    const period = await insertArenaPeriod(
+      { id: input.idFor(dbNow), name: input.name, reason: input.reason, createdBy: input.createdBy }, tx,
+    );
+    return { ok: true, period };
+  });
 }
 
 export function invalidateArenaPeriodCache(): void {
