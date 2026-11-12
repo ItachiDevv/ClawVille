@@ -265,13 +265,42 @@ export function tpSkipRunUpdate(prev: ExitRun | null, quoteRefusal: string | nul
   const attempt = quoteRefusal === null ? null : classifyExitAttempt(quoteRefusal);
   if (attempt !== 'low') {
     if (attempt === 'no_quote' || !prev?.deepLowCount) return null;
-    const ended: ExitRun = { ...prev };
-    delete ended.deepLowCount;
-    delete ended.deepStreakStartedAt;
-    delete ended.lastDeepLowAt;
-    return ended;
+    return withoutDeepStreak(prev);
   }
   return advanceExitRun(prev, 'low', nowMs, disputesMark);
+}
+
+/** The run with its deep-low streak ended (the three deep fields removed); everything else unchanged. */
+function withoutDeepStreak(run: ExitRun): ExitRun {
+  const ended: ExitRun = { ...run };
+  delete ended.deepLowCount;
+  delete ended.deepStreakStartedAt;
+  delete ended.lastDeepLowAt;
+  return ended;
+}
+
+/**
+ * Codex round 3 #2: a usable sell quote ends the deep-low streak even when its booking is REJECTED (a newer mark, an
+ * aged mark, a lost CAS); else deep at 0 s, a usable quote at 20 s (rejected) and deep at 50 s would book on a streak
+ * the usable quote contradicted. Returns the stored run without its deep streak, or null when there is none to end.
+ */
+export function runAfterRejectedUsableQuote(stored: ExitRun | null): ExitRun | null {
+  return stored?.deepLowCount ? withoutDeepStreak(stored) : null;
+}
+
+/**
+ * Codex round 3 #3: an accepted PARTIAL sale (a TP leg) leaves a remaining position, so it keeps the sticky guards of
+ * the history it sold under: markDisputed (the mark stays disbelieved; mark_fallback never books it) and sawLow (the
+ * stale price never books). The counters, both streaks and the 30-min clock restart at the sale. Null (exit_run NULL)
+ * when the run held neither guard; a full close always writes NULL (the caller).
+ */
+export function runAfterPartialFill(run: ExitRun | null, nowMs: number): ExitRun | null {
+  if (!run || (run.markDisputed !== true && !run.sawLow)) return null;
+  const nowIso = new Date(nowMs).toISOString();
+  return {
+    firstFailureAt: nowIso, runStartedAt: nowIso, streakStartedAt: null, failures: 0, lowCount: 0, sawLow: run.sawLow,
+    lastLowAt: null, lastAttemptAt: nowIso, ...(run.markDisputed === true ? { markDisputed: true as const } : {}),
+  };
 }
 
 /**
@@ -375,6 +404,14 @@ export function quoteDisputesMark(quote: SellQuoteResult, freshMarkPriceUsd: num
   return price !== undefined && Number.isFinite(price) && price <= freshMarkPriceUsd * FLOOR_ARENA_DEEP_LOW_OF_MARK;
 }
 
+/** Codex round 3 #1: with no fresh mark, a quote refused far below the reference at or under 0.2x of it (the same
+ *  depth and price basis as quoteDisputesMark, against the stale branch's reference). */
+export function quoteDeepUnderReference(quote: SellQuoteResult, referencePriceUsd: number | null): boolean {
+  if (quote.ok || quote.reason !== 'quote_far_below_reference' || referencePriceUsd === null || !(referencePriceUsd > 0)) return false;
+  const price = quote.fill?.priceUsd ?? quote.quotedPriceUsd;
+  return price !== undefined && Number.isFinite(price) && price <= referencePriceUsd * FLOOR_ARENA_DEEP_LOW_OF_MARK;
+}
+
 export function classifyExitAttempt(reason: string): ExitAttempt {
   if (reason === 'quote_far_below_reference' || reason === 'quote_far_below_mark') return 'low';
   if (reason === 'quote_failed' || reason === 'not_configured') return 'no_quote';
@@ -409,8 +446,14 @@ export function parseExitRun(raw: unknown): ExitRun | null {
   };
 }
 
-/** One failed sell attempt applied to the run (pure). disputesMark counts only on a 'low' attempt. */
-export function advanceExitRun(prev: ExitRun | null, attempt: ExitAttempt, nowMs: number, disputesMark = false): ExitRun {
+/**
+ * One failed sell attempt applied to the run (pure). disputesMark (sets markDisputed) and deepLow (a deep low for the
+ * deep streak; defaults to disputesMark) count only on a 'low' attempt. A deep low without a dispute is a low at or
+ * under 0.2x of the reference price on an already disputed run with no fresh mark (Codex round 3 #1).
+ */
+export function advanceExitRun(
+  prev: ExitRun | null, attempt: ExitAttempt, nowMs: number, disputesMark = false, deepLow = disputesMark,
+): ExitRun {
   const nowIso = new Date(nowMs).toISOString();
   const fresh: ExitRun = {
     firstFailureAt: nowIso, runStartedAt: nowIso, streakStartedAt: null, failures: 0, lowCount: 0, sawLow: false,
@@ -435,8 +478,8 @@ export function advanceExitRun(prev: ExitRun | null, attempt: ExitAttempt, nowMs
     lowCount = 0;
     streakStartedAt = null;
   }
-  const deepNow = attempt === 'low' && disputesMark;
-  const markDisputed = run.markDisputed === true || deepNow;
+  const deepNow = attempt === 'low' && deepLow;
+  const markDisputed = run.markDisputed === true || (attempt === 'low' && disputesMark);
   // The deep streak continues only from the run's own previous deep low (a pause restarts the run, so `paused` ends it).
   // A no-quote attempt keeps it unchanged; a shallow low or another refusal ends it.
   let deep: Pick<ExitRun, 'deepLowCount' | 'deepStreakStartedAt' | 'lastDeepLowAt'> = {};
@@ -461,13 +504,14 @@ export type D4Outcome = { kind: 'book'; priceUsd: number; source: ExitFillSource
 
 /**
  * The D4 decision after a failed sell attempt (pure; exported for tests). null = keep retrying.
- *   fresh mark: 3 failures over >= 45 s of the current run -> the mark (mark_fallback), UNLESS the history disputes the
- *     mark (run.markDisputed): then only 'quote_confirmed' books, from the DEEP streak alone (Codex review of
- *     fba01643f): THIS attempt is a deep low (the caller passes a low quote only when it disputes the mark, i.e. at or
- *     under 0.2x of the fresh mark), the deep streak holds >= 2 deep lows (each <= 5 min after the previous; only
- *     no-quote attempts between them) and >= 45 s passed since its first deep low; else 'unresolved' at 30 min;
- *     never the mark;
- *   no fresh mark: 'quote_confirmed' ONLY when THIS attempt returned a low quote (currentLowQuotePrice), the streak
+ *   disputed history (run.markDisputed), WITH OR WITHOUT a fresh mark (Codex round 3 #1: a mark that ages past 60 s
+ *     must not reopen the shared low streak): only 'quote_confirmed' books, from the DEEP streak alone (Codex review
+ *     of fba01643f): THIS attempt is a deep low (at or under 0.2x of the fresh mark; with no fresh mark, at or under
+ *     0.2x of the reference price the stale branch refuses against), the deep streak holds >= 2 deep lows (each <= 5
+ *     min after the previous; only no-quote attempts between them) and >= 45 s passed since its first deep low; else
+ *     'unresolved' at 30 min after the first failure; never the mark, never the stale price;
+ *   fresh mark, undisputed: 3 failures over >= 45 s of the current run -> the mark (mark_fallback);
+ *   no fresh mark, undisputed: 'quote_confirmed' ONLY when THIS attempt returned a low quote (currentLowQuotePrice), the streak
  *     holds >= 2 lows (each <= 5 min after the previous) and >= 45 s passed since the streak's first low; the fill is
  *     this attempt's quote (never a cached one);
  *   no fresh mark and no low quote for this position (a pure outage): 3 failures over >= 45 s -> the stale price
@@ -494,7 +538,7 @@ export function d4Decision(input: {
   const deepStreakMs = isoMs(run.deepStreakStartedAt ?? null);
   const deepConfirmed = lowPrice !== null && (run.deepLowCount ?? 0) >= CONFIRM_LOW_QUOTES && deepStreakMs !== null
     && run.lastDeepLowAt === new Date(nowMs).toISOString() && nowMs - deepStreakMs >= EXIT_FALLBACK_AFTER_MS;
-  if (input.freshMarkPrice !== null && run.markDisputed === true) {
+  if (run.markDisputed === true) {
     if (deepConfirmed) return { kind: 'book', priceUsd: lowPrice, source: 'quote_confirmed' };
     if (nowMs - firstMs >= EXIT_UNRESOLVED_AFTER_MS) return { kind: 'unresolved' };
   } else if (input.freshMarkPrice !== null) {
@@ -513,18 +557,22 @@ export function d4Decision(input: {
  * executeExit's D4 step for a refused sell quote (pure; exported for tests). The low quote that may book as
  * 'quote_confirmed' is THIS attempt's evaluated fill (after the sell haircut): a far-below-reference quote (no fresh
  * mark), or a far-below-mark quote that disputes the mark (quoteDisputesMark, at or under 0.2x of the fresh mark). A
- * shallow low under a fresh mark (above 0.2x, below 0.5x) is never a fill source.
+ * shallow low under a fresh mark (above 0.2x, below 0.5x) is never a fill source. referencePriceUsd = the price the
+ * stale branch refused against (null with a fresh mark): on a disputed run a far-below-reference low at or under 0.2x
+ * of it is a deep low (Codex round 3 #1); any other low ends the deep streak.
  */
 export function d4AfterFailedQuote(input: {
   prevRun: ExitRun | null;
   quote: Exclude<SellQuoteResult, SellFill>;
   freshMarkPrice: number | null;
+  referencePriceUsd: number | null;
   staleFallbackPrice: number | null;
   nowMs: number;
 }): { run: ExitRun; currentLow: SellFill | null; d4: D4Outcome } {
   const { quote, nowMs } = input;
   const disputes = quoteDisputesMark(quote, input.freshMarkPrice);
-  const run = advanceExitRun(input.prevRun, classifyExitAttempt(quote.reason), nowMs, disputes);
+  const deep = disputes || (input.prevRun?.markDisputed === true && quoteDeepUnderReference(quote, input.referencePriceUsd));
+  const run = advanceExitRun(input.prevRun, classifyExitAttempt(quote.reason), nowMs, disputes, deep);
   const currentLow = quote.fill && (quote.reason === 'quote_far_below_reference' || disputes) ? quote.fill : null;
   const d4 = d4Decision({
     freshMarkPrice: input.freshMarkPrice, currentLowQuotePrice: currentLow?.priceUsd ?? null, run, nowMs,
@@ -2020,10 +2068,14 @@ async function executeExit(
   let proceedsUsd: number;
   let fillSource: ExitFillSource;
   let fillPrice: number | null;
-  // Set when this failed attempt newly sets markDisputed or sawLow; written if the booking below is rejected
-  // (Codex, 94c489354; sawLow 2026-11-12).
+  // Written if the booking below is rejected: a failed attempt that newly sets markDisputed or sawLow (Codex,
+  // 94c489354; sawLow 2026-11-12), or a usable quote that ends a stored deep streak (Codex round 3 #2).
   let keptRun: ExitRun | null = null;
+  // The run the booking sold under: a partial sale keeps its sticky guards (Codex round 3 #3).
+  let guardRun: ExitRun | null;
   if (quote.ok) {
+    guardRun = parseExitRun(position.exitRun);
+    keptRun = runAfterRejectedUsableQuote(guardRun);
     proceedsUsd = quote.proceedsUsd;
     fillSource = 'quote';
     fillPrice = quote.priceUsd;
@@ -2034,6 +2086,7 @@ async function executeExit(
       prevRun,
       quote,
       freshMarkPrice,
+      referencePriceUsd,
       nowMs,
       // Stale fallback when no sell quote exists at all: the newest known mark, else the entry DS price.
       staleFallbackPrice: known?.priceUsd
@@ -2047,6 +2100,7 @@ async function executeExit(
       return written.length > 0 ? { kind: 'quote_failed' } : { kind: 'lost_race' };
     }
     keptRun = runToKeepAfterRejectedBooking(prevRun, run);
+    guardRun = run;
     if (d4.kind === 'unresolved') {
       const closed = await closeUnresolved(position, state, trigger, run, writtenMark, decisionAtMs, now);
       if (closed.kind === 'lost_race' && keptRun) await persistKeptRun(position, keptRun);
@@ -2069,7 +2123,7 @@ async function executeExit(
       realisedUsd: String(fill.realisedUsd),
       ...risingPeakSet(state.peakMult),
       exitQuoteFailures: 0,
-      exitRun: null,
+      exitRun: fill.closed ? null : runAfterPartialFill(guardRun, nowMs),
       exitFillSource: stickySource,
       ...newerMarkSet(writtenMark.mult, writtenMark.atMs),
       ...(fill.closed ? {
