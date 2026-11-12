@@ -745,6 +745,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-12 (session trading) - Promotion #29 PENDING: arena-only release branch `release/arena-periods` (PROTOCOL 135, migration 0122)
+
+- **WHAT:** a release branch from master `50e5ce7a1` with cherry-picks of the Trading Floor arena commits only: terminal phases 1 and 2 (PROTOCOL 133, 134), the D4 disputed-mark rule and deep-low streak, the P&L periods with the operator reset (PROTOCOL 135, migration `0122_floor_arena_periods.sql`), and the one-shot rescore script. Every arena-only file is byte-equal to origin/staging `5e92e85fd`.
+- **LEFT OUT (owners said not ready, 2026-11-12):** BrainChain Office (PROTOCOL 128/129/136, migrations 0101-0120), MCP Apps P0/P1 (130/131), UsePod fee wallet (132, migrations 0121-0121c), and the new-ville web items. PROTOCOL numbers 121-132 stay staging-only; prod jumps 120 -> 135.
+- **CONFLICT NOTES:** the terminal store keeps `exchangeEscapeOwnedByDialog` (the terminal guest upsell uses it). The wallet revoke on prod keeps `window.confirm` (the in-page confirm is MCP Apps P0). The `def.ui` test line was removed (master has no MCP `ui` field).
+- **DATA:** the rescore already ran on prod at 07:20Z (47 rows, delta -$4,805.33). The prod P&L reset runs only after the flip, when SOURCE_COMMIT shows this release.
+- **SCHEMA:** prod-migration-pending: `0122_floor_arena_periods.sql` (additive: new table, new exit reason value).
+- **PARITY:** human path: Trading Floor terminal + arena board (period window); agent path: arena REST routes and the nine `clawville_arena_*` read tools; settlement binds to the same authenticated avatar resolver.
+
 ### 2026-11-10 15:26Z (session claw2.0) - Own AI save fix: switching the agent to a registered UsePod token answered 500
 - **What changed:** `services/own-ai.ts` `saveOwnAiSettings` UPDATEs the existing `agent_ai_settings` row (read under the spend-rules lock) and INSERTs only when no row exists; no upsert. ARCHITECTURE note. No API shape change, no PROTOCOL bump, no migration.
 - **What broke + root cause:** the live AI-call check on staging (landtest1, after the $0.50 deposit was verified: tx `5cn7zHta...` finalized, ledger `317d273e` paid + credit seen, UsePod balance 500000 micro active) saved source `usepod` / model `gpt-oss-120b` / limit 10c. The metered key test reached UsePod and was charged (balance 500000 -> 499995 micro), then the save answered 500: `agent_ai_settings_own_complete_check`. Postgres checks CHECK constraints on the proposed INSERT row of INSERT ... ON CONFLICT before it sees the conflict, and that row has no `usepod_token_*` columns. Proven in a rolled-back transaction on staging: the upsert fails the check, a plain UPDATE passes. Same code on prod since part A (`7dc9a0001`): no human can switch to a registered UsePod token there. landtest1 was put back on ClawVille AI (PUT source clawville, 200).
