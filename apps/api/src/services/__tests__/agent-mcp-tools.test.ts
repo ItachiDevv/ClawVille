@@ -543,3 +543,46 @@ describe('answer size cap', () => {
     expect(body.next).toBe('n');
   });
 });
+
+describe('arena terminal read tools', () => {
+  const reads = [
+    ['trades', '/agents/house%3Agenesis/trades'], ['equity', '/agents/house%3Agenesis/equity'],
+    ['my_trades', '/me/trades'], ['my_equity', '/me/equity'],
+    ['events', '/agents/house%3Agenesis/events'], ['my_events', '/me/events'],
+    ['contest', '/contest'], ['discovery', '/discovery'], ['tape', '/tape'],
+  ] as const;
+  for (const [suffix, path] of reads) {
+    test(`${suffix} uses its read route without app metadata`, async () => {
+      const name = `clawville_arena_${suffix}`;
+      const def = MCP_TOOLS.find((tool) => tool.name === name)!;
+      expect(def).toBeDefined();
+      expect(def.readOnly).toBe(true);
+      const { rt, calls } = stubRuntime();
+      const result = await runMcpTool(name, { agentId: 'house:genesis' }, rt);
+      expect(result.body.ok).toBe(true);
+      expect(calls).toEqual([{ method: 'GET', path: `/api/floor/arena${path}` }]);
+    });
+  }
+  test('trade query forwards each cursor and filter without session credentials', () => {
+    const call = GAME_TOOL_ROUTES.clawville_arena_trades!.calls(
+      { sid: 'ag-live', agentId: 'agent-1' },
+      { agentId: 'house:genesis', before: '2026-11-11T10:00:00.000Z', beforeId: 'abc', limit: 7, outcome: 'loss', reason: 'stop', sessionId: 'secret' },
+    )[0]!;
+    const url = new URL(call.path, 'https://example.test');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ before: '2026-11-11T10:00:00.000Z', beforeId: 'abc', limit: '7', outcome: 'loss', reason: 'stop' });
+    // Protocol 135: the trades window forwards on both trade tools; absent, the route default (period) applies.
+    const context = { sid: 'ag-live', agentId: 'agent-1' };
+    expect(GAME_TOOL_ROUTES.clawville_arena_my_trades!.calls(context, { window: 'all', reason: 'reset' })[0]!.path).toBe('/api/floor/arena/me/trades?reason=reset&window=all');
+    expect(GAME_TOOL_ROUTES.clawville_arena_trades!.calls(context, { agentId: 'house:genesis', window: 'period' })[0]!.path).toBe('/api/floor/arena/agents/house%3Agenesis/trades?window=period');
+    expect(GAME_TOOL_ROUTES.clawville_arena_my_trades!.calls(context, {})[0]!.path).toBe('/api/floor/arena/me/trades');
+  });
+  test('equity window and event cursor remain query parameters', () => {
+    const context = { sid: 'ag-live', agentId: 'agent-1' };
+    // Protocol 135: the leaderboard defaults to the P&L period window; an explicit window still forwards.
+    expect(GAME_TOOL_ROUTES.clawville_arena_leaderboard!.calls(context, {})[0]!.path).toBe('/api/floor/arena/leaderboard?window=period');
+    expect(GAME_TOOL_ROUTES.clawville_arena_leaderboard!.calls(context, { window: 'contest' })[0]!.path).toBe('/api/floor/arena/leaderboard?window=contest');
+    expect(GAME_TOOL_ROUTES.clawville_arena_my_equity!.calls(context, { window: 'period' })[0]!.path).toBe('/api/floor/arena/me/equity?window=period');
+    expect(GAME_TOOL_ROUTES.clawville_arena_my_equity!.calls(context, { window: '7d' })[0]!.path).toBe('/api/floor/arena/me/equity?window=7d');
+    expect(GAME_TOOL_ROUTES.clawville_arena_my_events!.calls(context, { after: 'event&next', limit: 10 })[0]!.path).toBe('/api/floor/arena/me/events?after=event%26next&limit=10');
+  });
+});

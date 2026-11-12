@@ -160,7 +160,7 @@ function stats(realisedUsd: number, wins: number, losses: number) {
   return { realisedUsd, trades: wins + losses, wins, losses, deaths: 0, openPositions: 1, lastTradeAt: null };
 }
 
-function boardBody(overrides: Record<string, unknown> = {}, contest = { startsAt: '2000-01-01T00:00:00Z', endsAt: '2999-01-01T00:00:00Z' }) {
+function boardBody(overrides: Record<string, unknown> = {}, contest = { startsAt: '2000-01-01T00:00:00Z', endsAt: '2999-01-01T00:00:00Z' }, period: unknown = null) {
   return {
     version: 1,
     agents: FLOOR_ARENA_TEMPLATES.map((template, index) => ({
@@ -171,13 +171,14 @@ function boardBody(overrides: Record<string, unknown> = {}, contest = { startsAt
       status: 'active',
       paramsVersion: 1,
       exits: { tpMult: 1.1, stopMult: null, maxHoldS: 900 },
-      stats: { all: stats(1, 1, 1), last24h: stats(-2.5, 3, 4), contest: stats(7.77, 7, 10) },
+      stats: { all: stats(1, 1, 1), last24h: stats(-2.5, 3, 4), contest: stats(7.77, 7, 10), period: stats(4.2, 2, 1) },
       scan: null,
       watching: null,
       open: index === 0 ? [{ symbol: 'BONK', openedAt: '2026-10-01T00:00:00Z', sizeUsd: 20, lastMarkMult: 1.04 }] : [],
       ...(index === 0 ? overrides : {}),
     })),
     contest,
+    period,
     generatedAt: '2026-10-01T00:00:00Z',
   };
 }
@@ -273,7 +274,7 @@ beforeEach(() => {
     seatWriteVersion: 0,
     launched: null,
   });
-  useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+  useGameStore.setState({ tradingFloorOpen: false, exchangeTab: 'browse' });
 });
 
 afterEach(async () => {
@@ -325,7 +326,7 @@ describe('visibility', () => {
     expect(panel()).toBeNull();
     expect(walkupFrames()).toBe(0);
     await act(async () => {
-      useGameStore.getState().closeExchange();
+      useGameStore.getState().closeTradingFloor();
     });
     expect(panel()).not.toBeNull();
   });
@@ -375,6 +376,15 @@ describe('content', () => {
     expect(panel()!.textContent).toContain('-$2.50');
     // The staging build rendered "+$32.49realised" (2026-10-02 film QC): the space must be explicit.
     expect(panel()!.textContent).toContain('-$2.50 realised P&L');
+  });
+
+  test('with an active P&L period the live line uses the period, even while the contest runs', async () => {
+    boardReply = { status: 200, body: boardBody({}, undefined, { id: 'period-20261112T090000Z', name: 'Fresh start', startsAt: '2026-11-12T09:00:00.000Z' }) };
+    await render(createElement(HouseAgentWalkup));
+    await walkUp(0);
+    await waitFor(() => (panel()?.textContent ?? '').includes('This period'), 'the period live line');
+    expect(panel()!.textContent).toContain('+$4.20 realised P&L');
+    expect(panel()!.textContent).not.toContain('+$7.77');
   });
 
   test('a LIVE house agent shows LIVE, not PAPER', async () => {
@@ -537,7 +547,7 @@ describe('button flow', () => {
     expect(primary.textContent).toContain('Choose this trading style');
     await click(primary);
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'launch', launchTemplateId: 'dip-hunter' });
-    expect(useGameStore.getState()).toMatchObject({ exchangeOpen: true, exchangeTab: 'floor' });
+    expect(useGameStore.getState()).toMatchObject({ tradingFloorOpen: true });
     // A viewer who can own a trader leaves no pending key behind.
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).toBeNull();
     // And the pop-up gives way to the Exchange panel.
@@ -549,7 +559,7 @@ describe('button flow', () => {
     await walkUp(3);
     await click(byTestId('house-agent-walkup-watch'));
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'profile', profileAgentId: 'house:midcap-climber' });
-    expect(useGameStore.getState()).toMatchObject({ exchangeOpen: true, exchangeTab: 'floor' });
+    expect(useGameStore.getState()).toMatchObject({ tradingFloorOpen: true });
   });
 
   test('a viewer with a trader sees "Open my trader" and "One trader per account."', async () => {
@@ -561,7 +571,7 @@ describe('button flow', () => {
     expect(panel()!.textContent).not.toContain('Choose this trading style');
     await click(byTestId('house-agent-walkup-primary'));
     expect(useFloorArenaUi.getState().panel).toBe('desk');
-    expect(useGameStore.getState()).toMatchObject({ exchangeOpen: true, exchangeTab: 'floor' });
+    expect(useGameStore.getState()).toMatchObject({ tradingFloorOpen: true });
   });
 
   test('guest: the same call shows the sign-up card, the choice is kept, and the launch reopens ONCE after sign-up at step 2', async () => {
@@ -583,21 +593,21 @@ describe('button flow', () => {
     // Sign-up: clearIdentityState runs resetIdentity (which drops launchTemplateId)
     // and resets the query cache; the player is now a real account with no trader.
     await act(async () => {
-      useGameStore.getState().closeExchange();
+      useGameStore.getState().closeTradingFloor();
       useFloorArenaUi.getState().resetIdentity();
     });
     await walkUp(-1);
     expect(useFloorArenaUi.getState().launchTemplateId).toBeNull();
     let launches = 0;
     const unsubscribe = useGameStore.subscribe((state, previous) => {
-      if (state.exchangeOpen && !previous.exchangeOpen) launches += 1;
+      if (state.tradingFloorOpen && !previous.tradingFloorOpen) launches += 1;
     });
     authReply = { status: 200, body: { user: { id: 'u2', isGuest: false } } };
     meReply = { status: 200, body: { agent: null } };
     await act(async () => {
       await client!.resetQueries();
     });
-    await waitFor(() => useGameStore.getState().exchangeOpen, 'the launch to reopen');
+    await waitFor(() => useGameStore.getState().tradingFloorOpen, 'the launch to reopen');
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'launch', launchTemplateId: 'runner' });
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).toBeNull();
     // LaunchTrader starts at step 2 with that template.
@@ -605,7 +615,7 @@ describe('button flow', () => {
 
     // ONCE: closing the panel and further GET /me answers never reopen it.
     await act(async () => {
-      useGameStore.getState().closeExchange();
+      useGameStore.getState().closeTradingFloor();
     });
     await act(async () => {
       await client!.refetchQueries();
@@ -613,7 +623,7 @@ describe('button flow', () => {
     await settle(50);
     unsubscribe();
     expect(launches).toBe(1);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
   });
 
   test('a stored choice resumes on the next visit for a real account with no trader, then is gone', async () => {
@@ -622,7 +632,7 @@ describe('button flow', () => {
       JSON.stringify({ templateId: 'midcap-climber', at: Date.now() - 60_000 }),
     );
     await render(createElement(HouseAgentWalkup));
-    await waitFor(() => useGameStore.getState().exchangeOpen, 'the resumed launch');
+    await waitFor(() => useGameStore.getState().tradingFloorOpen, 'the resumed launch');
     expect(useFloorArenaUi.getState()).toMatchObject({ panel: 'launch', launchTemplateId: 'midcap-climber' });
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).toBeNull();
   });
@@ -636,7 +646,7 @@ describe('button flow', () => {
     await render(createElement(HouseAgentWalkup));
     await waitFor(() => testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY) === null, 'the key to clear');
     await settle(30);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
   });
 
   test('an expired stored choice never opens anything', async () => {
@@ -646,7 +656,7 @@ describe('button flow', () => {
     );
     await render(createElement(HouseAgentWalkup));
     await settle(80);
-    expect(useGameStore.getState().exchangeOpen).toBe(false);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(false);
     expect(testWindow.sessionStorage.getItem(HOUSE_AGENT_PENDING_TEMPLATE_KEY)).toBeNull();
   });
 

@@ -5,6 +5,13 @@
 > test it later" is now the standing answer — this file is the "later".
 
 
+
+### Trading Floor terminal: its own window, six tabs, trade history and equity curve (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game, open Economy, then Trading Floor (or walk into the Trading Floor and use the monitor). The Exchange window now has only listings and orders.
+- **CHECK:** the terminal matches the approved mockup (Dashboard, Strategy). Trades, Decisions, Reports and Other agents were NOT in the mockup: look at them first. The equity curve and P&L use real data only (paper costs included). "Decisions" shows the rule checks the bot records, not written reasoning. Strategy saves through the same rules route an agent uses.
+- **FEEDBACK:** layout, wording, and what each of the four new tabs should show more or less of. Phone and iPad sizes need a real-device look.
+
 ### Agent AI card deposit (session claw2.0, own AI part B, 2026-11-09, STAGING after an authorized deployment)
 
 - **STATUS:** local implementation only; no commit, push, registration or transaction in this session.
@@ -145,6 +152,11 @@
 - **KNOWN BEHAVIOR CHANGE:** a public or BYO agent restored after a deploy (owner-proven, not ledger-capable) gets 403 `agent_session_not_ledger_authorized` on top-up, MoonPay, the partner storefront, activity queue and party, and on the knowledge and memory exports. The match WebSocket closes its connection with code 4001 and the reason `agent_session_not_ledger_authorized` (a socket gets no 403). The agent gets access again when it runs the signed `/reconnect`, and its own knowledge reads and writes keep working the whole time. A guest-owned agent gets the same refusals and stays refused: a reconnect does not help it. A restored Hatcher session is not affected.
 
 ## TRADING FLOOR
+
+### Arena P&L reset ("This period") + scoring fix (session trading, 2026-11-12, STAGING)
+- **What to look at:** Trading Floor terminal (Dashboard, Trades, profile), the Exchange leaderboard and the 3D big screen on staging. They now open on "This period". Before the first reset, "This period" equals "All time".
+- **Where:** `https://staging.clawville.world/game`, walk into the Trading Floor, open the terminal; the board is on the back wall.
+- **Feedback wanted:** (1) the go to run the first reset on staging (operator route; closes open positions with "Period reset"); (2) the go to rescore the 53 wrong prod exits (dry-run list first); (3) where the 0.25% ClawVille fee applies (`ops/house-traders/research-20261112/fees/REPORT.md`); (4) the per-agent strategy review (`ops/house-traders/research-20261112/strategy-review/REPORT.md`).
 
 ### Arena: two new exit settings in the trader rules form (job arena-pipeline, 2026-10-15, STAGING)
 - **Look at:** `https://staging.clawville.world/game`, walk into the Trading Floor, sit at a desk (or open Exchange -> Trading Floor tab), open "My trader" and edit its rules. The exits part now has "Move the stop to breakeven at" (1.05x to 10x, off by default) and "Sell all when liquidity falls by" (10% to 95%, off by default). A trade closed by one of them shows "breakeven stop" or "liquidity drop" in the position list.

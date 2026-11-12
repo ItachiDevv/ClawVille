@@ -64,7 +64,7 @@ export default function HouseAgentWalkup() {
   const eAvailable = useHouseAgentWalkup((state) => state.eAvailable);
   const dismissedIndex = useHouseAgentWalkupPanel((state) => state.dismissedIndex);
   const pendingTemplateId = useHouseAgentWalkupPanel((state) => state.pendingTemplateId);
-  const exchangeOpen = useGameStore((state) => state.exchangeOpen);
+  const exchangeOpen = useGameStore((state) => state.exchangeOpen || state.tradingFloorOpen);
   const myAgent = useFloorArenaUi((state) => state.myAgent);
   const touch = useIsMobile();
   const template = index >= 0 ? (FLOOR_ARENA_TEMPLATES[index] ?? null) : null;
@@ -140,13 +140,15 @@ function LiveLine({ board, templateId }: { board: { data?: FloorArenaHouseBoardV
       </p>
     );
   }
-  // The big screen's window: the contest while it runs, else the last 24 hours.
+  // The big screen's window: the active P&L period when one exists, else the
+  // contest while it runs, else the last 24 hours.
   const { startsAt, endsAt } = board.data.contest;
-  const contestLive = startsAt !== null && endsAt !== null && contestPhase(startsAt, endsAt, Date.now()) === 'live';
-  const stats = contestLive ? agent.stats.contest : agent.stats.last24h;
+  const period = board.data.period !== null;
+  const contestLive = !period && startsAt !== null && endsAt !== null && contestPhase(startsAt, endsAt, Date.now()) === 'live';
+  const stats = period ? agent.stats.period : contestLive ? agent.stats.contest : agent.stats.last24h;
   return (
     <p style={mutedStyle} data-testid="house-agent-walkup-live">
-      {contestLive ? 'Contest' : 'Last 24 h'}:{' '}
+      {period ? 'This period' : contestLive ? 'Contest' : 'Last 24 h'}:{' '}
       <span style={{ color: pnlTone(stats.realisedUsd), fontWeight: 700 }}>{signedUsd(stats.realisedUsd)}</span>{' '}realised
       P&amp;L · {countLabel(stats.wins, 'win')} · {countLabel(stats.losses, 'loss', 'losses')} ·{' '}
       {countLabel(agent.open.length, 'open trade')}

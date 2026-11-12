@@ -22,6 +22,8 @@ import { createRateLimiter } from '../../middleware/rate-limit';
 import type { ArenaAgentRecord, ArenaEvent, ArenaReport, InsertUserAgentInput, ParamUpdateInput } from '../../services/floor-arena/queries';
 
 const NOW = new Date('2026-10-01T12:00:00Z');
+const PERIOD_A = { id: 'period-20260930T000000Z', name: 'Week A', startsAt: new Date('2026-09-30T00:00:00Z'), reason: 'reset', createdBy: 'admin', createdAt: new Date('2026-09-30T00:00:00Z') };
+const PERIOD_B = { id: 'period-20261001T110000Z', name: 'Week B', startsAt: new Date('2026-10-01T11:00:00Z'), reason: 'reset', createdBy: 'admin', createdAt: new Date('2026-10-01T11:00:00Z') };
 const USER = '00000000-0000-4000-8000-00000000000a';
 const OTHER = '00000000-0000-4000-8000-00000000000b';
 const AVATAR = '00000000-0000-4000-8000-0000000000aa';
@@ -141,6 +143,8 @@ function makeDeps() {
       reports.set(id, { ...report, suggestionState: state });
       return true;
     },
+    readTrades: async () => [],
+    readEquity: async (_id, bounds) => ({ series: [], openPnlUsd: 0, startAt: bounds.closedFrom?.toISOString() ?? bounds.openedFrom?.toISOString() ?? null }),
     readPositions: async (_agentId, status) => (status === 'closed' ? [{
       id: 'p1', mint: 'MintA', symbol: 'WIF', source: 'private:nansen-token-screener-sol', openedAt: NOW.toISOString(), sizeUsd: 20,
       tokens: 100, entryPriceUsd: 0.2, entryFillSource: 'quote', entryFeatures: { source: 'private:x', exits: {} }, paramsVersion: 1,
@@ -167,6 +171,7 @@ function makeDeps() {
       type: 'exit' as const, mint: 'M', symbol: 'WIF', side: 'sell' as const, usd: 22, pnlUsd: 2, pnlMult: 1.1, reason: 'tp' as const,
     })); },
     readStats: async () => new Map(),
+    readPeriod: async () => null,
     readLeaderboard: async (window) => [{
       rank: 1, agentId: AGENT_ID, name: 'x', kind: 'user', templateId: 'genesis', realisedUsd: 1, trades: 1, wins: 1,
       losses: 0, deaths: 0, openPositions: 0, lastTradeAt: null, eligible: window === 'contest',
@@ -236,12 +241,34 @@ describe('public arena GETs', () => {
     expect(body.houseAgents.every((house) => house.seated)).toBe(true);
   });
 
-  test('leaderboard validates the window and defaults to contest', async () => {
+  test('leaderboard validates the window and defaults to period (null with no period row)', async () => {
     const { routes } = app();
     expect((await routes.request('/leaderboard?window=7d')).status).toBe(400);
-    const body = await (await routes.request('/leaderboard')).json() as { window: string; rows: Array<{ eligible: boolean }> };
-    expect(body.window).toBe('contest');
-    expect(body.rows[0]!.eligible).toBe(true);
+    const body = await (await routes.request('/leaderboard')).json() as { window: string; period: unknown; rows: Array<{ eligible: boolean }> };
+    expect(body.window).toBe('period');
+    expect(body.period).toBeNull();
+    expect(body.rows[0]!.eligible).toBe(false);
+    const contest = await (await routes.request('/leaderboard?window=contest')).json() as { window: string; period: unknown; rows: Array<{ eligible: boolean }> };
+    expect(contest.window).toBe('contest');
+    expect(contest.period).toBeNull();
+    expect(contest.rows[0]!.eligible).toBe(true);
+  });
+
+  test('leaderboard: the response carries the active period, and a new period is a new cache entry', async () => {
+    const state = app();
+    let period: typeof PERIOD_A | null = PERIOD_A;
+    const reads: Array<[string, string | null]> = [];
+    state.deps.readPeriod = async () => period;
+    state.deps.readLeaderboard = async (window, _now, p) => { reads.push([window, p?.id ?? null]); return []; };
+    const first = await (await state.routes.request('/leaderboard')).json() as { window: string; period: unknown };
+    expect(first).toMatchObject({ window: 'period', period: { id: PERIOD_A.id, name: PERIOD_A.name, startsAt: PERIOD_A.startsAt.toISOString() } });
+    await state.routes.request('/leaderboard');
+    expect(reads).toEqual([['period', PERIOD_A.id]]);
+    // A reset inside the 10 s cache: the next read uses the new period at once.
+    period = PERIOD_B;
+    const second = await (await state.routes.request('/leaderboard')).json() as { period: { id: string } };
+    expect(second.period.id).toBe(PERIOD_B.id);
+    expect(reads).toEqual([['period', PERIOD_A.id], ['period', PERIOD_B.id]]);
   });
 
   test('agent profile: 404 for a bad or unknown id, and never the owner or avatar id', async () => {
@@ -441,7 +468,7 @@ describe('authed arena routes', () => {
     const response = await call('GET', '/me');
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect(await response.json()).toEqual({
-      agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, latestReport: null, withdraw: null,
+      agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, period: null, latestReport: null, withdraw: null,
     });
   });
 
@@ -880,4 +907,140 @@ describe('helpers', () => {
       { path: 'exits.tp', from: [[1.1, 1]], to: [[1.2, 1]] },
     ])).toBe('Changed 2 settings: exits.stop_mult off -> 0.7; exits.tp [[1.1,1]] -> [[1.2,1]]');
   });
+});
+
+
+interface TerminalTradesBody {
+  trades: Array<{ source: string | null; entryFeatures: unknown; symbol: string | null; masked?: boolean }>;
+  nextCursor: { before: string; beforeId: string } | null;
+}
+interface TerminalEquityBody { series: Array<{ closedAt: string; equityUsd: number }>; openPnlUsd: number | null }
+
+describe('terminal history and equity', () => {
+  test('public redaction, exact cursor, limit, and cache separation', async () => {
+    const state = app();
+    await state.call('POST', '/me/launch', launchBody());
+    const queries: unknown[] = [];
+    state.deps.readTrades = async (_id, query) => {
+      queries.push(query);
+      return (await state.deps.readPositions(AGENT_ID, 'closed', 50)).map((p, i) => ({ ...p,
+        id: `00000000-0000-4000-8000-00000000000${i + 1}`, closedAt: '2026-10-01T12:00:00.123456Z' }));
+    };
+    const base = `/agents/${AGENT_ID}/trades`;
+    const first = await (await state.routes.request(`${base}?limit=1`)).json() as TerminalTradesBody;
+    expect(first.trades).toHaveLength(1);
+    expect(first.trades[0]!.source).toBe('addon');
+    expect(first.trades[0]!.entryFeatures).toBeNull();
+    expect(first.trades[0]).not.toHaveProperty('exitPriceUsd');
+    expect(first.nextCursor).toEqual({ before: '2026-10-01T12:00:00.123456Z', beforeId: '00000000-0000-4000-8000-000000000001' });
+    await state.routes.request(`${base}?limit=1`);
+    expect(queries).toHaveLength(1);
+    for (const q of ['limit=2', 'limit=1&outcome=win', 'limit=1&outcome=loss', 'limit=1&reason=stop',
+      'limit=1&before=2026-10-01T12:00:00.123456Z&beforeId=00000000-0000-4000-8000-000000000001',
+      'limit=1&before=2026-10-01T12:00:00.123456Z&beforeId=00000000-0000-4000-8000-000000000002',
+      'limit=1&before=2026-10-01T12:00:00.123455Z&beforeId=00000000-0000-4000-8000-000000000002']) {
+      expect((await state.routes.request(`${base}?${q}`)).status).toBe(200);
+    }
+    expect(queries).toHaveLength(8);
+    expect(queries[2]).toMatchObject({ outcome: 'win', limit: 1 });
+    expect(queries[4]).toMatchObject({ reason: 'stop' });
+    expect((await (await state.routes.request(`${base}?limit=100`)).json() as TerminalTradesBody).nextCursor).toBeNull();
+    state.agents.get(AGENT_ID)!.kind = 'house';
+    state.advance(6000);
+    expect((await (await state.routes.request(base)).json() as TerminalTradesBody).trades[0]!.source).toContain('private:');
+  });
+  test('query validation rejects bad bounds, filters, and incomplete cursors', async () => {
+    const { routes } = app();
+    for (const query of ['limit=0', 'limit=101', 'limit=1.5', 'limit=NaN', 'limit=', 'outcome=draw', 'reason=bad',
+      'before=2026-10-01T00:00:00Z', 'beforeId=00000000-0000-4000-8000-000000000001', 'unknown=x']) {
+      expect((await routes.request(`/agents/${AGENT_ID}/trades?${query}`)).status).toBe(400);
+    }
+    expect((await routes.request(`/agents/${AGENT_ID}/equity?window=bad`)).status).toBe(400);
+    expect((await routes.request(`/agents/${AGENT_ID}/trades`)).status).toBe(404);
+  });
+  test('owner auth and private fields stay equal for human and agent identities', async () => {
+    const state = app();
+    for (const path of ['/me/trades', '/me/equity']) expect((await state.routes.request(path)).status).toBe(401);
+    await state.call('POST', '/me/launch', launchBody());
+    state.deps.readTrades = async () => state.deps.readPositions(AGENT_ID, 'closed', 50);
+    for (const kind of ['user', 'agent']) {
+      const headers = { 'x-test-user': USER, 'x-test-kind': kind };
+      const response = await state.call('GET', '/me/trades', undefined, headers);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toContain('no-store');
+      const body = await response.json() as TerminalTradesBody;
+      expect(body.trades[0]!.source).toContain('private:');
+      expect(body.trades[0]!.entryFeatures).not.toBeNull();
+      expect((await state.call('GET', '/me/equity', undefined, headers)).status).toBe(200);
+    }
+    expect((await state.call('GET', '/me/trades', undefined, { 'x-test-user': OTHER })).status).toBe(404);
+  });
+  test('equity windows isolate caches and pass exact time boundaries', async () => {
+    const state = app();
+    await state.call('POST', '/me/launch', launchBody());
+    const calls: unknown[] = [];
+    state.deps.readEquity = async (_id, bounds) => {
+      calls.push(bounds);
+      return { series: [], startAt: null, openPnlUsd: null };
+    };
+    for (const window of ['all', '24h', '7d', 'contest']) {
+      const body = await (await state.routes.request(`/agents/${AGENT_ID}/equity?window=${window}`)).json() as TerminalEquityBody;
+      expect(body.series).toEqual([]);
+      expect(body.openPnlUsd).toBeNull();
+      await state.routes.request(`/agents/${AGENT_ID}/equity?window=${window}`);
+    }
+    expect(calls).toEqual([
+      { openedFrom: null, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: false },
+      { openedFrom: null, openedTo: null, closedFrom: new Date('2026-09-30T12:00:00.000Z'), closedTo: null, unresolvedAsLoss: false },
+      { openedFrom: null, openedTo: null, closedFrom: new Date('2026-09-24T12:00:00.000Z'), closedTo: null, unresolvedAsLoss: false },
+      { openedFrom: new Date(FLOOR_ARENA_CONTEST.startsAt), openedTo: new Date(FLOOR_ARENA_CONTEST.endsAt), closedFrom: null, closedTo: null, unresolvedAsLoss: true },
+    ]);
+  });
+  test('equity and trades default to the period window and carry window + period', async () => {
+    const state = app();
+    await state.call('POST', '/me/launch', launchBody());
+    const equityBounds: unknown[] = [];
+    const tradeQueries: Array<Record<string, unknown>> = [];
+    state.deps.readEquity = async (_id, bounds) => { equityBounds.push(bounds); return { series: [], startAt: null, openPnlUsd: null }; };
+    state.deps.readTrades = async (_id, query) => { tradeQueries.push(query as unknown as Record<string, unknown>); return []; };
+    // No period row: the period window is identical to all.
+    const none = await (await state.routes.request(`/agents/${AGENT_ID}/equity`)).json() as { window: string; period: unknown };
+    expect(none).toMatchObject({ window: 'period', period: null });
+    expect(equityBounds[0]).toEqual({ openedFrom: null, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: false });
+    state.deps.readPeriod = async () => PERIOD_A;
+    const equity = await (await state.routes.request(`/agents/${AGENT_ID}/equity`)).json() as { window: string; period: { id: string } };
+    expect(equity.window).toBe('period');
+    expect(equity.period.id).toBe(PERIOD_A.id);
+    expect(equityBounds[1]).toEqual({ openedFrom: PERIOD_A.startsAt, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: true });
+    const trades = await (await state.routes.request(`/agents/${AGENT_ID}/trades`)).json() as { window: string; period: { id: string } };
+    expect(trades.window).toBe('period');
+    expect(trades.period.id).toBe(PERIOD_A.id);
+    expect(tradeQueries[0]!.bounds).toEqual({ openedFrom: PERIOD_A.startsAt, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: true });
+    const all = await (await state.routes.request(`/agents/${AGENT_ID}/trades?window=all`)).json() as { window: string; period: { id: string } };
+    expect(all.window).toBe('all');
+    expect(tradeQueries[1]!.bounds).toEqual({ openedFrom: null, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: false });
+    expect((await state.routes.request(`/agents/${AGENT_ID}/trades?window=bad`)).status).toBe(400);
+    for (const kind of ['user', 'agent']) {
+      const headers = { 'x-test-user': USER, 'x-test-kind': kind };
+      expect(await (await state.call('GET', '/me/equity', undefined, headers)).json()).toMatchObject({ window: 'period', period: { id: PERIOD_A.id } });
+      expect(await (await state.call('GET', '/me/trades', undefined, headers)).json()).toMatchObject({ window: 'period', period: { id: PERIOD_A.id } });
+      const me = await (await state.call('GET', '/me', undefined, headers)).json() as { period: { id: string }; stats: Record<string, unknown> };
+      expect(me.period.id).toBe(PERIOD_A.id);
+      expect(Object.keys(me.stats)).toContain('period');
+    }
+  });
+});
+
+
+test('terminal reads use the real ledger gate and public symbol mask', async () => {
+  const bound = app({ auth: [fakeIdentity, requireLedgerCapableIdentity] });
+  for (const path of ['/me/trades', '/me/equity']) {
+    expect((await bound.call('GET', path, undefined, { 'x-test-user': USER, 'x-test-kind': 'agent', 'x-test-ledger': 'false' })).status).toBe(403);
+  }
+  const state = app();
+  await state.call('POST', '/me/launch', launchBody());
+  state.deps.readTrades = async () => (await state.deps.readPositions(AGENT_ID, 'closed', 50)).map(p => ({ ...p, symbol: 'n1gg3r' }));
+  const result = await (await state.routes.request(`/agents/${AGENT_ID}/trades`)).json() as TerminalTradesBody;
+  expect(result.trades[0]!.symbol).toBe('***');
+  expect(result.trades[0]!.masked).toBe(true);
 });

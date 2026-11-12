@@ -1,7 +1,7 @@
 /**
  * Trading Floor Arena (paper contest) tables. Contract:
  * `docs/trading-floor-arena.md` §4. Migrations: `0070_floor_arena.sql` + `0072_floor_arena_sources.sql`
- * + `0074_floor_arena_withdraw.sql` + `0080_floor_arena_recording.sql` (idempotent, applied by the CI migrate gate,
+ * + `0074_floor_arena_withdraw.sql` + `0080_floor_arena_recording.sql` + `0122_floor_arena_periods.sql` (idempotent, applied by the CI migrate gate,
  * NEVER db:push). The 0080 research columns and tables are written by the engine only and read by no route.
  *
  * `floor_arena_addon_calls` and `floor_arena_withdrawals` record REAL USDC
@@ -162,7 +162,7 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
 }, (t) => ({
   statusValid: check('floor_arena_positions_status_valid', sql`${t.status} IN ('open','closed')`),
   closedStamp: check('floor_arena_positions_closed_stamp', sql`(${t.status} = 'open' AND ${t.closedAt} IS NULL) OR (${t.status} = 'closed' AND ${t.closedAt} IS NOT NULL AND ${t.exitReason} IS NOT NULL)`),
-  exitReasonValid: check('floor_arena_positions_exit_reason_valid', sql`${t.exitReason} IS NULL OR ${t.exitReason} IN ('tp','stop','trail','time','manual','unresolved')`),
+  exitReasonValid: check('floor_arena_positions_exit_reason_valid', sql`${t.exitReason} IS NULL OR ${t.exitReason} IN ('tp','stop','trail','time','manual','unresolved','reset')`),
   entryFillSourceValid: check('floor_arena_positions_entry_fill_source_valid', sql`${t.entryFillSource} IS NULL OR ${t.entryFillSource} IN ('quote')`),
   exitFillSourceValid: check('floor_arena_positions_exit_fill_source_valid', sql`${t.exitFillSource} IS NULL OR ${t.exitFillSource} IN ('quote','mark_fallback','quote_confirmed','unresolved')`),
   // A closed position has a P&L unless its exit is unresolved.
@@ -174,6 +174,19 @@ export const floorArenaPositions = pgTable('floor_arena_positions', {
   closedIdx: index('floor_arena_positions_closed_idx').on(t.closedAt),
   openMintUniq: uniqueIndex('floor_arena_positions_open_mint_uniq').on(t.agentId, t.mint).where(sql`${t.status} = 'open'`),
 }));
+
+/** P&L periods (migration 0122, 2026-11-12). The active period is the row with the greatest `starts_at` at or
+ *  before now; the `period` board window counts only positions opened at or after it. A reset inserts a row and
+ *  deletes nothing (old trades stay under 'all'). Written only by POST /api/admin/floor-arena/period/reset;
+ *  `id` = `period-<UTC yyyymmddThhmmssZ>`, `starts_at` = the DB now(). */
+export const floorArenaPeriods = pgTable('floor_arena_periods', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  startsAt: timestamp('starts_at', { withTimezone: true }).notNull().unique('floor_arena_periods_starts_at_key'),
+  reason: text('reason').notNull(),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
 
 /** Research (migration 0080): the bounded mark path of a position ('hold') and its 30-minute post-exit tail
  *  ('tail'), one row per time bucket, at most 800 rows per position (engine `markPathSlot`). Multiples are price /
@@ -434,3 +447,4 @@ export type FloorArenaWithdrawalRow = typeof floorArenaWithdrawals.$inferSelect;
 export type FloorArenaPositionMarkRow = typeof floorArenaPositionMarks.$inferSelect;
 export type FloorArenaEventArchiveRow = typeof floorArenaEventsArchive.$inferSelect;
 export type FloorArenaPositionTroughRow = typeof floorArenaPositionTroughs.$inferSelect;
+export type FloorArenaPeriodRow = typeof floorArenaPeriods.$inferSelect;

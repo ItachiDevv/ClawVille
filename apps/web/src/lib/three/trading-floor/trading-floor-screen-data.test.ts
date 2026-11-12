@@ -10,6 +10,7 @@ import {
   FLOOR_ARENA_TEMPLATES,
 } from '@clawville/shared';
 
+import { readLeaderboard } from '@/hooks/use-floor-arena';
 import { readHouseBoard } from '@/hooks/use-floor-arena-house-board';
 import {
   buildFloorScreenData,
@@ -60,6 +61,7 @@ function wireAgent(houseId: string, overrides: Record<string, unknown> = {}): Re
       all: stats({ realisedUsd: -40, trades: 30, wins: 10, losses: 20 }),
       last24h: stats({ realisedUsd: -1.5, trades: 3, wins: 1, losses: 2, lastTradeAt: minutesAgo(30) }),
       contest: stats({ realisedUsd: 7.77, trades: 17, wins: 7, losses: 10, lastTradeAt: minutesAgo(30) }),
+      period: stats({ realisedUsd: 3.25, trades: 5, wins: 4, losses: 1, lastTradeAt: minutesAgo(30) }),
     },
     scan: { at: minutesAgo(2), evaluated: 412, passed: 3, held: 1, topSkip: [{ code: 'liq', count: 300 }, { code: 'age', count: 50 }] },
     watching: { at: minutesAgo(1), symbol: 'BONK' },
@@ -396,13 +398,14 @@ describe('Trading Floor board data — the P&L window and the contest window', (
   test('the countdown keeps minutes, floors, and is null for a guessed time', () => {
     const start = Date.parse(FLOOR_ARENA_CONTEST.startsAt);
     const end = Date.parse(FLOOR_ARENA_CONTEST.endsAt);
-    expect(contestCountdownLabel(start, end, Date.parse('2026-09-30T18:47:30.000Z'))).toBe('STARTS IN 3H 12M');
+    expect(contestCountdownLabel(start, end, Date.parse('2026-09-30T18:47:30.000Z'))).toBeNull();
+    expect(contestCountdownLabel(start, end, start)).toBe('ENDS IN 4D 05H 59M');
     expect(contestCountdownLabel(start, end, NOW)).toBe('ENDS IN 3D 15H 59M');
     expect(contestCountdownLabel(start, end, end - 45 * 60_000)).toBe('ENDS IN 45M');
     expect(contestCountdownLabel(start, end, end - (26 * 60 + 3) * 60_000)).toBe('ENDS IN 1D 02H 03M');
     expect(contestCountdownLabel(start, end, end - 3_599_000)).toBe('ENDS IN 59M');
     expect(contestCountdownLabel(start, end, end - 30_000)).toBe('ENDS IN UNDER 1M');
-    expect(contestCountdownLabel(start, end, end + 1)).toBe('CONTEST ENDED');
+    expect(contestCountdownLabel(start, end, end + 1)).toBeNull();
     expect(contestCountdownLabel(null, end, NOW)).toBeNull();
     expect(contestCountdownLabel(end, start, NOW)).toBeNull();
     for (const hostile of [Number.NaN, 1e20, 8.64e15, -1]) expect(contestCountdownLabel(start, end, hostile)).toBeNull();
@@ -485,6 +488,7 @@ describe('Trading Floor board data — redraw signature', () => {
                 all: stats({ realisedUsd: 999, trades: 999 }),
                 last24h: stats({ realisedUsd: -1.5, trades: 99, wins: 1, losses: 2, deaths: 4, openPositions: 3, lastTradeAt: later(1) }),
                 contest: stats({ realisedUsd: 7.77, trades: 99, wins: 7, losses: 10, deaths: 4, openPositions: 3, lastTradeAt: later(1) }),
+                period: stats({ realisedUsd: 3.25, trades: 99, wins: 4, losses: 1, deaths: 4, openPositions: 3, lastTradeAt: later(1) }),
               },
             },
           },
@@ -516,6 +520,7 @@ describe('Trading Floor board data — redraw signature', () => {
       { stats: { all: stats(), last24h: stats({ realisedUsd: -1.5, wins: 1, losses: 2 }), contest: stats({ realisedUsd: 7.78, wins: 7, losses: 10 }) } },
       { stats: { all: stats(), last24h: stats({ realisedUsd: -1.6, wins: 1, losses: 2 }), contest: stats({ realisedUsd: 7.77, wins: 7, losses: 10 }) } },
       { stats: { all: stats(), last24h: stats({ realisedUsd: -1.5, wins: 1, losses: 3 }), contest: stats({ realisedUsd: 7.77, wins: 7, losses: 10 }) } },
+      { stats: { all: stats(), last24h: stats({ realisedUsd: -1.5, wins: 1, losses: 2 }), contest: stats({ realisedUsd: 7.77, wins: 7, losses: 10 }), period: stats({ realisedUsd: 3.26, wins: 4, losses: 1 }) } },
     ];
     for (const change of changes) {
       const moved = floorScreenSignature(inputs({ houseBoard: ready(view({ 'house:genesis': change })) }));
@@ -602,7 +607,82 @@ describe('Trading Floor board data — the tape field kept for the decor test', 
 });
 
 // ---------------------------------------------------------------------------
-// Rotation: page A house agents, page B the contest leaderboard, 15 s each
+// Arena P&L reset (2026-11-12): the active period picks the window
+// ---------------------------------------------------------------------------
+
+const PERIOD = { id: 'period-20261001T060000Z', name: 'Fresh start', startsAt: '2026-10-01T06:00:00.000Z' };
+
+/** The leaderboard hook's view (`readLeaderboard`) of `GET /leaderboard?window=period`. */
+const periodBoard = (period: unknown, rows: unknown[] = []) => ready(readLeaderboard({ window: 'period', period, rows }));
+
+describe('Trading Floor board data — the active P&L period', () => {
+  test('with a period, page A shows the period stats and says PERIOD, inside or outside the contest', () => {
+    for (const at of [BEFORE, NOW, AFTER]) {
+      const data = buildFloorScreenData(inputs({ leaderboard: periodBoard(PERIOD) }), at, 'house');
+      expect(data.window).toBe('period');
+      expect([data.columns[0]!.realisedUsd, data.columns[0]!.wins, data.columns[0]!.losses]).toEqual([3.25, 4, 1]);
+      expect(footer(inputs({ leaderboard: periodBoard(PERIOD) }), at)).toEndWith('P&L = REALISED, PERIOD');
+    }
+  });
+
+  test('with no period (null, absent, unreadable or not read yet) page A keeps the contest-else-24h rule', () => {
+    for (const leaderboard of [periodBoard(null), periodBoard(undefined), periodBoard({ id: 'x', name: 'x', startsAt: 'soon' }), LOADING, undefined]) {
+      const during = buildFloorScreenData(inputs({ leaderboard }), NOW, 'house');
+      expect(during.window).toBe('contest');
+      expect(during.columns[0]!.realisedUsd).toBe(7.77);
+      const after = buildFloorScreenData(inputs({ leaderboard }), AFTER, 'house');
+      expect(after.window).toBe('24h');
+      expect(after.columns[0]!.realisedUsd).toBe(-1.5);
+    }
+  });
+
+  test('page B is the period leaderboard: PERIOD with a period, ALL TRADES without', () => {
+    const rows = [wireRow()];
+    const withPeriod = buildFloorScreenData(inputs({ leaderboard: periodBoard(PERIOD, rows) }), PAGE_B);
+    expect(withPeriod.leaderboard.window).toBe('period');
+    expect(withPeriod.leaderboard.rows.map((row) => row.name)).toEqual(['alice trader']);
+    const strings = drawn(inputs({ leaderboard: periodBoard(PERIOD, rows) }), PAGE_B).map((p) => p.value);
+    expect(strings).toContain('LEADERBOARD · PERIOD');
+    expect(strings.at(-1)).toEndWith('P&L = REALISED, PERIOD');
+    const without = drawn(inputs({ leaderboard: periodBoard(null, rows) }), PAGE_B).map((p) => p.value);
+    expect(without).toContain('LEADERBOARD · ALL TRADES');
+    expect(without.at(-1)).toEndWith('P&L = REALISED, ALL TRADES');
+    expect(without.join(' | ')).not.toContain('CONTEST');
+  });
+
+  test('the countdown shows only while the contest runs', () => {
+    expect(buildFloorScreenData(inputs(), NOW).countdownLabel).toBe('ENDS IN 3D 15H 59M');
+    expect(buildFloorScreenData(inputs({ leaderboard: periodBoard(PERIOD) }), NOW).countdownLabel).toBe('ENDS IN 3D 15H 59M');
+    for (const at of [BEFORE, AFTER]) {
+      expect(buildFloorScreenData(inputs(), at).countdownLabel).toBeNull();
+      expect(buildFloorScreenData(inputs({ leaderboard: periodBoard(PERIOD) }), at).countdownLabel).toBeNull();
+    }
+  });
+
+  test("the house board's own period wins; the leaderboard read is the fallback", () => {
+    const own = view({}, { period: PERIOD });
+    for (const leaderboard of [periodBoard(null), LOADING, undefined]) {
+      const data = buildFloorScreenData(inputs({ houseBoard: ready(own), leaderboard }), AFTER, 'house');
+      expect(data.window).toBe('period');
+      expect(data.columns[0]!.realisedUsd).toBe(3.25);
+    }
+    expect(buildFloorScreenData(inputs({ houseBoard: ready(view({}, { period: null })), leaderboard: periodBoard(PERIOD) }), AFTER, 'house').window).toBe('period');
+    expect(buildFloorScreenData(inputs({ houseBoard: ready(view({}, { period: null })), leaderboard: periodBoard(null) }), AFTER, 'house').window).toBe('24h');
+  });
+
+  test('page A repaints when a period starts, not when only the leaderboard rows move', () => {
+    const none = floorScreenSignature(inputs({ leaderboard: periodBoard(null, [wireRow()]) }), 'house');
+    const started = floorScreenSignature(inputs({ leaderboard: periodBoard(PERIOD, [wireRow()]) }), 'house');
+    expect(started).not.toBe(none);
+    expect(floorScreenSignature(inputs({ leaderboard: periodBoard(PERIOD, []) }), 'house')).toBe(started);
+    expect(floorScreenSignature(inputs({ leaderboard: periodBoard(PERIOD, [wireRow()]) }), 'leaderboard')).not.toBe(
+      floorScreenSignature(inputs({ leaderboard: periodBoard(null, [wireRow()]) }), 'leaderboard'),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rotation: page A house agents, page B the period leaderboard, 15 s each
 // ---------------------------------------------------------------------------
 
 /** A leaderboard row as the ROUTE sends it (pre-P15 board fixture). */
@@ -658,7 +738,8 @@ describe('Trading Floor board data — page rotation and the leaderboard', () =>
     // The bare array the panel hook returns reads the same.
     expect(buildFloorScreenData(inputs({ leaderboard: ready(rows) }), PAGE_B).leaderboard).toEqual(data.leaderboard);
     const strings = drawn(inputs({ leaderboard: ready({ rows }) }), PAGE_B).map((p) => p.value);
-    expect(strings).toContain('LEADERBOARD · CONTEST');
+    // No `period` on the read: the period window counts every trade.
+    expect(strings).toContain('LEADERBOARD · ALL TRADES');
     expect(strings).toContain('NAME NOT SHOWN');
     expect(strings).toContain('N/A');
   });

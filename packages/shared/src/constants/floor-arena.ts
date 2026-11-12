@@ -367,6 +367,12 @@ export const FLOOR_ARENA_PAPER_COSTS = deepFreeze({
   mark_fallback_pool_fee_pct: 1.25,
 } as const);
 
+/** D4 (2026-11-12, measured on 130 prod positions): a sell quote refused far below a FRESH DexScreener mark at or
+ *  under this fraction of that mark disputes the mark (`markDisputed`): the mark never books for that exit history;
+ *  a confirmed low quote books (`quote_confirmed`), else the exit closes `unresolved`. No transient glitch was ever
+ *  this deep (0 of 103 episodes); deep lows were real collapses under a frozen mark. The rescore script mirrors it. */
+export const FLOOR_ARENA_DEEP_LOW_OF_MARK = 0.2;
+
 export interface FloorArenaContest {
   id: 'arena-week-1';
   name: string;
@@ -940,16 +946,26 @@ export const FLOOR_ARENA_POSITION_STATUSES = deepFreeze(['open', 'closed'] as co
 export type FloorArenaPositionStatus = (typeof FLOOR_ARENA_POSITION_STATUSES)[number];
 
 /** `unresolved`: the exit could not be priced; the row closes with `pnl_usd` NULL (the only case
- *  where a closed position has no P&L). */
-export const FLOOR_ARENA_EXIT_REASONS = deepFreeze(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved'] as const);
+ *  where a closed position has no P&L). `reset` (2026-11-12): the engine closed a position that was still
+ *  open when a new P&L period started (`floor_arena_periods`), through the normal exit path. */
+export const FLOOR_ARENA_EXIT_REASONS = deepFreeze(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved', 'reset'] as const);
 export type FloorArenaExitReason = (typeof FLOOR_ARENA_EXIT_REASONS)[number];
+
+/** The active P&L period (`floor_arena_periods`, 2026-11-12): the row with the greatest `startsAt` at or before
+ *  now. The `period` window counts only positions opened at or after `startsAt` (ISO). Null when no row exists. */
+export interface FloorArenaPeriod {
+  id: string;
+  name: string;
+  startsAt: string;
+}
 
 /** Entries always fill on a quote; only exits may fall back to the mark (D4). */
 export const FLOOR_ARENA_ENTRY_FILL_SOURCES = deepFreeze(['quote'] as const);
 export type FloorArenaEntryFillSource = (typeof FLOOR_ARENA_ENTRY_FILL_SOURCES)[number];
 
-/** `quote_confirmed`: with no fresh mark, a sell quote below 0.5x the reference price was refused 3+ times
- *  over at least 45 s, and the exit then filled at that latest quote (D4 hardening). */
+/** `quote_confirmed`: with no fresh mark (a sell quote below 0.5x the reference price) or with a disputed fresh mark
+ *  (a quote at or under `FLOOR_ARENA_DEEP_LOW_OF_MARK` of it), low quotes were refused at least 2 times in a row over
+ *  at least 45 s, and the exit then filled at that latest quote (D4 hardening). */
 export const FLOOR_ARENA_EXIT_FILL_SOURCES = deepFreeze(['quote', 'mark_fallback', 'quote_confirmed', 'unresolved'] as const);
 export type FloorArenaExitFillSource = (typeof FLOOR_ARENA_EXIT_FILL_SOURCES)[number];
 
@@ -1056,7 +1072,11 @@ export function buildFloorArenaWithdrawAddressMessage(input: {
  *  `firstFailureAt` = first failure of the whole exit history (the 30-minute `unresolved` clock; a
  *  pause after a low quote does not move it). `runStartedAt` = start of the current failure run (the
  *  3-failures-over-45-s mark fallback counts from it). `streakStartedAt` = first low quote of the
- *  current low streak (the 45-s low-quote confirmation window). */
+ *  current low streak (the 45-s low-quote confirmation window). Engine only: `ExitRun` in engine.ts adds an
+ *  optional `markDisputed: true` (2026-11-12, a quote at or under
+ *  `FLOOR_ARENA_DEEP_LOW_OF_MARK` of the fresh mark disputed it) and the optional deep-low streak
+ *  `deepLowCount` / `deepStreakStartedAt` / `lastDeepLowAt` (only these deep lows confirm a quote under a
+ *  disputed mark; see engine.ts). */
 export interface FloorArenaExitRun {
   firstFailureAt: string;
   runStartedAt: string;

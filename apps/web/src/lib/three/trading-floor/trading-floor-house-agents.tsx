@@ -341,7 +341,7 @@ function TradingFloorHouseAgentFigures({ active, readPlayer }: TradingFloorHouse
     const walkup = stepHouseAgentWalkup(
       tracker,
       player,
-      useGameStore.getState().exchangeOpen,
+      useGameStore.getState().exchangeOpen || useGameStore.getState().tradingFloorOpen,
       live,
       setHouseAgentWalkup,
     );

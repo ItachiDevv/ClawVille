@@ -3,10 +3,10 @@
 import { floorArenaTemplateById } from '@clawville/shared';
 
 import { useFloorArenaAgent, useFloorArenaEvents } from '@/hooks/use-floor-arena';
+import { TerminalEquity, TerminalTrades } from '../terminal/terminal-history';
 import { FLOOR_TEXT } from '../tokens';
 import {
   ArenaBlock,
-  ArenaClosedTrades,
   ArenaEventStream,
   ArenaOpenPositions,
   ArenaParamChanges,
@@ -115,9 +115,8 @@ export function AgentProfile({
           <ArenaReport report={data.latestReport} nowMs={nowMs} />
         </ArenaBlock>
       ) : null}
-      <ArenaBlock title="Recent trades">
-        <ArenaClosedTrades positions={data.closedPositions} nowMs={nowMs} />
-      </ArenaBlock>
+      <TerminalEquity key={`equity:${agentId}`} agentId={agentId} active={active} />
+      <TerminalTrades key={`trades:${agentId}`} agentId={agentId} active={active} nowMs={nowMs} />
       <ArenaBlock title="Rule changes">
         <ArenaParamChanges changes={data.paramChanges} nowMs={nowMs} />
       </ArenaBlock>

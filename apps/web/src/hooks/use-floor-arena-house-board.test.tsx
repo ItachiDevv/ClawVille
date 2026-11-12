@@ -245,6 +245,15 @@ describe('house-board fetch and reader', () => {
     expect(dip!.open).toEqual([]);
   });
 
+  test('the top-level period reads as is; a missing or broken one reads null', () => {
+    const period = { id: 'period-20261112T090000Z', name: 'Fresh start', startsAt: '2026-11-12T09:00:00.000Z' };
+    expect(readHouseBoard({ ...boardWire([]), period }).period).toEqual(period);
+    expect(readHouseBoard(boardWire([])).period).toBeNull();
+    expect(readHouseBoard({ ...boardWire([]), period: { id: 'x', name: 'x', startsAt: 'soon' } }).period).toBeNull();
+    const agent = readHouseBoard({ ...boardWire([agentWire('house:genesis', { stats: { period: { realisedUsd: 2.5, trades: 1 } } })]), period }).agents[0]!;
+    expect(agent.stats.period.realisedUsd).toBe(2.5);
+  });
+
   test('an unreadable body still gives five null columns', () => {
     const view = readHouseBoard({});
     expect(view.agents).toHaveLength(5);

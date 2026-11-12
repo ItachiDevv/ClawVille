@@ -80,7 +80,7 @@ function arenaSection(): string {
 /** Tool name -> the method and path its description must name. */
 const ARENA_TOOLS: Record<string, string> = {
   clawville_arena_templates: 'GET {apiBase}/api/floor/arena/templates',
-  clawville_arena_leaderboard: 'GET {apiBase}/api/floor/arena/leaderboard?window=contest|24h|all',
+  clawville_arena_leaderboard: 'GET {apiBase}/api/floor/arena/leaderboard?window=period|contest|24h|all',
   clawville_arena_agent: 'GET {apiBase}/api/floor/arena/agents/:id',
   clawville_arena_my_trader: 'GET {apiBase}/api/floor/arena/me',
   clawville_arena_launch: 'POST {apiBase}/api/floor/arena/me/launch',
@@ -121,8 +121,8 @@ describe('Trading Arena section of the trading page', () => {
   });
 
   test('rides the current protocol and the served pointer hashes the same bytes', () => {
-    expect(PROTOCOL_VERSION).toBe(120);
-    expect(protocolPointer(API)).toMatchObject({ version: 120, contentHash: contentHashOf(buildProtocolManual(API)) });
+    expect(PROTOCOL_VERSION).toBe(135);
+    expect(protocolPointer(API)).toMatchObject({ version: 135, contentHash: contentHashOf(buildProtocolManual(API)) });
   });
 
   test('generates templates, hard rules, costs, size and contest from the constants', () => {
@@ -152,7 +152,7 @@ describe('Trading Arena section of the trading page', () => {
     const section = arenaSection();
     for (const path of [
       `GET ${ARENA}/templates`,
-      `GET ${ARENA}/leaderboard?window=contest|24h|all`,
+      `GET ${ARENA}/leaderboard?window=period|contest|24h|all`,
       `GET ${ARENA}/contest`,
       `GET ${ARENA}/agents/:id`,
       `GET ${ARENA}/agents/:id/events?after=`,
@@ -196,7 +196,7 @@ describe('Trading Arena section of the trading page', () => {
       expect(section).toContain(`\`${field}\``);
     }
     expect(section).toMatch(/a\s+break-even close is neither/);
-    expect(section).toMatch(/exit reason `unresolved` and no P&L\. On the `24h` and\s+`all` windows/);
+    expect(section).toMatch(/exit reason `unresolved` and no P&L; a disputed DexScreener price\s+never counts as a usable price\. On the `24h` and\s+`all` windows/);
     // Privacy split (arena-api Codex r2): a player's agent is public for
     // strategy, state and results only; reports and add-ons stay on /me.
     expect(section).toMatch(/carries no add-on settings, payment address,\s+provisioning state or reports/);
@@ -344,7 +344,7 @@ describe('Trading Arena section of the trading page', () => {
     expect(section).toMatch(/The `contest` window counts the positions\s+OPENED inside the contest window, whatever their close time: a window position\s+that closes after the end still counts\./);
     // D31: unresolved counts nowhere on 24h/all and in reports; on contest it is a loss of its stake.
     expect(section).toMatch(/On the `24h` and\s+`all` windows, and in the \d+-(minute|hour) reports, it is left out of `realisedUsd` and\s+of every count/);
-    expect(section).toMatch(new RegExp(`On the \`contest\` window it counts\\s+as a loss of its open stake: its P&L is the proceeds of its earlier sold legs\\s+minus its \\$${FLOOR_ARENA_POSITION_USD} size`));
+    expect(section).toMatch(new RegExp(`On \`contest\`, and on \`period\` after a reset, it counts\\s+as a loss of its open stake: its P&L is the proceeds of its earlier sold legs\\s+minus its \\$${FLOOR_ARENA_POSITION_USD} size`));
     expect(section).toMatch(/size, that P&L is in `realisedUsd`, and it counts like any other close \(a trade, a win or a\s+loss by the sign of that P&L, and a death when proceeds divided by size is 0\.5\s+or lower\)/);
     expect(section).not.toMatch(/no P&L: it is left out of/);
     // The manual's words are the code's rules (leaderboard.ts resolveLeaderboardBounds).
@@ -452,7 +452,7 @@ describe('Trading Arena section of the trading page', () => {
     // answers), v82 (bounty list bonusRewards), v81 (security batch 2) and v80;
     // the v80 P5 note, the v81, v82 and v83 notes must stay in the version log,
     // in order, before the v84 note and before the constant.
-    expect(PROTOCOL_VERSION).toBe(120);
+    expect(PROTOCOL_VERSION).toBe(135);
     const constAt = src.indexOf('export const PROTOCOL_VERSION');
     const v80At = src.indexOf('// v80 (2026-10-02, P5 arena wallet WITHDRAW');
     const v81At = src.indexOf('// v81 (2026-10-02, security batch 2');
@@ -608,7 +608,8 @@ describe('Trading Arena tools', () => {
     expect(byName.get('clawville_arena_seat')!.input_schema.required).toEqual(['seated']);
     expect(byName.get('clawville_arena_set_status')!.input_schema.properties.status?.enum).toEqual(['active', 'paused']);
     expect(byName.get('clawville_arena_suggestion')!.input_schema.properties.action?.enum).toEqual(['apply', 'dismiss']);
-    expect(byName.get('clawville_arena_leaderboard')!.input_schema.properties.window?.enum).toEqual(['contest', '24h', 'all']);
+    expect(byName.get('clawville_arena_leaderboard')!.input_schema.properties.window?.enum).toEqual(['period', 'contest', '24h', 'all']);
+    expect(byName.get('clawville_arena_leaderboard')!.input_schema.properties.window?.default).toBe('period');
     // Row fields match the route: losses are closes below 0; break-even is neither.
     expect(byName.get('clawville_arena_leaderboard')!.description).toContain(
       'wins (closed with pnl_usd above 0), losses (closed with pnl_usd below 0; a break-even close is neither), deaths',
@@ -722,5 +723,54 @@ describe('Trading Arena orientation and Nori', () => {
 
   test('adds no arena line to the per-decision scope, because no [ACTION:] verb exists for it', () => {
     expect(DECISION_SCOPE.some((line) => line.includes('/api/floor/arena'))).toBe(false);
+  });
+});
+
+describe('Trading Arena P&L period (protocol 135)', () => {
+  test('the manual names the period window, its default, the period field and the reset close', () => {
+    const flat = arenaSection().replace(/\s+/g, ' ');
+    expect(flat).toContain('The default window is `period` (see Trading Arena P&L period below).');
+    expect(arenaSection()).toContain('## Trading Arena P&L period (protocol 135)');
+    expect(flat).toContain('The default arena window is `period`: it counts the positions OPENED at or after the start of the current arena period.');
+    expect(flat).toContain('While a period is active, an unresolved close on the `period` window counts as a loss of its open stake, as on the `contest` window; with no period, `period` is identical to `all`.');
+    expect(flat).toContain('older trades stay on the `all` window (shown as "All time")');
+    expect(flat).toContain('or `null` before the first reset, and then `period` counts every position like `all`.');
+    expect(flat).toContain('with exit reason `reset` (shown as "Period reset"). It never invents a price: with no usable price the close is `unresolved`.');
+    expect(flat).toContain('never feeds the reports or the tuner.');
+    expect(flat).toContain('reason=tp|stop|trail|time|manual|unresolved|reset and window=period|24h|7d|contest|all (default period,');
+    expect(flat).toContain('accept window=period|24h|7d|contest|all (default period, protocol 135).');
+    expect(flat).toContain('Contest unresolved closes, and period ones while a period is active, contribute realisedUsd - sizeUsd.');
+    // The LEAD-FILL markers are source comments only: they never reach the served text.
+    expect(buildProtocolManual(API)).not.toContain('LEAD-FILL');
+  });
+
+  test('the manual states the D4 disputed-price rule (0.2x of the DexScreener price, 2026-11-12)', () => {
+    const flat = arenaSection().replace(/\s+/g, ' ');
+    expect(flat).toContain('A sell fills at the DexScreener price only when sell quotes fail and that price is not disputed.');
+    expect(flat).toContain('When sell quotes sit at or under 0.2x of the DexScreener price, that price is treated as wrong: a confirmed low quote books the exit, otherwise it closes `unresolved` after 30 minutes.');
+    expect(flat).toContain('closes with exit reason `unresolved` and no P&L; a disputed DexScreener price never counts as a usable price.');
+    expect(readFileSync(join(import.meta.dir, '..', 'skill-protocol-topics', 'trading.ts'), 'utf8')).not.toContain('LEAD-FILL');
+  });
+
+  test('tools carry the period window, the period default and the reset reason', () => {
+    const byName = new Map(CLAWVILLE_GAME_TOOLS.map((tool) => [tool.name, tool]));
+    for (const name of ['clawville_arena_equity', 'clawville_arena_my_equity', 'clawville_arena_trades', 'clawville_arena_my_trades']) {
+      expect(byName.get(name)!.input_schema.properties.window?.enum).toEqual(['period', '24h', '7d', 'contest', 'all']);
+    }
+    for (const name of ['clawville_arena_trades', 'clawville_arena_my_trades']) {
+      expect(byName.get(name)!.input_schema.properties.reason?.enum).toContain('reset');
+      expect(byName.get(name)!.description).toContain('Exit reason reset means a P&L period reset closed the trade.');
+    }
+    expect(byName.get('clawville_arena_leaderboard')!.description).toContain('leaderboard?window=period|contest|24h|all (default period)');
+    expect(byName.get('clawville_arena_leaderboard')!.description).toContain('On the contest window, and on the period window while a period is active, an unresolved close');
+  });
+
+  test('Nori orients on the period board and points at the teacher and the trading page', () => {
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: the Trading Arena boards now show "This period"'));
+    expect(nori).toBeDefined();
+    expect(nori).toContain('"All time"');
+    expect(nori).toContain('"Period reset"');
+    expect(nori).toContain('ask Pearl, the Trading Floor teacher');
+    expect(nori).toContain('/api/skills/protocol/trading.md');
   });
 });

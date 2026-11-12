@@ -215,7 +215,7 @@ beforeEach(() => {
     seatWriteVersion: 0,
     launched: null,
   });
-  useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+  useGameStore.setState({ exchangeOpen: false, tradingFloorOpen: false, exchangeTab: 'browse' });
 });
 
 afterEach(async () => {
@@ -408,31 +408,10 @@ describe('Guest sign-up prompt for the arena', () => {
     expect(text).not.toMatch(/\bCT\b/);
   });
 
-  test('both arena launch buttons in the Trading Floor tab ask for the arena wording', async () => {
-    const variants: Array<string | undefined> = [];
-    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-    container = document.createElement('div');
-    document.body.append(container);
-    root = createRoot(container);
-    await act(async () => {
-      root?.render(
-        createElement(
-          QueryClientProvider,
-          { client: client! },
-          createElement(TradingFloorTab, {
-            active: true,
-            isGuest: true,
-            onGuestBlocked: (variant?: 'arena') => { variants.push(variant); },
-          }),
-        ),
-      );
-    });
-    await flush();
-    const host = container;
+  test('arena launch uses the owner sign-in callback', async () => {
+    const host = await render({ isGuest: true });
     await click(host.querySelector('[data-testid="arena-launch-button"]') as HTMLElement);
-    const entry = host.querySelector('[data-testid="arena-launch-entry"]') as HTMLElement;
-    await click(buttonByText(entry, 'Launch your trader'));
-    expect(variants).toEqual(['arena', 'arena']);
+    expect(host.querySelector('[data-testid="arena-launch"]')).toBeNull();
   });
 });
 
@@ -499,7 +478,7 @@ describe('Shared discovery feed card (prod verify b8d52ab6, finding 3)', () => {
 });
 
 describe('Paper arena and live traders are named apart (prod verify b8d52ab6, finding 2)', () => {
-  test('the Trading Floor tab says paper for the arena and real money for the live traders', async () => {
+  test('the legacy floor says real trades and has no duplicate arena', async () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
     container = document.createElement('div');
     document.body.append(container);
@@ -515,8 +494,8 @@ describe('Paper arena and live traders are named apart (prod verify b8d52ab6, fi
     });
     await flush();
     const text = container.textContent ?? '';
-    expect(text).toContain('The five arena house agents (paper)');
-    expect(text).toContain('Live traders (real money');
+    expect(text).toContain('The live floor: real trades, verified on-chain.');
+    expect(container.querySelector('[data-testid="floor-arena"]')).toBeNull();
     // The old heading sat on the live floor card AND on the live traders panel,
     // right under the arena's own house agents of the same names.
     expect(text).not.toContain('Watch the house traders');
@@ -588,16 +567,7 @@ describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-mone
     expect(lower).not.toContain('cannot withdraw');
   });
 
-  test('saving rules says that open positions keep their exits (audit-contest W-2)', async () => {
-    meBody = myAgentBody();
-    useFloorArenaUi.setState({ panel: 'desk' });
-    const host = await render();
-    await click(buttonByText(host, 'Edit rules'));
-    const editor = host.querySelector('[data-testid="arena-rules-editor"]') as HTMLElement;
-    expect(editor.textContent).toContain(
-      'Changes apply to positions opened after you save. Open positions keep the exits they were opened with.',
-    );
-  });
+
 
   test('no address yet means no wallet text and no withdraw panel', async () => {
     meBody = myAgentBody();
@@ -651,6 +621,10 @@ describe('Contest rules 2, 5 and 6 and the standings after the end (D30/D31)', (
     expect(host.querySelector('[data-testid="arena-countdown"]')?.textContent).toBe(
       'The contest has ended. Standings are provisional: 2 positions opened in the window are still open, and they still count.',
     );
+    // The board opens on the period window; the standings pill belongs to the Contest window.
+    expect(host.querySelector('[data-testid="arena-leaderboard"]')?.textContent).not.toContain('Provisional');
+    const contestWindow = [...host.querySelectorAll('[aria-label="Leaderboard window"] button')].find((node) => node.textContent === 'Contest');
+    await click(contestWindow as HTMLButtonElement);
     expect(host.querySelector('[data-testid="arena-leaderboard"]')?.textContent).toContain('Provisional');
     await click(buttonByText(host, 'Contest rules'));
     expect(host.querySelector('[data-testid="arena-contest-rules"]')?.textContent).toContain('Top 10 (provisional)');

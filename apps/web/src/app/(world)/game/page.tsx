@@ -58,6 +58,7 @@ const SkillBuilderModal = dynamic(() => import('@/components/game/skill-builder-
 const LandOfficeModal = dynamic(() => import('@/components/game/land/land-office-modal'), { ssr: false });
 const QuestBoardModal = dynamic(() => import('@/components/game/quest-board-modal'), { ssr: false });
 const BountyBoardModal = dynamic(() => import('@/components/game/bounty-board-modal'), { ssr: false });
+const TradingFloorTerminal = dynamic(() => import('@/components/game/trading-floor/terminal/trading-floor-terminal').then((module) => module.TradingFloorTerminal), { ssr: false });
 const ExchangeModal = dynamic(() => import('@/components/game/exchange-modal'), { ssr: false });
 const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-modal'), { ssr: false });
 const WorldMapModal = dynamic(() => import('@/components/game/world-map-modal'), { ssr: false });
@@ -698,6 +699,7 @@ export default function GamePage() {
       <QuestBoardModal />
       <BountyBoardModal />
       <ExchangeModal />
+      <TradingFloorTerminal />
       <LeaderboardModal />
       {/* World Map (fast-travel WARP surface). Opened from the minimap "⤢ Map"
           button via openWorldMap(); gates internally on worldMapOpen. */}

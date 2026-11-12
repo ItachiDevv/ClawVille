@@ -136,6 +136,8 @@ function makeDeps(store: ReturnType<typeof makeStore>): FloorArenaRouteDeps {
     readReport: async () => null,
     readLatestReport: async () => null,
     setReportState: async () => false,
+    readTrades: async () => [],
+    readEquity: async (_id, bounds) => ({ series: [], openPnlUsd: 0, startAt: bounds.closedFrom?.toISOString() ?? bounds.openedFrom?.toISOString() ?? null }),
     readPositions: async () => [],
     readParamChanges: async () => [],
     readEvents: async (_agentId, after, limit, types) => {
@@ -146,6 +148,7 @@ function makeDeps(store: ReturnType<typeof makeStore>): FloorArenaRouteDeps {
     readTape: async () => [],
     readStats: async () => new Map(),
     readLeaderboard: async () => [],
+    readPeriod: async () => null,
     readContest: async () => { throw new Error('unused'); },
     readAddonStats: async () => [],
     readWalletBalance: async () => ({ agentId: 'cp-agent-1', walletAddress: SOURCE_WALLET, sol: 0.012, usdc: 1.5, updatedAt: NOW.toISOString() }),

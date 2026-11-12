@@ -28,7 +28,8 @@ import {
 } from '@clawville/shared';
 // Type only: clawpump-writer imports this module at run time (isArenaClawPumpOwnedBy).
 import type { ClawPumpArenaWalletLive } from '../clawpump-writer';
-import { readArenaAggregates, toCents, type ArenaAgentAggregate, type ArenaLeaderboardWindow } from './leaderboard';
+import { closedInWindowSql, windowPnlUsdSql, type ArenaWindowBounds, readArenaAggregates, toCents, type ArenaAgentAggregate, type ArenaLeaderboardWindow } from './leaderboard';
+import { readActiveArenaPeriod, type ArenaPeriodRecord } from './period';
 
 /**
  * Trading Floor Arena data access (docs/trading-floor-arena.md §4, §5).
@@ -804,6 +805,86 @@ export async function readArenaPositions(agentId: string, status: 'open' | 'clos
   return list.map(mapPosition);
 }
 
+/** Terminal history uses the full timestamp precision for a stable (closed_at, id) cursor. */
+export interface ArenaTradesQuery {
+  before?: string;
+  beforeId?: string;
+  limit: number;
+  outcome: 'win' | 'loss' | 'all';
+  reason?: string;
+  /** The window (resolveLeaderboardBounds): only its opened/closed time bounds filter the rows, so an 'unresolved'
+   *  close stays listed. With unresolvedAsLoss (contest, active period) such a close counts as a loss for `outcome`. */
+  bounds?: ArenaWindowBounds;
+}
+
+export async function readArenaTrades(agentId: string, query: ArenaTradesQuery, readRows: (query: SQL) => Promise<Row[]> = rows): Promise<ArenaPosition[]> {
+  const cursor = query.before && query.beforeId
+    ? sql`AND (closed_at, id) < (${query.before}::timestamptz, ${query.beforeId}::uuid)` : sql``;
+  const bounds = query.bounds;
+  const pnl = bounds?.unresolvedAsLoss ? sql`COALESCE(pnl_usd, realised_usd - size_usd)` : sql`pnl_usd`;
+  const outcome = query.outcome === 'win' ? sql`AND ${pnl} > 0`
+    : query.outcome === 'loss' ? sql`AND ${pnl} < 0` : sql``;
+  const reason = query.reason ? sql`AND exit_reason = ${query.reason}` : sql``;
+  // Raw-sql timestamps go in as ISO strings with an explicit cast (repo rule).
+  const window = sql.join([
+    bounds?.openedFrom ? sql`AND opened_at >= ${bounds.openedFrom.toISOString()}::timestamptz` : sql``,
+    bounds?.openedTo ? sql`AND opened_at <= ${bounds.openedTo.toISOString()}::timestamptz` : sql``,
+    bounds?.closedFrom ? sql`AND closed_at >= ${bounds.closedFrom.toISOString()}::timestamptz` : sql``,
+    bounds?.closedTo ? sql`AND closed_at <= ${bounds.closedTo.toISOString()}::timestamptz` : sql``,
+  ], sql` `);
+  const list = await readRows(sql`
+    SELECT *, to_char(closed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
+    FROM floor_arena_positions
+    WHERE agent_id = ${agentId} AND status = 'closed' AND closed_at IS NOT NULL
+      ${window} ${cursor} ${outcome} ${reason}
+    ORDER BY closed_at DESC, id DESC LIMIT ${Math.min(100, Math.max(1, query.limit)) + 1}
+  `);
+  // Entry/exit fills include costs and may include partial exits. No stored column gives an exact exit price.
+  return list.map((row) => ({ ...mapPosition(row), closedAt: String(row.cursor_at) }));
+}
+
+export interface ArenaEquityData {
+  /** Cumulative window-scored P&L, including paper execution costs and contest unresolved losses. */
+  series: Array<{ closedAt: string; equityUsd: number }>;
+  /** Total P&L of open positions, including prior partial proceeds; null if any open position lacks a mark, zero if none. */
+  openPnlUsd: number | null;
+  startAt: string | null;
+}
+
+export async function readArenaEquity(agentId: string, bounds: ArenaWindowBounds, readRows: (query: SQL) => Promise<Row[]> = rows): Promise<ArenaEquityData> {
+  const inWindow = closedInWindowSql(bounds);
+  const pnlUsd = windowPnlUsdSql(bounds);
+  // Aggregate the whole selected history in SQL before bounding the response. LIMIT before SUM loses P&L.
+  const [points, open] = await Promise.all([
+    readRows(sql`
+      WITH cumulative AS (
+        SELECT id, closed_at,
+          sum(${pnlUsd}) OVER (ORDER BY closed_at, id ROWS UNBOUNDED PRECEDING) AS equity_usd,
+          ntile(500) OVER (ORDER BY closed_at, id) AS bucket
+        FROM floor_arena_positions p
+        WHERE p.agent_id = ${agentId} AND ${inWindow} AND p.closed_at IS NOT NULL
+      ), endpoints AS (
+        SELECT DISTINCT ON (bucket) bucket, id, closed_at, equity_usd,
+          min(closed_at) OVER () AS start_at
+        FROM cumulative ORDER BY bucket, closed_at DESC, id DESC
+      )
+      SELECT *, to_char(closed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS point_at,
+        to_char(start_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS first_at
+      FROM endpoints ORDER BY closed_at, id LIMIT 500
+    `),
+    readRows(sql`
+      SELECT CASE WHEN count(*) FILTER (WHERE last_mark_mult IS NULL) > 0 THEN NULL
+        ELSE coalesce(sum(realised_usd + size_usd * remaining_fraction * last_mark_mult - size_usd), 0) END AS open_pnl_usd
+      FROM floor_arena_positions WHERE agent_id = ${agentId} AND status = 'open' LIMIT 1
+    `),
+  ]);
+  return {
+    series: points.map((row) => ({ closedAt: String(row.point_at), equityUsd: toCents(num(row.equity_usd)) / 100 })),
+    openPnlUsd: numOrNull(open[0]?.open_pnl_usd),
+    startAt: bounds.closedFrom?.toISOString() ?? bounds.openedFrom?.toISOString() ?? (points[0]?.first_at ? String(points[0].first_at) : null),
+  };
+}
+
 export async function readArenaParamChanges(agentId: string, limit: number): Promise<ArenaParamChange[]> {
   const list = await rows(sql`
     SELECT * FROM floor_arena_param_changes WHERE agent_id = ${agentId} ORDER BY id DESC LIMIT ${limit}
@@ -849,17 +930,22 @@ export async function readArenaDiscovery(limit: number, now: Date): Promise<Aren
   return list.map(mapDiscovery);
 }
 
+export type ArenaStatsWindowKey = 'period' | 'all' | 'last24h' | 'contest';
+
+/** Stats per window for each agent. `period` undefined = read the active period (period.ts). */
 export async function readArenaAgentStats(
   agentIds: readonly string[],
   now: Date,
-): Promise<Map<string, Record<'all' | 'last24h' | 'contest', ArenaAgentStats>>> {
-  const windows: Array<[ArenaLeaderboardWindow, 'all' | 'last24h' | 'contest']> = [
-    ['all', 'all'], ['24h', 'last24h'], ['contest', 'contest'],
+  period?: ArenaPeriodRecord | null,
+): Promise<Map<string, Record<ArenaStatsWindowKey, ArenaAgentStats>>> {
+  const windows: Array<[ArenaLeaderboardWindow, ArenaStatsWindowKey]> = [
+    ['period', 'period'], ['all', 'all'], ['24h', 'last24h'], ['contest', 'contest'],
   ];
-  const results = await Promise.all(windows.map(([window]) => readArenaAggregates(window, now, agentIds)));
-  const out = new Map<string, Record<'all' | 'last24h' | 'contest', ArenaAgentStats>>();
+  const active = period === undefined ? await readActiveArenaPeriod(now) : period;
+  const results = await Promise.all(windows.map(([window]) => readArenaAggregates(window, now, agentIds, active)));
+  const out = new Map<string, Record<ArenaStatsWindowKey, ArenaAgentStats>>();
   for (const id of agentIds) {
-    const entry = {} as Record<'all' | 'last24h' | 'contest', ArenaAgentStats>;
+    const entry = {} as Record<ArenaStatsWindowKey, ArenaAgentStats>;
     windows.forEach(([, key], index) => {
       entry[key] = toStats(results[index]!.find((row) => row.agentId === id));
     });
@@ -1184,10 +1270,10 @@ export interface ArenaTapeItem {
   pnlUsd: number | null;
   pnlMult: number | null;
   /** 'unresolved' = closed after a >= 30-min quote outage: no sale was priced, so pnlUsd is null. */
-  reason: 'tp' | 'stop' | 'trail' | 'time' | 'manual' | 'unresolved' | null;
+  reason: 'tp' | 'stop' | 'trail' | 'time' | 'manual' | 'unresolved' | 'reset' | null;
 }
 
-const EXIT_REASONS = new Set(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved']);
+const EXIT_REASONS = new Set(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved', 'reset']);
 
 /** Null for a malformed row (no size on an entry, no proceeds on an exit): the tape skips it. */
 export function mapTapeRow(row: Row): ArenaTapeItem | null {

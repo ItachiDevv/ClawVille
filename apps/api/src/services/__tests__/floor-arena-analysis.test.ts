@@ -21,9 +21,12 @@ import {
   computeArenaTradeStats,
   evaluateArenaSuggestion,
   houseTunableRanges,
+  isStrategyTrade,
   parseArenaAnalysisReply,
   runArenaAnalysisTickWith,
   tradeJudgedAt,
+  tunerSampleSize,
+  tunerTrades,
   type ArenaAnalysisAgent,
   type ArenaAnalysisCandidate,
   type ArenaAnalysisStore,
@@ -274,6 +277,32 @@ describe('Trading Arena analysis stats', () => {
     ]);
     expect(stats).toMatchObject({ trades: 1, wins: 1, losses: 0, deaths: 0, severe: 0, realisedUsd: 2 });
     expect(stats.exits.other).toBe(0);
+  });
+
+  test('D35: a period-reset close counts nowhere (stats, tuner sample, tuner trades)', () => {
+    const reset = trade({ pnlMult: 0.4, exitReason: 'reset' });
+    const kept = trade({ pnlMult: 1.1 });
+    expect(isStrategyTrade(reset)).toBe(false);
+    expect(isStrategyTrade(kept)).toBe(true);
+    const stats = computeArenaTradeStats([kept, reset]);
+    expect(stats).toMatchObject({ trades: 1, wins: 1, losses: 0, deaths: 0, severe: 0, realisedUsd: 2 });
+    expect(stats.exits.other).toBe(0);
+    expect(tunerSampleSize([kept, reset])).toBe(1);
+    expect(tunerTrades([kept, reset])).toEqual([kept]);
+  });
+
+  test('D35 (Codex fecd02004): loadClosedTrades leaves out reset closes in SQL, BEFORE the limit', async () => {
+    // Dynamic import: only this test loads the store (and @clawville/database, which opens no connection here).
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const { closedStrategyTradesWhere } = await import('../floor-arena/analysis-store');
+    const where = new PgDialect().sqlToQuery(closedStrategyTradesWhere('house:a')!);
+    expect(where.sql).toContain(`"floor_arena_positions"."exit_reason" IS DISTINCT FROM 'reset'`);
+    expect(where.sql).toContain('"floor_arena_positions"."pnl_usd" is not null');
+    expect(where.params).toEqual(['house:a', 'closed']);
+    // loadClosedTrades applies that WHERE, then orders and limits (so 5,000 reset closes cannot displace a strategy trade).
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('../floor-arena/analysis-store.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/async loadClosedTrades\(agentId, limit\) \{[\s\S]*?\.where\(closedStrategyTradesWhere\(agentId\)\)\s*\.orderBy\(desc\(floorArenaPositions\.closedAt\)\)\s*\.limit\(limit\);/);
   });
 
   test('an empty set reports zero trades and null ratios', () => {
@@ -688,6 +717,21 @@ describe('Trading Arena analysis tick', () => {
     summary: 'Eight of ten trades hit +10%; two coins under 35 minutes old died.',
     observations: ['Both deaths were coins 30 to 35 minutes old.'],
     suggestion: { path, to, reason: 'Both deaths sit in the 30m-2h age bucket.' },
+  });
+
+  test('D35: period-reset closes never reach the report, the model or the tuner', async () => {
+    const a = agent();
+    const resets = Array.from({ length: 30 }, () => trade({ pnlMult: 0.3, exitReason: 'reset' }));
+    const store = fakeStore({ candidates: [candidate(a)], trades: { [a.id]: [...tunerSplitTrades(), ...resets] } });
+    const { llm, calls } = llmReply(tpReply(2_400, 'filters.age_min_s'));
+    await runArenaAnalysisTickWith({ store, llm, log: quietLog }, NOW);
+    const report = store.reports[0]!;
+    // the same numbers as the run with no reset closes (24 trades, 5 deaths, the same tuner change)
+    expect(report.stats.period).toMatchObject({ trades: 24, deaths: 5 });
+    expect(report.stats.currentParams.trades).toBe(24);
+    expect(report.stats.lifetime.trades).toBe(24);
+    expect(store.changes[0]?.changes).toEqual([{ path: 'filters.age_min_s', from: 1_800, to: 3_000 }]);
+    expect(JSON.stringify(calls)).not.toContain('reset');
   });
 
   test('a house agent is tuned by CODE (the model proposal is ignored) and the change is logged publicly', async () => {

@@ -31,7 +31,7 @@ import {
 } from './trading-floor-room';
 
 beforeEach(() => {
-  useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+  useGameStore.setState({ exchangeOpen: false, tradingFloorOpen: false, exchangeTab: 'browse' });
 });
 
 test('the arena player reader retains one record at the movement-collider centre', () => {
@@ -55,11 +55,11 @@ test('the arena player reader retains one record at the movement-collider centre
 });
 
 describe('Trading Floor monitor hotspot', () => {
-  test('opens the Exchange modal on the Trading Floor tab', () => {
+  test('opens the independent Trading Floor window', () => {
     openTradingFloorMonitor();
     const state = useGameStore.getState();
-    expect(state.exchangeOpen).toBe(true);
-    expect(state.exchangeTab).toBe('floor');
+    expect(state.tradingFloorOpen).toBe(true);
+    expect(state.exchangeOpen).toBe(false);
   });
 
   // The whole point of the slice: one panel, one data path. If the monitor
@@ -67,28 +67,28 @@ describe('Trading Floor monitor hotspot', () => {
   test('lands on exactly the state the sidebar row produces', () => {
     openTradingFloorMonitor();
     const fromMonitor = {
-      open: useGameStore.getState().exchangeOpen,
+      open: useGameStore.getState().tradingFloorOpen,
       tab: useGameStore.getState().exchangeTab,
     };
-    useGameStore.setState({ exchangeOpen: false, exchangeTab: 'browse' });
+    useGameStore.setState({ exchangeOpen: false, tradingFloorOpen: false, exchangeTab: 'browse' });
     useGameStore.getState().openTradingFloor();
     expect({
-      open: useGameStore.getState().exchangeOpen,
+      open: useGameStore.getState().tradingFloorOpen,
       tab: useGameStore.getState().exchangeTab,
     }).toEqual(fromMonitor);
   });
 
-  test('switches an already-open Exchange onto the Trading Floor tab', () => {
+  test('closes Exchange and opens Trading Floor', () => {
     useGameStore.setState({ exchangeOpen: true, exchangeTab: 'my-orders' });
     openTradingFloorMonitor();
-    expect(useGameStore.getState().exchangeTab).toBe('floor');
+    expect(useGameStore.getState().tradingFloorOpen).toBe(true);
   });
 
-  test('is a no-op when the Floor tab is already showing', () => {
-    useGameStore.setState({ exchangeOpen: true, exchangeTab: 'floor' });
+  test('is a no-op when the Trading Floor window is already showing', () => {
+    useGameStore.setState({ tradingFloorOpen: true });
     openTradingFloorMonitor();
-    expect(useGameStore.getState().exchangeOpen).toBe(true);
-    expect(useGameStore.getState().exchangeTab).toBe('floor');
+    expect(useGameStore.getState().tradingFloorOpen).toBe(true);
+    expect(useGameStore.getState().tradingFloorOpen).toBe(true);
   });
 
   test('publishes a disarmed proximity snapshot before any frame runs', () => {

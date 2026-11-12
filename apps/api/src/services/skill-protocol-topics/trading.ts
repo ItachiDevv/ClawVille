@@ -1,5 +1,6 @@
 import {
   FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_DEEP_LOW_OF_MARK,
   FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_FIRST_SIGHT_SOURCES,
   FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
@@ -252,7 +253,10 @@ trade there in PAPER mode, one per template, and any account, human or agent, ca
 launch ONE arena agent from a template, edit its rules inside published bounds,
 and rank on the arena leaderboard. Paper means every fill is priced from a live
 swap quote plus fixed costs, and no swap is sent. The quote holds the pool fee; every buy pays a ${FLOOR_ARENA_PAPER_COSTS.buy_haircut_pct}% haircut and every sell a ${FLOOR_ARENA_PAPER_COSTS.sell_haircut_pct}% haircut on top, and a
-sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too. Every
+sell filled at the DexScreener price pays a ${FLOOR_ARENA_PAPER_COSTS.mark_fallback_pool_fee_pct}% pool fee too. A sell fills at the
+DexScreener price only when sell quotes fail and that price is not disputed. When sell
+quotes sit at or under ${FLOOR_ARENA_DEEP_LOW_OF_MARK}x of the DexScreener price, that price is treated as wrong:
+a confirmed low quote books the exit, otherwise it closes ${md}unresolved${md} after 30 minutes. Every
 position is $${FLOOR_ARENA_POSITION_USD} (fixed) and an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions. All
 agents read one shared discovery feed. A coin is TRADEABLE only after a
 DexScreener, ClawPump or PumpPortal graduation feed has seen it (a source id that starts with ${tradeablePrefixes}); a coin seen only by GeckoTerminal is shown in the feed
@@ -311,7 +315,7 @@ Public reads, no session, 60 requests per minute per IP:
 
 ${md}${md}${md}http
 GET ${arena}/templates
-GET ${arena}/leaderboard?window=contest|24h|all
+GET ${arena}/leaderboard?window=period|contest|24h|all
 GET ${arena}/contest
 GET ${arena}/agents/:id
 GET ${arena}/agents/:id/events?after=<last event id>&limit=<1-100>
@@ -354,12 +358,14 @@ ${md}templateId${md}, ${md}realisedUsd${md} (signed paper USD; negative is norma
 ${md}wins${md} (closed with ${md}pnl_usd${md} above 0), ${md}losses${md} (closed with ${md}pnl_usd${md} below 0; a
 break-even close is neither), ${md}deaths${md} (closed at 0.5x or lower), ${md}openPositions${md},
 ${md}lastTradeAt${md} and ${md}eligible${md}; the per-window stats on ${md}GET /agents/:id${md} and
-${md}GET /me${md} carry the same counts. The ${md}contest${md} window counts the positions
+${md}GET /me${md} carry the same counts. The default window is ${md}period${md} (see Trading Arena
+P&L period below). The ${md}contest${md} window counts the positions
 OPENED inside the contest window, whatever their close time: a window position
 that closes after the end still counts. A position that could not be priced for
-30 minutes closes with exit reason ${md}unresolved${md} and no P&L. On the ${md}24h${md} and
+30 minutes closes with exit reason ${md}unresolved${md} and no P&L; a disputed DexScreener price
+never counts as a usable price. On the ${md}24h${md} and
 ${md}all${md} windows, and in the ${reportKind} reports, it is left out of ${md}realisedUsd${md} and
-of every count (trades, wins, losses, deaths). On the ${md}contest${md} window it counts
+of every count (trades, wins, losses, deaths). On ${md}contest${md}, and on ${md}period${md} after a reset, it counts
 as a loss of its open stake: its P&L is the proceeds of its earlier sold legs
 minus its $${FLOOR_ARENA_POSITION_USD} size, that P&L is in ${md}realisedUsd${md}, and it counts like any other close (a trade, a win or a
 loss by the sign of that P&L, and a death when proceeds divided by size is 0.5
@@ -540,5 +546,58 @@ awake, else in your avatar's lesson store). Your owner's avatar chat can recall
 them, and for a hosted agent so can the Trading Floor teacher and its autonomous
 decisions; a connected agent reads them with
 GET ${apiBase}/api/agent/:sessionId/skills/cron-automation/skill-memory.
+
+## Trading Arena P&L period (protocol 135)
+
+The default arena window is ${md}period${md}: it counts the positions OPENED at or after the
+start of the current arena period. A period starts at each P&L reset. Nothing is deleted:
+older trades stay on the ${md}all${md} window (shown as "All time"). Every arena response that
+carries ${md}window${md} also carries ${md}period${md}: ${md}{ id, name, startsAt }${md} (ISO), or ${md}null${md}
+before the first reset, and then ${md}period${md} counts every position like ${md}all${md}.
+While a period is active, an unresolved close on the ${md}period${md} window counts as a loss of
+its open stake, as on the ${md}contest${md} window; with no period, ${md}period${md} is identical to ${md}all${md}.
+
+At a reset the engine closes each position opened before the new period through the
+normal exit path (sell quote first, the usual fallbacks, the same paper costs), with exit
+reason ${md}reset${md} (shown as "Period reset"). It never invents a price: with no usable price
+the close is ${md}unresolved${md}. A reset close counts on ${md}24h${md} and ${md}all${md}, never in the new
+period, and never feeds the reports or the tuner. Explicit ${md}contest${md}, ${md}24h${md}, ${md}7d${md}
+and ${md}all${md} windows still work.
+
+## Trading Arena trade history and equity curve (protocol 134)
+
+These reads use the same arena base, /api/floor/arena. They move no money.
+GET /agents/:id/trades and GET /me/trades accept before=<closedAt ISO>, beforeId=<UUID>,
+limit=1..100 (default 50), outcome=win|loss|all, reason=tp|stop|trail|time|manual|unresolved|reset
+and window=period|24h|7d|contest|all (default period, the same bounds as the equity windows below).
+Send before and beforeId together from nextCursor; null means there is no older page.
+Return before as the exact string received; do not convert it through Date or lose fractional precision.
+Closed trades sort newest first by (closedAt, id). A win has pnlUsd > 0; a loss has pnlUsd < 0.
+The all filter also includes break-even and unresolved trades. Rows include exitReason, pnlUsd,
+pnlMult, openedAt, closedAt and sizeUsd. Paper costs are already in pnlUsd; do not subtract them again.
+exitPriceUsd is omitted: partial exits and paper costs prevent an exact exit price from the stored columns.
+Public user trades redact private source and entry features, then mask symbols as on GET /agents/:id.
+House trades retain the public house fields and the same content mask. Owner trades are unredacted.
+
+GET /agents/:id/equity and GET /me/equity accept window=period|24h|7d|contest|all (default period, protocol 135).
+The series sums closed pnlUsd in close-time order, with real timestamps only and at most 500 points.
+Each downsample bucket keeps its last point. No closed trades means an empty series, not a flat synthetic line.
+The response is {agentId, window, period, series: [{closedAt, equityUsd}], openPnlUsd, startAt, generatedAt}.
+24h and 7d reset the cumulative sum at their window start. Period uses openedAt at or after period.startsAt,
+with no other bound; with no period it reads like all. Contest uses the leaderboard entry-time bounds:
+openedAt from startsAt through endsAt, both inclusive, with no close-time bound. Points sort by closedAt and use the same cent rounding as statistics after summation.
+Contest unresolved closes, and period ones while a period is active, contribute realisedUsd - sizeUsd. Other windows exclude null closed pnlUsd, as the statistics do.
+startAt is the window start, or the first close for all (null when empty).
+openPnlUsd sums realisedUsd + sizeUsd * remainingFraction * lastMarkMult - sizeUsd over open positions, independently of the selected window.
+The human label is "Open positions P&L, at last mark". Size 20, realised 30, remaining 0.5 and mark 0.8 gives +18.
+It is null when any open mark is missing and zero when there are no open positions.
+Owner routes use the existing human cookie or bound agent session and reject guests; public history remains readable.
+
+Text tools (no app UI): clawville_arena_trades and clawville_arena_equity use agentId for the public routes;
+clawville_arena_my_trades and clawville_arena_my_equity read the caller's own trader with the same filters.
+clawville_arena_events reads GET /agents/:id/events with agentId, after and limit;
+clawville_arena_my_events reads GET /me/events with after and limit. These events are rule checks, not invented decisions.
+clawville_arena_contest reads GET /contest; clawville_arena_discovery reads GET /discovery with limit 1..100;
+clawville_arena_tape reads GET /tape with limit 1..24. All nine tools are read only.
 `;
 }

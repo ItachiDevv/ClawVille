@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { FLOOR_ARENA_CONTEST, FLOOR_ARENA_HOUSE_AGENTS } from '@clawville/shared';
 import {
+  arenaBoardCacheKey,
   closedInWindowSql,
   isArenaLeaderboardWindow,
   isContestEligible,
@@ -88,6 +89,7 @@ describe('arena leaderboard ranking', () => {
     expect(contest.map((row) => [row.agentId, row.eligible])).toEqual([['house:genesis', false], ['u1', true]]);
     expect(rankArenaLeaderboard(input, '24h').every((row) => !row.eligible)).toBe(true);
     expect(rankArenaLeaderboard(input, 'all').every((row) => !row.eligible)).toBe(true);
+    expect(rankArenaLeaderboard(input, 'period').every((row) => !row.eligible)).toBe(true);
   });
 
   test('Codex r2 #6: prize eligibility needs enrolment (created by the end) and one qualifying closed trade', () => {
@@ -316,8 +318,40 @@ describe('arena leaderboard windows', () => {
     expect(all.sql).toBe("p.status = 'closed' AND p.pnl_usd IS NOT NULL");
   });
 
+  test('period: opened at or after the active period start, any close time, unresolved counts as a loss', () => {
+    const startsAt = new Date('2026-10-02T06:00:00Z');
+    const bounds = resolveLeaderboardBounds('period', now, FLOOR_ARENA_CONTEST, { startsAt });
+    expect(bounds).toEqual({ openedFrom: startsAt, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: true });
+    const dialect = new PgDialect();
+    const query = dialect.sqlToQuery(closedInWindowSql(bounds));
+    expect(query.sql).toBe("p.status = 'closed' AND (p.pnl_usd IS NOT NULL OR p.exit_reason = 'unresolved') AND p.opened_at >= $1::timestamptz");
+    expect(query.params).toEqual(['2026-10-02T06:00:00.000Z']);
+    expect(dialect.sqlToQuery(windowPnlUsdSql(bounds)).sql).toBe('COALESCE(p.pnl_usd, p.realised_usd - p.size_usd)');
+    expect(dialect.sqlToQuery(windowPnlMultSql(bounds)).sql).toBe('COALESCE(p.pnl_mult, p.realised_usd / p.size_usd)');
+    const open = dialect.sqlToQuery(openInWindowSql(bounds));
+    expect(open.sql).toBe("p.status = 'open' AND p.opened_at >= $1::timestamptz");
+  });
+
+  test('period with no period row is identical to all (no bound, unresolved left out)', () => {
+    const bounds = resolveLeaderboardBounds('period', now);
+    expect(bounds).toEqual(resolveLeaderboardBounds('all', now));
+    expect(bounds).toEqual({ openedFrom: null, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: false });
+    expect(resolveLeaderboardBounds('period', now, FLOOR_ARENA_CONTEST, null)).toEqual(bounds);
+    expect(new PgDialect().sqlToQuery(closedInWindowSql(bounds)).sql).toBe("p.status = 'closed' AND p.pnl_usd IS NOT NULL");
+  });
+
+  test('the board cache key holds the period id, so a reset is a new board', () => {
+    const a = arenaBoardCacheKey('period', { id: 'period-20261112T000000Z' });
+    const b = arenaBoardCacheKey('period', { id: 'period-20261113T000000Z' });
+    expect(a).not.toBe(b);
+    expect(arenaBoardCacheKey('period', null)).not.toBe(a);
+    // The other windows do not depend on the period.
+    expect(arenaBoardCacheKey('contest', { id: 'x' })).toBe(arenaBoardCacheKey('contest', null));
+    expect(arenaBoardCacheKey('all', { id: 'x' })).toBe(arenaBoardCacheKey('all', null));
+  });
+
   test('window names are a closed set', () => {
-    expect(['contest', '24h', 'all'].every(isArenaLeaderboardWindow)).toBe(true);
+    expect(['period', 'contest', '24h', 'all'].every(isArenaLeaderboardWindow)).toBe(true);
     expect(isArenaLeaderboardWindow('7d')).toBe(false);
     expect(isArenaLeaderboardWindow(undefined)).toBe(false);
   });

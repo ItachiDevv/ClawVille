@@ -3,17 +3,17 @@ import { readFileSync } from 'node:fs';
 import { floorArenaPositions } from '@clawville/database';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import type { FloorArenaExits, FloorArenaFilters, FloorArenaParams } from '@clawville/shared';
+import { FLOOR_ARENA_DEEP_LOW_OF_MARK, type FloorArenaExits, type FloorArenaFilters, type FloorArenaParams } from '@clawville/shared';
 import {
-  advanceExitRun, applyExitFill, chainCheckCandidateMints, classifyExitAttempt, combineFillSource, d4Decision, decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
+  advanceExitRun, applyExitFill, chainCheckCandidateMints, runAfterPartialFill, runAfterRejectedUsableQuote, resetExitTrigger, classifyExitAttempt, combineFillSource, d4AfterFailedQuote, d4Decision,decideExitTrigger, entrySummary, entryVia, evaluateAgentCandidates,
   ENTRY_STATEMENT_TIMEOUT_MS, ENTRY_TX_TIMEOUT_MS, exitSummary, freshBookingAllowed, insertTimeGate, keepNewerMark, openPosition,
   tryOpenPosition, markNewerThanDecision, markStillFresh, newestKnownMark, parseExitRun,
-  quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, type D4Outcome,
+  quoteDisputesMark, quotedTpMultiple, tpConfirmedByQuote, tpSkipRunUpdate, tpSkipUnresolved, type D4Outcome,
   topFailCodes, tpHitsFromRemaining, type ArenaCandidate, type ExitState,
   breakevenMarkMult, liquidityBelow, liquidityShadowCrossings, LIQ_SHADOW_THRESHOLDS, recordLiquidityShadow,
   type ExitLiquidity, type ExitTrigger, type LiqShadowDeps,
 } from './engine';
-import { markFallbackProceeds } from './pricing';
+import { DEFAULT_PAPER_COSTS, evaluateSellQuote, markFallbackProceeds, tokensToRaw, USDC_MINT, type SellQuoteResult } from './pricing';
 import type { ArenaEventInput } from './events';
 import { ARENA_CONTEST_FINAL_GRACE_MS } from './contest';
 import type { FloorArenaFeatures } from './filters';
@@ -468,6 +468,549 @@ describe('D4 sell-quote failures (persisted exit_run, Codex r4 #1 + r5)', () => 
   });
 });
 
+describe('D4 with a disputed fresh mark (FEAR + frozen marks, prod; real evaluateSellQuote -> d4AfterFailedQuote)', () => {
+  // house:late-bloomer, position 2c4259d7: entry 0.0000529, the mark said 204x, every sell quote said ~0.92x of entry.
+  // 2026-11-12 depth rule: a quote at or under FLOOR_ARENA_DEEP_LOW_OF_MARK (0.2x) of the FRESH mark disputes it.
+  const QMINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+  const ENTRY = 0.0000529;
+  const TOKENS = 20 / ENTRY;
+  const AMOUNT_RAW = tokensToRaw(TOKENS, 6)!;
+  const SPIKE = 204 * ENTRY;
+  const SANE = 0.92 * ENTRY;
+  const HAIRCUT = DEFAULT_PAPER_COSTS.sell_haircut_pct;
+  function sellAt(priceUsd: number, markPriceUsd: number | null, referencePriceUsd: number | null = null): SellQuoteResult {
+    return evaluateSellQuote({
+      status: 'quoted', input: { mint: QMINT, amount: String(TOKENS), rawAmount: AMOUNT_RAW, decimals: 6 },
+      output: { mint: USDC_MINT, amount: String(TOKENS * priceUsd), rawAmount: '1', decimals: 6 }, slippageBps: 300, priceImpactPct: '0.01',
+    }, { mint: QMINT, tokens: TOKENS, amountRaw: AMOUNT_RAW, markPriceUsd, referencePriceUsd });
+  }
+  const NO_QUOTE: SellQuoteResult = { ok: false, reason: 'quote_failed', detail: 'timeout' };
+  /** reject: D4 decided a booking (or an unresolved close) but the write was rejected (a newer mark, an aged mark or a
+   *  lost CAS), as executeExit sees it. */
+  type QStep = { t: number; quote: SellQuoteResult; mark: number | null; tp?: boolean; reject?: boolean; ref?: number };
+  type QOut = 'tp_hold' | 'tp_unresolved' | 'quote' | { d4: D4Outcome; proceedsUsd: number | null };
+  /** The executeExit wiring, pure: a TP step goes through tpSkipRunUpdate, an exit step through d4AfterFailedQuote.
+   *  The only state between steps is the stored jsonb copy. The run is stored as executeExit writes it: on a retry
+   *  (d4 null) always; on a REJECTED booking or close the attempt's own run too (Codex round 4 #1; a TP step with
+   *  reject: true models a rejected TP-skip unresolved close).
+   *  After an accepted booking `stored` keeps that attempt's run (the real booking clears exit_run; the tests read
+   *  the run the decision used). */
+  function drive(steps: QStep[], stale: number | null = null): { out: QOut[]; stored: unknown } {
+    let stored: unknown = null;
+    const out = steps.map((s): QOut => {
+      const nowMs = T0 + s.t * 1000;
+      if (s.tp) {
+        const storedRun = parseExitRun(stored);
+        const lowRun = tpSkipRunUpdate(storedRun, s.quote.ok ? null : s.quote.reason, nowMs, quoteDisputesMark(s.quote, s.mark));
+        if (!s.quote.ok && tpSkipUnresolved(lowRun ?? storedRun, s.mark, nowMs)) {
+          if (!s.reject) return 'tp_unresolved';
+          if (lowRun) stored = JSON.parse(JSON.stringify(lowRun)); // the rejected close keeps this skip's run
+          return 'tp_hold';
+        }
+        if (lowRun) stored = JSON.parse(JSON.stringify(lowRun));
+        return 'tp_hold';
+      }
+      if (s.quote.ok) {
+        // A usable quote whose booking is REJECTED still ends a stored deep streak (Codex round 3 #2).
+        const keep = s.reject ? runAfterRejectedUsableQuote(parseExitRun(stored)) : null;
+        if (keep) stored = JSON.parse(JSON.stringify(keep));
+        return 'quote';
+      }
+      const prevRun = parseExitRun(stored);
+      const r = d4AfterFailedQuote({
+        prevRun, quote: s.quote, freshMarkPrice: s.mark, referencePriceUsd: s.mark === null ? s.ref ?? stale : null,
+        staleFallbackPrice: stale, nowMs,
+      });
+      if (r.d4 !== null && s.reject) {
+        stored = JSON.parse(JSON.stringify(r.run)); // Codex round 4 #1: a rejected booking or close keeps this run
+        return { d4: null, proceedsUsd: null };
+      }
+      stored = JSON.parse(JSON.stringify(r.run));
+      const proceedsUsd = r.d4?.kind === 'book'
+        ? (r.d4.source === 'quote_confirmed' && r.currentLow ? r.currentLow.proceedsUsd : markFallbackProceeds(TOKENS, r.d4.priceUsd))
+        : null;
+      return { d4: r.d4, proceedsUsd };
+    });
+    return { out, stored };
+  }
+  const exitAt = (t: number, quote: SellQuoteResult, mark: number | null = SPIKE): QStep => ({ t, quote, mark });
+  const confirmedAt = (priceUsd: number): D4Outcome => ({ kind: 'book', source: 'quote_confirmed', priceUsd: expect.closeTo(priceUsd, 12) });
+  const d4Of = (o: QOut) => (o as { d4: D4Outcome }).d4;
+
+  test('the wire: a FEAR quote is refused quote_far_below_mark, carries its fill and disputes the mark', () => {
+    const q = sellAt(SANE, SPIKE);
+    expect(q).toMatchObject({ ok: false, reason: 'quote_far_below_mark' });
+    if (q.ok || !q.fill) throw new Error('expected a carried fill');
+    expect(q.fill.priceUsd).toBeCloseTo(SANE, 12);
+    expect(quoteDisputesMark(q, SPIKE)).toBe(true);
+  });
+
+  test('(a) FEAR replay: TP held on the quote for 10 min, the time exit books the 0.92x quote (quote_confirmed), never the 204x mark', () => {
+    const steps: QStep[] = [];
+    for (let t = 20; t < 600; t += 10) steps.push({ t, quote: sellAt(SANE, SPIKE), mark: SPIKE, tp: true });
+    steps.push(exitAt(600, sellAt(SANE, SPIKE)));
+    const { out } = drive(steps);
+    expect(out.slice(0, -1).every((o) => o === 'tp_hold')).toBe(true);
+    const last = out.at(-1) as { d4: D4Outcome; proceedsUsd: number };
+    expect(last.d4).toEqual(confirmedAt(SANE));
+    // the booked quote pays the sell haircut like any quote fill (D3): ~ $20 x 0.92 x 0.995, a loss, not +$4,005
+    expect(last.proceedsUsd).toBeCloseTo(TOKENS * SANE * (1 - HAIRCUT / 100), 6);
+    expect(last.proceedsUsd).toBeLessThan(20);
+  });
+
+  test('(a) FEAR replay, time exit quote fails once: a TP-primed history never books the 204x mark', () => {
+    const steps: QStep[] = [];
+    for (let t = 20; t < 600; t += 10) steps.push({ t, quote: sellAt(SANE, SPIKE), mark: SPIKE, tp: true });
+    steps.push(exitAt(600, NO_QUOTE), exitAt(610, sellAt(SANE, SPIKE)));
+    const { out } = drive(steps);
+    expect(d4Of(out.at(-2)!)).toBeNull();
+    expect(d4Of(out.at(-1)!)).toEqual(confirmedAt(SANE));
+  });
+
+  test('(a) without TP primes: sane lows confirm after >= 2 lows over >= 45 s; the spiked mark never books', () => {
+    const { out } = drive([0, 10, 20, 44, 45].map((t) => exitAt(t, sellAt(SANE, SPIKE))));
+    expect(out.slice(0, 4).map(d4Of)).toEqual([null, null, null, null]);
+    expect(d4Of(out[4]!)).toEqual(confirmedAt(SANE));
+  });
+
+  test('(a) a sane low disputes the mark for the rest of the history: a later no-quote or drift attempt never books the mark', () => {
+    const { out, stored } = drive([
+      exitAt(0, sellAt(SANE, SPIKE)), exitAt(10, sellAt(SANE, SPIKE)),
+      exitAt(45, NO_QUOTE), exitAt(60, NO_QUOTE),                       // 4 failures over 60 s: the old code booked 204x here
+      exitAt(70, sellAt(SPIKE * 1.5, SPIKE)), exitAt(80, NO_QUOTE),       // drift resets the low streak; still no mark
+      exitAt(90, sellAt(SANE, SPIKE)), exitAt(134, sellAt(SANE, SPIKE)),   // new streak 90 -> 134 s: 44 s, not yet
+      exitAt(135, sellAt(SANE, SPIKE)),
+    ]);
+    const d4s = out.map(d4Of);
+    expect(d4s.slice(0, 8)).toEqual([null, null, null, null, null, null, null, null]);
+    expect(d4s[8]).toEqual(confirmedAt(SANE));
+    expect(parseExitRun(stored)?.markDisputed).toBe(true);
+  });
+
+  test('(a) disputed mark and no usable quote after it (no quote, drift): never books; unresolved 30 min after the first failure', () => {
+    const steps: QStep[] = [exitAt(0, sellAt(SANE, SPIKE))];
+    for (let t = 60; t <= 1800; t += 60) steps.push(exitAt(t, t % 120 === 0 ? sellAt(SPIKE * 1.5, SPIKE) : NO_QUOTE));
+    const d4s = drive(steps).out.map(d4Of);
+    expect(d4s.slice(0, -1).every((d) => d === null)).toBe(true);
+    expect(d4s.at(-1)).toEqual({ kind: 'unresolved' });
+  });
+
+  test('(a) disputed mark, then near-zero lows: each deep low disputes too; the confirmed near-zero quote books, never the mark', () => {
+    const steps: QStep[] = [exitAt(0, sellAt(SANE, SPIKE))];
+    for (let t = 60; t <= 300; t += 60) steps.push(exitAt(t, t % 120 === 0 ? sellAt(0.001 * ENTRY, SPIKE) : NO_QUOTE));
+    const d4s = drive(steps).out.map(d4Of);
+    expect(d4s.slice(0, 2)).toEqual([null, null]);
+    expect(d4s[2]).toEqual(confirmedAt(0.001 * ENTRY)); // 120 s: 2 lows, streak 120 s
+  });
+
+  test('(b) frozen-mark collapse (Runner): mark 1.2x, quotes 0.047x of entry for >= 45 s -> quote_confirmed at the low, never the mark', () => {
+    const MARK = 1.2 * ENTRY;
+    const LOW = 0.047 * ENTRY; // ~0.039x of the mark: the PumpSwap floor of a dumped migrated coin
+    const { out, stored } = drive([0, 10, 20, 45].map((t) => exitAt(t, sellAt(LOW, MARK), MARK)));
+    expect(out.slice(0, 3).map(d4Of)).toEqual([null, null, null]);
+    const last = out[3] as { d4: D4Outcome; proceedsUsd: number };
+    expect(last.d4).toEqual(confirmedAt(LOW));
+    expect(last.proceedsUsd).toBeCloseTo(TOKENS * LOW * (1 - HAIRCUT / 100), 9);
+    expect(parseExitRun(stored)?.markDisputed).toBe(true);
+    // a TP-primed history (the lows came on TP skips) is disputed the same way
+    const tp = drive([
+      { t: 0, quote: sellAt(LOW, MARK), mark: MARK, tp: true }, { t: 10, quote: sellAt(LOW, MARK), mark: MARK, tp: true },
+      exitAt(20, NO_QUOTE, MARK), exitAt(45, NO_QUOTE, MARK), exitAt(60, sellAt(LOW, MARK), MARK),
+    ]).out.map(d4Of);
+    expect(tp.slice(2)).toEqual([null, null, confirmedAt(LOW)]);
+  });
+
+  test('(c) one-sample glitch: mark 1.0x, one low at 0.05x of the mark, a sane quote 11 s later books (quote), never the glitch', () => {
+    const MARK = 1.0 * ENTRY;
+    const { out, stored } = drive([exitAt(0, sellAt(0.05 * MARK, MARK), MARK), exitAt(11, sellAt(0.98 * MARK, MARK), MARK)]);
+    expect(d4Of(out[0]!)).toBeNull();
+    expect(out[1]).toBe('quote');
+    expect(parseExitRun(stored)?.markDisputed).toBe(true); // the glitch disputed the mark; the sane quote books anyway
+  });
+
+  test('(d) shallow lows (0.2x < quote/mark < 0.5x) never dispute: mark_fallback after 3 failures over 45 s (XRP; unchanged)', () => {
+    const MARK = 1.0 * ENTRY;
+    const { out, stored } = drive([0, 10, 20, 45].map((t) => exitAt(t, sellAt(0.3 * MARK, MARK), MARK)));
+    expect(out.slice(0, 3).map(d4Of)).toEqual([null, null, null]);
+    const last = out[3] as { d4: D4Outcome; proceedsUsd: number };
+    expect(last.d4).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+    expect(last.proceedsUsd).toBeCloseTo(markFallbackProceeds(TOKENS, MARK), 9);
+    expect(parseExitRun(stored)?.sawLow).toBe(true);
+    expect(parseExitRun(stored)?.markDisputed).toBeUndefined();
+    // mark 3.0x: the shallow quote is 0.9x of entry, which the removed entry-floor rule treated as a dispute
+    const HIGH = 3.0 * ENTRY;
+    const high = drive([0, 10, 20, 45].map((t) => exitAt(t, sellAt(0.3 * HIGH, HIGH), HIGH)));
+    expect(high.out.slice(0, 3).map(d4Of)).toEqual([null, null, null]);
+    expect(d4Of(high.out[3]!)).toEqual({ kind: 'book', priceUsd: HIGH, source: 'mark_fallback' });
+    expect(parseExitRun(high.stored)?.markDisputed).toBeUndefined();
+  });
+
+  test('(e) boundary: a quote at exactly 0.2x of the fresh mark disputes, 0.2001x does not; no fresh mark never disputes', () => {
+    expect(FLOOR_ARENA_DEEP_LOW_OF_MARK).toBe(0.2);
+    const MARK = 1.0 * ENTRY;
+    const refusal = (priceUsd: number): SellQuoteResult => ({
+      ok: false, reason: 'quote_far_below_mark', quotedPriceUsd: priceUsd,
+      fill: { ok: true, tokens: TOKENS, quotedUsd: TOKENS * priceUsd, proceedsUsd: TOKENS * priceUsd * 0.995, priceUsd, venue: null },
+    });
+    expect(quoteDisputesMark(refusal(MARK * 0.2), MARK)).toBe(true);
+    expect(quoteDisputesMark(refusal(MARK * 0.2001), MARK)).toBe(false);
+    expect(quoteDisputesMark({ ok: false, reason: 'quote_far_below_mark', quotedPriceUsd: MARK * 0.2 }, MARK)).toBe(true); // no fill
+    expect(quoteDisputesMark(sellAt(0.1999 * MARK, MARK), MARK)).toBe(true);          // through the wire
+    expect(quoteDisputesMark(sellAt(0.2001 * MARK, MARK), MARK)).toBe(false);
+    expect(quoteDisputesMark(sellAt(SANE, MARK), MARK)).toBe(false);                   // passes the mark: no refusal
+    expect(quoteDisputesMark(sellAt(0.001 * ENTRY, null, ENTRY), null)).toBe(false);   // far below reference, no fresh mark
+    expect(quoteDisputesMark(refusal(MARK * 0.1), null)).toBe(false);
+    expect(quoteDisputesMark(NO_QUOTE, MARK)).toBe(false);
+    const { stored } = drive([exitAt(0, sellAt(0.001 * ENTRY, null, ENTRY), null)]);
+    expect(parseExitRun(stored)?.markDisputed).toBeUndefined();
+  });
+
+  test('(f) a rejected booking keeps a NEWLY set sawLow: the next stale-branch no-quote attempt never books the stale price', () => {
+    const MARK = 1.0 * ENTRY;
+    const steps: QStep[] = [
+      exitAt(0, NO_QUOTE, MARK), exitAt(10, NO_QUOTE, MARK), exitAt(20, NO_QUOTE, MARK),
+      // first low (shallow, undisputed) under the fresh mark: D4 decides mark_fallback, the mark aged, booking rejected
+      { ...exitAt(45, sellAt(0.3 * MARK, MARK), MARK), reject: true },
+      exitAt(55, NO_QUOTE, null), exitAt(65, NO_QUOTE, null),
+    ];
+    const before = drive(steps.slice(0, 3)).stored;
+    const low45 = sellAt(0.3 * MARK, MARK);
+    if (low45.ok) throw new Error('expected a refused quote');
+    const at45 = d4AfterFailedQuote({ prevRun: parseExitRun(before), quote: low45, freshMarkPrice: MARK, referencePriceUsd: null, staleFallbackPrice: MARK, nowMs: T0 + 45_000 });
+    expect(at45.d4).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+    expect(parseExitRun(before)?.sawLow).toBe(false);
+    const { out, stored } = drive(steps, MARK);
+    expect(out.map(d4Of)).toEqual([null, null, null, null, null, null]);
+    expect(parseExitRun(stored)?.sawLow).toBe(true);
+    // without the fix (nothing written on the rejection) the 55 s stale-branch attempt books the stale price
+    const bug = d4AfterFailedQuote({ prevRun: parseExitRun(before), quote: NO_QUOTE, freshMarkPrice: null, referencePriceUsd: MARK, staleFallbackPrice: MARK, nowMs: T0 + 55_000 });
+    expect(bug.d4).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+  });
+
+  test('(c) drift refusals and no-quote attempts with a fresh mark -> mark_fallback (unchanged)', () => {
+    const MARK = 2 * ENTRY;
+    const drift = drive([0, 10, 20, 45].map((t) => exitAt(t, sellAt(MARK * 1.5, MARK), MARK))).out;
+    expect(d4Of(drift[0]!)).toBeNull();
+    expect(d4Of(drift[3]!)).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+    const failed = drive([0, 10, 20, 45].map((t) => exitAt(t, NO_QUOTE, MARK))).out;
+    expect(d4Of(failed[3]!)).toEqual({ kind: 'book', priceUsd: MARK, source: 'mark_fallback' });
+  });
+
+  test('(d) stale branch through the same wiring: a far-below-reference low books quote_confirmed (unchanged)', () => {
+    const LOW = 0.2 * ENTRY;
+    const d4s = drive([0, 45].map((t) => exitAt(t, sellAt(LOW, null, ENTRY), null)), ENTRY).out.map(d4Of);
+    expect(d4s[0]).toBeNull();
+    expect(d4s[1]).toEqual(confirmedAt(LOW));
+  });
+
+  test('(e) a TP is still judged on the quote: the FEAR quote never confirms a TP, a quote at the TP multiple does', () => {
+    expect(tpConfirmedByQuote(quotedTpMultiple(SANE, ENTRY), 2)).toBe(false);
+    expect(tpConfirmedByQuote(quotedTpMultiple(2 * ENTRY, ENTRY), 2)).toBe(true);
+  });
+
+  test('Codex 94c489354 + fba01643f: shallow lows then a first deep low dispute the mark and decide NO booking; the 204x mark never books', () => {
+    const SHALLOW = 0.3 * SPIKE;
+    // shallow lows (0.3x of the mark) at 0 s and 10 s (undisputed); at 45 s a 0.92x-of-entry quote (0.0045x of the mark)
+    // disputes the mark. Before fba01643f's review it also qualified quote_confirmed on the shallow lows' streak (the
+    // booking 94c489354 kept the dispute for when it was rejected); now the first deep low alone confirms nothing, so the
+    // attempt retries and stores the dispute (the 'reject' flag never applies). A first dispute can still decide an
+    // 'unresolved' close: the next test covers the rejected one.
+    const steps: QStep[] = [
+      exitAt(0, sellAt(SHALLOW, SPIKE)), exitAt(10, sellAt(SHALLOW, SPIKE)),
+      { ...exitAt(45, sellAt(SANE, SPIKE)), reject: true },
+      exitAt(55, NO_QUOTE), exitAt(65, NO_QUOTE), exitAt(120, NO_QUOTE),
+    ];
+    // the 45 s attempt decides nothing (one deep low): no booking to reject
+    const before = drive(steps.slice(0, 2)).stored;
+    const sane45 = sellAt(SANE, SPIKE);
+    if (sane45.ok) throw new Error('expected a refused quote');
+    const at45 = d4AfterFailedQuote({
+      prevRun: parseExitRun(before), quote: sane45, freshMarkPrice: SPIKE, referencePriceUsd: null, staleFallbackPrice: null,
+      nowMs: T0 + 45_000,
+    });
+    expect(at45.d4).toBeNull();
+    expect(parseExitRun(before)?.markDisputed).toBeUndefined();
+    const { out, stored } = drive(steps);
+    expect(out.map(d4Of)).toEqual([null, null, null, null, null, null]);
+    expect(parseExitRun(stored)?.markDisputed).toBe(true);
+    // the next sane low books the quote, never the mark
+    const { out: after } = drive([...steps, exitAt(130, sellAt(SANE, SPIKE))]);
+    expect(d4Of(after.at(-1)!)).toEqual(confirmedAt(SANE));
+    // without the fix (nothing written on the rejection) the 55 s attempt books the 204x mark: the bug Codex replayed
+    const bug = d4AfterFailedQuote({
+      prevRun: parseExitRun(before), quote: NO_QUOTE, freshMarkPrice: SPIKE, referencePriceUsd: null, staleFallbackPrice: null, nowMs: T0 + 55_000,
+    });
+    expect(bug.d4).toEqual({ kind: 'book', priceUsd: SPIKE, source: 'mark_fallback' });
+  });
+
+  test('Codex 94c489354: a rejected unresolved close that first disputed the mark keeps the dispute too', () => {
+    const steps: QStep[] = [exitAt(0, NO_QUOTE, null)];
+    for (let t = 60; t < 1800; t += 60) steps.push(exitAt(t, NO_QUOTE, null));
+    // 30 min in, a fresh 204x mark and a sane quote: disputed, not yet confirmed (one low) -> unresolved, rejected
+    steps.push({ ...exitAt(1800, sellAt(SANE, SPIKE)), reject: true }, exitAt(1810, NO_QUOTE));
+    const { out, stored } = drive(steps);
+    expect(out.slice(0, -2).map(d4Of).every((d) => d === null)).toBe(true);
+    expect(parseExitRun(stored)?.markDisputed).toBe(true);
+    // the next attempt (no quote under the fresh 204x mark) closes unresolved, it never books the mark
+    expect(d4Of(out.at(-1)!)).toEqual({ kind: 'unresolved' });
+    // without the fix the undisputed run books the mark at 1810 s
+    const bug = d4AfterFailedQuote({
+      prevRun: parseExitRun(drive(steps.slice(0, -2)).stored), quote: NO_QUOTE, freshMarkPrice: SPIKE, referencePriceUsd: null,
+      staleFallbackPrice: null, nowMs: T0 + 1_810_000,
+    });
+    expect(bug.d4).toEqual({ kind: 'book', priceUsd: SPIKE, source: 'mark_fallback' });
+  });
+
+  test('Codex round 4 #1: a rejected booking or unresolved close persists THIS attempt\'s run with the d4-null CAS', () => {
+    // the engine writes it after a rejected booking and after a rejected unresolved close, with the d4-null CAS
+    const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/keptRun = run;\s+guardRun = run;/);
+    expect(source).not.toContain('runToKeepAfterRejectedBooking');
+    expect(source).toContain("if (closed.kind === 'lost_race' && keptRun) await persistKeptRun(position, keptRun);");
+    expect(source).toContain('if (keptRun) await persistKeptRun(position, keptRun);');
+    expect(source).toMatch(/async function persistKeptRun[\s\S]*?eq\(floorArenaPositions\.status, 'open'\), exitRunUnchanged\(position\)\)\);/);
+  });
+
+  test('stored rows: markDisputed survives the jsonb round trip and a pause; an old row without it parses as not disputed', () => {
+    const disputed = advanceExitRun(null, 'low', T0, true);
+    expect(disputed.markDisputed).toBe(true);
+    expect(parseExitRun(JSON.parse(JSON.stringify(disputed)))).toEqual(disputed);
+    expect(advanceExitRun(disputed, 'no_quote', T0 + 6 * 60_000).markDisputed).toBe(true);
+    expect(advanceExitRun(disputed, 'low', T0 + 10_000, false).markDisputed).toBe(true);
+    // a no-quote attempt cannot dispute the mark, whatever the caller passes
+    expect(advanceExitRun(null, 'no_quote', T0, true).markDisputed).toBeUndefined();
+    const old = { ...advanceExitRun(null, 'low', T0) };
+    expect('markDisputed' in old).toBe(false);
+    expect(parseExitRun(JSON.parse(JSON.stringify(old)))).toEqual(old);
+    expect(parseExitRun({ ...old, markDisputed: 'yes' })).toBeNull();
+  });
+
+  // Codex review of fba01643f, finding 1: under a disputed fresh mark only a streak of DEEP lows confirms a quote.
+  // Reset rule (lead decision): a shallow low, a usable quote or a drift refusal ends the deep streak; a no-quote
+  // attempt neither counts nor resets it (as the low streak, Codex r4 #1). Steps are seconds after T0.
+  const MARK1 = 1.0 * ENTRY;
+  const deepAt = (t: number, price = 0.000001 * MARK1) => exitAt(t, sellAt(price, MARK1), MARK1);
+  const shallowAt = (t: number) => exitAt(t, sellAt(0.3 * MARK1, MARK1), MARK1);
+
+  test('Codex fba01643f: shallow lows at 0 s and 10 s, then ONE deep 0.000001x quote at 45 s never books (no second deep low)', () => {
+    const steps = [shallowAt(0), shallowAt(10), deepAt(45)];
+    const { out, stored } = drive(steps);
+    expect(out.map(d4Of)).toEqual([null, null, null]); // the old engine booked quote_confirmed at 45 s here
+    const run = parseExitRun(stored)!;
+    expect(run).toMatchObject({ markDisputed: true, lowCount: 3, deepLowCount: 1, deepStreakStartedAt: new Date(T0 + 45_000).toISOString() });
+    // and the disputed mark never books later either: no quote -> nothing, unresolved 30 min after the first failure
+    const later = drive([...steps, exitAt(60, NO_QUOTE, MARK1), exitAt(1800, NO_QUOTE, MARK1)]).out.map(d4Of);
+    expect(later.slice(3)).toEqual([null, { kind: 'unresolved' }]);
+  });
+
+  test('Codex fba01643f: two deep lows over >= 45 s book quote_confirmed at the latest deep quote', () => {
+    expect(drive([deepAt(0), deepAt(44)]).out.map(d4Of)).toEqual([null, null]);
+    expect(drive([deepAt(0), deepAt(45, 0.01 * MARK1)]).out.map(d4Of)).toEqual([null, confirmedAt(0.01 * MARK1)]);
+  });
+
+  test('Codex fba01643f: deep, shallow, deep never confirms; the deep streak restarts at the second deep low', () => {
+    const { out, stored } = drive([deepAt(0), shallowAt(20), deepAt(50), deepAt(94), deepAt(95)]);
+    // 50 s: 2 deep lows in the history, 50 s apart, but the shallow low ended the streak (deepLowCount 1 at 50 s)
+    expect(out.map(d4Of)).toEqual([null, null, null, null, confirmedAt(0.000001 * MARK1)]); // 50 -> 95 s = 45 s
+    expect(parseExitRun(stored)).toMatchObject({ deepLowCount: 3, deepStreakStartedAt: new Date(T0 + 50_000).toISOString() });
+    // a drift refusal ends it the same way
+    expect(drive([deepAt(0), exitAt(20, sellAt(MARK1 * 1.5, MARK1), MARK1), deepAt(50)]).out.map(d4Of)).toEqual([null, null, null]);
+  });
+
+  test('Codex fba01643f: a no-quote attempt between deep lows neither counts nor resets the deep streak', () => {
+    const { out, stored } = drive([deepAt(0), exitAt(20, NO_QUOTE, MARK1), deepAt(45)]);
+    expect(out.map(d4Of)).toEqual([null, null, confirmedAt(0.000001 * MARK1)]);
+    expect(parseExitRun(stored)).toMatchObject({ deepLowCount: 2, deepStreakStartedAt: new Date(T0).toISOString() });
+  });
+
+  test('Codex fba01643f: TP skips: a usable quote or a drift refusal ends the deep streak, a no-quote skip keeps it', () => {
+    const tpAt = (t: number, quote: SellQuoteResult): QStep => ({ t, quote, mark: MARK1, tp: true });
+    const usable = sellAt(0.98 * MARK1, MARK1);
+    expect(usable.ok).toBe(true);
+    // deep TP skip, usable quote under the TP, deep exit at 45 s: no confirmation (the streak restarted at 45 s)
+    const sane = drive([tpAt(0, sellAt(0.000001 * MARK1, MARK1)), tpAt(20, usable), deepAt(45)]);
+    expect(d4Of(sane.out[2]!)).toBeNull();
+    expect(parseExitRun(sane.stored)).toMatchObject({ markDisputed: true, deepLowCount: 1 });
+    const drift = drive([tpAt(0, sellAt(0.000001 * MARK1, MARK1)), tpAt(20, sellAt(MARK1 * 1.5, MARK1)), deepAt(45)]);
+    expect(d4Of(drift.out[2]!)).toBeNull();
+    const noQuote = drive([tpAt(0, sellAt(0.000001 * MARK1, MARK1)), tpAt(20, NO_QUOTE), deepAt(45)]);
+    expect(d4Of(noQuote.out[2]!)).toEqual(confirmedAt(0.000001 * MARK1));
+    // a TP skip with nothing stored to end writes nothing
+    expect(tpSkipRunUpdate(null, null, T0)).toBeNull();
+    expect(tpSkipRunUpdate(advanceExitRun(null, 'low', T0), 'quote_failed', T0 + 1_000)).toBeNull();
+  });
+
+  test('Codex fba01643f: the deep streak survives the jsonb round trip; old rows and broken deep fields read as no streak; a pause ends it', () => {
+    const deep = advanceExitRun(advanceExitRun(null, 'low', T0, true), 'low', T0 + 10_000, true);
+    expect(deep).toMatchObject({ deepLowCount: 2, deepStreakStartedAt: new Date(T0).toISOString(), lastDeepLowAt: new Date(T0 + 10_000).toISOString() });
+    expect(parseExitRun(JSON.parse(JSON.stringify(deep)))).toEqual(deep);
+    const { deepLowCount: _c, deepStreakStartedAt: _s, lastDeepLowAt: _l, ...old } = deep;
+    expect(parseExitRun(old)).toEqual(old);
+    expect(parseExitRun({ ...deep, lastDeepLowAt: 'nope' })).toEqual(old);
+    expect(parseExitRun({ ...deep, deepLowCount: 0 })).toEqual(old);
+    // a pause (> 5 min since the last attempt) restarts the run and ends the deep streak, even across a no-quote attempt
+    expect(advanceExitRun(deep, 'no_quote', T0 + 10_000 + 6 * 60_000).deepLowCount).toBeUndefined();
+    expect(advanceExitRun(deep, 'low', T0 + 10_000 + 6 * 60_000, true)).toMatchObject({ deepLowCount: 1 });
+  });
+
+  // Codex review of fba01643f, finding 2: an unconfirmed TP never reaches d4Decision.
+  test('Codex fba01643f: a TP held on a disputed fresh mark with refused quotes closes unresolved 30 min after the first failure', () => {
+    // FEAR shape, no stop, long max_hold: the TP fires every 10 s on the 204x mark, every quote is refused.
+    const steps: QStep[] = [];
+    for (let t = 0; t <= 1800; t += 10) {
+      steps.push({ t, quote: t % 20 === 0 ? sellAt(SANE, SPIKE) : NO_QUOTE, mark: SPIKE, tp: true });
+    }
+    const { out } = drive(steps);
+    expect(out.slice(0, -1).every((o) => o === 'tp_hold')).toBe(true); // the old engine held here forever
+    expect(out.at(-1)).toBe('tp_unresolved');
+    // a usable quote under the TP is a price, not a failure: it holds; no fresh mark or an undisputed run holds too
+    const disputed = parseExitRun(drive(steps.slice(0, 2)).stored)!;
+    expect(disputed.markDisputed).toBe(true);
+    expect(tpSkipUnresolved(disputed, SPIKE, T0 + 1_800_000)).toBe(true);
+    expect(tpSkipUnresolved(disputed, SPIKE, T0 + 1_799_999)).toBe(false);
+    expect(tpSkipUnresolved(disputed, null, T0 + 1_800_000)).toBe(false);
+    expect(tpSkipUnresolved(advanceExitRun(null, 'low', T0), SPIKE, T0 + 1_800_000)).toBe(false);
+    expect(tpSkipUnresolved(null, SPIKE, T0 + 1_800_000)).toBe(false);
+    const usable = drive([...steps.slice(0, -1), { t: 1800, quote: sellAt(0.9 * SPIKE, SPIKE), mark: SPIKE, tp: true }]).out;
+    expect(usable.at(-1)).toBe('tp_hold');
+    // executeExit wiring: the TP skip closes with closeUnresolved (its CAS) before the run write, only on a refused quote,
+    // and keeps a newly set guard when that close is rejected
+    const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    expect(source).toContain('if (!quote.ok && skipRun && tpSkipUnresolved(skipRun, freshMarkPrice, nowMs)) {');
+    expect(source).toMatch(/tpSkipUnresolved\(skipRun, freshMarkPrice, nowMs\)\) \{\s+const closed = await closeUnresolved\(position, state, trigger, skipRun, writtenMark, decisionAtMs, now\);\s+\/\/[^\n]*\n\s+if \(closed\.kind === 'lost_race' && lowRun\) await persistKeptRun\(position, lowRun\);\s+return closed;\s+\}\s+if \(lowRun\) \{/);
+  });
+
+  // Codex round 3 #1: once the mark is disputed, a stale mark must not reopen the shared low streak.
+  test('Codex round 3 #1: one deep low disputes a $1 mark; at 61 s the mark is stale and a 0.3x quote (far below reference) never books', () => {
+    const staleLow = (t: number, price: number): QStep => ({ t, quote: sellAt(price, null, MARK1), mark: null, ref: MARK1 });
+    const { out, stored } = drive([deepAt(0), staleLow(61, 0.3 * MARK1)]);
+    expect(staleLow(61, 0.3 * MARK1).quote).toMatchObject({ ok: false, reason: 'quote_far_below_reference' });
+    expect(out.map(d4Of)).toEqual([null, null]); // the old engine booked quote_confirmed here (lowCount 2 over 61 s)
+    expect(parseExitRun(stored)).toMatchObject({ markDisputed: true, lowCount: 2 });
+    expect(parseExitRun(stored)?.deepLowCount).toBeUndefined(); // the shallow stale low ended the deep streak
+    // never the stale price either: unresolved 30 min after the first failure
+    expect(drive([deepAt(0), staleLow(61, 0.3 * MARK1), exitAt(1800, NO_QUOTE, null)], MARK1).out.map(d4Of).at(-1))
+      .toEqual({ kind: 'unresolved' });
+  });
+
+  test('Codex round 3 #1: a real collapse still books after the mark goes stale: deep lows against the reference (<= 0.2x) continue the deep streak', () => {
+    const staleLow = (t: number, price: number): QStep => ({ t, quote: sellAt(price, null, MARK1), mark: null, ref: MARK1 });
+    // fresh deep low at 0 s, stale deep low (0.05x of the reference) at 61 s: 2 deep lows over 61 s -> quote_confirmed
+    expect(drive([deepAt(0), staleLow(61, 0.05 * MARK1)]).out.map(d4Of)).toEqual([null, confirmedAt(0.05 * MARK1)]);
+    // the same 45 s span rule: deep lows at 0 s (fresh) and 30 s (stale) do not confirm, a third at 45 s does
+    expect(drive([deepAt(0), staleLow(30, 0.05 * MARK1), staleLow(45, 0.04 * MARK1)]).out.map(d4Of))
+      .toEqual([null, null, confirmedAt(0.04 * MARK1)]);
+    // an UNDISPUTED stale history keeps today's rule (any far-below-reference low counts; no deep streak written)
+    const plain = drive([staleLow(0, 0.3 * MARK1), staleLow(45, 0.3 * MARK1)], MARK1);
+    expect(plain.out.map(d4Of)).toEqual([null, confirmedAt(0.3 * MARK1)]);
+    expect(parseExitRun(plain.stored)?.deepLowCount).toBeUndefined();
+  });
+
+  test('Codex round 3 #2: deep at 0 s, a usable quote at 20 s whose booking is REJECTED, deep at 50 s: no confirmation', () => {
+    const usable = sellAt(0.98 * MARK1, MARK1);
+    expect(usable.ok).toBe(true);
+    const { out, stored } = drive([deepAt(0), { ...exitAt(20, usable, MARK1), reject: true }, deepAt(50)]);
+    expect(d4Of(out[2]!)).toBeNull(); // the old engine kept the 0 s deep low and booked at 50 s
+    expect(parseExitRun(stored)).toMatchObject({ markDisputed: true, deepLowCount: 1, deepStreakStartedAt: new Date(T0 + 50_000).toISOString() });
+    expect(runAfterRejectedUsableQuote(null)).toBeNull();
+    expect(runAfterRejectedUsableQuote(advanceExitRun(null, 'low', T0))).toBeNull(); // no deep streak: nothing to write
+    // executeExit wiring: the usable-quote branch sets keptRun, written on a rejected booking with the d4-null CAS
+    const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/if \(quote\.ok\) \{\s+guardRun = parseExitRun\(position\.exitRun\);\s+keptRun = runAfterRejectedUsableQuote\(guardRun\);/);
+    expect(source).toContain('if (keptRun) await persistKeptRun(position, keptRun);');
+  });
+
+  test('Codex round 3 #3: a PARTIAL sale keeps markDisputed and sawLow for the remaining position; 3 failures over 45 s never book the disputed mark', () => {
+    const disputed = parseExitRun(drive([deepAt(0)]).stored)!;
+    const SOLD = T0 + 100_000;
+    const kept = runAfterPartialFill(disputed, SOLD)!;
+    const soldIso = new Date(SOLD).toISOString();
+    expect(kept).toEqual({
+      firstFailureAt: soldIso, runStartedAt: soldIso, streakStartedAt: null, failures: 0, lowCount: 0, sawLow: true,
+      lastLowAt: null, lastAttemptAt: soldIso, markDisputed: true,
+    });
+    expect(parseExitRun(JSON.parse(JSON.stringify(kept)))).toEqual(kept);
+    const after = (run: unknown) => {
+      let stored = run;
+      return [110, 120, 130, 160].map((t) => {
+        const r = d4AfterFailedQuote({
+          prevRun: parseExitRun(stored), quote: NO_QUOTE as Exclude<SellQuoteResult, { ok: true }>, freshMarkPrice: MARK1,
+          referencePriceUsd: null, staleFallbackPrice: null, nowMs: T0 + t * 1000,
+        });
+        stored = JSON.parse(JSON.stringify(r.run));
+        return r.d4;
+      });
+    };
+    expect(after(kept)).toEqual([null, null, null, null]);
+    // the old engine wrote exit_run NULL: the 4th failure (60 s after the first) books the disputed mark
+    expect(after(null).at(-1)).toEqual({ kind: 'book', priceUsd: MARK1, source: 'mark_fallback' });
+    // Codex round 4 #2: an undisputed history (sawLow alone, or no guard, or none) writes NULL, as before 94c489354
+    expect(runAfterPartialFill(advanceExitRun(null, 'low', T0), SOLD)).toBeNull();
+    expect(runAfterPartialFill(advanceExitRun(null, 'no_quote', T0), SOLD)).toBeNull();
+    expect(runAfterPartialFill(null, SOLD)).toBeNull();
+    const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    expect(source).toContain('exitRun: fill.closed ? null : runAfterPartialFill(guardRun, nowMs),');
+  });
+
+  test('Codex round 4 #1: shallow at 0 s, deep at 1790 s, shallow at 1800 s (unresolved, REJECTED), one deep at 1835 s never books', () => {
+    const $1 = MARK1;
+    const shallow = (t: number, reject = false): QStep => ({ ...exitAt(t, sellAt(0.3 * $1, $1), $1), reject });
+    const deep = (t: number): QStep => exitAt(t, sellAt(0.1 * $1, $1), $1);
+    // the trigger pauses after 0 s; the 1790 s attempt restarts the run but keeps the 0 s clock (sawLow, Codex r6 #1)
+    const steps: QStep[] = [shallow(0), deep(1790), shallow(1800, true), deep(1835)];
+    const before = drive(steps.slice(0, -2)).stored;
+    expect(parseExitRun(before)).toMatchObject({ markDisputed: true, deepLowCount: 1 });
+    // the 1800 s shallow low ends the deep streak and asks for unresolved (30 min since 0 s); a newer mark rejects it
+    const at1800 = d4AfterFailedQuote({
+      prevRun: parseExitRun(before), quote: sellAt(0.3 * $1, $1) as Exclude<SellQuoteResult, { ok: true }>, freshMarkPrice: $1,
+      referencePriceUsd: null, staleFallbackPrice: null, nowMs: T0 + 1_800_000,
+    });
+    expect(at1800.d4).toEqual({ kind: 'unresolved' });
+    expect(at1800.run.deepLowCount).toBeUndefined();
+    const { out, stored } = drive(steps);
+    // 1835 s: one deep low after the reset -> no booking (the old engine booked quote_confirmed on the 1790 s sample),
+    // and still past 30 min -> unresolved
+    expect(d4Of(out.at(-1)!)).toEqual({ kind: 'unresolved' });
+    expect(parseExitRun(stored)).toMatchObject({ deepLowCount: 1, deepStreakStartedAt: new Date(T0 + 1_835_000).toISOString() });
+    // without the fix (the rejected close wrote nothing: no new guard) the 1835 s deep low books on the 1790 s sample
+    const bug = d4AfterFailedQuote({
+      prevRun: parseExitRun(before), quote: sellAt(0.1 * $1, $1) as Exclude<SellQuoteResult, { ok: true }>, freshMarkPrice: $1,
+      referencePriceUsd: null, staleFallbackPrice: null, nowMs: T0 + 1_835_000,
+    });
+    expect(bug.d4).toEqual(confirmedAt(0.1 * $1));
+  });
+
+  test('Codex round 4 #1 (TP-skip variant): a drift TP skip ends the deep streak, its unresolved close is REJECTED, one deep low never books', () => {
+    const tpAt = (t: number, quote: SellQuoteResult, reject = false): QStep => ({ t, quote, mark: MARK1, tp: true, reject });
+    const steps: QStep[] = [
+      tpAt(0, sellAt(0.3 * MARK1, MARK1)), tpAt(1790, sellAt(0.1 * MARK1, MARK1)), tpAt(1800, sellAt(MARK1 * 1.5, MARK1), true),
+      deepAt(1835, 0.1 * MARK1),
+    ];
+    const { out, stored } = drive(steps);
+    expect(out.at(-2)).toBe('tp_hold'); // the rejected close
+    expect(d4Of(out.at(-1)!)).toEqual({ kind: 'unresolved' }); // never quote_confirmed on the 1790 s sample
+    expect(parseExitRun(stored)).toMatchObject({ deepLowCount: 1, deepStreakStartedAt: new Date(T0 + 1_835_000).toISOString() });
+  });
+
+  test('Codex round 4 #2: a partial sale changes nothing for an UNDISPUTED history: the stale fallback books at 75 s as before', () => {
+    // shallow $0.30 vs a $1 mark at 0 s (sawLow, not disputed), partial sale at 20 s, no quotes at 30/40/75 s, stale mark
+    const shallowRun = parseExitRun(drive([exitAt(0, sellAt(0.3 * MARK1, MARK1), MARK1)]).stored)!;
+    expect(shallowRun).toMatchObject({ sawLow: true });
+    expect(shallowRun.markDisputed).toBeUndefined();
+    let stored: unknown = runAfterPartialFill(shallowRun, T0 + 20_000);
+    expect(stored).toBeNull();
+    const d4s = [30, 40, 75].map((t) => {
+      const r = d4AfterFailedQuote({
+        prevRun: parseExitRun(stored), quote: NO_QUOTE as Exclude<SellQuoteResult, { ok: true }>, freshMarkPrice: null,
+        referencePriceUsd: MARK1, staleFallbackPrice: MARK1, nowMs: T0 + t * 1000,
+      });
+      stored = JSON.parse(JSON.stringify(r.run));
+      return r.d4;
+    });
+    expect(d4s).toEqual([null, null, { kind: 'book', priceUsd: MARK1, source: 'mark_fallback' }]);
+  });
+});
+
 describe('exit summaries', () => {
   test('partial TP and closing summaries are human readable', () => {
     const partial = exitSummary({
@@ -485,6 +1028,79 @@ describe('exit summaries', () => {
       fillSource: 'quote_confirmed', fill: { remainingFraction: 0, realisedUsd: 0.19, closed: true, pnlUsd: -19.81, pnlMult: 0.0095 }, sizeUsd: 20,
     });
     expect(crash).toBe('Sold 100% of RUG at 0.01x (time cap) for $0.19 via confirmed low quote (2+ low quotes over 45 s). Closed: P&L -$19.81 (-99.0%).');
+  });
+});
+
+describe('D35 period reset exit', () => {
+  const START = T0 + 3_600_000;
+  const ex = exits({ tp: [[1.2, 0.5], [1.5, 0.5]], stop_mult: 0.8, trail_from_peak: 0.1, max_hold_s: 900 });
+
+  test('fires only for a position opened BEFORE the period start; at or after the start it is untouched', () => {
+    expect(resetExitTrigger(state({ openedAtMs: START - 1 }), START)).toEqual({ reason: 'reset', fraction: 1, leg: null });
+    expect(resetExitTrigger(state({ openedAtMs: START }), START)).toBeNull();
+    expect(resetExitTrigger(state({ openedAtMs: START + 1 }), START)).toBeNull();
+    expect(resetExitTrigger(state(), null)).toBeNull(); // no active period
+  });
+
+  test('closes the whole REMAINING fraction; a closed position never triggers', () => {
+    expect(resetExitTrigger(state({ remainingFraction: 0.5, realisedUsd: 12 }), START))
+      .toEqual({ reason: 'reset', fraction: 0.5, leg: null });
+    expect(resetExitTrigger(state({ remainingFraction: 0 }), START)).toBeNull();
+  });
+
+  test('outranks TP, stop, trail and time (runExitTick asks it first; the TP re-decide never sees a reset)', () => {
+    const s = state({ openedAtMs: T0 });
+    for (const [mark, at] of [[1.6, T0 + 1_000], [0.5, T0 + 1_000], [1.0, T0 + 900_000]] as const) {
+      expect(decideExitTrigger(s, ex, mark, at)).not.toBeNull();
+      expect(resetExitTrigger(s, START) ?? decideExitTrigger(s, ex, mark, at)).toEqual({ reason: 'reset', fraction: 1, leg: null });
+    }
+    const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    expect(source).toContain('const trigger = resetExitTrigger(state, periodStartMs) ?? decideExitTrigger(state, exits, markMult, nowMs, liq);');
+    expect(source.match(/readActiveArenaPeriod\)\(now\)/g)).toHaveLength(1); // one period read per tick
+  });
+
+  test('books like a time exit: same fill math for the same quote proceeds, same mark-fallback costs', () => {
+    const s = state({ remainingFraction: 0.5, realisedUsd: 12 });
+    const reset: ExitTrigger = { reason: 'reset', fraction: 0.5, leg: null };
+    const time: ExitTrigger = { reason: 'time', fraction: 0.5, leg: null };
+    expect(applyExitFill(s, reset, 9.5)).toEqual(applyExitFill(s, time, 9.5));
+    expect(applyExitFill(s, reset, 9.5)).toMatchObject({ closed: true, remainingFraction: 0 });
+    expect(markFallbackProceeds(10_000, 0.001)).toBeCloseTo(10_000 * 0.001 * (1 - (DEFAULT_PAPER_COSTS.sell_haircut_pct + DEFAULT_PAPER_COSTS.mark_fallback_pool_fee_pct) / 100), 12);
+    // executeExit asks the TP-quote confirmation only of a 'tp' trigger
+    const source = readFileSync(new URL('./engine.ts', import.meta.url), 'utf8');
+    expect(source.match(/if \(trigger\.reason === 'tp'\) \{\s+const legMult[^\n]*\n\s+const quoteMult[^\n]*\n\s+if \(!tpConfirmedByQuote\(/g)).toHaveLength(1);
+    expect(source.match(/if \(!tpConfirmedByQuote\(/g)).toHaveLength(1);
+  });
+
+  test('no usable quote: D4 is the same for a reset (it takes no trigger); a disputed mark never books; unresolved at 30 min', () => {
+    const ENTRY = 0.001;
+    type Refused = Exclude<SellQuoteResult, { ok: true }>;
+    const spike: Refused = {
+      ok: false, reason: 'quote_far_below_mark', quotedPriceUsd: 0.9 * ENTRY,
+      fill: { ok: true, tokens: 20_000, quotedUsd: 18, proceedsUsd: 17.91, priceUsd: 0.9 * ENTRY, venue: null },
+    };
+    const noQuote: Refused = { ok: false, reason: 'quote_failed' };
+    let stored: unknown = null;
+    const step = (t: number, quote: Refused, mark: number | null) => {
+      const r = d4AfterFailedQuote({
+        prevRun: parseExitRun(stored), quote,
+        freshMarkPrice: mark, referencePriceUsd: null, staleFallbackPrice: null, nowMs: T0 + t * 1000,
+      });
+      stored = JSON.parse(JSON.stringify(r.run));
+      return r.d4;
+    };
+    expect(step(0, spike, 200 * ENTRY)).toBeNull();                   // disputes the 200x mark
+    for (let t = 60; t < 1800; t += 60) expect(step(t, noQuote, 200 * ENTRY)).toBeNull(); // never the mark
+    expect(step(1800, noQuote, 200 * ENTRY)).toEqual({ kind: 'unresolved' });
+    expect(d4AfterFailedQuote.length).toBe(1); // one input object, no trigger in it
+  });
+
+  test('exit summary says "period reset"', () => {
+    const closed = exitSummary({
+      label: 'BONK', trigger: { reason: 'reset', fraction: 1, leg: null }, legs: 2, mult: 1.1, proceedsUsd: 21.9,
+      fillSource: 'quote', fill: { remainingFraction: 0, realisedUsd: 21.9, closed: true, pnlUsd: 1.9, pnlMult: 1.095 }, sizeUsd: 20,
+    });
+    expect(closed).toBe('Sold 100% of BONK at 1.10x (period reset) for $21.90 via quote. Closed: P&L +$1.90 (+9.5%).');
   });
 });
 

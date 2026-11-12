@@ -54,8 +54,12 @@ import { TRADING_FLOOR_SCREEN } from './trading-floor-room';
 
 export type FloorScreenMode = 'paper' | 'live';
 export type FloorScreenStatus = 'active' | 'paused' | 'stopped';
-/** Which stats window the P&L line shows: the contest while it runs, else 24 h. */
-export type FloorScreenWindow = 'contest' | '24h';
+/**
+ * Which stats window the P&L figures are from. Page A: the active period when
+ * one exists, else the contest while it runs, else 24 h. Page B: the period
+ * leaderboard, which is 'all' (drawn ALL TRADES) when no period exists.
+ */
+export type FloorScreenWindow = 'period' | 'contest' | '24h' | 'all';
 
 /**
  * The exit rule of the LIVE params (the first take-profit leg). `null` is OFF
@@ -129,7 +133,7 @@ export interface FloorScreenBasis {
 
 /**
  * The board ROTATES (founder order 2026-10-02): page A is the five house-agent
- * columns, page B the arena contest leaderboard, `FLOOR_SCREEN_PAGE_MS` each.
+ * columns, page B the arena period leaderboard, `FLOOR_SCREEN_PAGE_MS` each.
  * The page comes from the clock (`floorScreenPage` in the data module), so
  * there is no per-frame state; the scene's timer redraws on a page change.
  */
@@ -137,7 +141,7 @@ export type FloorScreenPage = 'house' | 'leaderboard';
 export const FLOOR_SCREEN_PAGE_MS = 15_000;
 
 /**
- * One contest-leaderboard row, DRAWABLE. NaN for any unreadable number (it
+ * One period-leaderboard row, DRAWABLE. NaN for any unreadable number (it
  * prints N/A or "-"); `name` is outside text, sanitised at draw time, and ""
  * when the route sent the agent id as the name.
  */
@@ -150,6 +154,8 @@ export interface FloorScreenLeaderRow {
 
 export interface FloorScreenLeaderboard {
   readonly phase: 'connecting' | 'error' | 'ready';
+  /** The window the rows are from: the active period, or every trade when no period exists. */
+  readonly window: 'period' | 'all';
   /** Rank order, unranked last. Empty = "NO TRADERS YET", never fake rows. */
   readonly rows: readonly FloorScreenLeaderRow[];
 }
@@ -1058,7 +1064,9 @@ function drawHeader(
         ? label`LIVE`
         : label`PAPER`;
   const title =
-    data.page === 'leaderboard' ? label`LEADERBOARD · CONTEST` : label`HOUSE AGENTS · ${mode}`;
+    data.page === 'leaderboard'
+      ? label`LEADERBOARD · ${windowWord(data.leaderboard.window)}`
+      : label`HOUSE AGENTS · ${mode}`;
   value(ctx, title, MARGIN_X, HEADER_BASELINE, {
     px: BOARD_MIN_PX,
     color: COLOR.headerText,
@@ -1090,6 +1098,17 @@ function drawHeader(
   });
 }
 
+/** The window word, on the title of page B and at the end of the footer. */
+function windowWord(window: FloorScreenWindow): BoardValue {
+  return window === 'period'
+    ? label`PERIOD`
+    : window === 'contest'
+      ? label`CONTEST`
+      : window === 'all'
+        ? label`ALL TRADES`
+        : label`24H`;
+}
+
 /**
  * The method, composed from NUMBERS, so the line cannot state a position size
  * or a cost the engine is not using. Three forms (lead decision, 2026-10-02):
@@ -1108,7 +1127,7 @@ function drawFooter(
   ctx.fillStyle = COLOR.divider;
   ctx.fillRect(0, H - FOOTER_H, W, 1.5);
 
-  const windowWord = data.window === 'contest' ? label`CONTEST` : label`24H`;
+  const word = windowWord(data.window);
   const { positionUsd, buyCostPct, sellCostPct } = data.basis;
   const usd = formatUsd(positionUsd);
   const buy = formatPercent(buyCostPct);
@@ -1118,20 +1137,20 @@ function drawFooter(
     !modes.anyLive
       ? fit(
           budget,
-          label`PAPER: ${usd} A POSITION, ${buy} BUY + ${sell} SELL COSTS. P&L = REALISED, ${windowWord}`,
-          label`PAPER TRADES. P&L = REALISED, ${windowWord}`,
+          label`PAPER: ${usd} A POSITION, ${buy} BUY + ${sell} SELL COSTS. P&L = REALISED, ${word}`,
+          label`PAPER TRADES. P&L = REALISED, ${word}`,
         )
       : modes.anyPaper
         ? fit(
             budget,
-            label`PAPER COLUMNS: ${usd} EACH, ${buy} BUY + ${sell} SELL COSTS. P&L = REALISED, ${windowWord}`,
-            label`PAPER COLUMNS. P&L = REALISED, ${windowWord}`,
+            label`PAPER COLUMNS: ${usd} EACH, ${buy} BUY + ${sell} SELL COSTS. P&L = REALISED, ${word}`,
+            label`PAPER COLUMNS. P&L = REALISED, ${word}`,
           )
-        : label`P&L = REALISED, ${windowWord}`;
+        : label`P&L = REALISED, ${word}`;
   value(ctx, method, MARGIN_X, H - FOOTER_BASELINE_UP, { px: BOARD_MIN_PX, color: COLOR.value });
 }
 
-// ── page B: the arena contest leaderboard ──────────────────────────────────
+// ── page B: the arena period leaderboard ───────────────────────────────────
 
 /** Leaderboard columns, logical px at 22 px (13.2 px a character). */
 const LEADER_RANK_RIGHT = MARGIN_X + 66; // "#9999" ends here, starts at x 16
@@ -1143,7 +1162,7 @@ const LEADER_PNL_FROM_RIGHT = 200;
 /**
  * Page B, as the pre-P15 board showed it, at the 22 px floor: captions on the
  * first line, then one row per line (8 at 313): rank, trader, realised P&L,
- * trades. The rows are the contest-window leaderboard, house and player alike.
+ * trades. The rows are the period-window leaderboard, house and player alike.
  */
 function drawLeaderboardPage(
   ctx: FloorScreenContext,
@@ -1163,8 +1182,8 @@ function drawLeaderboardPage(
     );
     return;
   }
-  // The paper disclosure is on page B too: these are paper contest figures.
-  const footer = { ...data, window: 'contest' as const };
+  // The paper disclosure is on page B too: these are paper figures from the board's window.
+  const footer = { ...data, window: board.window };
   const paper: BoardModes = { anyLive: false, anyPaper: true };
   if (board.rows.length === 0) {
     value(ctx, label`NO TRADERS YET`, W / 2, messageY, {

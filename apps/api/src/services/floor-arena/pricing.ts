@@ -261,10 +261,10 @@ export interface SellFill {
   priceUsd: number;
   venue: string | null;
 }
-/** `fill` is set only on `quote_far_below_reference`: the engine books it as `quote_confirmed` once D4 is reached. */
 /**
- * `fill` is set only on `quote_far_below_reference`: the engine books it as `quote_confirmed` once D4 is reached.
- * `quotedPriceUsd` is set on every refusal of a quote that DID quote (drift / far below mark / reference), for the
+ * `fill` is set only on `quote_far_below_reference` and `quote_far_below_mark`: the engine books it as `quote_confirmed`
+ * once D4 is reached (a far-below-mark fill only when the quote is at or under 0.2x of the fresh mark, see
+ * `quoteDisputesMark` in engine.ts). `quotedPriceUsd` is set on every refusal of a quote that DID quote (drift / far below mark / reference), for the
  * exit-refusal events.
  */
 export type SellQuoteResult = SellFill | { ok: false; reason: SellRefusal; detail?: string; fill?: SellFill; quotedPriceUsd?: number };
@@ -340,8 +340,11 @@ export function evaluateBuyQuote(
  * A sell quote is the exit fill. Exits never refuse on venue impact (a dump must still close), but:
  * with a FRESH mark (snapshot <= 60 s; the caller passes null otherwise)
  *   - more than 35 % ABOVE the mark -> `drift` (a paper exit must not book a price nobody saw);
- *   - below 0.5 x the mark -> `quote_far_below_mark` (Codex r2 #5: a near-zero quote must not book a false loss);
- *   D4 then retries and, after 3 failures over >= 45 s, fills at the mark;
+ *   - below 0.5 x the mark -> `quote_far_below_mark` (Codex r2 #5: a near-zero quote must not book a false loss),
+ *     carrying the evaluated fill;
+ *   D4 then retries and, after 3 failures over >= 45 s, fills at the mark, UNLESS the low quote is at or under 0.2x of
+ *   the mark (FLOOR_ARENA_DEEP_LOW_OF_MARK, 2026-11-12: a frozen or spiked mark): then the mark is disputed and only a
+ *   confirmed quote books (`quote_confirmed`), else the exit closes `unresolved` after 30 min;
  * with NO fresh mark
  *   - below 0.5 x the reference (last known mark, else entry price) -> `quote_far_below_reference` carrying the
  *     evaluated fill (Codex r3 #5): a one-off glitch is retried, and a real crash is booked at the LATEST quote
@@ -374,7 +377,7 @@ export function evaluateSellQuote(
       return { ok: false, reason: 'drift', detail: `${(100 * (priceUsd / mark - 1)).toFixed(2)}% over mark`, quotedPriceUsd: priceUsd };
     }
     if (priceUsd < mark * ARENA_SELL_FLOOR_OF_MARK) {
-      return { ok: false, reason: 'quote_far_below_mark', detail: `${(priceUsd / mark).toFixed(4)}x of mark`, quotedPriceUsd: priceUsd };
+      return { ok: false, reason: 'quote_far_below_mark', detail: `${(priceUsd / mark).toFixed(4)}x of mark`, fill, quotedPriceUsd: priceUsd };
     }
     return fill;
   }
