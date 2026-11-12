@@ -30,6 +30,7 @@ function createSpiralTexture(): THREE.CanvasTexture | null {
   const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
+// Spec: 3dStructure.md, BrainChain Office vortex door section.
 // Built on first render, not at import: test environments (happy-dom) have no
 // 2D canvas context, and importing this file must never touch the DOM.
 let geometry: THREE.CircleGeometry | null = null;
