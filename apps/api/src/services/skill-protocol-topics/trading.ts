@@ -386,8 +386,7 @@ money. A session with no bound active avatar gets 403 with an ${md}error${md} th
 with ${md}Agent session is not bound to an active avatar${md}. No arena agent yet: 404
 ${md}no_agent${md}. A malformed body or an out-of-range field answers 400 ${md}invalid_body${md}.
 More than 30 changes or 5 launches a minute per account: 429 ${md}rate_limited${md}.
-Owner reads (${md}GET /me${md}, ${md}/me/trades${md}, ${md}/me/equity${md}, ${md}/me/events${md}, ${md}/me/withdrawals${md}): 60 a minute per IP
-for each route, then 429 ${md}rate_limited${md}.
+Each ${md}GET /me*${md} read: 60 a minute per IP, then 429.
 
 ${md}${md}${md}http
 GET ${arena}/me
