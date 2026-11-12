@@ -918,7 +918,9 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 - **Where:** `https://staging.clawville.world/game` on a desktop. Walk to ring slot 4 (east-south-east of the plaza), the BrainChain Office.
 - **Look at:** the new orbit-sculpture building with the large pink vortex entrance (glowing pink seams and spiral), and Cortex, the brain-head clerk robot in front of it (idle animation). Walk all the way round the building.
-- **Feedback wanted:** building size against its neighbours (it is wider and lower than the old Office: 1400 wide, about 1000 high); Cortex height and facing; whether the vortex glow is strong enough or should also spin (a moving spiral is a follow-up); the robot name (still "Cortex").
+- **Feedback wanted:** building size against its neighbours (it is wider and lower than the old Office: 1400 wide, about 1000 high); Cortex height and facing; the robot name (still "Cortex").
+- **2026-11-12 vortex door:** the vortex now spins. Walk straight at it (up the gap in front of the entrance): a transition plays and the BrainChain page opens. "Back to town" puts you outside the vortex, facing away. Feedback wanted: spin speed and colour, whether the walk-up gap looks right next to the white ribbons, and whether the transition feels good.
+- **2026-11-12 Bumper Shells:** now at Mrs. Puff's Boating School next to Reef Race. The Office building panel shows only the Office entry and Cortex chat.
 
 ### October 6: seabed decorations are back (staging)
 
