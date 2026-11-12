@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-11 22:09Z (session new-ville). **STAGING = Trading Floor terminal phases 1+2 (`11e475784`, `023be7e27`, `879c422c2` + this docs commit) on top of `baf896371`: the Trading Floor opens its own window (Dashboard, Trades, Decisions, Strategy, Reports, Other agents); new read routes `/api/floor/arena/agents/:id/trades`, `/agents/:id/equity`, `/me/trades`, `/me/equity`; nine MCP arena read tools; PROTOCOL 134; no migration.** VERIFIED 22:29Z (`87234632f`): CI run 43110152171 all 8 jobs success; both containers healthy on image `87234632f`; `/health` commit `87234632f`. First push `8fc548bd7` did NOT deploy (gates failed on one stale PROTOCOL 132 pin in `agent-paid-surface.test.ts`; fixed in `87234632f`). PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
+Last Audited: 2026-11-12 04:45Z (session new-ville). **STAGING WEB = `1f0e72aa6` emote hotbar hidden on /game (founder order 2026-11-11) on top of the Trading Floor terminal (`87234632f`), VERIFIED 04:38Z: CI run 43154370778 success; both containers SOURCE_COMMIT `1f0e72aa6`; `/health` commit `1f0e72aa6`; no live /game chunk holds the hotbar label (0 of 39); headless /game load renders the world (DEPLOY LOG 2026-11-12 04:45Z).** Web only; no PROTOCOL change, no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
+
+Prior - Last Audited: 2026-11-11 22:09Z (session new-ville). **STAGING = Trading Floor terminal phases 1+2 (`11e475784`, `023be7e27`, `879c422c2` + this docs commit) on top of `baf896371`: the Trading Floor opens its own window (Dashboard, Trades, Decisions, Strategy, Reports, Other agents); new read routes `/api/floor/arena/agents/:id/trades`, `/agents/:id/equity`, `/me/trades`, `/me/equity`; nine MCP arena read tools; PROTOCOL 134; no migration.** VERIFIED 22:29Z (`87234632f`): CI run 43110152171 all 8 jobs success; both containers healthy on image `87234632f`; `/health` commit `87234632f`. First push `8fc548bd7` did NOT deploy (gates failed on one stale PROTOCOL 132 pin in `agent-paid-surface.test.ts`; fixed in `87234632f`). PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (staging only).
 
 Prior - Last Audited: 2026-11-11 19:58Z (session brainchain). **STAGING = BrainChain Office v3 building + Cortex clerk robot (`cbbd961ca`, VERIFIED 19:17Z: CI run 43083255309 green, both containers on `cbbd961ca`, `/health` `cbbd961ca`) plus follow-up pushes up to `91c12c6ed` (VERIFIED 19:58Z: CI run 43090075468 green, both containers on `91c12c6ed`): Cortex `scaleOverride: 106` (about 190 wu) and Meshy-driver fixes.** Web + one shared collider constant; no PROTOCOL change (still 132), no migration. PROD = `50e5ce7a1` (promotion #28) unchanged. SCHEMA: prod-migration-pending: 0101-0121c (BrainChain + UsePod, staging only).
 
@@ -766,6 +768,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-12 04:45Z (session new-ville) - emote hotbar hidden on /game (web only)
+
+- **What:** founder order 2026-11-11: "just hide it" (bad spot over the email-verify banner, not working right). `apps/web/src/app/(world)/game/page.tsx` no longer mounts `EmoteHotbar`; its 1-4 hotkeys go with it. The component file stays for a later fix. Agent emote path unchanged.
+- **Broke:** nothing known. Web tsc clean; HUD tests 28 pass; doc path check pass. claw2.0 told before the push.
+- **Verified:** CI run 43154370778 success; both containers `1f0e72aa6` healthy; `/health` `1f0e72aa6`; 0 of 39 live /game chunks hold the label "Emote hotbar" (1 before the flip); headless desktop /game renders the world, buildings present (loader gone 12.3 s). Founder eyes: FOUNDER-REVIEW HUD entry.
+- **SCHEMA:** prod-migration-pending: 0101-0121c (unchanged).
 
 ### 2026-11-11 22:09Z (session new-ville) - Trading Floor terminal, phases 1+2 (web + API, PROTOCOL 134, no migration)
 
