@@ -16,7 +16,9 @@ import {
 
 const NOW = new Date('2026-10-02T12:00:00Z');
 
-function makeDeps(options: { failFirst?: boolean } = {}) {
+const PERIOD = { id: 'period-20261112T000000Z', name: 'Week 2', startsAt: new Date('2026-10-02T00:00:00Z'), reason: 'reset', createdBy: 'admin', createdAt: new Date('2026-10-02T00:00:00Z') };
+
+function makeDeps(options: { failFirst?: boolean; period?: typeof PERIOD | null } = {}) {
   let clock = NOW.getTime();
   let fail = options.failFirst === true;
   const hits = { houseAgents: 0, stats: 0, open: 0, signals: 0 };
@@ -30,10 +32,13 @@ function makeDeps(options: { failFirst?: boolean } = {}) {
       }
       return [];
     },
-    readStats: async (agentIds) => {
+    readPeriod: async () => options.period ?? null,
+    readStats: async (agentIds, _now, period) => {
       hits.stats += 1;
       const zero = { realisedUsd: 0, trades: 0, wins: 0, losses: 0, deaths: 0, openPositions: 0, lastTradeAt: null };
-      return new Map(agentIds.map((id) => [id, { all: zero, last24h: zero, contest: zero }]));
+      // The period the board read is the one the stats count from.
+      const periodStats = { ...zero, trades: period ? 1 : 0 };
+      return new Map(agentIds.map((id) => [id, { period: periodStats, all: zero, last24h: zero, contest: zero }]));
     },
     readOpenPositions: async () => {
       hits.open += 1;
@@ -61,6 +66,15 @@ describe('GET /house-board', () => {
     expect(body.version).toBe(1);
     expect(body.agents.map((agent) => agent.id)).toEqual(FLOOR_ARENA_HOUSE_AGENTS.map((house) => house.id));
     expect(body.generatedAt).toBe(NOW.toISOString());
+  });
+
+  test('period: null with no period row; the active period and stats.period when one exists', async () => {
+    const none = await (await createFloorArenaHouseBoardRoutes(makeDeps().deps).request('/house-board', { headers: IP })).json() as { period: unknown; agents: Array<{ stats: { period: { trades: number } } }> };
+    expect(none.period).toBeNull();
+    expect(none.agents[0]!.stats.period.trades).toBe(0);
+    const body = await (await createFloorArenaHouseBoardRoutes(makeDeps({ period: PERIOD }).deps).request('/house-board', { headers: IP })).json() as { period: unknown; agents: Array<{ stats: { period: { trades: number } } }> };
+    expect(body.period).toEqual({ id: PERIOD.id, name: 'Week 2', startsAt: '2026-10-02T00:00:00.000Z' });
+    expect(body.agents.every((agent) => agent.stats.period.trades === 1)).toBe(true);
   });
 
   test('429 after 60 requests in a minute from one IP; another IP still gets 200', async () => {

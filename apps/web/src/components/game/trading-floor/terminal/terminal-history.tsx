@@ -8,16 +8,23 @@ import { ArenaClosedTrades } from '../arena/arena-parts';
 import { signedUsd } from '../arena/arena-format';
 import { TerminalBlock, TerminalWindowPicker, terminalButton, terminalMuted } from './terminal-parts';
 
+/** The option words for a stored exit reason; only 'reset' reads differently. */
+export function exitReasonOptionLabel(reason: string): string {
+  return reason === 'reset' ? 'Period reset' : reason;
+}
+
 export function TerminalTrades({ agentId, owner = false, active = true, nowMs }: { agentId: string; owner?: boolean; active?: boolean; nowMs: number }) {
+  const [range, setRange] = useState<FloorArenaEquityWindow>('period');
   const [outcome, setOutcome] = useState<FloorArenaTradeOutcome>('all');
   const [reason, setReason] = useState<FloorArenaExitReason | ''>('');
-  const query = useFloorArenaTrades(agentId, { owner, enabled: active, outcome, reason: reason || undefined });
+  const query = useFloorArenaTrades(agentId, { owner, enabled: active, window: range, outcome, reason: reason || undefined });
   const positions = query.data?.pages.flatMap((page) => page.trades) ?? [];
   return <TerminalBlock title="Closed trades">
+    <TerminalWindowPicker value={range} onChange={setRange} windows={['period', '24h', '7d', 'all']} active={active} />
     <p style={terminalMuted}>P&amp;L includes paper costs. Exit prices are unavailable because fills and costs do not identify an exact exit price.</p>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 12 }}>
       <label style={terminalMuted}>Outcome <select aria-label="Trade outcome" style={terminalButton} value={outcome} onChange={(event) => setOutcome(event.target.value as FloorArenaTradeOutcome)}><option value="all">All</option><option value="win">Wins</option><option value="loss">Losses</option></select></label>
-      <label style={terminalMuted}>Exit reason <select aria-label="Trade exit reason" style={terminalButton} value={reason} onChange={(event) => setReason(event.target.value as FloorArenaExitReason | '')}><option value="">All</option>{FLOOR_ARENA_EXIT_REASONS.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      <label style={terminalMuted}>Exit reason <select aria-label="Trade exit reason" style={terminalButton} value={reason} onChange={(event) => setReason(event.target.value as FloorArenaExitReason | '')}><option value="">All</option>{FLOOR_ARENA_EXIT_REASONS.map((item) => <option key={item} value={item}>{exitReasonOptionLabel(item)}</option>)}</select></label>
     </div>
     {query.isError ? <p role="status" style={terminalMuted}>{query.data ? 'Trades could not be refreshed. Data can be out of date.' : 'Trades could not be loaded.'}</p> : null}
     {query.isLoading ? <p style={terminalMuted}>Loading trades...</p> : query.data ? positions.length > 0 ? <ArenaClosedTrades positions={positions} nowMs={nowMs} limit={positions.length} /> : <p style={terminalMuted}>No closed trades match these filters.</p> : null}
@@ -55,10 +62,10 @@ export function EquityCurve({ series }: { series: FloorArenaEquityView['series']
 }
 
 export function TerminalEquity({ agentId, owner = false, active = true }: { agentId: string; owner?: boolean; active?: boolean }) {
-  const [range, setRange] = useState<FloorArenaEquityWindow>('contest');
+  const [range, setRange] = useState<FloorArenaEquityWindow>('period');
   const query = useFloorArenaEquity(agentId, range, { owner, enabled: active });
   return <TerminalBlock title="Equity curve">
-    <TerminalWindowPicker value={range} onChange={setRange} windows={['contest', '24h', '7d', 'all']} />
+    <TerminalWindowPicker value={range} onChange={setRange} windows={['period', '24h', '7d', 'all']} active={active} />
     <p style={terminalMuted}>Realised paper P&amp;L for this window. Paper costs included.</p>
     {query.isError ? <p role="status" style={terminalMuted}>{query.data ? 'Equity could not be refreshed. Data can be out of date.' : 'Equity could not be loaded.'}</p> : null}
     {query.isLoading ? <p style={terminalMuted}>Loading equity...</p> : query.data ? <><EquityCurve series={query.data.series} /><p style={terminalMuted}>Open positions P&amp;L, at last mark: {signedUsd(query.data.openPnlUsd)}{query.data.openPnlUsd === null ? ' (no complete mark)' : ''}</p></> : null}

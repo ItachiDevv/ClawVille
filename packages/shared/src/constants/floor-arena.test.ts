@@ -374,7 +374,7 @@ describe('floor arena static tables', () => {
     expect(FLOOR_ARENA_AGENT_STATUSES).toEqual(['active', 'paused', 'stopped']);
     expect(FLOOR_ARENA_PROVISION_STATES).toEqual(['none', 'pending', 'creating', 'ready', 'failed']);
     expect(FLOOR_ARENA_POSITION_STATUSES).toEqual(['open', 'closed']);
-    expect(FLOOR_ARENA_EXIT_REASONS).toEqual(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved']);
+    expect(FLOOR_ARENA_EXIT_REASONS).toEqual(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved', 'reset']);
     expect(FLOOR_ARENA_ENTRY_FILL_SOURCES).toEqual(['quote']);
     expect(FLOOR_ARENA_EXIT_FILL_SOURCES).toEqual(['quote', 'mark_fallback', 'quote_confirmed', 'unresolved']);
     expect(FLOOR_ARENA_EVENT_TYPES).toEqual([

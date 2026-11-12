@@ -160,7 +160,7 @@ function stats(realisedUsd: number, wins: number, losses: number) {
   return { realisedUsd, trades: wins + losses, wins, losses, deaths: 0, openPositions: 1, lastTradeAt: null };
 }
 
-function boardBody(overrides: Record<string, unknown> = {}, contest = { startsAt: '2000-01-01T00:00:00Z', endsAt: '2999-01-01T00:00:00Z' }) {
+function boardBody(overrides: Record<string, unknown> = {}, contest = { startsAt: '2000-01-01T00:00:00Z', endsAt: '2999-01-01T00:00:00Z' }, period: unknown = null) {
   return {
     version: 1,
     agents: FLOOR_ARENA_TEMPLATES.map((template, index) => ({
@@ -171,13 +171,14 @@ function boardBody(overrides: Record<string, unknown> = {}, contest = { startsAt
       status: 'active',
       paramsVersion: 1,
       exits: { tpMult: 1.1, stopMult: null, maxHoldS: 900 },
-      stats: { all: stats(1, 1, 1), last24h: stats(-2.5, 3, 4), contest: stats(7.77, 7, 10) },
+      stats: { all: stats(1, 1, 1), last24h: stats(-2.5, 3, 4), contest: stats(7.77, 7, 10), period: stats(4.2, 2, 1) },
       scan: null,
       watching: null,
       open: index === 0 ? [{ symbol: 'BONK', openedAt: '2026-10-01T00:00:00Z', sizeUsd: 20, lastMarkMult: 1.04 }] : [],
       ...(index === 0 ? overrides : {}),
     })),
     contest,
+    period,
     generatedAt: '2026-10-01T00:00:00Z',
   };
 }
@@ -375,6 +376,15 @@ describe('content', () => {
     expect(panel()!.textContent).toContain('-$2.50');
     // The staging build rendered "+$32.49realised" (2026-10-02 film QC): the space must be explicit.
     expect(panel()!.textContent).toContain('-$2.50 realised P&L');
+  });
+
+  test('with an active P&L period the live line uses the period, even while the contest runs', async () => {
+    boardReply = { status: 200, body: boardBody({}, undefined, { id: 'period-20261112T090000Z', name: 'Fresh start', startsAt: '2026-11-12T09:00:00.000Z' }) };
+    await render(createElement(HouseAgentWalkup));
+    await walkUp(0);
+    await waitFor(() => (panel()?.textContent ?? '').includes('This period'), 'the period live line');
+    expect(panel()!.textContent).toContain('+$4.20 realised P&L');
+    expect(panel()!.textContent).not.toContain('+$7.77');
   });
 
   test('a LIVE house agent shows LIVE, not PAPER', async () => {

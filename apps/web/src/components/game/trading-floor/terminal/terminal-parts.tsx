@@ -2,7 +2,7 @@
 
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import { FLOOR_ARENA_EVENT_TYPES } from '@clawville/shared';
-import { type FloorArenaEventView, type FloorArenaAgentStats, type FloorArenaLeaderboardWindow, type FloorArenaStatsByWindow, type FloorArenaEquityWindow } from '@/hooks/use-floor-arena';
+import { parseArenaTimestamp, useFloorArenaPeriod, type FloorArenaEventView, type FloorArenaAgentStats, type FloorArenaLeaderboardWindow, type FloorArenaPeriodView, type FloorArenaStatsByWindow, type FloorArenaEquityWindow } from '@/hooks/use-floor-arena';
 import { isoAgo, signedUsd } from '../arena/arena-format';
 
 export const terminalButton: CSSProperties = { minHeight: 44, padding: '8px 14px', borderRadius: 8, borderWidth: 1, borderStyle: 'solid', borderColor: '#2f5bb5', background: '#00226e', color: '#F8F0D8', font: '600 14px Barlow, sans-serif', cursor: 'pointer' };
@@ -18,9 +18,25 @@ export function statsForWindow(stats: FloorArenaStatsByWindow, window: FloorAren
   return window === '24h' ? stats.last24h : stats[window];
 }
 
-export function TerminalWindowPicker<T extends FloorArenaEquityWindow>({ value, onChange, windows }: { value: T; onChange: (value: T) => void; windows?: readonly T[] }) {
+/**
+ * The words for one stats window. 'period' names its start when a period
+ * exists, reads "All trades" when none does (the window then counts every
+ * position), and plain "This period" while the period is not read yet.
+ */
+export function floorArenaWindowLabel(window: FloorArenaEquityWindow, period: FloorArenaPeriodView | null | undefined): string {
+  if (window === 'period') {
+    if (period === undefined) return 'This period';
+    if (period === null) return 'All trades';
+    const since = new Date(parseArenaTimestamp(period.startsAt)).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return `This period · since ${since}`;
+  }
+  return window === 'contest' ? 'Contest' : window === '24h' ? '24 hours' : window === '7d' ? '7 days' : 'All time';
+}
+
+export function TerminalWindowPicker<T extends FloorArenaEquityWindow>({ value, onChange, windows, active = true }: { value: T; onChange: (value: T) => void; windows?: readonly T[]; active?: boolean }) {
+  const period = useFloorArenaPeriod(active).data;
   return <div aria-label="Stats window" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-    {(windows ?? ['contest', '24h', 'all'] as T[]).map((item) => <button key={item} type="button" aria-pressed={value === item} onClick={() => onChange(item)} style={{ ...terminalButton, ...(value === item ? { background: '#F8D038', color: '#1a0f05', borderColor: '#F8D038' } : {}) }}>{item === 'contest' ? 'Contest' : item === '24h' ? '24 hours' : item === '7d' ? '7 days' : 'All time'}</button>)}
+    {(windows ?? ['period', '24h', 'all'] as T[]).map((item) => <button key={item} type="button" aria-pressed={value === item} onClick={() => onChange(item)} style={{ ...terminalButton, ...(value === item ? { background: '#F8D038', color: '#1a0f05', borderColor: '#F8D038' } : {}) }}>{floorArenaWindowLabel(item, period)}</button>)}
   </div>;
 }
 

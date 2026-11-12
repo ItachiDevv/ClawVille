@@ -111,9 +111,10 @@ function fakeDeps(input: FakeInput = {}) {
   const signalCalls: Array<readonly string[]> = [];
   const deps: HouseBoardDeps = {
     readHouseAgents: async () => input.rows ?? [],
+    readPeriod: async () => null,
     readStats: async (agentIds) => {
       statsCalls.push(agentIds);
-      return new Map(agentIds.map((id, index) => [id, { all: stats(index + 1, 10), last24h: stats(index, 5), contest: stats(index + 0.5, 3) }]));
+      return new Map(agentIds.map((id, index) => [id, { period: stats(index + 2, 1), all: stats(index + 1, 10), last24h: stats(index, 5), contest: stats(index + 0.5, 3) }]));
     },
     readOpenPositions: async (agentId, limit) => {
       openCalls.push({ agentId, limit });

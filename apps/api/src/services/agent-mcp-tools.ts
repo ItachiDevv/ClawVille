@@ -284,7 +284,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
   },
   clawville_arena_leaderboard: {
     sources: [arena('get', '/leaderboard')],
-    calls: (_c, i) => [{ method: 'GET', path: `${ARENA}/leaderboard?window=${seg(i.window ?? 'contest')}` }],
+    calls: (_c, i) => [{ method: 'GET', path: `${ARENA}/leaderboard?window=${seg(i.window ?? 'period')}` }],
     next: 'Call clawville_arena_agent {"agentId": "<id from a row>"} to read one trader.',
   },
   clawville_arena_agent: {
@@ -294,7 +294,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
   },
   clawville_arena_trades: {
     sources: [arena('get', '/agents/:id/trades')],
-    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/agents/${seg(i.agentId)}/trades`, i, ['before', 'beforeId', 'limit', 'outcome', 'reason']) }],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/agents/${seg(i.agentId)}/trades`, i, ['before', 'beforeId', 'limit', 'outcome', 'reason', 'window']) }],
     next: 'Read the trading manual for field definitions and privacy rules.',
   },
   clawville_arena_equity: {
@@ -304,7 +304,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
   },
   clawville_arena_my_trades: {
     sources: [arena('get', '/me/trades')],
-    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/me/trades`, i, ['before', 'beforeId', 'limit', 'outcome', 'reason']) }],
+    calls: (_c, i) => [{ method: 'GET', path: arenaReadPath(`${ARENA}/me/trades`, i, ['before', 'beforeId', 'limit', 'outcome', 'reason', 'window']) }],
     next: 'Read the trading manual for field definitions and privacy rules.',
   },
   clawville_arena_my_equity: {

@@ -101,15 +101,47 @@ describe('terminal reads on isolated PostgreSQL', () => {
           ${row.opened.toISOString()}::timestamptz, ${row.closed.toISOString()}::timestamptz,
           ${row.pnl}, ${row.proceeds}, ${row.reason})`);
     }
-    for (const window of ['contest', '24h', '7d', 'all'] as const) {
-      const equity = await readArenaEquity('parity', resolveLeaderboardBounds(window, clock), readRows);
-      const stats = (await readRows(arenaAggregatesSql(window, clock, ['parity'])))[0]!;
+    // A period that starts at the contest end: only the unresolved position (opened at the end) is in it.
+    const period = { startsAt: end };
+    for (const window of ['period', 'contest', '24h', '7d', 'all'] as const) {
+      const equity = await readArenaEquity('parity', resolveLeaderboardBounds(window, clock, FLOOR_ARENA_CONTEST, period), readRows);
+      const stats = (await readRows(arenaAggregatesSql(window, clock, ['parity'], period)))[0]!;
       // readArenaAgentStats maps the aggregate through this same whole-cent conversion.
       const realisedUsd = toCents(Number(stats.realised_usd)) / 100;
-      expect(realisedUsd).toBe({ contest: -5, '24h': 18.01, '7d': 21.01, all: 23.01 }[window]);
+      // period: the unresolved close loses its open stake, 5 - 20 = -15 (D31, as on the contest window).
+      expect(realisedUsd).toBe({ period: -15, contest: -5, '24h': 18.01, '7d': 21.01, all: 23.01 }[window]);
       expect(equity.series.at(-1)!.equityUsd).toBe(realisedUsd);
       expect(equity.series.map(point => point.closedAt)).toEqual(equity.series.map(point => point.closedAt).sort());
     }
+  });
+  test('period with no period row is identical to all: same total, unresolved left out, startAt the first close', async () => {
+    const clock = new Date(new Date(FLOOR_ARENA_CONTEST.endsAt).getTime() + 3_600_000);
+    const bounds = resolveLeaderboardBounds('period', clock);
+    const equity = await readArenaEquity('parity', bounds, readRows);
+    const stats = (await readRows(arenaAggregatesSql('period', clock, ['parity'])))[0]!;
+    // all = 23.008 -> 23.01, the unresolved close left out.
+    expect(toCents(Number(stats.realised_usd)) / 100).toBe(23.01);
+    expect(equity.series.at(-1)!.equityUsd).toBe(23.01);
+    expect(equity.series).toEqual((await readArenaEquity('parity', resolveLeaderboardBounds('all', clock), readRows)).series);
+    // Trades: with no period, outcome=loss leaves the unresolved row out, as on all.
+    expect(await readArenaTrades('parity', { limit: 100, outcome: 'loss', bounds }, readRows)).toEqual([]);
+    // No bound: startAt is the first close, as on 'all'.
+    expect(equity.startAt).not.toBeNull();
+    expect(equity.startAt).toBe((await readArenaEquity('parity', resolveLeaderboardBounds('all', clock), readRows)).startAt);
+  });
+  test('trades: the window bounds filter by open time, keep unresolved rows, and score them as losses on period', async () => {
+    const end = new Date(FLOOR_ARENA_CONTEST.endsAt);
+    const clock = new Date(end.getTime() + 3_600_000);
+    const periodBounds = resolveLeaderboardBounds('period', clock, FLOOR_ARENA_CONTEST, { startsAt: end });
+    const inPeriod = await readArenaTrades('parity', { limit: 100, outcome: 'all', bounds: periodBounds }, readRows);
+    expect(inPeriod.map((p) => p.exitReason)).toEqual(['unresolved']);
+    expect((await readArenaTrades('parity', { limit: 100, outcome: 'loss', bounds: periodBounds }, readRows)).map((p) => p.exitReason)).toEqual(['unresolved']);
+    // all: no bound, and an unresolved close (pnl NULL) is neither a win nor a loss there.
+    const allRows = await readArenaTrades('parity', { limit: 100, outcome: 'all', bounds: resolveLeaderboardBounds('all', clock) }, readRows);
+    expect(allRows).toHaveLength(5);
+    expect(await readArenaTrades('parity', { limit: 100, outcome: 'loss', bounds: resolveLeaderboardBounds('all', clock) }, readRows)).toEqual([]);
+    // 24h bounds by close time.
+    expect(await readArenaTrades('parity', { limit: 100, outcome: 'all', bounds: resolveLeaderboardBounds('24h', clock) }, readRows)).toHaveLength(3);
   });
   test('open P&L includes partial TP proceeds and missing marks remain null', async () => {
     expect((await readArenaEquity('marked', allBounds, readRows)).openPnlUsd).toBe(18);

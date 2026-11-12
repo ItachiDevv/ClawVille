@@ -940,9 +940,18 @@ export const FLOOR_ARENA_POSITION_STATUSES = deepFreeze(['open', 'closed'] as co
 export type FloorArenaPositionStatus = (typeof FLOOR_ARENA_POSITION_STATUSES)[number];
 
 /** `unresolved`: the exit could not be priced; the row closes with `pnl_usd` NULL (the only case
- *  where a closed position has no P&L). */
-export const FLOOR_ARENA_EXIT_REASONS = deepFreeze(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved'] as const);
+ *  where a closed position has no P&L). `reset` (2026-11-12): the engine closed a position that was still
+ *  open when a new P&L period started (`floor_arena_periods`), through the normal exit path. */
+export const FLOOR_ARENA_EXIT_REASONS = deepFreeze(['tp', 'stop', 'trail', 'time', 'manual', 'unresolved', 'reset'] as const);
 export type FloorArenaExitReason = (typeof FLOOR_ARENA_EXIT_REASONS)[number];
+
+/** The active P&L period (`floor_arena_periods`, 2026-11-12): the row with the greatest `startsAt` at or before
+ *  now. The `period` window counts only positions opened at or after `startsAt` (ISO). Null when no row exists. */
+export interface FloorArenaPeriod {
+  id: string;
+  name: string;
+  startsAt: string;
+}
 
 /** Entries always fill on a quote; only exits may fall back to the mark (D4). */
 export const FLOOR_ARENA_ENTRY_FILL_SOURCES = deepFreeze(['quote'] as const);
@@ -1056,7 +1065,8 @@ export function buildFloorArenaWithdrawAddressMessage(input: {
  *  `firstFailureAt` = first failure of the whole exit history (the 30-minute `unresolved` clock; a
  *  pause after a low quote does not move it). `runStartedAt` = start of the current failure run (the
  *  3-failures-over-45-s mark fallback counts from it). `streakStartedAt` = first low quote of the
- *  current low streak (the 45-s low-quote confirmation window). */
+ *  current low streak (the 45-s low-quote confirmation window). Engine only: `ExitRun` in engine.ts adds an
+ *  optional `markDisputed: true` (2026-11-12, a quote under 0.5x the fresh mark disputed it; see engine.ts). */
 export interface FloorArenaExitRun {
   firstFailureAt: string;
   runStartedAt: string;

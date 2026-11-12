@@ -1,11 +1,14 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@clawville/database';
 import { FLOOR_ARENA_CONTEST } from '@clawville/shared';
+import { readActiveArenaPeriod, type ArenaPeriodRecord } from './period';
 
 /**
  * Trading Floor Arena leaderboard (docs/trading-floor-arena.md D6, §5).
  *
  * Score = realised paper P&L in USD of CLOSED positions. Windows:
+ *   period:  opened at or after the active P&L period's start (period.ts; 2026-11-12), whatever the close time;
+ *            with no period row it is identical to `all`. The default window of every arena read.
  *   contest: opened at or after startsAt and at or before endsAt, whatever the close time (D30: a
  *            position still open at the end counts when it closes, so a losing one cannot drop out)
  *   24h:     closed in the last 24 hours
@@ -13,8 +16,9 @@ import { FLOOR_ARENA_CONTEST } from '@clawville/shared';
  * trades = closed positions in the window, wins = P&L > 0, losses = P&L < 0
  * (a flat close, P&L = 0, is neither), deaths = P&L multiple <= 0.5.
  * P&L is pnl_usd / pnl_mult. An 'unresolved' close (no usable price for 30 min, pnl_usd NULL)
- * counts nowhere on 24h and all; on the contest window (D31) it counts as a loss of its open
- * stake: P&L = realised_usd - size_usd (realised_usd = gross proceeds of earlier TP legs).
+ * counts nowhere on 24h and all; on the contest window and an ACTIVE period (D31) it counts as a loss of its
+ * open stake: P&L = realised_usd - size_usd (realised_usd = gross proceeds of earlier TP legs), so a
+ * position whose low quote never confirms cannot drop out of the score.
  * openPositions and lastTradeAt are current facts, not windowed.
  * Rank: realisedUsd desc (compared in whole cents), then trades desc, then created_at asc.
  * `eligible` (prize eligibility, contest window only; Codex r2 #6, rule 6 as amended by D30) =
@@ -27,7 +31,7 @@ import { FLOOR_ARENA_CONTEST } from '@clawville/shared';
  * which the fixture tests pin.
  */
 
-export const ARENA_LEADERBOARD_WINDOWS = ['contest', '24h', 'all'] as const;
+export const ARENA_LEADERBOARD_WINDOWS = ['period', 'contest', '24h', 'all'] as const;
 export type ArenaLeaderboardWindow = (typeof ARENA_LEADERBOARD_WINDOWS)[number];
 export const ARENA_DEATH_MULT = 0.5;
 
@@ -36,7 +40,7 @@ export interface ArenaWindowBounds {
   openedTo: Date | null;
   closedFrom: Date | null;
   closedTo: Date | null;
-  /** D31: an 'unresolved' close scores as a loss of its open stake. Contest window only. */
+  /** D31: an 'unresolved' close scores as a loss of its open stake. Contest and period windows only. */
   unresolvedAsLoss: boolean;
 }
 
@@ -89,7 +93,12 @@ export function resolveLeaderboardBounds(
   window: ArenaLeaderboardWindow | '7d',
   now: Date,
   contest: ArenaContestWindow = FLOOR_ARENA_CONTEST,
+  period: { startsAt: Date } | null = null,
 ): ArenaWindowBounds {
+  // No period row: the period window IS the all window (founder 2026-11-12: "No row -> same as all").
+  if (window === 'period' && period) {
+    return { openedFrom: period.startsAt, openedTo: null, closedFrom: null, closedTo: null, unresolvedAsLoss: true };
+  }
   if (window === 'contest') {
     const endsAt = new Date(contest.endsAt);
     return {
@@ -186,7 +195,7 @@ export function openInWindowSql(bounds: ArenaWindowBounds): SQL {
 }
 
 /**
- * The P&L in USD a window scores for one counted position. D31: on the contest window an
+ * The P&L in USD a window scores for one counted position. D31: on the contest and period windows an
  * 'unresolved' close loses its open stake: realised_usd (gross proceeds of earlier TP legs)
  * minus size_usd, the formula the engine books for a normal close, with 0 proceeds for the rest.
  */
@@ -216,13 +225,14 @@ type AggregateSqlRow = {
   last_trade_at: Date | string | null;
 };
 
-/** The aggregate query: one row per agent (optionally only `agentIds`). */
+/** The aggregate query: one row per agent (optionally only `agentIds`). `period` = the active period (period window). */
 export function arenaAggregatesSql(
   window: ArenaLeaderboardWindow | '7d',
   now: Date,
   agentIds: readonly string[] | null = null,
+  period: { startsAt: Date } | null = null,
 ): SQL {
-  const bounds = resolveLeaderboardBounds(window, now);
+  const bounds = resolveLeaderboardBounds(window, now, FLOOR_ARENA_CONTEST, period);
   const inWindow = closedInWindowSql(bounds);
   const pnlUsd = windowPnlUsdSql(bounds);
   const pnlMult = windowPnlMultSql(bounds);
@@ -254,13 +264,21 @@ export function arenaAggregatesSql(
   `;
 }
 
-/** One aggregate row per agent (optionally only `agentIds`). */
+/** The period a read uses: the given one, else (period window only) the active one at `now`. */
+async function periodFor(window: ArenaLeaderboardWindow, now: Date, period: ArenaPeriodRecord | null | undefined): Promise<ArenaPeriodRecord | null> {
+  if (period !== undefined) return period;
+  return window === 'period' ? readActiveArenaPeriod(now) : null;
+}
+
+/** One aggregate row per agent (optionally only `agentIds`). `period` undefined = read the active period. */
 export async function readArenaAggregates(
   window: ArenaLeaderboardWindow,
   now: Date,
   agentIds: readonly string[] | null = null,
+  period?: ArenaPeriodRecord | null,
 ): Promise<ArenaAgentAggregate[]> {
-  const rows = await db.execute<AggregateSqlRow>(arenaAggregatesSql(window, now, agentIds));
+  const active = await periodFor(window, now, period);
+  const rows = await db.execute<AggregateSqlRow>(arenaAggregatesSql(window, now, agentIds, active));
   // Both driver shapes (postgres-js array, `{ rows }`); same rule as queries.ts rowsOf.
   const list: AggregateSqlRow[] = Array.isArray(rows)
     ? rows
@@ -290,30 +308,39 @@ export interface ArenaBoard {
 }
 
 const LEADERBOARD_CACHE_MS = 10_000;
-const leaderboardCache = new Map<ArenaLeaderboardWindow, { expiresAt: number; board: ArenaBoard }>();
+const leaderboardCache = new Map<string, { expiresAt: number; board: ArenaBoard }>();
 
-/** Ranked board for a window plus its open window positions, cached 10 s in process. */
+/** The board cache key: window + period id, so a reset never serves the old period's board. */
+export function arenaBoardCacheKey(window: ArenaLeaderboardWindow, period: { id: string } | null): string {
+  return `${window}|${window === 'period' ? period?.id ?? 'none' : ''}`;
+}
+
+/** Ranked board for a window plus its open window positions, cached 10 s in process. `period` undefined = read it. */
 export async function readArenaBoard(
   window: ArenaLeaderboardWindow,
   now: Date = new Date(),
+  period?: ArenaPeriodRecord | null,
 ): Promise<ArenaBoard> {
-  const cached = leaderboardCache.get(window);
+  const active = await periodFor(window, now, period);
+  const key = arenaBoardCacheKey(window, active);
+  const cached = leaderboardCache.get(key);
   if (cached && cached.expiresAt > now.getTime()) return cached.board;
-  const aggregates = await readArenaAggregates(window, now);
+  const aggregates = await readArenaAggregates(window, now, null, active);
   const board: ArenaBoard = {
     rows: rankArenaLeaderboard(aggregates, window),
     windowOpenPositions: aggregates.reduce((sum, row) => sum + row.windowOpenPositions, 0),
   };
-  leaderboardCache.set(window, { expiresAt: now.getTime() + LEADERBOARD_CACHE_MS, board });
+  leaderboardCache.set(key, { expiresAt: now.getTime() + LEADERBOARD_CACHE_MS, board });
   return board;
 }
 
-/** Ranked board for a window, cached 10 s in process. */
+/** Ranked board for a window, cached 10 s in process. `period` undefined = read the active period. */
 export async function readArenaLeaderboard(
   window: ArenaLeaderboardWindow,
   now: Date = new Date(),
+  period?: ArenaPeriodRecord | null,
 ): Promise<ArenaLeaderboardRow[]> {
-  return (await readArenaBoard(window, now)).rows;
+  return (await readArenaBoard(window, now, period)).rows;
 }
 
 /** Test seam. */

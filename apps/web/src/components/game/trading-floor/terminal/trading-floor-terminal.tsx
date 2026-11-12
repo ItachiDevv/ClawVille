@@ -44,7 +44,7 @@ function OtherAgents({ range, onRange, guest, onGuestBlocked }: { range: FloorAr
     <TerminalWindowPicker value={range} onChange={onRange} />
     <TerminalBlock title="Other agents">
       {board.isError ? <p role="status" style={terminalMuted}>The leaderboard refresh failed.</p> : null}
-      {board.isLoading ? <p style={terminalMuted}>Loading agents...</p> : (board.data ?? []).length === 0 ? <p style={terminalMuted}>No agents in this view.</p> : <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{board.data?.map((agent) => <button type="button" key={agent.agentId} style={{ ...terminalButton, display: 'flex', flexWrap: 'wrap', alignItems: 'center', textAlign: 'left', gap: 8 }} onClick={() => showPanel('profile', { agentId: agent.agentId })}>
+      {board.isLoading ? <p style={terminalMuted}>Loading agents...</p> : (board.data?.rows ?? []).length === 0 ? <p style={terminalMuted}>No agents in this view.</p> : <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{board.data?.rows.map((agent) => <button type="button" key={agent.agentId} style={{ ...terminalButton, display: 'flex', flexWrap: 'wrap', alignItems: 'center', textAlign: 'left', gap: 8 }} onClick={() => showPanel('profile', { agentId: agent.agentId })}>
         <span style={{ flex: '1 1 160px', overflowWrap: 'anywhere' }}>{agent.rank ?? 'n/a'}. {agent.name}{agent.kind === 'house' ? ' (House)' : ''}</span><span>{signedUsd(agent.realisedUsd)}</span><span style={terminalMuted}>{agent.trades ?? 'n/a'} trades</span>
       </button>)}</div>}
     </TerminalBlock>
@@ -65,7 +65,7 @@ function TerminalContent({ onClose }: { onClose: () => void }) {
   const events = useFloorArenaMyEvents(agent?.id ?? null, !!agent);
   const nowMs = useArenaNow(true, 30_000);
   const [tab, setTab] = useState<TerminalTab>('Dashboard');
-  const [range, setRange] = useState<FloorArenaLeaderboardWindow>('contest');
+  const [range, setRange] = useState<FloorArenaLeaderboardWindow>('period');
   const [manage, setManage] = useState(false);
   const [upsell, setUpsell] = useState(false);
   const panel = useFloorArenaUi((state) => state.panel);

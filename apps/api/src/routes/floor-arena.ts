@@ -28,6 +28,7 @@ import {
   validateFloorArenaParams,
   type FloorArenaAddon,
   type FloorArenaParamDiff,
+  type FloorArenaPeriod,
   type FloorArenaParams,
   FLOOR_ARENA_DESK_COUNT,
 } from '@clawville/shared';
@@ -64,6 +65,7 @@ import {
   type ArenaLeaderboardRow,
   type ArenaLeaderboardWindow,
 } from '../services/floor-arena/leaderboard';
+import { readActiveArenaPeriod, toPublicPeriod, type ArenaPeriodRecord } from '../services/floor-arena/period';
 import { evaluateArenaSuggestion } from '../services/floor-arena/analysis';
 import { logEventFromContext, type EventInput } from '../services/event-logger';
 import {
@@ -157,6 +159,8 @@ import {
 // ─── Response shapes (arena-web consumes these) ────────────────────────────
 
 export interface ArenaAgentStatsByWindow {
+  /** Positions opened in the active P&L period (every position when there is no period). */
+  period: ArenaAgentStats;
   all: ArenaAgentStats;
   last24h: ArenaAgentStats;
   contest: ArenaAgentStats;
@@ -197,6 +201,8 @@ export interface ArenaMeResponse {
   wallet: { address: string; usdc: number | null; sol: number | null; updatedAt: string | null } | null;
   addons: ArenaMyAddonStatus[];
   stats: ArenaAgentStatsByWindow | null;
+  /** The active P&L period that `stats.period` counts from; null when there is none. */
+  period: FloorArenaPeriod | null;
   latestReport: ArenaReport | null;
   /** P5: the current withdraw address and the one open withdrawal; null with no arena agent. */
   withdraw: { address: ArenaWithdrawAddressView | null; open: ArenaWithdrawalView | null } | null;
@@ -255,8 +261,10 @@ export interface FloorArenaRouteDeps {
   readEvents(agentId: string, after: number | null, limit: number, types?: readonly ArenaEventType[] | null): Promise<ArenaEvent[]>;
   readDiscovery(limit: number, now: Date): Promise<ArenaDiscoveryRow[]>;
   readTape(limit: number): Promise<ArenaTapeItem[]>;
-  readStats(agentIds: readonly string[], now: Date): Promise<Map<string, ArenaAgentStatsByWindow>>;
-  readLeaderboard(window: ArenaLeaderboardWindow, now: Date): Promise<ArenaLeaderboardRow[]>;
+  readStats(agentIds: readonly string[], now: Date, period?: ArenaPeriodRecord | null): Promise<Map<string, ArenaAgentStatsByWindow>>;
+  readLeaderboard(window: ArenaLeaderboardWindow, now: Date, period?: ArenaPeriodRecord | null): Promise<ArenaLeaderboardRow[]>;
+  /** The active P&L period (period.ts, cached 10 s); null when there is none. */
+  readPeriod(now: Date): Promise<ArenaPeriodRecord | null>;
   readContest(now: Date): Promise<ArenaContestView>;
   readAddonStats(agentId: string, dayStart: Date): Promise<ArenaAddonCallStat[]>;
   readWalletBalance(clawpumpAgentId: string): Promise<ClawPumpWalletBalance | null>;
@@ -308,6 +316,7 @@ export const defaultFloorArenaRouteDeps: FloorArenaRouteDeps = {
   readTape: readArenaTape,
   readStats: readArenaAgentStats,
   readLeaderboard: readArenaLeaderboard,
+  readPeriod: (now) => readActiveArenaPeriod(now),
   readContest: readArenaContest,
   readAddonStats: readArenaAddonStats,
   readWalletBalance: (clawpumpAgentId) => readArenaWalletBalance(clawpumpAgentId),
@@ -340,14 +349,18 @@ const NAME_LETTER = /\p{L}/u;
 const NAME_MAX = 32;
 const SEAT_MAX_INDEX = FLOOR_ARENA_DESK_COUNT - 1;
 
+// 2026-11-12: every windowed read defaults to the active P&L period ('period'); the others stay explicit.
+const HISTORY_WINDOWS = ['period', '24h', '7d', 'contest', 'all'] as const;
+type ArenaHistoryWindow = (typeof HISTORY_WINDOWS)[number];
 const tradesQuerySchema = z.object({
   before: z.string().datetime({ offset: true }).optional(),
   beforeId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   outcome: z.enum(['win', 'loss', 'all']).default('all'),
   reason: z.enum(FLOOR_ARENA_EXIT_REASONS).optional(),
+  window: z.enum(HISTORY_WINDOWS).default('period'),
 }).strict().refine((q) => Boolean(q.before) === Boolean(q.beforeId), 'before and beforeId must be supplied together');
-const equityQuerySchema = z.object({ window: z.enum(['24h', '7d', 'contest', 'all']).default('all') }).strict();
+const equityQuerySchema = z.object({ window: z.enum(HISTORY_WINDOWS).default('period') }).strict();
 
 const eventsQuerySchema = z.object({
   after: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
@@ -568,7 +581,7 @@ function publicAddon(addon: FloorArenaAddon): ArenaPublicAddon {
 
 function emptyStats(): ArenaAgentStatsByWindow {
   const zero: ArenaAgentStats = { realisedUsd: 0, trades: 0, wins: 0, losses: 0, deaths: 0, openPositions: 0, lastTradeAt: null };
-  return { all: { ...zero }, last24h: { ...zero }, contest: { ...zero } };
+  return { period: { ...zero }, all: { ...zero }, last24h: { ...zero }, contest: { ...zero } };
 }
 
 async function readJson(c: Context): Promise<unknown> {
@@ -682,9 +695,10 @@ export function createFloorArenaRoutes(
     const blocked = limited(c, 'templates');
     if (blocked) return blocked;
     const now = deps.now();
-    const body = await templatesCache.get('templates', now.getTime(), async () => {
+    const period = await deps.readPeriod(now);
+    const body = await templatesCache.get(`templates|${period?.id ?? ''}`, now.getTime(), async () => {
       const rows = new Map((await deps.readHouseAgents()).map((agent) => [agent.id, agent]));
-      const stats = await deps.readStats(FLOOR_ARENA_HOUSE_AGENTS.map((house) => house.id), now);
+      const stats = await deps.readStats(FLOOR_ARENA_HOUSE_AGENTS.map((house) => house.id), now, period);
       const houseAgents: ArenaHouseAgentView[] = FLOOR_ARENA_HOUSE_AGENTS.map((house) => {
         const row = rows.get(house.id);
         return {
@@ -714,16 +728,19 @@ export function createFloorArenaRoutes(
   routes.get('/leaderboard', async (c) => {
     const blocked = limited(c, 'leaderboard');
     if (blocked) return blocked;
-    const window = c.req.query('window') ?? 'contest';
+    const window = c.req.query('window') ?? 'period';
     if (!isArenaLeaderboardWindow(window)) {
-      return c.json({ error: 'window must be contest, 24h or all.', code: 'invalid_window' }, 400);
+      return c.json({ error: 'window must be period, contest, 24h or all.', code: 'invalid_window' }, 400);
     }
     const now = deps.now();
-    const body = await leaderboardCache.get(window, now.getTime(), async () => ({
+    const period = await deps.readPeriod(now);
+    // The key holds the period id, so a reset never serves the old period's board.
+    const body = await leaderboardCache.get(`${window}|${period?.id ?? ''}`, now.getTime(), async () => ({
       window,
+      period: toPublicPeriod(period),
       contest: { id: FLOOR_ARENA_CONTEST.id, startsAt: FLOOR_ARENA_CONTEST.startsAt, endsAt: FLOOR_ARENA_CONTEST.endsAt },
       // Player-chosen trader names pass the content mask (content-mask.ts), as on every public payload.
-      rows: (await deps.readLeaderboard(window, now)).map(maskArenaName),
+      rows: (await deps.readLeaderboard(window, now, period)).map(maskArenaName),
       generatedAt: now.toISOString(),
     }));
     return publicJson(c, body);
@@ -735,12 +752,13 @@ export function createFloorArenaRoutes(
     const id = c.req.param('id') ?? '';
     if (!AGENT_ID.test(id)) return c.json({ error: 'Arena agent not found.', code: 'agent_not_found' }, 404);
     const now = deps.now();
-    const body = await agentCache.get(id, now.getTime(), async () => {
+    const period = await deps.readPeriod(now);
+    const body = await agentCache.get(`${id}|${period?.id ?? ''}`, now.getTime(), async () => {
       const agent = await deps.readAgent(id);
       if (!agent) return null;
       const house = agent.kind === 'house';
       const [stats, openPositions, closedPositions, latestReport, paramChanges] = await Promise.all([
-        deps.readStats([agent.id], now),
+        deps.readStats([agent.id], now, period),
         deps.readPositions(agent.id, 'open', 5),
         deps.readPositions(agent.id, 'closed', 50),
         house ? deps.readLatestReport(agent.id) : Promise.resolve(null),
@@ -753,6 +771,7 @@ export function createFloorArenaRoutes(
       return {
         agent: maskArenaName(house ? toPublicAgent(agent) : toPublicUserProfile(agent)),
         stats: stats.get(agent.id) ?? emptyStats(),
+        period: toPublicPeriod(period),
         openPositions: (house ? openPositions : openPositions.map(redactArenaPositionForPublic)).map(maskArenaPosition),
         closedPositions: (house ? closedPositions : closedPositions.map(redactArenaPositionForPublic)).map(maskArenaPosition),
         latestReport: latestReport ? maskArenaSummary(latestReport) : null,
@@ -764,19 +783,20 @@ export function createFloorArenaRoutes(
     return publicJson(c, body);
   });
 
-  async function tradesBody(agent: ArenaAgentRecord, query: ArenaTradesQuery, owner: boolean, now: Date) {
-    const rows = await deps.readTrades(agent.id, query);
+  async function tradesBody(agent: ArenaAgentRecord, query: ArenaTradesQuery & { window: ArenaHistoryWindow }, owner: boolean, now: Date, period: ArenaPeriodRecord | null) {
+    const bounds = resolveLeaderboardBounds(query.window, now, FLOOR_ARENA_CONTEST, period);
+    const rows = await deps.readTrades(agent.id, { ...query, bounds });
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     const trades = owner ? page : (agent.kind === 'house' ? page : page.map(redactArenaPositionForPublic)).map(maskArenaPosition);
-    return { agentId: agent.id, trades,
+    return { agentId: agent.id, window: query.window, period: toPublicPeriod(period), trades,
       nextCursor: rows.length > query.limit && last?.closedAt ? { before: last.closedAt, beforeId: last.id } : null,
       generatedAt: now.toISOString() };
   }
 
-  async function equityBody(agent: ArenaAgentRecord, window: '24h' | '7d' | 'contest' | 'all', now: Date) {
-    const bounds = resolveLeaderboardBounds(window, now);
-    return { agentId: agent.id, window, ...await deps.readEquity(agent.id, bounds), generatedAt: now.toISOString() };
+  async function equityBody(agent: ArenaAgentRecord, window: ArenaHistoryWindow, now: Date, period: ArenaPeriodRecord | null) {
+    const bounds = resolveLeaderboardBounds(window, now, FLOOR_ARENA_CONTEST, period);
+    return { agentId: agent.id, window, period: toPublicPeriod(period), ...await deps.readEquity(agent.id, bounds), generatedAt: now.toISOString() };
   }
 
   routes.get('/agents/:id/trades', async (c) => {
@@ -787,9 +807,10 @@ export function createFloorArenaRoutes(
     const query = tradesQuerySchema.safeParse(c.req.query());
     if (!query.success) return c.json({ error: 'Invalid trade history query.', code: 'invalid_query' }, 400);
     const now = deps.now();
-    const body = await tradesCache.get(JSON.stringify([id, query.data]), now.getTime(), async () => {
+    const period = await deps.readPeriod(now);
+    const body = await tradesCache.get(JSON.stringify([id, query.data, period?.id ?? null]), now.getTime(), async () => {
       const agent = await deps.readAgent(id);
-      return agent ? tradesBody(agent, query.data, false, now) : null;
+      return agent ? tradesBody(agent, query.data, false, now, period) : null;
     });
     if (!body) return c.json({ error: 'Arena agent not found.', code: 'agent_not_found' }, 404);
     return publicJson(c, body);
@@ -803,9 +824,10 @@ export function createFloorArenaRoutes(
     const query = equityQuerySchema.safeParse(c.req.query());
     if (!query.success) return c.json({ error: 'Invalid equity window.', code: 'invalid_query' }, 400);
     const now = deps.now();
-    const body = await equityCache.get(JSON.stringify([id, query.data]), now.getTime(), async () => {
+    const period = await deps.readPeriod(now);
+    const body = await equityCache.get(JSON.stringify([id, query.data, period?.id ?? null]), now.getTime(), async () => {
       const agent = await deps.readAgent(id);
-      return agent ? equityBody(agent, query.data.window, now) : null;
+      return agent ? equityBody(agent, query.data.window, now, period) : null;
     });
     if (!body) return c.json({ error: 'Arena agent not found.', code: 'agent_not_found' }, 404);
     return publicJson(c, body);
@@ -933,12 +955,13 @@ export function createFloorArenaRoutes(
   async function meBody(agent: ArenaAgentRecord | null, now: Date): Promise<ArenaMeResponse> {
     if (!agent) {
       return {
-        agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, latestReport: null, withdraw: null,
+        agent: null, paymentAddress: null, provision: null, wallet: null, addons: [], stats: null, period: null, latestReport: null, withdraw: null,
       };
     }
     const catalog = new Map(deps.addonCatalog().map((addon) => [addon.id, addon]));
+    const period = await deps.readPeriod(now);
     const [stats, addonStats, latestReport, balance, withdraw] = await Promise.all([
-      deps.readStats([agent.id], now),
+      deps.readStats([agent.id], now, period),
       deps.readAddonStats(agent.id, utcDayStart(now)),
       deps.readLatestReport(agent.id),
       agent.provisionState === 'ready' && agent.clawpumpAgentId
@@ -977,6 +1000,7 @@ export function createFloorArenaRoutes(
         : null,
       addons,
       stats: stats.get(agent.id) ?? emptyStats(),
+      period: toPublicPeriod(period),
       latestReport,
       withdraw: {
         address: withdraw.address ? toWithdrawAddressView(withdraw.address, now) : null,
@@ -996,7 +1020,8 @@ export function createFloorArenaRoutes(
     if (!query.success) return c.json({ error: 'Invalid trade history query.', code: 'invalid_query' }, 400);
     const agent = await myAgent(c);
     if (!agent) return noAgent(c);
-    return c.json(await tradesBody(agent, query.data, true, deps.now()));
+    const now = deps.now();
+    return c.json(await tradesBody(agent, query.data, true, now, await deps.readPeriod(now)));
   });
 
   routes.get('/me/equity', async (c) => {
@@ -1006,7 +1031,8 @@ export function createFloorArenaRoutes(
     if (!query.success) return c.json({ error: 'Invalid equity window.', code: 'invalid_query' }, 400);
     const agent = await myAgent(c);
     if (!agent) return noAgent(c);
-    return c.json(await equityBody(agent, query.data.window, deps.now()));
+    const now = deps.now();
+    return c.json(await equityBody(agent, query.data.window, now, await deps.readPeriod(now)));
   });
 
   // The owner's FULL decision stream (every type, nothing redacted): scans,

@@ -497,10 +497,18 @@ function finishBuckets(map: Map<string, BucketAccumulator>): Record<string, Aren
   return out;
 }
 
+/** D35: a 'reset' close is the operator's period reset, not a strategy
+ *  outcome. It never feeds the stats, the observations, the suggestions, the
+ *  tuner or auto-apply. */
+export function isStrategyTrade(trade: Pick<ArenaClosedTrade, 'exitReason'>): boolean {
+  return trade.exitReason !== 'reset';
+}
+
 /** Deterministic stats for a set of closed trades. Order does not matter. A
- *  trade without a finite P&L (an 'unresolved' exit) counts nowhere. */
+ *  trade without a finite P&L (an 'unresolved' exit) or a 'reset' close (D35)
+ *  counts nowhere. */
 export function computeArenaTradeStats(input: readonly ArenaClosedTrade[]): ArenaTradeStats {
-  const trades = input.filter((t) => Number.isFinite(t.pnlUsd) && Number.isFinite(t.pnlMult));
+  const trades = input.filter((t) => isStrategyTrade(t) && Number.isFinite(t.pnlUsd) && Number.isFinite(t.pnlMult));
   const exits = { tp: 0, stop: 0, trail: 0, time: 0, manual: 0, other: 0 };
   const age = new Map<string, BucketAccumulator>();
   const chg5m = new Map<string, BucketAccumulator>();
@@ -860,19 +868,19 @@ export function roundTunerCandidate(x: number, down: boolean): number {
   return Number((steps * scale).toPrecision(3));
 }
 
-/** The trades the tuner judges: finite P&L, newest first, at most TUNER_MAX_TRADES. */
+/** The trades the tuner judges: finite P&L, no 'reset' close (D35), newest first, at most TUNER_MAX_TRADES. */
 export function tunerTrades(trades: readonly ArenaClosedTrade[]): ArenaClosedTrade[] {
   return trades
-    .filter((t) => Number.isFinite(t.pnlMult))
+    .filter((t) => isStrategyTrade(t) && Number.isFinite(t.pnlMult))
     .sort((a, b) => b.closedAt.getTime() - a.closedAt.getTime())
     .slice(0, TUNER_MAX_TRADES);
 }
 
-/** n for the checkpoint schedule: closed trades with a finite pnl_mult (the
- *  trades `tunerTrades` takes from), not capped at TUNER_MAX_TRADES. */
+/** n for the checkpoint schedule: closed trades with a finite pnl_mult and no
+ *  'reset' close (the trades `tunerTrades` takes from), not capped at TUNER_MAX_TRADES. */
 export function tunerSampleSize(trades: readonly ArenaClosedTrade[]): number {
   let n = 0;
-  for (const t of trades) if (Number.isFinite(t.pnlMult)) n += 1;
+  for (const t of trades) if (isStrategyTrade(t) && Number.isFinite(t.pnlMult)) n += 1;
   return n;
 }
 
@@ -1623,11 +1631,14 @@ async function analyseAgent(
   const periodStart = arenaPeriodStart(candidate, now);
   const periodEnd = now;
 
-  const [trades, entries, openPositions] = await Promise.all([
+  const [loadedTrades, entries, openPositions] = await Promise.all([
     store.loadClosedTrades(agent.id, ARENA_LIFETIME_TRADE_LIMIT),
     store.countOpened(agent.id, periodStart, periodEnd),
     store.countOpen(agent.id),
   ]);
+  // D35: 'reset' closes never reach the report, the observations, the model,
+  // the suggestions, the tuner or auto-apply.
+  const trades = loadedTrades.filter(isStrategyTrade);
   const periodTrades = trades.filter(
     (t) => t.closedAt.getTime() > periodStart.getTime() && t.closedAt.getTime() <= periodEnd.getTime(),
   );
@@ -1645,7 +1656,7 @@ async function analyseAgent(
       paramsVersions: [...new Set(periodTrades.map((t) => t.paramsVersion))].sort((a, b) => a - b),
     },
     currentParams: computeArenaTradeStats(currentTrades),
-    lifetime: { ...computeArenaTradeStats(trades), truncated: trades.length >= ARENA_LIFETIME_TRADE_LIMIT },
+    lifetime: { ...computeArenaTradeStats(trades), truncated: loadedTrades.length >= ARENA_LIFETIME_TRADE_LIMIT },
     observations: [],
     suggestionCheck: { llm: 'skipped' },
   };

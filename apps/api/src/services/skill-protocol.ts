@@ -918,7 +918,8 @@ import {
 // 121-132: staging-only versions (BrainChain Office, MCP Apps, UsePod fee wallet); not on production at this release.
 // 133 (2026-11-11, Trading Floor terminal phase 1): orientation names the separate Trading Floor window instead of an Exchange tab. Existing arena routes and tools stay unchanged.
 // 134 (2026-11-11, Trading Floor terminal phase 2): paged trade history, realised equity and nine text read tools; all knowledge surfaces refreshed.
-export const PROTOCOL_VERSION = 134;
+// 135 (2026-11-12, arena P&L reset): arena boards, equity and MCP tools gain the `period` window (default; trades opened since the last founder reset, all time still kept) and exit reason `reset` ("Period reset"): at a reset the engine closes every older open position through the normal exit path.
+export const PROTOCOL_VERSION = 135;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

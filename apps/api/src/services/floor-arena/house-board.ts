@@ -1,8 +1,9 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@clawville/database';
-import { FLOOR_ARENA_CONTEST, FLOOR_ARENA_HOUSE_AGENTS } from '@clawville/shared';
+import { FLOOR_ARENA_CONTEST, FLOOR_ARENA_HOUSE_AGENTS, type FloorArenaPeriod } from '@clawville/shared';
 import { maskArenaFields, maskArenaPosition, type ArenaMasked } from './content-mask';
 import { FLOOR_ARENA_FAIL_CODES } from './filters';
+import { readActiveArenaPeriod, toPublicPeriod, type ArenaPeriodRecord } from './period';
 import {
   readArenaAgentStats,
   readArenaHouseAgents,
@@ -12,6 +13,7 @@ import {
   type ArenaAgentRecord,
   type ArenaAgentStats,
   type ArenaPosition,
+  type ArenaStatsWindowKey,
 } from './queries';
 
 /**
@@ -45,7 +47,8 @@ const SIGNAL_LOOKBACK_MS = HOUSE_BOARD_SCAN_MAX_AGE_MS + 2 * 60_000;
 
 const FAIL_CODES: ReadonlySet<string> = new Set(FLOOR_ARENA_FAIL_CODES);
 
-export type ArenaHouseBoardStats = Record<'all' | 'last24h' | 'contest', ArenaAgentStats>;
+/** `period` = positions opened in the active P&L period (every position when there is none). */
+export type ArenaHouseBoardStats = Record<ArenaStatsWindowKey, ArenaAgentStats>;
 
 export interface ArenaHouseBoardScan {
   at: string;
@@ -81,6 +84,8 @@ export interface ArenaHouseBoardAgent {
 export interface ArenaHouseBoardResponse {
   version: typeof HOUSE_BOARD_VERSION;
   agents: ArenaHouseBoardAgent[];
+  /** The active P&L period that each `stats.period` counts from; null when there is none. */
+  period: FloorArenaPeriod | null;
   contest: { startsAt: string; endsAt: string };
   generatedAt: string;
 }
@@ -95,13 +100,15 @@ export interface ArenaHouseSignals {
 
 export interface HouseBoardDeps {
   readHouseAgents(): Promise<ArenaAgentRecord[]>;
-  readStats(agentIds: readonly string[], now: Date): Promise<Map<string, ArenaHouseBoardStats>>;
+  readPeriod(now: Date): Promise<ArenaPeriodRecord | null>;
+  readStats(agentIds: readonly string[], now: Date, period: ArenaPeriodRecord | null): Promise<Map<string, ArenaHouseBoardStats>>;
   readOpenPositions(agentId: string, limit: number): Promise<ArenaPosition[]>;
   readSignals(agentIds: readonly string[], now: Date): Promise<Map<string, ArenaHouseSignals>>;
 }
 
 export const defaultHouseBoardDeps: HouseBoardDeps = {
   readHouseAgents: readArenaHouseAgents,
+  readPeriod: (now) => readActiveArenaPeriod(now),
   readStats: readArenaAgentStats,
   readOpenPositions: (agentId, limit) => readArenaPositions(agentId, 'open', limit),
   readSignals: (agentIds, now) => readArenaHouseSignals(agentIds, now),
@@ -197,9 +204,10 @@ function openOf(positions: readonly ArenaPosition[]): ArenaHouseBoardOpen[] {
 
 export async function buildArenaHouseBoard(deps: HouseBoardDeps, now: Date): Promise<ArenaHouseBoardResponse> {
   const ids = FLOOR_ARENA_HOUSE_AGENTS.map((house) => house.id);
+  const period = await deps.readPeriod(now);
   const [rows, stats, signals, open] = await Promise.all([
     deps.readHouseAgents(),
-    deps.readStats(ids, now),
+    deps.readStats(ids, now, period),
     deps.readSignals(ids, now),
     Promise.all(ids.map((id) => deps.readOpenPositions(id, HOUSE_BOARD_OPEN_MAX))),
   ]);
@@ -218,7 +226,7 @@ export async function buildArenaHouseBoard(deps: HouseBoardDeps, now: Date): Pro
       // Stats count positions, not the agent row. The reader gives one entry for each id it is
       // asked for, so the fallback below is the same zero result that reader gives an agent
       // with no positions.
-      stats: stats.get(house.id) ?? { all: emptyStats(), last24h: emptyStats(), contest: emptyStats() },
+      stats: stats.get(house.id) ?? { period: emptyStats(), all: emptyStats(), last24h: emptyStats(), contest: emptyStats() },
       scan: scanOf(signal, now),
       watching: watchingOf(signal, now),
       open: openOf(open[index] ?? []),
@@ -227,6 +235,7 @@ export async function buildArenaHouseBoard(deps: HouseBoardDeps, now: Date): Pro
   return {
     version: HOUSE_BOARD_VERSION,
     agents,
+    period: toPublicPeriod(period),
     contest: { startsAt: FLOOR_ARENA_CONTEST.startsAt, endsAt: FLOOR_ARENA_CONTEST.endsAt },
     generatedAt: now.toISOString(),
   };

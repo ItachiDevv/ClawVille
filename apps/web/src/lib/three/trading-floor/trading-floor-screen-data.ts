@@ -22,8 +22,9 @@
  * (scan, watching, `openedAt`), `paramsVersion`, `held`, `sizeUsd`, the `all`
  * window, `trades`, `deaths`, `openPositions` and `lastTradeAt`. The board does
  * not draw them, and the ones that tick would repaint the whole board every
- * poll for identical pixels. The countdown and the P&L window come from the
- * contest window and the scene's 30 s clock instead.
+ * poll for identical pixels. The P&L window comes from the active P&L period
+ * (the `period` field of the period leaderboard read), else the contest window
+ * and the scene's 30 s clock; the countdown from the contest window alone.
  */
 
 import {
@@ -71,9 +72,10 @@ export interface FloorScreenInputs {
   /** The contest query: the fallback contest window. */
   readonly contest: ArenaQueryInput;
   /**
-   * Page B (founder order 2026-10-02): the contest-window leaderboard query,
-   * `GET /api/floor/arena/leaderboard?window=contest` (the pre-P15 board's
-   * read). Absent reads as never fetched.
+   * Page B (founder order 2026-10-02): the period-window leaderboard query,
+   * `GET /api/floor/arena/leaderboard?window=period` (arena P&L reset,
+   * 2026-11-12). Its `period` field also tells page A whether a period exists.
+   * Absent reads as never fetched.
    */
   readonly leaderboard?: ArenaQueryInput;
   /**
@@ -183,10 +185,11 @@ function span(ms: number): string {
 }
 
 /**
- * "STARTS IN 3H 12M", "ENDS IN 4D 03H 12M", "CONTEST ENDED", or null. Minute
- * resolution (lead decision 2026-10-02: the countdown keeps its minutes) and
- * FLOORED, so it can run behind the true time but never ahead of it. Null when
- * the clock or either end of the window is unusable, or the window is inverted.
+ * "ENDS IN 4D 03H 12M" while the contest runs, else null (arena P&L reset,
+ * 2026-11-12: no "STARTS IN" or "CONTEST ENDED" line). Minute resolution (lead
+ * decision 2026-10-02: the countdown keeps its minutes) and FLOORED, so it can
+ * run behind the true time but never ahead of it. Null when the clock or either
+ * end of the window is unusable, or the window is inverted.
  */
 export function contestCountdownLabel(
   startsAtMs: number | null,
@@ -195,9 +198,7 @@ export function contestCountdownLabel(
 ): string | null {
   if (startsAtMs === null || endsAtMs === null || endsAtMs <= startsAtMs) return null;
   if (!isUsableClock(nowMs)) return null;
-  if (nowMs < startsAtMs) return `STARTS IN ${span(startsAtMs - nowMs)}`;
-  if (nowMs <= endsAtMs) return `ENDS IN ${span(endsAtMs - nowMs)}`;
-  return 'CONTEST ENDED';
+  return nowMs >= startsAtMs && nowMs <= endsAtMs ? `ENDS IN ${span(endsAtMs - nowMs)}` : null;
 }
 
 // ── readers ─────────────────────────────────────────────────────────────────
@@ -282,8 +283,9 @@ function readWindowStats(stats: Record<string, unknown> | null, key: string): Wi
   };
 }
 
-/** A column with BOTH P&L windows; the clock picks one in `buildFloorScreenData`. */
+/** A column with every P&L window it can show; `buildFloorScreenData` picks one. */
 type ProjectedColumn = Omit<FloorScreenColumn, keyof WindowStats> & {
+  readonly period: WindowStats;
   readonly contest: WindowStats;
   readonly last24h: WindowStats;
 };
@@ -319,6 +321,7 @@ function readColumn(house: FloorArenaHouseAgent, raw: Record<string, unknown> | 
           markMult: money(first.lastMarkMult) ?? Number.NaN,
         }
       : null,
+    period: readWindowStats(stats, 'period'),
     contest: readWindowStats(stats, 'contest'),
     last24h: readWindowStats(stats, 'last24h'),
   };
@@ -357,6 +360,16 @@ function readContestWindow(data: unknown): ContestWindow | null {
     : null;
 }
 
+/**
+ * True when a read names an active period: a `period` with a string id and a
+ * plausible `startsAt`. A read that never had data, a null period, or anything
+ * unreadable is false (the board then shows what it showed before periods existed).
+ */
+function readPeriodActive(input: ArenaQueryInput | undefined): boolean {
+  const period = record(record(input?.data)?.period);
+  return typeof period?.id === 'string' && period.id.length > 0 && isoMs(period.startsAt) !== null;
+}
+
 // ── projection: ONE list of what the board draws ────────────────────────────
 
 /**
@@ -373,6 +386,10 @@ function readContestWindow(data: unknown): ContestWindow | null {
  * ONE CONTEST WINDOW (lead decision 2026-10-02): the house board's own window
  * first, because the server computed `stats.contest` over it; the contest hook
  * second. The countdown and the P&L window read the same one.
+ *
+ * `periodActive`: the house board's own `period` first (its `stats.period`
+ * counts from it), the period leaderboard read second. It is the only
+ * leaderboard fact page A reads, so a poll that changes rows does not repaint page A.
  */
 function project(inputs: FloorScreenInputs) {
   const board = inputs.houseBoard ?? NEVER_FETCHED;
@@ -382,10 +399,11 @@ function project(inputs: FloorScreenInputs) {
     phase,
     columns: phase === 'ready' ? readColumns(board.data) : [],
     window: readContestWindow(board.data) ?? readContestWindow(inputs.contest.data),
+    periodActive: readPeriodActive(board) || readPeriodActive(inputs.leaderboard),
   };
 }
 
-// ── page B: the contest leaderboard ─────────────────────────────────────────
+// ── page B: the period leaderboard ──────────────────────────────────────────
 
 /** Rows page B can ever show (8 fit at 313); the draw slices to the canvas. */
 const LEADER_ROWS_MAX = 10;
@@ -428,7 +446,9 @@ function readLeaderRow(raw: unknown): FloorScreenLeaderRow | null {
  */
 function projectLeaderboard(input: ArenaQueryInput | undefined): FloorScreenLeaderboard {
   const query = input ?? NEVER_FETCHED;
-  if (query.data === undefined) return { phase: query.isError ? 'error' : 'connecting', rows: [] };
+  // With no period row the 'period' window counts every trade, so the board says ALL TRADES.
+  const window = readPeriodActive(query) ? 'period' : 'all';
+  if (query.data === undefined) return { phase: query.isError ? 'error' : 'connecting', window, rows: [] };
   const list: unknown = Array.isArray(query.data) ? query.data : record(query.data)?.rows;
   const rows = (Array.isArray(list) ? list : [])
     .map(readLeaderRow)
@@ -438,7 +458,7 @@ function projectLeaderboard(input: ArenaQueryInput | undefined): FloorScreenLead
     const delta = order(a) - order(b);
     return Number.isNaN(delta) ? 0 : delta;
   });
-  return { phase: 'ready', rows: rows.slice(0, LEADER_ROWS_MAX) };
+  return { phase: 'ready', window, rows: rows.slice(0, LEADER_ROWS_MAX) };
 }
 
 function contestRunning(window: ContestWindow | null, nowMs: number): boolean {
@@ -464,14 +484,15 @@ export function buildFloorScreenData(
 ): FloorScreenBuild {
   const projected = project(inputs);
   const running = contestRunning(projected.window, nowMs);
-  const windowKey: FloorScreenWindow = running ? 'contest' : '24h';
+  // The active period wins; with no period the board keeps its pre-period rule.
+  const windowKey: FloorScreenWindow = projected.periodActive ? 'period' : running ? 'contest' : '24h';
   return {
     phase: projected.phase,
     page,
     leaderboard: projectLeaderboard(inputs.leaderboard),
-    columns: projected.columns.map(({ contest, last24h, ...column }) => ({
+    columns: projected.columns.map(({ period, contest, last24h, ...column }) => ({
       ...column,
-      ...(running ? contest : last24h),
+      ...(windowKey === 'period' ? period : windowKey === 'contest' ? contest : last24h),
     })),
     window: windowKey,
     countdownLabel: projected.window

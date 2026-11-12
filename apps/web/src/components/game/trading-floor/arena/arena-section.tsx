@@ -15,6 +15,7 @@ import {
   useFloorArenaDiscovery,
   useFloorArenaLeaderboard,
   useFloorArenaMe,
+  useFloorArenaPeriod,
   useFloorArenaTemplates,
   type FloorArenaLeaderboardRow,
   type FloorArenaLeaderboardWindow,
@@ -46,6 +47,7 @@ import {
 } from './arena-kit';
 import { countText } from './arena-parts';
 import { ContestRules } from './contest-rules';
+import { floorArenaWindowLabel } from '../terminal/terminal-parts';
 import { LaunchSuccess, LaunchTrader } from './launch-trader';
 import { MyTrader } from './my-trader';
 
@@ -54,11 +56,8 @@ import { MyTrader } from './my-trader';
 // arena trader. Spec: docs/trading-floor-arena.md. This is the human path; a
 // connected agent drives the same routes through its tools.
 
-const WINDOWS: ReadonlyArray<{ id: FloorArenaLeaderboardWindow; label: string }> = [
-  { id: 'contest', label: 'Contest' },
-  { id: '24h', label: '24 hours' },
-  { id: 'all', label: 'All time' },
-];
+/** 'contest' stays last: it carries the past contest's standings and prize eligibility. */
+const WINDOWS: readonly FloorArenaLeaderboardWindow[] = ['period', '24h', 'all', 'contest'];
 
 const PLACE: Record<1 | 2 | 3, string> = { 1: '1st', 2: '2nd', 3: '3rd' };
 
@@ -312,8 +311,9 @@ function ArenaLeaderboard({
   myAgentId: string | null;
   onOpenAgent: (agentId: string) => void;
 }) {
-  const [range, setRange] = useState<FloorArenaLeaderboardWindow>('contest');
+  const [range, setRange] = useState<FloorArenaLeaderboardWindow>('period');
   const board = useFloorArenaLeaderboard(range, active);
+  const period = useFloorArenaPeriod(active).data;
   const nowMs = useArenaNow(active, 60_000);
   const ended = contestPhase(FLOOR_ARENA_CONTEST.startsAt, FLOOR_ARENA_CONTEST.endsAt, nowMs) === 'ended';
   // The same query key as the banner, so this adds no fetch.
@@ -321,7 +321,7 @@ function ArenaLeaderboard({
   const standingsPill = range === 'contest' && ended
     ? contestStandingsCopy(contest.data?.standings ?? null, contest.data?.openWindowPositions ?? null).pill
     : null;
-  const rows = board.data ?? [];
+  const rows = board.data?.rows ?? [];
 
   return (
     <section style={arenaCardStyle} data-testid="arena-leaderboard">
@@ -332,21 +332,21 @@ function ArenaLeaderboard({
             <ArenaPill colour={standingsPill === 'Final' ? FLOOR_TEXT.positive : FLOOR_TEXT.accent}>{standingsPill}</ArenaPill>
           ) : null}
         </div>
-        <div role="group" aria-label="Leaderboard window" style={{ display: 'flex', gap: 6 }}>
+        <div role="group" aria-label="Leaderboard window" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {WINDOWS.map((option) => (
             <button
-              key={option.id}
+              key={option}
               type="button"
-              aria-pressed={range === option.id}
-              onClick={() => setRange(option.id)}
+              aria-pressed={range === option}
+              onClick={() => setRange(option)}
               style={{
                 ...arenaButtonStyle,
                 padding: '8px 10px',
-                color: range === option.id ? FLOOR_TEXT.value : FLOOR_TEXT.muted,
-                background: range === option.id ? 'rgba(14,116,144,0.45)' : 'rgba(14,116,144,0.12)',
+                color: range === option ? FLOOR_TEXT.value : FLOOR_TEXT.muted,
+                background: range === option ? 'rgba(14,116,144,0.45)' : 'rgba(14,116,144,0.12)',
               }}
             >
-              {option.label}
+              {floorArenaWindowLabel(option, period)}
             </button>
           ))}
         </div>
@@ -392,7 +392,8 @@ function ArenaLeaderboard({
         </div>
       )}
       <ArenaMuted size={11}>
-        Realised paper P&amp;L in USD after the paper trading costs. The contest score counts positions opened inside
+        Realised paper P&amp;L in USD after the paper trading costs. This period counts positions opened since the last
+        P&amp;L reset; older trades stay under All time. The contest score counts positions opened inside
         the contest window, also when they close after it ends. A player&apos;s agent becomes eligible for a prize once
         a position it opened inside the window has closed. House agents cannot win prizes.
       </ArenaMuted>

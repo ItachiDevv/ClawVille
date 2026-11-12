@@ -12,8 +12,12 @@ import {
   floorArenaProvisionInProgress,
   flushFloorArenaSeatWritesForTest,
   mergeFloorArenaEvents,
+  readEquity,
   readEvent,
+  readLeaderboard,
   readLeaderboardRow,
+  readPeriod,
+  readStatsByWindow,
   readMe,
   readProfile,
   readReport,
@@ -186,6 +190,36 @@ afterEach(async () => {
 afterAll(() => {
   restoreDom();
   testWindow.close();
+});
+
+describe('Floor arena P&L period readers', () => {
+  const PERIOD = { id: 'period-20261112T090000Z', name: 'Fresh start', startsAt: '2026-11-12T09:00:00.123456Z' };
+
+  test('a complete period reads as is; null, missing or broken reads as null', () => {
+    expect(readPeriod(PERIOD)).toEqual(PERIOD);
+    expect(readPeriod({ ...PERIOD, extra: 1 })).toEqual(PERIOD);
+    for (const broken of [null, undefined, 'period', [], {}, { ...PERIOD, id: '' }, { ...PERIOD, name: 7 }, { ...PERIOD, startsAt: 'soon' }, { id: 'a', name: 'b' }]) {
+      expect(readPeriod(broken)).toBeNull();
+    }
+  });
+
+  test('the leaderboard and equity reads carry the period; old bodies read null', () => {
+    const board = readLeaderboard({ window: 'period', period: PERIOD, rows: [{ agentId: 'a', name: 'A', rank: 1 }] });
+    expect(board.period).toEqual(PERIOD);
+    expect(board.rows.map((row) => row.agentId)).toEqual(['a']);
+    expect(readLeaderboard({ rows: [] })).toEqual({ rows: [], period: null });
+    expect(readLeaderboard({ period: null, rows: 'x' })).toEqual({ rows: [], period: null });
+    expect(readEquity({ series: [], period: PERIOD }).period).toEqual(PERIOD);
+    expect(readEquity({ series: [] }).period).toBeNull();
+  });
+
+  test('stats by window read the period block; a missing one is unknown, never zero', () => {
+    const stats = readStatsByWindow({ period: { realisedUsd: '1.5', trades: 2 }, all: { realisedUsd: 3 } });
+    expect(stats.period.realisedUsd).toBe(1.5);
+    expect(stats.period.trades).toBe(2);
+    const old = readStatsByWindow({ all: { realisedUsd: 3 } });
+    expect(old.period).toEqual({ realisedUsd: null, trades: null, wins: null, losses: null, deaths: null, openPositions: null, lastTradeAt: null });
+  });
 });
 
 describe('Floor arena wire readers', () => {
