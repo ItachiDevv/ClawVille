@@ -78,7 +78,8 @@ export function createBrainChainRoutes(status = brainChainStatus, options: {
     });
   });
   // Lazy imports keep public knowledge independent of database/runtime initialization.
-  const privatePaths = ['/workers', '/workers/*', '/install', '/purchases', '/purchases/*'];
+  // Every owner-scoped route needs this chain; /funding-exit was missing until 2026-11-13 (its reads failed as a generic 503).
+  const privatePaths = ['/workers', '/workers/*', '/install', '/purchases', '/purchases/*', '/funding-exit', '/funding-exit/*'];
   for (const path of privatePaths) routes.use(path, async (c, next) => {
     const { sessionMiddleware } = await import('../middleware/auth');
     const { requireAuthOrAgentSession, requireLedgerCapableIdentity } = await import('../middleware/require-auth-or-agent');

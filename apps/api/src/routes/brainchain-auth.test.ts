@@ -184,6 +184,13 @@ describe('BrainChain HTTP session composition', () => {
 });
 
 
+test('funding-exit routes run the session chain before the service (no generic 503 without a session)',async()=>{
+ const routes=createBrainChainRoutes();
+ for(const path of ['/funding-exit','/funding-exit/00000000-0000-4000-8000-000000000001'])
+  for(const [headers,status]of [[{},401],[{'X-Clawville-Agent-Session':'non-ledger'},403],[{'X-Clawville-Agent-Session':'bound','X-Fixture-Guest':'yes'},403]] as const)
+   expect((await routes.request(path,{headers})).status).toBe(status);
+});
+
 test('purchase routes bind the canonical human or agent and recheck the current session',async()=>{
  const owners:unknown[]=[];
  const service={list:async(owner:import('../services/brainchain/purchases').BuyerOwner)=>{await owner.assertCurrent();owners.push({avatarId:owner.avatarId,userId:owner.userId,actor:owner.actor});return {orders:[],availability:{executionEnabled:false}};}} as unknown as import('../services/brainchain/purchases').BrainchainPurchases;

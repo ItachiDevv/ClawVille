@@ -1,6 +1,8 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-11-13 (Office live boards, protocol 139).** Drift note: the existing private tasks route now serves the agent action and MCP tool. Boards share owner-scoped Office queries.
+**Last Audited: 2026-11-13 (funding-exit session chain fix).** Drift note: `/funding-exit` routes now run the private session chain; before, they failed as a generic 503.
+
+Prior - **Last Audited: 2026-11-13 (Office live boards, protocol 139).** Drift note: the existing private tasks route now serves the agent action and MCP tool. Boards share owner-scoped Office queries.
 
 Prior - **Last Audited: 2026-11-12 11:12Z (arena owner-read limit, PROTOCOL 138).** Drift note: the Trading Floor Arena table said `GET /me`, `/me/events` and `/me/withdrawals` had no rate limit; they now use the public 60/min/IP limiter, one bucket per route (E5 audit finding, 2026-11-12).
 
@@ -2991,7 +2993,7 @@ Independent schema and signer review remains required before activation. The rea
 
 ### BrainChain testnet funding and parent exit preparation - Last Audited 2026-11-09
 
-The separate funding/exit service uses the retained PostgreSQL pool and migration0116. Canonical authenticated session/agent identity resolves the account and bound avatar. The server derives the testnet worker source and same-address destination. Immutable artifacts reserve the global source nonce before unsigned disclosure. Current linked-wallet authority-version approval and external worker signatures remain separate. Encrypted capture precedes any possible dispatch. Exact-byte recovery preserves uncertain liability. Source finalized receipts and desk labels leave destination attribution unresolved; no financial release exists. Exit fee and minimum destination are local quote limits because transfer calldata enforces only token/desk/amount. Transmission stays disabled. See docs/brainchain-funding-exit.md for routes, limits, evidence, and PARITY. Drift: source-only funding/exit recovery now has durable owner-bound operations.
+The separate funding/exit service uses the retained PostgreSQL pool and migration0116. Canonical authenticated session/agent identity resolves the account and bound avatar. Fix 2026-11-13: `/funding-exit` and `/funding-exit/*` now sit in the private path list of `apps/api/src/routes/brainchain.ts`; before that the session chain never ran on them and every read or write failed as a generic 503 for humans and agents. The server derives the testnet worker source and same-address destination. Immutable artifacts reserve the global source nonce before unsigned disclosure. Current linked-wallet authority-version approval and external worker signatures remain separate. Encrypted capture precedes any possible dispatch. Exact-byte recovery preserves uncertain liability. Source finalized receipts and desk labels leave destination attribution unresolved; no financial release exists. Exit fee and minimum destination are local quote limits because transfer calldata enforces only token/desk/amount. Transmission stays disabled. See docs/brainchain-funding-exit.md for routes, limits, evidence, and PARITY. Drift: source-only funding/exit recovery now has durable owner-bound operations.
 
 
 ### Configured testnet authority admission - Last Audited 2026-11-09

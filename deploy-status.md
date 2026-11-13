@@ -785,6 +785,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-13 (session brainchain) - Funding-exit routes get the session chain (no PROTOCOL change, no migration)
+
+- **WHAT:** signed in as staging test account landtest2 (founder order: test it myself). The Task Board showed real data (paused testnet worker, "No tasks indexed yet", draft order "i50784 test"). The Receipts wall showed "Data unavailable": `GET /api/brainchain/funding-exit` returned 503 `brainchain_unavailable` in 1 ms. ROOT CAUSE (older than phase 2): `/funding-exit` and `/funding-exit/*` were missing from `privatePaths` in `apps/api/src/routes/brainchain.ts`, so no identity was set, `purchaseOwner` threw, and `onError` mapped it to 503. The Office funding panel and the agent `funding_*` ops failed the same way. The service itself returned `{operations:[],executionEnabled:false}` when called directly in the staging container. FIX: add both paths; new gate test in `brainchain-auth.test.ts`. Execution stays hard-disabled (`FUNDING_EXIT_EXECUTION_ENABLED=false`). Codex read-only review: APPROVE.
+- **PARITY:** human path: Office funding panel + Receipts wall; agent path: `brainchain(op=funding_list|funding_*)`; both now resolve the session avatar through `requireAuthOrAgentSession`.
+- **SCHEMA:** synced (no migration).
+
 ### 2026-11-13 (session brainchain) - BrainChain Office interior phase 2: live boards (PROTOCOL 139, no migration)
 
 - **WHAT:** the Task Board shows the owner's bound workers, the newest indexed tasks (provisional) and open purchase orders; the Receipts wall shows purchase payment or refund references and funding records. Both read the same TanStack Query cache as the Office window, through `useBrainchainInteriorStore` (no query inside the Canvas). Refetch on room entry, then every 60 s only while `/brainchain` is active and the tab is visible. Canvases redraw only when the text changes; no new meshes or textures. The room never calls the chain earnings read (it stays a button in the worker record). The Work and Earnings tabs now show the same records instead of "not available yet". Signed out, guest, loading, error and empty states are text; an error is never a zero.
