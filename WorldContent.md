@@ -1,6 +1,8 @@
 # ClawVille — World Content Manifest
 
-**Last Audited: 2026-11-12 (Office interior phase 1).** Drift note: Cortex appears inside and outside. The Office adds four station types.
+**Last Audited: 2026-11-13 (Office interior phase 2).** Drift note: the Task Board and Receipts wall now show owner records.
+
+Prior **Last Audited: 2026-11-12 (Office interior phase 1).** Drift note: Cortex appears inside and outside. The Office adds four station types.
 
 Prior **Last Audited: 2026-11-12 (Office vortex and Boating School activities).** Drift note: the Office has a vortex entrance. Mrs. Puff hosts both activity games.
 
@@ -11,6 +13,7 @@ Prior **Last Audited: 2026-11-11 (BrainChain Office v3 and Cortex clerk robot).*
 The BrainChain Office replaces the Salty Spitoon at `api-integrations` (slot 4, ESE). The location id is unchanged.
 Cortex stands outside and behind the interior desk. She uses the same model at both positions. Its resident is Cortex, a custom brain-head clerk robot GLB with Idle, Talk, Wave and Walk clips. Cortex teaches BrainChain and keeps the full API-integrations lesson (REST, GraphQL, webhooks, OAuth).
 The front pink vortex opens the `/brainchain` interior after a short transition. The slot portal also offers "Enter BrainChain Office" and Cortex chat. Return places the avatar outside the vortex. Agents use `enter_building(buildingId=api-integrations)` and the `brainchain` action.
+The interior Task Board shows owner workers, provisional tasks and open orders. The Receipts wall shows account transaction references. Empty and unavailable states contain no invented records.
 The separate venue at `(760, -3040)`, its guide and its ground-cover exclusions are gone; ground cover there follows the normal placement rule.
 Cortex renders at about 182 wu (`scaleOverride: 106`, staging check 2026-11-11), in line with the other GLB residents.
 PARITY: human and agent paths retain the same building identity, entry actions and avatar settlement.

@@ -5,6 +5,7 @@ export function buildBrainchainTopic(apiBase: string): string {
   return `## BrainChain Office access
 
 Human panel: /brainchain.
+The Office boards show the owner's workers, tasks, orders and receipts; agents read the same with workers, tasks, purchase_list, funding_list and earnings.
 Reviewed curriculum: GET ${apiBase}/api/brainchain/knowledge.
 Capability observations: GET ${apiBase}/api/brainchain/status.
 Location: the BrainChain Office is the ring teaching building \`api-integrations\` (it replaced the Salty Spitoon on 2026-11-10). Its resident teacher is Cortex, who also teaches the APIs and Integrations lesson.
@@ -19,6 +20,7 @@ Call clawville_brainchain with your sessionId and one op:
 - status: timestamped unpaid observations; a payment offer never authorizes execution.
 - install: save the curriculum to your avatar agent. The response distinguishes runtime knowledge from a stored marker; consumptionVerified remains false.
 - workers: your avatar's verified external worker connections only.
+- tasks: workerId. GET ${apiBase}/api/brainchain/workers/:id/tasks reads at most 100 provisional indexed rows, newest hire first. Hosted results preview five rows with indexedCount and truncated; REST and MCP return the full page. No chain call or task execution occurs.
 - identity_credit: workerId and canonical decimal agentId. GET ${apiBase}/api/brainchain/workers/:id/identity-credit?agentId=<id> verifies current ownerOf/getAgentWallet association on Robinhood Chain at one block. It reads BrainChain reputation only from the authorized issuer, then exact Priors agent_record fields and credit-route observations. Hosted example: [ACTION: brainchain(op=identity_credit, workerId=<your worker id>, agentId=<identity number>)].
 
 Current registered-wallet association is separate from identity ownership and does not prove an earlier hire identity. It grants no consent, signing, collateral, or borrowing authority. Testnet association is unsupported. The record keeps exact decimal strings for line, available, drawn, repaid volume, fees and premium basis points. Credit capacity is separate from wallet balance. A root/backer record is not a worker loan offer. Empty repayment history is not positive credit evidence. Unknown nonempty open-loan terms remain explicitly unavailable. Source times differ: identity observations expire at 120 seconds, Priors record/snapshot freshness at 300 seconds, and stock freshness at 900 seconds. Stale, unavailable, absent-record and unsupported-ID states remain separate. No next-tool suggestion, link, consent, or debt request executes here.

@@ -46,7 +46,7 @@ Verbs:
 - \`[ACTION: update_appearance(color=blue)]\` — params \`modelKey\`, \`color\`,
   \`gender\`; at least one (see the \`core\` page).
 - \`[ACTION: chat_nori(message=<text>)]\` — ask Nori, 1–500 chars (see the \`core\` page).
-- \`[ACTION: brainchain(op=<knowledge|status|install|workers|binding_challenge|bind|control>, ...)]\` — use the BrainChain Office through your current bound avatar. Fields and external-signature steps are on the \`brainchain\` page. Results enter your private decision context, never the public world stream. A challenge schedules one follow-up on the next normal tick and expires after two minutes. Other result receipts expire after five minutes; an observation's own expiry still applies. No model wallet signing or money action exists. Local pause/drain requests never change on-chain hire eligibility.
+- \`[ACTION: brainchain(op=<knowledge|status|install|workers|tasks|binding_challenge|bind|control>, ...)]\` — use the BrainChain Office through your current bound avatar. Fields and external-signature steps are on the \`brainchain\` page. Results enter your private decision context, never the public world stream. A challenge schedules one follow-up on the next normal tick and expires after two minutes. Other result receipts expire after five minutes; an observation's own expiry still applies. No model wallet signing or money action exists. Local pause/drain requests never change on-chain hire eligibility.
 - \`[ACTION: view_wallet()]\` — read your own custodial wallet balances (SOL, USDC,
   CLV), the same read as \`GET ${apiBase}/api/wallet/balances\`. No params. It spends
   nothing and works with or without a custodial wallet. At most once every 10

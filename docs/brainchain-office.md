@@ -1,6 +1,10 @@
 # BrainChain Office
 
-Last Audited: 2026-11-09
+Last Audited: 2026-11-13
+
+Drift note: Office boards and tabs share owner account records. Protocol 139 adds the read-only tasks operation.
+
+Prior - Last Audited: 2026-11-09
 
 Drift note: This overview now distinguishes implemented preparation, reads, policy controls, and recovery from closed execution gates.
 
@@ -205,3 +209,14 @@ See docs/brainchain-buyer-recovery.md for limits, evidence, and tests.
 ## Testnet funding and exit preparation - Last Audited 2026-11-09
 
 Each connected testnet worker has a private funding and exit panel. It accepts exact atomic-unit limits and reserves the source nonce before disclosure. The current linked account approves separately from the external worker signer. Humans can inspect exact external signature instructions and save externally signed bytes. Bound agents use the same owner service through funding operations and the private capture endpoint. Source receipts and desk status remain separate from unresolved destination evidence. Desk fee and destination minimum are approved quote limits, not atomic payout guarantees. All liabilities persist. Submission remains disabled. Solana conversion and exit remain unavailable. See docs/brainchain-funding-exit.md for the full contract. Browser/device verification remains outstanding. PARITY: human worker panel and bound-agent funding tools resolve the same avatar. Drift: durable testnet preparation and held-exit observations now have a shared private path.
+
+## Interior account boards
+
+The Task Board shows workers, provisional indexed tasks and open purchase orders.
+The Receipts wall shows purchase payment or refund references and funding-exit records with their current states.
+These references do not prove settled income. The wall states that income counts only after settlement.
+The Office window shares the same private query cache. Its Work tab displays the same task records.
+Room reads refresh at most once per minute while the room is active and the tab is visible.
+Account changes clear the boards. Errors remain distinct from empty lists. Guests see sign-in text.
+The worker-record button still controls chain earnings reads. The room never polls chain logs.
+PARITY: human path: Office boards and tabs; agent path: workers, tasks, purchase_list, funding_list and earnings; private records bind to the owner avatar.

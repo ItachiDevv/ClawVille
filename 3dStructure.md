@@ -1,6 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-11-12 (Office interior phase 1).** Drift note: the Office gains its own stage scene and local stations. Cortex uses a per-entry height limit.
+**Last Audited: 2026-11-13 (Office interior phase 2).** Drift note: the two boards now show private account data through the shared Office cache.
+
+Prior **Last Audited: 2026-11-12 (Office interior phase 1).** Drift note: the Office gains its own stage scene and local stations. Cortex uses a per-entry height limit.
 
 Prior **Last Audited: 2026-11-12 07:17Z (quest/bounty pavilion GLB 2.99 MB -> 1.34 MB).** Drift note: the pavilion now loads `apps/web/public/models/quest-bounty-pavilion-nonorm-256-ktx.glb` (new file name, no `?v=` bump; the old `-nonorm-ktx` file stays until prod is promoted). Built from `apps/web/public/models/quest-bounty-pavilion.glb`: textures 512 -> 256 px, ETC1S q192, meshopt QUANTIZE mode without re-quantizing (16-bit normals kept, 0 deg normal difference; one mesh, Object_24, lost its TANGENT, which nothing reads because the file has no normal maps), normal maps dropped with `scripts/ktx2-texture-diet.mjs`. Same bounds, meshes, materials, 54 textures and 49,144 vertices; colour spaces unchanged. Look: same at play distance, display boards a little softer up close. Every first visit downloads 1.66 MB less (phone profile: about 8 s of transfer at 1.6 Mbps; the load-time gain is not measured). PARITY: render-only, no agent or economy change.
 Prior **Last Audited: 2026-11-12 05:28Z (world stage shadows off at boot; no shader rebuild).** Drift note: the table said desktop world shadows are on. In fact R3F's stage `<Canvas>` (no `shadows` prop) reset `shadowMap.enabled` to false on its next configure (~4.7 s on desktop), and no world light sets `castShadow`, so no world shadow ever rendered. The early `true` only changed the TSL environment key (three r185 `NodeManager.getCacheKey`), so shaders the boot warm-up built with shadows on were rebuilt after the flip, and again after each world re-entry. `apps/web/src/components/three/world-stage/WorldStageRoot.tsx` now sets the world appearance `shadows: false`. Measured on a local prod build (desktop, 2 runs each): 128 -> 109 TSL builds per cold /game load, no shadow flip. No visual change. The `WORLD_DEVICE_PROFILE.shadows` knob now only feeds the `/perf` page's `World3DCanvas`. PARITY: render-only, no agent or economy change.
@@ -9,7 +11,7 @@ Prior **Last Audited: 2026-11-11 22:08Z (Trading Floor monitor opens the separat
 
 **Last Audited: 2026-11-12 (BrainChain vortex door).** Drift note: the Office adds a local walk-in door and a safe return position.
 
-### BrainChain Office interior phase 1 (2026-11-12)
+### BrainChain Office interior phases 1 and 2 (2026-11-13)
 
 The /brainchain route uses its own persistent stage scene. The Trading Floor provides the stage, player-controller and mobile-control pattern.
 The room has radius 2200 wu, diameter 4400 wu and height 1300 wu. The floor sits at y=0.
@@ -39,7 +41,11 @@ The sculpture envelope is 1300 x 1000 x 860 wu (enlarged on 2026-11-12 after the
 Each pod envelope is 470 x 500 x 420 wu. Model origins sit at bottom centre, with the front along +Z.
 The replacement path constant preserves these footprints and anchors. The sculpture uses a shallow depth to fit its envelope.
 The receipts plane sits at z=-1900, inside the wall.
-Board textures contain titles and short labels only. They contain no invented task, receipt or balance data.
+The Task Board shows owner workers, provisional indexed tasks and open purchase orders. The Receipts wall shows transaction references and funding-exit records.
+The DOM layer shares the Office query cache and sends plain text through the interior store. No query runs inside the Canvas.
+The two 1024 x 512 canvases and textures persist. A changed summary key triggers a redraw and texture upload.
+Account changes clear prior text. Font loading has a timeout before the first data draw. Text has line limits and ellipsis clipping.
+No mesh, draw call, prop size or per-frame allocation is added. Chain earnings remain an explicit Office button read.
 Canvas textures initialize lazily and tolerate a missing 2D context. Module import does not access the DOM.
 
 The static scene estimate is 23 draw calls, excluding the player avatar. The target remains at most 25 room draw calls.

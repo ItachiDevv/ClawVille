@@ -1,6 +1,8 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useLayoutEffect, useMemo } from 'react';
+import { useBrainchainInteriorStore } from '@/components/brainchain/brainchain-interior-store';
+import { createBoardCanvasWriter, waitForBoardFonts } from './brainchain-board-canvas';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { useGLTFWithKTX2 } from '../use-gltf-ktx2';
@@ -120,18 +122,33 @@ function Prop({ kind, url }: { kind: keyof typeof BRAINCHAIN_PROP_BOUNDS; url: s
   return url ? <AuthoredProp kind={kind} url={url} /> : <>{placeholder(kind).map((p, i) => <mesh key={i} {...p} dispose={null} />)}</>;
 }
 let boards: THREE.MeshBasicMaterial[] | null = null;
+let boardWriters: ReturnType<typeof createBoardCanvasWriter>[] = [];
 function boardMaterials() {
-  return boards ??= ['TASK BOARD', 'RECEIPTS'].map((title, i) => new THREE.MeshBasicMaterial({ map: canvasTexture(ctx => {
-    ctx.fillStyle = '#1d1d1d'; ctx.fillRect(0, 0, 1024, 512);
-    ctx.strokeStyle = '#f386a1'; ctx.lineWidth = 8; ctx.strokeRect(8, 8, 1008, 496);
-    ctx.fillStyle = '#f8f7f4'; ctx.font = '52px "Fragment Mono", monospace'; ctx.fillText(title, 55, 110);
-    ctx.font = '28px Geist, sans-serif'; ctx.fillText(i ? 'Earnings and account records' : 'Work status / Hire help', 55, 190);
-    ctx.fillStyle = '#f386a1'; ctx.fillText('Open the Office window to view your data', 55, 400);
-  }), toneMapped: false }));
+  if (boards) return boards;
+  if (typeof document === 'undefined') return [];
+  boards = [0, 1].map(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 512;
+    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+    boardWriters.push(createBoardCanvasWriter(canvas.getContext('2d'), () => { texture.needsUpdate = true; }, waitForBoardFonts()));
+    return new THREE.MeshBasicMaterial({ map: texture, toneMapped: false });
+  });
+  return boards;
+}
+function updateBoards() {
+  const summary = useBrainchainInteriorStore.getState().boardSummary;
+  boardWriters[0]?.update(summary.ownerId, summary.task);
+  boardWriters[1]?.update(summary.ownerId, summary.receipts);
 }
 const boardGeometry = new THREE.PlaneGeometry(1000, 500);
 export function BrainchainShell() {
   const materials = boardMaterials();
+  useLayoutEffect(() => {
+    updateBoards();
+    // Synchronous subscription erases account data before the next scene frame.
+    return useBrainchainInteriorStore.subscribe((state, previous) => {
+      if (state.boardSummary !== previous.boardSummary) updateBoards();
+    });
+  }, []);
   return <group dispose={null}>
     {resources().map((p, i) => <mesh key={i} {...p} />)}
     <Prop kind="sculpture" url={BRAINCHAIN_SCULPTURE_MODEL} />

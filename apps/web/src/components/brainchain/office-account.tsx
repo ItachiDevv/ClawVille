@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { officeAccountRequest, workerRequestDescription, type OfficeWorkerLocalState } from './office-api';
 import styles from './brainchain-office.module.css';
+import { workerQueryOptions } from './office-board-data';
 import { OfficeWorkerRecord } from './office-worker-record';
 import {OfficeFundingExit} from './office-funding-exit';
 import {OfficeWorkerRecovery} from './office-worker-recovery';
@@ -52,8 +53,7 @@ function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install
   const request = useRef<AbortController | null>(null);
   const mounted = useRef(true);
   const workers = useQuery({
-    queryKey: ['brainchain-office', 'workers', userId],
-    queryFn: ({ signal }) => officeAccountRequest<{ workers: Worker[] }>('workers', signal),
+    ...workerQueryOptions(userId),
     enabled: mode === 'workers', retry: false, staleTime: 15_000, gcTime: 0,
   });
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; request.current?.abort(); }; }, []);

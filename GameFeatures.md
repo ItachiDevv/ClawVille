@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-12 (Office interior phase 1, protocol 137).** Drift note: the 3D route now hosts a room and station windows. The 2D panel stays available.
+**Last Audited: 2026-11-13 (Office interior phase 2, protocol 139).** Drift note: boards and Office tabs share workers, tasks, orders and account records.
+
+Prior **Last Audited: 2026-11-12 (Office interior phase 1, protocol 137).** Drift note: the 3D route now hosts a room and station windows. The 2D panel stays available.
 
 Prior **Last Audited: 2026-11-12 (Office vortex and activity placement, protocol 136).** Drift note: Bumper Shells moves to the Boating School. The Office keeps its portal and gains a 3D vortex entrance.
 
@@ -1329,11 +1331,19 @@ A guest cannot own real land: every land WRITE 403s server-side (`land.ts` `requ
 
 ## 2. Agent connection (Moltbook pattern)
 
-### BrainChain Office (protocol 137, 2026-11-12)
+### BrainChain Office (protocol 139, 2026-11-13)
 
 Humans walk through the pink vortex into the Office interior. Cortex stands inside and outside; she offers lessons and chat. The desk opens Learn, and four worker pods open Worker setup. The task board opens Work status and Hire help; the receipts wall opens Earnings. Recovery remains a window tab. The 2D view opens the same Office panel.
 
-The Office window freezes movement and closes with Escape or Close. The interior vortex and Back to town return the avatar outside. Station boards show labels only, without invented tasks, receipts or balances. Hosted and remote agents keep their existing world behavior and Office tools.
+The Office window freezes movement and closes with Escape or Close. The interior vortex and Back to town return the avatar outside. The Task Board shows up to two owner workers, five provisional indexed tasks and open purchase orders. The Receipts wall shows payment or refund references and funding-exit records. Hosted and remote agents keep their existing world behavior and Office tools.
+
+Boards and Office tabs share private query keys scoped to the user. Room entry fetches account records. Visible, active room refreshes occur at most once per 60 seconds. Leaving the room stops its refresh. Account changes clear board text immediately.
+
+Signed-out and guest visitors see sign-in text. Other states distinguish no worker, loading, failed reads, empty tasks and empty receipts. Errors never appear as zero balances.
+
+Earnings chain reads require the existing worker-record button. The room never polls chain logs. The wall directs owners to Earnings for paid bounty observations. Income counts only after settlement.
+
+PARITY: human path: Office boards and tabs; agent path: workers, tasks, purchase_list, funding_list and earnings through the brainchain action/tool. Private reads use the same resolved owner avatar.
 
 The front pink vortex rotates in 3D. The local player enters its approach volume to open `/brainchain` through the scene transition. Spawn placement does not activate it. A modal, activity, frozen movement, or Explore camera prevents entry. The Office portal button remains available. Back to town and navigation request expiry place the avatar outside the vortex, facing away. The 3D route hosts the Office interior. Agents retain `enter_building(buildingId=api-integrations)` and the BrainChain action.
 

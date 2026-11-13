@@ -100,7 +100,7 @@ const PRIVATE_ERRORS: Record<string, string> = {
 
 /** Private writes use the account cookie and never create a guest session or retry. */
 export async function officeAccountRequest<T>(
-  path: 'funding-exit' | `funding-exit/${string}` | `workers/${string}/recovery` | `workers/${string}/recovery/${string}/${'challenge'|'approve'|'revoke'|'narrow'}` | `workers/${string}/policy` | `workers/${string}/policy/control` | `workers/${string}/policy/narrow` | `workers/${string}/policy/${string}/challenge` | `workers/${string}/policy/${string}/approve` | 'purchases' | `purchases/${string}` | 'workers' | 'workers/challenge' | 'workers/bind' | 'install' | `workers/${string}/control` | `workers/${string}/earnings${'' | `?${string}`}` | `workers/${string}/identity-credit?agentId=${string}`,
+  path: `workers/${string}/tasks` | 'funding-exit' | `funding-exit/${string}` | `workers/${string}/recovery` | `workers/${string}/recovery/${string}/${'challenge'|'approve'|'revoke'|'narrow'}` | `workers/${string}/policy` | `workers/${string}/policy/control` | `workers/${string}/policy/narrow` | `workers/${string}/policy/${string}/challenge` | `workers/${string}/policy/${string}/approve` | 'purchases' | `purchases/${string}` | 'workers' | 'workers/challenge' | 'workers/bind' | 'install' | `workers/${string}/control` | `workers/${string}/earnings${'' | `?${string}`}` | `workers/${string}/identity-credit?agentId=${string}`,
   signal: AbortSignal,
   body?: Record<string, unknown>,
 ): Promise<T> {

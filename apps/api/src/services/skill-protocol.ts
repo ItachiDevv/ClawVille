@@ -932,7 +932,8 @@ import {
 // 136 (2026-11-12): both activity portals belong to the Boating School; Office vortex and portal entry retain Cortex access.
 // 137 (2026-11-12): Office interior stations and Cortex inside/outside; no action or partner wire change.
 // 138 (2026-11-12, arena owner-read limit): the `trading` page says owner reads (GET /me, /me/trades, /me/equity, /me/events, /me/withdrawals) allow 60 requests a minute per IP for each route, then 429 rate_limited. GET /me, /me/events and /me/withdrawals had no limit before. No verb, executor or migration change.
-export const PROTOCOL_VERSION = 138;
+// 139 (2026-11-13, Office live boards): owner records and read-only tasks parity. No wire or signature change.
+export const PROTOCOL_VERSION = 139;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

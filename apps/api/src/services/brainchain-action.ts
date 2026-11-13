@@ -32,6 +32,7 @@ export function decodeBrainchainPurchaseDraft(value: string) {
 
 export function decodeBrainchainFundingDraft(draft:string){if(!/^[A-Za-z0-9_-]{1,2048}$/.test(draft))throw Error('Invalid funding draft');const bytes=Buffer.from(draft,'base64url');if(bytes.toString('base64url')!==draft)throw Error('Invalid funding draft');return fundingDraftSchema.parse(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));}
 const operationSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('tasks'), workerId: z.string().uuid() }).strict(),
  z.object({op:z.literal('funding_list')}).strict(),
  z.object({op:z.literal('funding_create'),draft:z.string().max(2048)}).strict(),
  z.object({op:z.enum(['funding_get','funding_intent','funding_submit','funding_recover','funding_reconcile']),operationId:z.string().uuid()}).strict(),
@@ -93,6 +94,20 @@ const installation = z.object({ installed: z.enum(['runtime', 'marker', 'already
 const amount = z.string().regex(/^(0|[1-9]\d{0,77})$/);
 const address = z.string().regex(/^0x[0-9a-f]{40}$/);
 const hash = z.string().regex(/^0x[0-9a-f]{64}$/);
+// Mirrors listWorkerTasks. Validate every row before selecting the private preview.
+export const brainchainTasksResponseSchema = z.object({
+  tasks: z.array(z.object({
+    id: z.string().uuid(), boardAddress: address,
+    taskId: z.string().regex(/^\d{1,78}$/).refine(value => BigInt(value) < 2n ** 256n),
+    status: z.number().int().min(1).max(9),
+    bountyAtomic: z.string().regex(/^\d{1,39}$/).refine(value => BigInt(value) < 2n ** 128n),
+    deadlineUnix: amount, canonical: z.boolean(), observedBlock: amount, observedBlockHash: hash,
+    hireBlock: amount, hireBlockHash: hash, hireTransaction: hash,
+    hireLogIndex: z.number().int().min(0).max(2147483647),
+    briefHash: hash, resultHash: hash, updatedAt: z.string().datetime(), provisional: z.literal(true),
+  }).strict()).max(100),
+  provisional: z.literal(true),
+}).strict();
 const earnings = z.object({ workerId: z.string().uuid(), environment: z.enum(['mainnet', 'testnet']), chainId: z.number().int().positive(), address,
   observedAt: z.string().datetime(), blockAgeSeconds: z.number().int().nonnegative(), provisional: z.literal(true),
   freshness: z.object({ state: z.enum(['recent', 'stale']), maxBlockAgeSeconds: z.literal(120) }),
@@ -168,6 +183,10 @@ export function selectBrainchainActionResult(op: BrainchainActionInput['op'], st
     if (result.expiresAt <= now || result.expiresAt > now + 125_000) throw new Error('Invalid challenge lifetime');
   } else if(op==='purchase_list'){const selected=z.object({orders:z.array(purchaseOrder).max(30),availability:z.object({environment:z.literal('testnet'),network:z.enum(['eip155:84532',BRAINCHAIN_SOLANA_BUYER_NETWORK]),executionEnabled:z.boolean()})}).parse(body);result.data={...selected,orders:selected.orders.slice(0,10)};}
   else if(op.startsWith('purchase_'))result.data=z.object({order:purchaseOrder}).parse(body);
+  else if (op === 'tasks') {
+    const selected = brainchainTasksResponseSchema.parse(body);
+    result.data = { tasks: selected.tasks.slice(0, 5), provisional: true, indexedCount: selected.tasks.length, truncated: selected.tasks.length > 5 };
+  }
   else if (op === 'workers') result.data = z.object({ workers: z.array(worker).max(2) }).parse(body);
   else if (op === 'bind' || op === 'control') result.data = z.object({ worker }).parse(body);
   else if (op === 'install') result.data = installation.parse(body);
@@ -244,6 +263,7 @@ export async function runBrainchainHostedAction(input: {
     if (op.fromBlock) query.set('fromBlock', op.fromBlock);
     path = `/workers/${op.workerId}/earnings${query.size ? `?${query}` : ''}`;
   }
+  else if (op.op === 'tasks') path = `/workers/${op.workerId}/tasks`;
   else if (op.op === 'identity_credit') { path = `/workers/${op.workerId}/identity-credit?agentId=${op.agentId}`; }
   else { path = `/${op.op}`; if (op.op === 'install') body = {}; }
   const response = await router.request(`http://office.internal${path}`, {

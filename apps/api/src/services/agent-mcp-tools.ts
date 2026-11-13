@@ -550,6 +550,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
       src('brainchain.ts', 'post', '/api/brainchain', '/install'),
       src('brainchain.ts', 'get', '/api/brainchain', '/workers'),
       src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/earnings'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/tasks'),
       src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/identity-credit'),
       src('brainchain.ts', 'post', '/api/brainchain', '/workers/challenge'),
       src('brainchain.ts', 'post', '/api/brainchain', '/workers/bind'),
@@ -583,6 +584,7 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
         case 'knowledge': return [{ method: 'GET', path: '/api/brainchain/knowledge' }];
         case 'status': return [{ method: 'GET', path: '/api/brainchain/status' }];
         case 'workers': return [{ method: 'GET', path: '/api/brainchain/workers' }];
+        case 'tasks': return [{ method: 'GET', path: `/api/brainchain/workers/${seg(i.workerId)}/tasks` }];
         case 'earnings': {
           const query = new URLSearchParams();
           if (typeof i.board === 'string') query.set('board', i.board);

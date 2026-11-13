@@ -1,6 +1,8 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-11-12 11:12Z (arena owner-read limit, PROTOCOL 138).** Drift note: the Trading Floor Arena table said `GET /me`, `/me/events` and `/me/withdrawals` had no rate limit; they now use the public 60/min/IP limiter, one bucket per route (E5 audit finding, 2026-11-12).
+**Last Audited: 2026-11-13 (Office live boards, protocol 139).** Drift note: the existing private tasks route now serves the agent action and MCP tool. Boards share owner-scoped Office queries.
+
+Prior - **Last Audited: 2026-11-12 11:12Z (arena owner-read limit, PROTOCOL 138).** Drift note: the Trading Floor Arena table said `GET /me`, `/me/events` and `/me/withdrawals` had no rate limit; they now use the public 60/min/IP limiter, one bucket per route (E5 audit finding, 2026-11-12).
 
 Prior **Last Audited: 2026-11-12 (Office interior phase 1, protocol 137).** Drift note: /brainchain uses a separate 3D stage scene with the existing Office panel. No API contract changes.
 
@@ -1706,6 +1708,10 @@ Out-of-bound rent stays in the native-SOL leg. N8 residual: rent paid by another
 ### BrainChain Office ring building (2026-11-10)
 
 Founder decision 2026-11-10: the Office replaces the Salty Spitoon at ring building `api-integrations`; the location id is unchanged. Migration `packages/database/migrations/0120_brainchain_office_ring_slot.sql` (data only, idempotent) renames the `map_locations` row and rewrites the stored `building_skills` curriculum names (Salty Spitoon -> BrainChain Office, Flying Dutchman -> Cortex) and recomputes its `content_hash`, so manifest clients re-fetch; no model call. The system NPC seeder keys location agents by template name, so it creates a fresh "Cortex" platform agent (clean memory); the old "Flying Dutchman" platform-agent row stays unreferenced. The system-agent slug `brainchain-office` (`POST /api/chat/system/brainchain-office`) answers as Cortex. The separate venue constants (`brainchain-office-world`) and the `pathfindingRaster` collider policy are removed. PROTOCOL_VERSION 129.
+
+The read-only tasks operation uses the existing owner-bound GET /api/brainchain/workers/:id/tasks route. Strict validation permits at most 100 provisional rows. Hosted results retain five rows, indexedCount and truncated to preserve the private 8 KiB limit. MCP and REST retain the full page. No chain query or execution authority changes.
+
+PARITY: human path: Office boards and Work tab; agent path: brainchain tasks and clawville_brainchain; private reads bind to the resolved owner avatar.
 
 ### BrainChain Office public observations (2026-11-09)
 

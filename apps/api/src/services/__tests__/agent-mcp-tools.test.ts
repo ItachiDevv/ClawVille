@@ -360,6 +360,7 @@ describe('game tool execution', () => {
   test('BrainChain operations call the declared subject-bound REST routes and drop authority fields', async () => {
     const cases: Array<[Record<string, unknown>, HttpMethod, string, Record<string, unknown> | undefined]> = [
       [{op:'purchase_list'},'GET','/api/brainchain/purchases',undefined],
+      [{op:'tasks',workerId:'worker-id'},'GET','/api/brainchain/workers/worker-id/tasks',undefined],
       [{op:'purchase_quote',orderId:'purchase-id'},'POST','/api/brainchain/purchases/purchase-id/quote',{}],
       [{op:'purchase_reconcile',orderId:'purchase-id'},'POST','/api/brainchain/purchases/purchase-id/reconcile',{}],
       [{ op: 'knowledge' }, 'GET', '/api/brainchain/knowledge', undefined],

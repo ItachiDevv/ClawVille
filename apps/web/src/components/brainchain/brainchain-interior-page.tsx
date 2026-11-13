@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
+import { useOfficeBoardBridge } from './office-board-data';
 import { BrainchainOffice } from './brainchain-office';
 import { useBrainchainInteriorStore } from './brainchain-interior-store';
 import TradingFloorMobileControls from '@/components/trading-floor/TradingFloorMobileControls';
@@ -18,6 +19,7 @@ import { USE_BUTTON_BOTTOM_CSS } from '@/components/trading-floor/trading-floor-
 import { useGameStore } from '@/stores/game';
 
 export function BrainchainInteriorPage() {
+  useOfficeBoardBridge();
   const router = useRouter();
   const mode = useWorldRendererMode();
   const isMobile = useIsMobile();
