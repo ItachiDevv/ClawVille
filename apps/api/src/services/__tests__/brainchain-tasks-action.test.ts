@@ -18,7 +18,7 @@ test('tasks grammar permits only an owned worker selector', () => {
 });
 
 test('tasks response mirrors all indexed fields and rejects unknown fields at either level', () => {
-  const body = { tasks: [task], provisional: true };
+  const body = { tasks: [task], provisional: true as const };
   expect(brainchainTasksResponseSchema.parse(body)).toEqual(body);
   expect(brainchainTasksResponseSchema.safeParse({ ...body, next: 'execute' }).success).toBe(false);
   expect(brainchainTasksResponseSchema.safeParse({ ...body, tasks: [{ ...task, secret: 'unexpected' }] }).success).toBe(false);
