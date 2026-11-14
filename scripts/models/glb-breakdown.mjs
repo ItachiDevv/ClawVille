@@ -104,8 +104,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 //   uv    : largest TEXCOORD_0 error (UV units; 1/2048 = one texel of a 2048 map)
 //   triangleMismatch: triangles (and line / point elements) whose matched
 //     corners differ from BEFORE: a lost or moved vertex, a collapsed or
-//     re-wound triangle. BEFORE vertices within a tenth of every limit count as
-//     one, so dedup and quantization do not cause a mismatch.
+//     re-wound triangle. BEFORE vertices within a tenth of every limit of one
+//     representative count as one, so dedup and quantization do not cause a
+//     mismatch; every triangle is compared, none is skipped.
 export async function geometryDiff(fileA, fileB) {
   const [da, db] = [await io.read(fileA), await io.read(fileB)];
   const collect = (doc) => {
@@ -186,22 +187,21 @@ export async function geometryDiff(fileA, fileB) {
     }
     if (a.mode !== b.mode) { triangleMismatch++; continue; }
     // Primitive elements as matched BEFORE classes. Triangles keep their winding
-    // (rotated to the smallest class); lines are unordered pairs; points single.
-    // Elements whose corners share a class have zero size and draw nothing, so
-    // they are skipped on both sides.
+    // (the lexicographically smallest rotation is the key); lines are unordered
+    // pairs; points single. Every element counts, also one with two corners in
+    // one class: such a triangle can still have area (Codex round 3).
     const arity = { 0: 1, 1: 2, 4: 3 }[a.mode];
     if (!arity) { nonTriangle++; continue; }
     const elem = (c) => {
-      if (new Set(c).size !== c.length) return null;
-      if (arity === 3) { const r = c.indexOf(Math.min(...c)); return `${c[r]},${c[(r + 1) % 3]},${c[(r + 2) % 3]}`; }
+      if (arity === 3) { const r = [c, [c[1], c[2], c[0]], [c[2], c[0], c[1]]].map((x) => x.join(',')); r.sort(); return r[0]; }
       return [...c].sort((x, y) => x - y).join(',');
     };
     const count = new Map();
-    for (let t = 0; t + arity - 1 < a.idx.length; t += arity) { const kk = elem(Array.from({ length: arity }, (_, r) => cls[a.idx[t + r]])); if (kk) count.set(kk, (count.get(kk) ?? 0) + 1); }
+    for (let t = 0; t + arity - 1 < a.idx.length; t += arity) { const kk = elem(Array.from({ length: arity }, (_, r) => cls[a.idx[t + r]])); count.set(kk, (count.get(kk) ?? 0) + 1); }
     for (let t = 0; t + arity - 1 < b.idx.length; t += arity) {
       const c = Array.from({ length: arity }, (_, r) => match[b.idx[t + r]]);
       if (c.some((x) => x < 0)) { triangleMismatch++; continue; }
-      const kk = elem(c); if (!kk) continue;
+      const kk = elem(c);
       const n = count.get(kk) ?? 0;
       if (n > 0) count.set(kk, n - 1); else triangleMismatch++;
     }
