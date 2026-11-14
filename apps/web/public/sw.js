@@ -3,7 +3,7 @@
 // JS chunks. Bump CACHE_VERSION whenever the asset matcher or layout changes.
 //
 // 2026-11-13 (v13, no version bump: list-only change): the arcade precache
-//   entry now names claw-arcade-exterior-opt2-mo-ktx.glb (0.80 -> 0.58 MB).
+//   entry now names claw-arcade-exterior-opt2-mo-ktx.glb (835,240 -> 604,816 bytes).
 // 2026-09-29 (v13, no version bump: handler-only change):
 //   - Both fetch strategies now fall back to a plain network fetch when they
 //     reject (for example caches.open throws on a broken Cache Storage

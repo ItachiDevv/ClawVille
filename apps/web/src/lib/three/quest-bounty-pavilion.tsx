@@ -11,10 +11,12 @@
  * 2026-11-12 (phone load): textures 512 → 256 px from quest-bounty-pavilion.glb,
  * ETC1S q192 + meshopt (no re-quantize: i16 normals kept; unused Object_24 tangent dropped), normal maps dropped (scripts/ktx2-texture-diet.mjs):
  * 2.99 MB → 1.34 MB. That file (-nonorm-256-ktx) softened the display boards.
- * 2026-11-13 (v3): all base-colour maps restored byte-for-byte from the
- * prod file (-nonorm-ktx); only metallic-roughness and occlusion stay 256 px.
- * 2.99 MB → 1.97 MB. scripts/models/glb-compare.mjs: geometry identical, every
- * game-distance view keeps ≥ 98% of its fine detail.
+ * 2026-11-13 (v3): every map except metallic-roughness and occlusion (base
+ * colour, specular, specular colour) restored byte-for-byte from the prod file
+ * (-nonorm-ktx); those two stay 256 px. 2,999,016 → 2,068,664 bytes.
+ * scripts/models/glb-compare.mjs: geometry identical (0 error, 0 triangles
+ * differ); texture-only render: overall detail 98.9% or more in every
+ * game-camera view, worst 16x16 area 91.6%.
  *
  * Visual: octagonal wooden pavilion with 4 numbered display boards inside.
  * Boards 1 + 2 → openQuestBoard(), Boards 3 + 4 → openBountyBoard(). Click

@@ -96,11 +96,16 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 }
 
 // Numeric geometry check. Decodes both files, puts every vertex in world space
-// (so KHR_mesh_quantization node transforms are included), matches each AFTER
-// vertex to the nearest BEFORE vertex of the same node/primitive, and reports:
-//   pos  : largest position error / bounding-box diagonal
+// (so KHR_mesh_quantization node transforms are included) and, per node and
+// primitive (same order in both files), matches each AFTER vertex to the BEFORE
+// vertex that best fits position, normal and UV together. Reports:
+//   pos   : largest position error / bounding-box diagonal
 //   normal: largest normal angle (degrees)
-//   uv   : largest TEXCOORD_0 error (UV units; 1/2048 = one texel of a 2048 map)
+//   uv    : largest TEXCOORD_0 error (UV units; 1/2048 = one texel of a 2048 map)
+//   triangleMismatch: triangles (and line / point elements) whose matched
+//     corners differ from BEFORE: a lost or moved vertex, a collapsed or
+//     re-wound triangle. BEFORE vertices within a tenth of every limit count as
+//     one, so dedup and quantization do not cause a mismatch.
 export async function geometryDiff(fileA, fileB) {
   const [da, db] = [await io.read(fileA), await io.read(fileB)];
   const collect = (doc) => {
@@ -129,73 +134,135 @@ export async function geometryDiff(fileA, fileB) {
           }
           if (uv) { T.getElement(k, t); uv[k * 2] = t[0]; uv[k * 2 + 1] = t[1]; }
         }
-        out.push({ key: `${node.getName() || ''}#${pi}`, n, pos, nor, uv });
+        const I = p.getIndices(); const idx = I ? Array.from(I.getArray()) : Array.from({ length: n }, (_, k) => k);
+        out.push({ key: `${node.getName() || ''}#${pi}`, mode: p.getMode(), n, pos, nor, uv, idx });
       });
     }
     return out;
   };
   const A = collect(da), B = collect(db);
   if (A.length !== B.length) return { error: `primitive instance count ${A.length} -> ${B.length}` };
-  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const p of A) for (let k = 0; k < p.n; k++) for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], p.pos[k * 3 + c]); hi[c] = Math.max(hi[c], p.pos[k * 3 + c]); }
   const diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
-  const cell = diag * 1e-3; let maxPos = 0, maxAng = 0, maxUv = 0;
+  const cell = diag * 1e-3;
+  let maxPos = 0, maxAng = 0, maxUv = 0, triangleMismatch = 0, unmatched = 0, nonTriangle = 0;
+  const angOf = (a, i, b, k) => (a.nor && b.nor ? Math.acos(Math.max(-1, Math.min(1, a.nor[i * 3] * b.nor[k * 3] + a.nor[i * 3 + 1] * b.nor[k * 3 + 1] + a.nor[i * 3 + 2] * b.nor[k * 3 + 2]))) * 180 / Math.PI : 0);
+  const uvOf = (a, i, b, k) => (a.uv && b.uv ? Math.max(Math.abs(a.uv[i * 2] - b.uv[k * 2]), Math.abs(a.uv[i * 2 + 1] - b.uv[k * 2 + 1])) : 0);
   for (let q = 0; q < A.length; q++) {
     const a = A[q], b = B[q];
-    if (a.n !== b.n) return { error: `primitive ${q} vertex count ${a.n} -> ${b.n}` };
     const grid = new Map(); const keyOf = (x, y, z) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
     for (let k = 0; k < a.n; k++) { const kk = keyOf(a.pos[k * 3], a.pos[k * 3 + 1], a.pos[k * 3 + 2]); let l = grid.get(kk); if (!l) grid.set(kk, (l = [])); l.push(k); }
+    // BEFORE vertices that differ by less than a tenth of each limit form one
+    // class (union-find): quantization can make such near-copies identical, so
+    // matching either one is correct.
+    const parent = Int32Array.from({ length: a.n }, (_, k) => k);
+    const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    for (let k = 0; k < a.n; k++) {
+      const cx = Math.floor(a.pos[k * 3] / cell), cy = Math.floor(a.pos[k * 3 + 1] / cell), cz = Math.floor(a.pos[k * 3 + 2] / cell);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let l = -1; l <= 1; l++) for (const o of grid.get(`${cx + i},${cy + j},${cz + l}`) ?? []) {
+        if (o <= k) continue;
+        const dd = Math.hypot(a.pos[o * 3] - a.pos[k * 3], a.pos[o * 3 + 1] - a.pos[k * 3 + 1], a.pos[o * 3 + 2] - a.pos[k * 3 + 2]) / diag;
+        if (dd < 1e-5 && angOf(a, o, a, k) < 0.01 && uvOf(a, o, a, k) < 1 / 81920) { const ra = find(o), rb = find(k); if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb); }
+      }
+    }
+    const cls = Int32Array.from({ length: a.n }, (_, k) => find(k));
+    const match = new Int32Array(b.n).fill(-1);
     for (let k = 0; k < b.n; k++) {
       const x = b.pos[k * 3], y = b.pos[k * 3 + 1], z = b.pos[k * 3 + 2];
       const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
-      const cand = []; let best = Infinity;
-      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let l = -1; l <= 1; l++) for (const idx of grid.get(`${cx + i},${cy + j},${cz + l}`) ?? []) {
-        const dd = Math.hypot(a.pos[idx * 3] - x, a.pos[idx * 3 + 1] - y, a.pos[idx * 3 + 2] - z); cand.push([idx, dd]); best = Math.min(best, dd);
+      let bestScore = Infinity, bi = -1, bd = 0, ba = 0, bu = 0;
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let l = -1; l <= 1; l++) for (const ai of grid.get(`${cx + i},${cy + j},${cz + l}`) ?? []) {
+        const dd = Math.hypot(a.pos[ai * 3] - x, a.pos[ai * 3 + 1] - y, a.pos[ai * 3 + 2] - z) / diag, an = angOf(a, ai, b, k), du = uvOf(a, ai, b, k);
+        // One score for all three errors, each scaled by its limit.
+        const sc = Math.max(dd / 1e-4, an / 0.1, du * 8192);
+        if (sc < bestScore) { bestScore = sc; bi = ai; bd = dd; ba = an; bu = du; }
       }
-      if (!cand.length) { maxPos = Math.max(maxPos, cell * 2); continue; }
-      maxPos = Math.max(maxPos, best);
-      // Among co-located BEFORE vertices (seams share positions), take the best normal + UV match.
-      let ang = Infinity, duv = Infinity;
-      for (const [idx, dd] of cand) {
-        if (dd > best + diag * 1e-5) continue;
-        if (a.nor && b.nor) { const dot = a.nor[idx * 3] * b.nor[k * 3] + a.nor[idx * 3 + 1] * b.nor[k * 3 + 1] + a.nor[idx * 3 + 2] * b.nor[k * 3 + 2]; ang = Math.min(ang, Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI); } else ang = 0;
-        if (a.uv && b.uv) duv = Math.min(duv, Math.max(Math.abs(a.uv[idx * 2] - b.uv[k * 2]), Math.abs(a.uv[idx * 2 + 1] - b.uv[k * 2 + 1]))); else duv = 0;
-      }
-      maxAng = Math.max(maxAng, ang); maxUv = Math.max(maxUv, duv);
+      if (bi < 0) { unmatched++; continue; }
+      match[k] = cls[bi]; maxPos = Math.max(maxPos, bd); maxAng = Math.max(maxAng, ba); maxUv = Math.max(maxUv, bu);
     }
+    if (a.mode !== b.mode) { triangleMismatch++; continue; }
+    // Primitive elements as matched BEFORE classes. Triangles keep their winding
+    // (rotated to the smallest class); lines are unordered pairs; points single.
+    // Elements whose corners share a class have zero size and draw nothing, so
+    // they are skipped on both sides.
+    const arity = { 0: 1, 1: 2, 4: 3 }[a.mode];
+    if (!arity) { nonTriangle++; continue; }
+    const elem = (c) => {
+      if (new Set(c).size !== c.length) return null;
+      if (arity === 3) { const r = c.indexOf(Math.min(...c)); return `${c[r]},${c[(r + 1) % 3]},${c[(r + 2) % 3]}`; }
+      return [...c].sort((x, y) => x - y).join(',');
+    };
+    const count = new Map();
+    for (let t = 0; t + arity - 1 < a.idx.length; t += arity) { const kk = elem(Array.from({ length: arity }, (_, r) => cls[a.idx[t + r]])); if (kk) count.set(kk, (count.get(kk) ?? 0) + 1); }
+    for (let t = 0; t + arity - 1 < b.idx.length; t += arity) {
+      const c = Array.from({ length: arity }, (_, r) => match[b.idx[t + r]]);
+      if (c.some((x) => x < 0)) { triangleMismatch++; continue; }
+      const kk = elem(c); if (!kk) continue;
+      const n = count.get(kk) ?? 0;
+      if (n > 0) count.set(kk, n - 1); else triangleMismatch++;
+    }
+    for (const n of count.values()) triangleMismatch += n;
   }
-  return { posErrOfDiag: maxPos / diag, normalDeg: maxAng, uvErr: maxUv };
+  return { posErrOfDiag: unmatched ? Infinity : maxPos / diag, normalDeg: maxAng, uvErr: maxUv, triangleMismatch, unmatchedVertices: unmatched, nonTrianglePrimitives: nonTriangle };
 }
 
-// Texture-only file: BEFORE's geometry with AFTER's texture images, matched by
-// material (name when names are unique, else index) and slot. Rendering BEFORE
-// against this file shows only the texture change, with no geometry noise.
+// Texture-only file: BEFORE's geometry with AFTER's texture images. Works on
+// the glTF JSON so every texture slot counts, including material extensions
+// (KHR_materials_specular, clearcoat, ...). Each (material, slot path) in
+// BEFORE must exist in AFTER with the same texCoord, scale/strength, texture
+// transform and sampler; only the image may differ. A removed core slot is
+// removed in the hybrid too. Anything else throws, so the check never scores
+// a texture it did not copy.
 export async function texturesOnto(fileA, fileB, outFile) {
   const { KHRTextureBasisu, EXTTextureWebP, EXTTextureAVIF } = await import('@gltf-transform/extensions');
+  const [ja, jb] = [glbJson(fileA), glbJson(fileB)];
   const [da, db] = [await io.read(fileA), await io.read(fileB)];
-  const ma = da.getRoot().listMaterials(), mb = db.getRoot().listMaterials();
+  const imageOf = (j, ti) => { const t = j.textures[ti]; return t.source ?? t.extensions?.KHR_texture_basisu?.source ?? t.extensions?.EXT_texture_webp?.source ?? t.extensions?.EXT_texture_avif?.source; };
+  const samplerOf = (j, ti) => JSON.stringify(j.samplers?.[j.textures[ti].sampler] ?? {});
+  const slots = (j, mi) => {
+    const out = new Map();
+    const walk = (o, path) => {
+      for (const [k, v] of Object.entries(o ?? {})) {
+        if (!v || typeof v !== 'object') continue;
+        if (/Texture$/.test(k) && typeof v.index === 'number') { const { index, ...info } = v; out.set(`${path}${k}`, { tex: index, info: JSON.stringify(info) }); }
+        else walk(v, `${path}${k}.`);
+      }
+    };
+    walk(j.materials[mi], ''); return out;
+  };
+  const ma = ja.materials ?? [], mb = jb.materials ?? [];
   if (ma.length !== mb.length) throw new Error(`material count ${ma.length} -> ${mb.length}`);
-  const names = mb.map((m) => m.getName());
-  const unique = names.every((n) => n && names.indexOf(n) === names.lastIndexOf(n));
-  const byName = new Map(mb.map((m) => [m.getName(), m]));
+  const na = ma.map((m) => m.name), nb = mb.map((m) => m.name);
+  const uniq = (n) => n.every((x) => x && n.indexOf(x) === n.lastIndexOf(x));
+  const byName = uniq(na) && uniq(nb);
+  const imgMap = new Map(); const drop = [];
+  const CORE = { 'pbrMetallicRoughness.baseColorTexture': 'BaseColor', 'pbrMetallicRoughness.metallicRoughnessTexture': 'MetallicRoughness', normalTexture: 'Normal', occlusionTexture: 'Occlusion', emissiveTexture: 'Emissive' };
+  ma.forEach((m, i) => {
+    const bi = byName ? nb.indexOf(m.name) : i;
+    if (bi < 0) throw new Error(`no AFTER material "${m.name}"`);
+    const sa = slots(ja, i), sb = slots(jb, bi);
+    for (const k of sb.keys()) if (!sa.has(k)) throw new Error(`AFTER adds texture slot ${k} on "${m.name}"`);
+    for (const [k, va] of sa) {
+      const vb = sb.get(k);
+      if (!vb) { if (!CORE[k]) throw new Error(`AFTER removes extension slot ${k} on "${m.name}" (not supported)`); drop.push([i, CORE[k]]); continue; }
+      if (va.info !== vb.info) throw new Error(`texture settings changed on "${m.name}" ${k}: ${va.info} -> ${vb.info}`);
+      if (samplerOf(ja, va.tex) !== samplerOf(jb, vb.tex)) throw new Error(`sampler changed on "${m.name}" ${k}`);
+      const ia = imageOf(ja, va.tex), ib = imageOf(jb, vb.tex);
+      if (imgMap.has(ia) && imgMap.get(ia) !== ib) throw new Error(`BEFORE image ${ia} maps to two AFTER images (not supported)`);
+      imgMap.set(ia, ib);
+    }
+  });
   const used = new Set(db.getRoot().listExtensionsUsed().map((e) => e.extensionName));
   if (used.has('KHR_texture_basisu')) da.createExtension(KHRTextureBasisu).setRequired(true);
   if (used.has('EXT_texture_webp')) da.createExtension(EXTTextureWebP).setRequired(true);
   if (used.has('EXT_texture_avif')) da.createExtension(EXTTextureAVIF).setRequired(true);
-  const SLOTS = ['BaseColor', 'MetallicRoughness', 'Normal', 'Occlusion', 'Emissive'];
-  const copies = new Map();
-  ma.forEach((a, i) => {
-    const b = unique ? byName.get(a.getName()) : mb[i];
-    if (!b) throw new Error(`no AFTER material for "${a.getName()}"`);
-    for (const s of SLOTS) {
-      const tb = b[`get${s}Texture`]();
-      if (!a[`get${s}Texture`]()) { if (tb) throw new Error(`AFTER adds a ${s} texture on "${a.getName()}"`); continue; }
-      if (!tb) { a[`set${s}Texture`](null); continue; }
-      let t = copies.get(tb);
-      if (!t) { t = da.createTexture(tb.getName()).setImage(tb.getImage().slice()).setMimeType(tb.getMimeType()); copies.set(tb, t); }
-      a[`set${s}Texture`](t);
-    }
-  });
-  for (const t of da.getRoot().listTextures()) if (!copies.has(t) && ![...copies.values()].includes(t) && t.listParents().every((p) => p.propertyType === 'Root')) t.dispose();
+  // gltf-transform keeps one Texture per glTF image, in image order.
+  const ta = da.getRoot().listTextures(), tb = db.getRoot().listTextures();
+  if (ta.length !== (ja.images ?? []).length || tb.length !== (jb.images ?? []).length) throw new Error('texture list does not match the glTF image list');
+  for (const [ia, ib] of imgMap) ta[ia].setImage(tb[ib].getImage().slice()).setMimeType(tb[ib].getMimeType());
+  const mats = da.getRoot().listMaterials();
+  for (const [i, slot] of drop) mats[i][`set${slot}Texture`](null);
   await io.write(outFile, da);
+  return { images: imgMap.size, droppedSlots: drop.length };
 }

@@ -62,11 +62,18 @@ function views(box) {
   if (KIND === 'avatar') {
     ring('game-front', half + Hm * 0.9, Hm * 0.8, 0.3, box.min.y + Hm * 0.5);
     ring('game-back', half + Hm * 0.9, Hm * 0.8, Math.PI + 0.3, box.min.y + Hm * 0.5);
+    ring('game-left', half + Hm * 0.9, Hm * 0.8, -Math.PI / 2, box.min.y + Hm * 0.5);
+    ring('game-right', half + Hm * 0.9, Hm * 0.8, Math.PI / 2, box.min.y + Hm * 0.5);
+    ring('game-high', half + Hm * 0.6, Hm * 2.0, 0.5, box.min.y + Hm * 0.4);
     ring('worst-front', half + Hm * 0.15, Hm * 0.5, 0.2, box.min.y + Hm * 0.5);
   } else {
     ring('game-front', half + Hm * 0.25, Hm * 0.3, 0.15, box.min.y + Hm * 0.3);
     ring('game-side', half + Hm * 0.25, Hm * 0.3, Math.PI / 2 + 0.4, box.min.y + Hm * 0.3);
     ring('game-back', half + Hm * 0.25, Hm * 0.3, Math.PI + 0.15, box.min.y + Hm * 0.3);
+    ring('game-left', half + Hm * 0.25, Hm * 0.3, -Math.PI / 2 - 0.4, box.min.y + Hm * 0.3);
+    // The follow camera sits above the avatar and looks down: roofs and tops.
+    ring('game-high', half + Hm * 0.5, Hm * 1.3, 0.8, box.min.y + Hm * 0.6);
+    ring('game-high-back', half + Hm * 0.5, Hm * 1.3, Math.PI + 0.8, box.min.y + Hm * 0.6);
     // A player at ground level looking up at signs and roof trim.
     ring('game-upper', half + Hm * 0.6, Hm * 0.3, 0.15, box.min.y + Hm * 0.75);
     ring('game-upper-back', half + Hm * 0.6, Hm * 0.3, Math.PI + 0.15, box.min.y + Hm * 0.75);
@@ -87,9 +94,9 @@ function grab(scene, cam) {
 
 function score(a, b) {
   const n = W * H; const la = new Float32Array(n), lb = new Float32Array(n), m = new Uint8Array(n);
-  let se = 0, cov = 0, over = 0;
+  let se = 0, cov = 0, over = 0, covA = 0, covB = 0;
   for (let i = 0; i < n; i++) {
-    const k = i * 4; const cover = a[k + 3] > 8 || b[k + 3] > 8; m[i] = cover ? 1 : 0;
+    const k = i * 4; const inA = a[k + 3] > 8, inB = b[k + 3] > 8; covA += inA; covB += inB; const cover = inA || inB; m[i] = cover ? 1 : 0;
     la[i] = 0.299 * a[k] + 0.587 * a[k + 1] + 0.114 * a[k + 2];
     lb[i] = 0.299 * b[k] + 0.587 * b[k + 1] + 0.114 * b[k + 2];
     if (!cover) continue; cov++;
@@ -123,10 +130,13 @@ function score(a, b) {
     const eb = Math.abs(4 * lb[p] - lb[p - 1] - lb[p + 1] - lb[p - W] - lb[p + W]);
     const t = (y >> 4) * DT + (x >> 4); dA[t] += ea; dB[t] += eb; sumA += ea; sumB += eb;
   }
-  let worstDetail = 1; const minEnergy = 16 * 16 * 6; // ignore flat tiles (mean |lap| < 6)
-  for (let t = 0; t < dA.length; t++) if (dA[t] > minEnergy) worstDetail = Math.min(worstDetail, dB[t] / dA[t]);
+  // maxTileDetail > 1 means AFTER has MORE fine detail in an area: added noise or artifacts.
+  let worstDetail = 1, maxDetail = 1; const minEnergy = 16 * 16 * 6; // ignore flat tiles (mean |lap| < 6)
+  for (let t = 0; t < dA.length; t++) if (dA[t] > minEnergy) { worstDetail = Math.min(worstDetail, dB[t] / dA[t]); maxDetail = Math.max(maxDetail, dB[t] / dA[t]); }
   const detailKept = sumA > 0 ? sumB / sumA : 1;
-  return { detailKept: +detailKept.toFixed(3), worstTileDetail: +worstDetail.toFixed(3), worstTileSsim: +worst.toFixed(4), psnr: Number.isFinite(psnr) ? +psnr.toFixed(2) : "identical", ssim: +(wn ? ss / wn : 1).toFixed(4), changedPct: +((100 * over) / Math.max(1, cov)).toFixed(2), coveredPx: cov };
+  // A view where the model covers under 0.5% of the frame proves nothing: mark it empty.
+  const empty = Math.max(covA, covB) < W * H * 0.005;
+  return { empty, coveredA: covA, coveredB: covB, maxTileDetail: +maxDetail.toFixed(3), detailKept: +detailKept.toFixed(3), worstTileDetail: +worstDetail.toFixed(3), worstTileSsim: +worst.toFixed(4), psnr: Number.isFinite(psnr) ? +psnr.toFixed(2) : "identical", ssim: +(wn ? ss / wn : 1).toFixed(4), changedPct: +((100 * over) / Math.max(1, cov)).toFixed(2), coveredPx: cov };
 }
 
 function sheet(rows) {
@@ -140,7 +150,7 @@ function sheet(rows) {
     put(d, lw + 2 * w2, y);
     g.fillStyle = '#fff'; g.font = 'bold 16px sans-serif'; g.fillText(row.name, 8, y + 24);
     g.font = '14px sans-serif'; const s = row.score;
-    g.fillText(`PSNR ${s.psnr} dB`, 8, y + 50); g.fillText(`SSIM ${s.ssim}`, 8, y + 70); g.fillText(`changed ${s.changedPct}%`, 8, y + 90); g.fillText(`worst tile ${s.worstTileSsim}`, 8, y + 110); g.fillText(`detail kept ${s.detailKept}`, 8, y + 130); g.fillText(`worst detail ${s.worstTileDetail}`, 8, y + 150);
+    g.fillText(`PSNR ${s.psnr} dB`, 8, y + 50); g.fillText(`SSIM ${s.ssim}`, 8, y + 70); g.fillText(`changed ${s.changedPct}%`, 8, y + 90); g.fillText(`worst tile ${s.worstTileSsim}`, 8, y + 110); g.fillText(`detail kept ${s.detailKept}`, 8, y + 130); g.fillText(`worst detail ${s.worstTileDetail}`, 8, y + 150); if (s.empty) g.fillText('EMPTY VIEW', 8, y + 170);
     if (i === 0) { g.fillText('BEFORE', lw + 8, 18); g.fillText('AFTER', lw + w2 + 8, 18); g.fillText('DIFF x4', lw + 2 * w2 + 8, 18); }
     g.strokeStyle = '#335'; g.strokeRect(lw, y, w2 * 3, h2);
   });

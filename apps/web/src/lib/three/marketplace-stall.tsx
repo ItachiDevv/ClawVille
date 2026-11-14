@@ -6,7 +6,7 @@
  * Asset: /models/shisha-oasis-ktx.glb (DAE bazaar — shisha oasis, user-supplied
  * 2026-05-21, optimised via gltf-transform resize 1024 + webp = 1.6 MB).
  * 2026-11-13: served as shisha-oasis-v2-mo-ktx.glb (texture 0 re-encoded at
- * 512 px from the webp source; 0.52 → 0.48 MB; scripts/models/glb-compare.mjs
+ * 512 px from the webp source; 547,828 → 498,756 bytes; scripts/models/glb-compare.mjs
  * shows no detail loss). Texture 1 failed the same test and keeps its size.
  * DO NOT re-optimise without that check. Replaces the prior `marketplace-food-stall.glb` which
  * never thematically matched the Exchange modal it opens.

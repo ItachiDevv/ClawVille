@@ -218,9 +218,10 @@ export const DECORATION_GLBS: readonly string[] = [
  * 7-day edge cache would keep serving the old 8.7 MB version.
  * 2026-11-12: the pavilion moved to a NEW file name (-nonorm-256-ktx, 256 px
  * textures, 2.99 MB → 1.34 MB) instead of a ?v= bump.
- * 2026-11-13: -v3-ktx (1.97 MB) replaces it: base-colour maps back at full
- * size because the 256 px boards were visibly softer. The shisha stall moved
- * to -v2-mo-ktx (one 1024 map → 512, 0.52 → 0.48 MB). Both passed
+ * 2026-11-13: -v3-ktx (2,068,664 bytes) replaces it: every map except
+ * metallic-roughness and occlusion is back at full size, because the 256 px
+ * boards were visibly softer. The shisha stall moved to -v2-mo-ktx (one 1024
+ * map → 512, 547,828 → 498,756 bytes). Both passed
  * scripts/models/glb-compare.mjs.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [

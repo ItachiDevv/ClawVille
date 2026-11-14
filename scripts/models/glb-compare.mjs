@@ -24,12 +24,16 @@ import { describeGlb, structuralDiff, geometryDiff, texturesOnto } from './glb-b
 // Geometry limits. i16 quantization stays far inside these; the i8 normals that
 // Codex rejected on the pavilion (0.97 deg) do not.
 const LIMITS = { posErrOfDiag: 1e-4, normalDeg: 0.1, uvErr: 1 / 8192 };
-// Review flags (not blocks), from the texture-only render: a game-distance or
-// worst-case view where one 16x16 area lost more than 10% of its fine detail, or
-// a 64x64 area's SSIM fell under 0.98. On the pavilion boards (512 -> 256 px)
-// the game view reads 0.90 and the worst view 0.82, and the softening is
-// visible, so a flag means "look at this view".
-const FLAG = { worstTileDetail: 0.9, worstTileSsim: 0.98 };
+// Review flags (not blocks), from the texture-only render, on every non-empty
+// view: one 16x16 area lost more than 10% of its fine detail, gained more than
+// 25% (noise or artifacts), or a 64x64 area's SSIM fell under 0.98. On the
+// pavilion boards (512 -> 256 px) the game view reads 0.90 and the worst view
+// 0.82, and the softening is visible, so a flag means "look at this view".
+const FLAG = { worstTileDetail: 0.9, maxTileDetail: 1.25, worstTileSsim: 0.98 };
+// Full-render blocks: a real compression keeps SSIM >= 0.99 in every view (the
+// worst accepted case so far is 0.994). Under 0.97, or a silhouette that grows or
+// shrinks by more than 2% of the covered pixels, means the model itself changed.
+const RENDER_BLOCK = { ssim: 0.97, coverage: 0.02 };
 
 const args = process.argv.slice(2);
 const li = args.indexOf('--label');
@@ -49,7 +53,8 @@ const chromePath = process.env.CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Ap
 for (const p of [before, after, threeDir, chromePath]) if (!existsSync(p)) { console.error(`missing: ${p}`); process.exit(2); }
 mkdirSync(outDir, { recursive: true });
 const hybrid = join(mkdtempSync(join(tmpdir(), 'glbcmp-h-')), 'textures-only.glb');
-await texturesOnto(before, after, hybrid);
+let hybridError = null;
+try { await texturesOnto(before, after, hybrid); } catch (e) { hybridError = String(e?.message ?? e); }
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.glb': 'model/gltf-binary', '.json': 'application/json' };
 const routes = { '/a.glb': resolve(before), '/b.glb': resolve(after), '/h.glb': hybrid, '/': join(here, 'glb-compare.html') };
@@ -94,28 +99,45 @@ try {
   writeFileSync(join(outDir, `${name}-compare.jpg`), Buffer.from(res.sheet.split(',')[1], 'base64'));
   for (const [view, url] of Object.entries(res.pairs)) writeFileSync(join(outDir, `${name}-${view}.jpg`), Buffer.from(url.split(',')[1], 'base64'));
   delete res.sheet; delete res.pairs;
-  const tex = await render('/h.glb');
-  writeFileSync(join(outDir, `${name}-textures-compare.jpg`), Buffer.from(tex.sheet.split(',')[1], 'base64'));
-  res.textureViews = tex.views;
+  if (hybridError) res.textureViews = [];
+  else {
+    const tex = await render('/h.glb');
+    writeFileSync(join(outDir, `${name}-textures-compare.jpg`), Buffer.from(tex.sheet.split(',')[1], 'base64'));
+    res.textureViews = tex.views;
+  }
   const [da, db] = [await describeGlb(before), await describeGlb(after)];
   const structure = structuralDiff(da, db);
   const geometry = await geometryDiff(before, after);
   const blocks = [...structure.blocks];
+  if (hybridError) blocks.push(`texture-only render not possible, texture loss not measured: ${hybridError}`);
   if (geometry.error) blocks.push(geometry.error);
-  else for (const [k, lim] of Object.entries(LIMITS)) if (geometry[k] > lim) blocks.push(`geometry ${k} ${geometry[k].toExponential(2)} > ${lim.toExponential(2)}`);
+  else {
+    for (const [k, lim] of Object.entries(LIMITS)) if (geometry[k] > lim) blocks.push(`geometry ${k} ${geometry[k].toExponential(2)} > ${lim.toExponential(2)}`);
+    if (geometry.triangleMismatch) blocks.push(`geometry: ${geometry.triangleMismatch} triangles differ from BEFORE (lost, moved or re-wound)`);
+    if (geometry.unmatchedVertices) blocks.push(`geometry: ${geometry.unmatchedVertices} AFTER vertices have no BEFORE vertex nearby`);
+    if (geometry.nonTrianglePrimitives) blocks.push(`geometry: ${geometry.nonTrianglePrimitives} non-triangle primitives (not checked)`);
+  }
+  for (const v of res.views) {
+    if (v.empty) continue;
+    if (v.ssim < RENDER_BLOCK.ssim) blocks.push(`render ${v.name}: SSIM ${v.ssim} < ${RENDER_BLOCK.ssim}`);
+    const dc = Math.abs(v.coveredA - v.coveredB) / Math.max(1, v.coveredA);
+    if (dc > RENDER_BLOCK.coverage) blocks.push(`render ${v.name}: covered pixels ${v.coveredA} -> ${v.coveredB}`);
+  }
+  if (res.views.every((v) => v.empty)) blocks.push('every view is empty: the cameras did not see the model');
   const span = Math.hypot(...res.boundsA[1].map((v, i) => v - res.boundsA[0][i])) || 1;
   const boundsDelta = Math.max(...res.boundsA.flatMap((v, i) => v.map((n, j) => Math.abs(n - res.boundsB[i][j])))) / span;
   if (boundsDelta > 1e-3) blocks.push(`bounds moved ${(boundsDelta * 100).toFixed(3)}% of the diagonal`);
-  const flags = res.textureViews.filter((v) => /^(game|worst)/.test(v.name)).flatMap((v) => [
+  const flags = res.textureViews.filter((v) => !v.empty).flatMap((v) => [
     ...(v.worstTileDetail < FLAG.worstTileDetail ? [`${v.name}: an area kept ${(v.worstTileDetail * 100).toFixed(0)}% of its fine detail`] : []),
+    ...(v.maxTileDetail > FLAG.maxTileDetail ? [`${v.name}: an area has ${(v.maxTileDetail * 100).toFixed(0)}% of its fine detail (noise or artifacts)`] : []),
     ...(v.worstTileSsim < FLAG.worstTileSsim ? [`${v.name}: worst-area SSIM ${v.worstTileSsim}`] : []),
   ]);
   Object.assign(res, { flags, kind, before: { path: before, bytes: da.bytes }, after: { path: after, bytes: db.bytes }, structure, geometry, limits: LIMITS, blocks });
   writeFileSync(join(outDir, `${name}-compare.json`), JSON.stringify(res, null, 2));
-  console.log(`${name} (${kind}): ${(da.bytes / 1048576).toFixed(2)} MB -> ${(db.bytes / 1048576).toFixed(2)} MB (${(100 - (100 * db.bytes) / da.bytes).toFixed(1)}% smaller)`);
-  if (!geometry.error) console.log(`geometry: position ${geometry.posErrOfDiag.toExponential(2)} of diagonal, normal ${geometry.normalDeg.toFixed(4)} deg, uv ${geometry.uvErr.toExponential(2)}`);
+  console.log(`${name} (${kind}): ${da.bytes.toLocaleString('en-US')} -> ${db.bytes.toLocaleString('en-US')} bytes (${(da.bytes / 1e6).toFixed(3)} -> ${(db.bytes / 1e6).toFixed(3)} MB, ${(100 - (100 * db.bytes) / da.bytes).toFixed(1)}% smaller)`);
+  if (!geometry.error) console.log(`geometry: position ${geometry.posErrOfDiag.toExponential(2)} of diagonal, normal ${geometry.normalDeg.toFixed(4)} deg, uv ${geometry.uvErr.toExponential(2)}, triangles differing ${geometry.triangleMismatch}`);
   for (const n of structure.notes) console.log(`note: ${n}`);
-  const row = (v) => `  ${v.name.padEnd(12)} PSNR ${String(v.psnr).padStart(8)} dB  SSIM ${v.ssim.toFixed(4)}  worst tile ${v.worstTileSsim.toFixed(4)}  detail kept ${v.detailKept.toFixed(3)} (worst tile ${v.worstTileDetail.toFixed(3)})  changed ${v.changedPct}%`;
+  const row = (v) => v.empty ? `  ${v.name.padEnd(15)} EMPTY (model under 0.5% of the frame)` : `  ${v.name.padEnd(15)} PSNR ${String(v.psnr).padStart(8)} dB  SSIM ${v.ssim.toFixed(4)}  worst tile ${v.worstTileSsim.toFixed(4)}  detail kept ${v.detailKept.toFixed(3)} (worst ${v.worstTileDetail.toFixed(3)}, max ${v.maxTileDetail.toFixed(3)})  changed ${v.changedPct}%`;
   console.log('render, before vs after:'); for (const v of res.views) console.log(row(v));
   console.log('render, textures only:'); for (const v of res.textureViews) console.log(row(v));
   for (const f of flags) console.log(`REVIEW: ${f}`);
