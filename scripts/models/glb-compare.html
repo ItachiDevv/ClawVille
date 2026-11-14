@@ -1,0 +1,181 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>glb-compare</title>
+<style>body{margin:0;background:#0a2a4a}</style>
+<script type="importmap">{"imports":{"three":"/three/build/three.module.js","three/addons/":"/three/examples/jsm/"}}</script>
+</head>
+<body>
+<script type="module">
+// Before/after render check for a compressed GLB. Driven by glb-compare.mjs.
+// Renders model A and model B from the same cameras (framed on A's bounds),
+// then scores each view on the pixels that either model covers:
+//   PSNR (dB) on RGB, SSIM on luma (8x8 box windows, stride 4), and the
+//   share of covered pixels whose largest channel error exceeds 8/255.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+
+const q = new URLSearchParams(location.search);
+const A = q.get('a'), B = q.get('b'), KIND = q.get('kind') || 'building';
+// 1280x720 so texture softness that a desktop or phone screen shows is not hidden.
+const W = 1280, H = 720;
+const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+r.setPixelRatio(1); r.setSize(W, H); r.outputColorSpace = THREE.SRGBColorSpace; r.setClearColor(0x000000, 0);
+document.body.appendChild(r.domElement);
+const ktx = new KTX2Loader().setTranscoderPath('/three/examples/jsm/libs/basis/').detectSupport(r);
+const loader = new GLTFLoader().setKTX2Loader(ktx).setMeshoptDecoder(MeshoptDecoder);
+const load = (url) => new Promise((ok, bad) => loader.load(url, ok, undefined, bad));
+
+function makeScene(model) {
+  const s = new THREE.Scene();
+  s.add(new THREE.HemisphereLight(0xbfe3ff, 0x806040, 1.6));
+  const d = new THREE.DirectionalLight(0xffffff, 2.2); d.position.set(5, 10, 7); s.add(d);
+  const d2 = new THREE.DirectionalLight(0xffffff, 0.8); d2.position.set(-6, 4, -8); s.add(d2);
+  s.add(model);
+  return s;
+}
+
+// Views are relative to A's bounding box so both files see identical cameras.
+// FOV 50 = the world stage camera (WorldStageRoot.tsx). "game-*" views put the
+// camera where a player's follow camera can be: buildings are scaled to 1000 wu
+// (arena-buildings.tsx) and the follow camera sits ~240 wu behind a 270 wu avatar
+// (World3DCanvas.tsx FPS_FOLLOW_DISTANCE, VRM_AVATAR_TARGET_HEIGHT_WU), so a player
+// at a wall sees it from ~0.25 x building height. An avatar-sized model (kind=avatar)
+// is seen from ~0.9 x its own height. "worst-*" is the closest the camera gets
+// (minDistance 40 wu): it is reported, but a player rarely holds that view.
+function views(box) {
+  const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  const R = Math.max(size.x, size.y, size.z), Hm = size.y, half = Math.max(size.x, size.z) / 2;
+  const out = [];
+  const ring = (name, dist, elev, az, lookY) => {
+    const cam = new THREE.PerspectiveCamera(50, W / H, R / 1000, R * 50);
+    cam.position.set(c.x + Math.sin(az) * dist, box.min.y + elev, c.z + Math.cos(az) * dist);
+    cam.lookAt(c.x, lookY, c.z); out.push({ name, cam, close: /^(game|worst)/.test(name) });
+  };
+  for (const [i, az] of [0, Math.PI / 2, Math.PI, -Math.PI / 2].entries())
+    ring(`far-${['front', 'right', 'back', 'left'][i]}`, R * 1.4, Hm * 0.6 + R * 0.3, az, c.y);
+  ring('mid-front', R * 1.0, Hm * 0.5, 0.35, c.y);
+  ring('mid-back', R * 1.0, Hm * 0.5, Math.PI + 0.35, c.y);
+  if (KIND === 'avatar') {
+    ring('game-front', half + Hm * 0.9, Hm * 0.8, 0.3, box.min.y + Hm * 0.5);
+    ring('game-back', half + Hm * 0.9, Hm * 0.8, Math.PI + 0.3, box.min.y + Hm * 0.5);
+    ring('worst-front', half + Hm * 0.15, Hm * 0.5, 0.2, box.min.y + Hm * 0.5);
+  } else {
+    ring('game-front', half + Hm * 0.25, Hm * 0.3, 0.15, box.min.y + Hm * 0.3);
+    ring('game-side', half + Hm * 0.25, Hm * 0.3, Math.PI / 2 + 0.4, box.min.y + Hm * 0.3);
+    ring('game-back', half + Hm * 0.25, Hm * 0.3, Math.PI + 0.15, box.min.y + Hm * 0.3);
+    // A player at ground level looking up at signs and roof trim.
+    ring('game-upper', half + Hm * 0.6, Hm * 0.3, 0.15, box.min.y + Hm * 0.75);
+    ring('game-upper-back', half + Hm * 0.6, Hm * 0.3, Math.PI + 0.15, box.min.y + Hm * 0.75);
+    ring('worst-front', half + Hm * 0.06, Hm * 0.25, 0.1, box.min.y + Hm * 0.25);
+  }
+  return out;
+}
+
+function grab(scene, cam) {
+  r.render(scene, cam);
+  const gl = r.getContext(); const px = new Uint8Array(W * H * 4);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  // Flip rows (GL origin is bottom-left).
+  const out = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) out.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
+  return out;
+}
+
+function score(a, b) {
+  const n = W * H; const la = new Float32Array(n), lb = new Float32Array(n), m = new Uint8Array(n);
+  let se = 0, cov = 0, over = 0;
+  for (let i = 0; i < n; i++) {
+    const k = i * 4; const cover = a[k + 3] > 8 || b[k + 3] > 8; m[i] = cover ? 1 : 0;
+    la[i] = 0.299 * a[k] + 0.587 * a[k + 1] + 0.114 * a[k + 2];
+    lb[i] = 0.299 * b[k] + 0.587 * b[k + 1] + 0.114 * b[k + 2];
+    if (!cover) continue; cov++;
+    let mx = 0; for (let c = 0; c < 4; c++) { const d = a[k + c] - b[k + c]; se += d * d; mx = Math.max(mx, Math.abs(d)); }
+    if (mx > 8) over++;
+  }
+  const mse = se / Math.max(1, cov * 4);
+  const psnr = mse === 0 ? Infinity : 10 * Math.log10((255 * 255) / mse);
+  const C1 = (0.01 * 255) ** 2, C2 = (0.03 * 255) ** 2; let ss = 0, wn = 0;
+  // Per 64x64 tile SSIM, so a small blurred area (a sign, a poster) is not lost in the average.
+  const TX = Math.ceil(W / 64), tileSum = new Float64Array(TX * Math.ceil(H / 64)), tileN = new Uint16Array(tileSum.length);
+  for (let y = 0; y + 8 <= H; y += 4) for (let x = 0; x + 8 <= W; x += 4) {
+    let mc = 0, ma = 0, mb = 0;
+    for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) { const p = (y + j) * W + x + i; mc += m[p]; ma += la[p]; mb += lb[p]; }
+    if (mc < 32) continue; ma /= 64; mb /= 64;
+    let va = 0, vb = 0, cv = 0;
+    for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) { const p = (y + j) * W + x + i; const da = la[p] - ma, db = lb[p] - mb; va += da * da; vb += db * db; cv += da * db; }
+    va /= 63; vb /= 63; cv /= 63;
+    const sv = ((2 * ma * mb + C1) * (2 * cv + C2)) / ((ma * ma + mb * mb + C1) * (va + vb + C2)); ss += sv; wn++;
+    const ti = ((y + 4) >> 6) * TX + ((x + 4) >> 6); tileSum[ti] += sv; tileN[ti]++;
+  }
+  let worst = 1; for (let t = 0; t < tileSum.length; t++) if (tileN[t] >= 100) worst = Math.min(worst, tileSum[t] / tileN[t]);
+  // Sharpness: fine detail = |Laplacian| of luma. detailKept = AFTER / BEFORE detail,
+  // for the whole covered area and for the worst 16x16 tile that has real detail.
+  // Blur lowers it below 1; it is the direct measure of "softer up close".
+  const DT = Math.ceil(W / 16), dA = new Float64Array(DT * Math.ceil(H / 16)), dB = new Float64Array(dA.length);
+  let sumA = 0, sumB = 0;
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const p = y * W + x; if (!m[p]) continue;
+    const ea = Math.abs(4 * la[p] - la[p - 1] - la[p + 1] - la[p - W] - la[p + W]);
+    const eb = Math.abs(4 * lb[p] - lb[p - 1] - lb[p + 1] - lb[p - W] - lb[p + W]);
+    const t = (y >> 4) * DT + (x >> 4); dA[t] += ea; dB[t] += eb; sumA += ea; sumB += eb;
+  }
+  let worstDetail = 1; const minEnergy = 16 * 16 * 6; // ignore flat tiles (mean |lap| < 6)
+  for (let t = 0; t < dA.length; t++) if (dA[t] > minEnergy) worstDetail = Math.min(worstDetail, dB[t] / dA[t]);
+  const detailKept = sumA > 0 ? sumB / sumA : 1;
+  return { detailKept: +detailKept.toFixed(3), worstTileDetail: +worstDetail.toFixed(3), worstTileSsim: +worst.toFixed(4), psnr: Number.isFinite(psnr) ? +psnr.toFixed(2) : "identical", ssim: +(wn ? ss / wn : 1).toFixed(4), changedPct: +((100 * over) / Math.max(1, cov)).toFixed(2), coveredPx: cov };
+}
+
+function sheet(rows) {
+  const k = 0.5, w2 = W * k, h2 = H * k, lw = 150, cv = document.createElement('canvas'); cv.width = lw + w2 * 3; cv.height = rows.length * h2;
+  const g = cv.getContext('2d'); g.fillStyle = '#0a2a4a'; g.fillRect(0, 0, cv.width, cv.height);
+  const put = (px, x, y) => { const t = document.createElement('canvas'); t.width = W; t.height = H; t.getContext('2d').putImageData(new ImageData(px, W, H), 0, 0); g.drawImage(t, x, y, w2, h2); };
+  rows.forEach((row, i) => {
+    const y = i * h2; put(row.a, lw, y); put(row.b, lw + w2, y);
+    const d = new Uint8ClampedArray(W * H * 4);
+    for (let p = 0; p < W * H; p++) { const k = p * 4; let mx = 0; for (let c = 0; c < 3; c++) mx = Math.max(mx, Math.abs(row.a[k + c] - row.b[k + c])); const v = Math.min(255, mx * 4); d[k] = v; d[k + 1] = v * 0.3; d[k + 2] = 0; d[k + 3] = (row.a[k + 3] || row.b[k + 3]) ? 255 : 0; }
+    put(d, lw + 2 * w2, y);
+    g.fillStyle = '#fff'; g.font = 'bold 16px sans-serif'; g.fillText(row.name, 8, y + 24);
+    g.font = '14px sans-serif'; const s = row.score;
+    g.fillText(`PSNR ${s.psnr} dB`, 8, y + 50); g.fillText(`SSIM ${s.ssim}`, 8, y + 70); g.fillText(`changed ${s.changedPct}%`, 8, y + 90); g.fillText(`worst tile ${s.worstTileSsim}`, 8, y + 110); g.fillText(`detail kept ${s.detailKept}`, 8, y + 130); g.fillText(`worst detail ${s.worstTileDetail}`, 8, y + 150);
+    if (i === 0) { g.fillText('BEFORE', lw + 8, 18); g.fillText('AFTER', lw + w2 + 8, 18); g.fillText('DIFF x4', lw + 2 * w2 + 8, 18); }
+    g.strokeStyle = '#335'; g.strokeRect(lw, y, w2 * 3, h2);
+  });
+  return cv.toDataURL('image/jpeg', 0.85);
+}
+
+// Full-size BEFORE over AFTER for the close views, so softness is judged at 1:1.
+function pair(row) {
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H * 2; const g = cv.getContext('2d');
+  g.fillStyle = '#0a2a4a'; g.fillRect(0, 0, W, H * 2);
+  [row.a, row.b].forEach((px, i) => { const t = document.createElement('canvas'); t.width = W; t.height = H; t.getContext('2d').putImageData(new ImageData(px, W, H), 0, 0); g.drawImage(t, 0, i * H); });
+  g.fillStyle = '#fff'; g.font = 'bold 22px sans-serif'; g.fillText(`${row.name} BEFORE`, 12, 30); g.fillText(`${row.name} AFTER`, 12, H + 30);
+  return cv.toDataURL('image/jpeg', 0.92);
+}
+
+try {
+  const ga = await load(A), gb = await load(B);
+  const box = new THREE.Box3().setFromObject(ga.scene);
+  const sa = makeScene(ga.scene), sb = makeScene(gb.scene);
+  const boxB = new THREE.Box3().setFromObject(gb.scene);
+  const rows = [];
+  for (const v of views(box)) {
+    grab(sa, v.cam); grab(sb, v.cam); // warm texture upload before the real grab
+    const a = grab(sa, v.cam), b = grab(sb, v.cam);
+    rows.push({ name: v.name, close: v.close, a, b, score: score(a, b) });
+  }
+  window.__result = {
+    boundsA: [box.min.toArray(), box.max.toArray()].map((v) => v.map((n) => +n.toFixed(4))),
+    boundsB: [boxB.min.toArray(), boxB.max.toArray()].map((v) => v.map((n) => +n.toFixed(4))),
+    views: rows.map((r) => ({ name: r.name, ...r.score })),
+    sheet: sheet(rows),
+    pairs: Object.fromEntries(rows.filter((r) => r.close).map((r) => [r.name, pair(r)])),
+  };
+  document.title = 'done';
+} catch (e) { document.title = 'err ' + (e?.message || e); }
+</script>
+</body>
+</html>

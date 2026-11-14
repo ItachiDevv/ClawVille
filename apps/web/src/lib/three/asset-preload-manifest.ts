@@ -31,7 +31,7 @@
  *   boating-school-opt1-ktx.glb?v=3,
  *   trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2,
  *   building-lighthouse-opt1-ktx.glb?v=3,
- *   arcade/claw-arcade-exterior-opt1-ktx.glb?v=4, cove/cove-exterior-opt1-ktx.glb?v=4,
+ *   arcade/claw-arcade-exterior-opt2-mo-ktx.glb, cove/cove-exterior-opt1-ktx.glb?v=4,
  *   patricks-rock-v2-opt1-ktx.glb?v=5, squidward-house-opt1-ktx.glb?v=5
  *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
  *   old GLB contributed ~1.13M live tris after material merge.
@@ -103,7 +103,7 @@ export const BUILDING_GLBS: readonly string[] = [
   // patty-building). ?v=2: the bytes were replaced once already.
   '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
-  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
+  '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
   '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',
@@ -218,11 +218,15 @@ export const DECORATION_GLBS: readonly string[] = [
  * 7-day edge cache would keep serving the old 8.7 MB version.
  * 2026-11-12: the pavilion moved to a NEW file name (-nonorm-256-ktx, 256 px
  * textures, 2.99 MB → 1.34 MB) instead of a ?v= bump.
+ * 2026-11-13: -v3-ktx (1.97 MB) replaces it: base-colour maps back at full
+ * size because the 256 px boards were visibly softer. The shisha stall moved
+ * to -v2-mo-ktx (one 1024 map → 512, 0.52 → 0.48 MB). Both passed
+ * scripts/models/glb-compare.mjs.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
-  '/models/quest-bounty-pavilion-nonorm-256-ktx.glb',
+  '/models/quest-bounty-pavilion-v3-ktx.glb',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
-  '/models/shisha-oasis-mo-ktx.glb',
+  '/models/shisha-oasis-v2-mo-ktx.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
   // Auction podium removed 2026-07-15 — superseded by quest-bounty-pavilion.
 ] as const;

@@ -115,7 +115,7 @@ const LANDING_BUILDINGS: LandingBuildingDef[] = [
   { model: '/models/boating-school-opt1-ktx.glb?v=3',       rotY: -2.620 },  // app-publishing
   { model: '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2', rotY: 3.142 },  // cron-automation (Trading Floor)
   { model: '/models/building-lighthouse-opt1-ktx.glb?v=3',  rotY:  2.620 },  // deployment-ops
-  { model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4', rotY: 2.093 }, // claw-arcade
+  { model: '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb', rotY: 2.093 }, // claw-arcade
   { model: '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',    rotY:  1.049 },  // agent-security
   { model: '/models/squidward-house-opt1-ktx.glb?v=5',      rotY:  0.522 },  // memory-rag
 ];

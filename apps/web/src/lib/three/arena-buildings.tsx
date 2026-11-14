@@ -230,7 +230,11 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'deployment-ops':      { model: '/models/building-lighthouse-opt1-ktx.glb?v=3', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
   // Slot 8 — WSW (cx=67, cy=245): dx=113, dz=-65 → atan2(113,-65)≈2.093 (2π/3)
   // Phase 6.1 swap preserved: claw-arcade at slot 8/WSW. Cove is at slot 9/W (2 slots away).
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
+  // 2026-11-13 opt2-mo: 16-bit quantized geometry + meshopt, 3 of 4 1024 maps at 512
+  // (0.80 → 0.58 MB); the 4th failed scripts/models/glb-compare.mjs and stays 1024.
+  // stripGroundPlanes finds no flat mesh in either file, so the quantized local
+  // bounds change nothing here.
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
   // Slot 9 — W (cx=50, cy=180): dx=130, dz=0 → atan2(130,0)=π/2≈1.571  ← entertainment district
   // cove-exterior.glb = "Pyramid Cove" by tl0615 (CC-BY-4.0, Sketchfab).

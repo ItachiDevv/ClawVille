@@ -44,7 +44,7 @@ export const MESHLET_BUILDINGS: BuildingSpec[] = [
   { id: 'app-publishing',     model: '/models/boating-school-opt1-ktx.glb?v=3',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1]  },
   { id: 'cron-automation',    model: '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2', posX: ringPos(6)[0],  posZ: ringPos(6)[1]  },
   { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1-ktx.glb?v=3',                posX: ringPos(7)[0],  posZ: ringPos(7)[1]  },
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
+  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
   { id: 'cove',               model: '/models/cove/cove-exterior-opt1-ktx.glb?v=4',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1]  },
   { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',                   posX: ringPos(10)[0], posZ: ringPos(10)[1] },
   { id: 'memory-rag',         model: '/models/squidward-house-opt1-ktx.glb?v=5',                    posX: ringPos(11)[0], posZ: ringPos(11)[1] },

@@ -5,7 +5,10 @@
  *
  * Asset: /models/shisha-oasis-ktx.glb (DAE bazaar — shisha oasis, user-supplied
  * 2026-05-21, optimised via gltf-transform resize 1024 + webp = 1.6 MB).
- * DO NOT re-optimise. Replaces the prior `marketplace-food-stall.glb` which
+ * 2026-11-13: served as shisha-oasis-v2-mo-ktx.glb (texture 0 re-encoded at
+ * 512 px from the webp source; 0.52 → 0.48 MB; scripts/models/glb-compare.mjs
+ * shows no detail loss). Texture 1 failed the same test and keeps its size.
+ * DO NOT re-optimise without that check. Replaces the prior `marketplace-food-stall.glb` which
  * never thematically matched the Exchange modal it opens.
  *
  * Position: (1273, groundedY, -120) — east of the town-directory sign,
@@ -37,7 +40,7 @@ import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
 /** The model path: ONE constant for the byte-warm, the render read
  * (MarketplaceStallInner) and the warm read, so they hit the same cache entry. */
-const MARKETPLACE_STALL_MODEL = '/models/shisha-oasis-mo-ktx.glb';
+const MARKETPLACE_STALL_MODEL = '/models/shisha-oasis-v2-mo-ktx.glb';
 
 /** web-load T10-C: NON-HOOK read of the exact cache entry MarketplaceStallInner's
  * useGLTFWithKTX2 call reads (same drei call, path, flags and extender).

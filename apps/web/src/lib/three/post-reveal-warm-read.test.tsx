@@ -281,8 +281,8 @@ describe('post-reveal props: warm read matches the production render read (T10-C
       expect(paths).toEqual([
         '/models/bazaar-merchant-stand-ktx.glb?v=3',
         '/models/crayfish-ktx.glb?v=2',
-        '/models/quest-bounty-pavilion-nonorm-256-ktx.glb',
-        '/models/shisha-oasis-mo-ktx.glb',
+        '/models/quest-bounty-pavilion-v3-ktx.glb',
+        '/models/shisha-oasis-v2-mo-ktx.glb',
       ]);
 
       const problems: string[] = [];

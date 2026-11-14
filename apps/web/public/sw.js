@@ -2,6 +2,8 @@
 // Cache-first for static 3D assets (GLB + VRM + basis WASM); SWR for Next.js
 // JS chunks. Bump CACHE_VERSION whenever the asset matcher or layout changes.
 //
+// 2026-11-13 (v13, no version bump: list-only change): the arcade precache
+//   entry now names claw-arcade-exterior-opt2-mo-ktx.glb (0.80 -> 0.58 MB).
 // 2026-09-29 (v13, no version bump: handler-only change):
 //   - Both fetch strategies now fall back to a plain network fetch when they
 //     reject (for example caches.open throws on a broken Cache Storage
@@ -131,7 +133,7 @@ const PRECACHE_GLBS = [
   '/models/boating-school-opt1-ktx.glb?v=3',
   '/models/patty-building-opt1-mo-ktx.glb?v=3',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
-  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
+  '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
   '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',

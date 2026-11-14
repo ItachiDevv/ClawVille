@@ -949,6 +949,11 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## PERF
 
+### Smaller models with before/after checks (session new-ville, 2026-11-13, STAGING)
+- **What:** three models are smaller, each checked against the file that ships today with `scripts/models/glb-compare.mjs` (same cameras, sharpness score per small area, geometry error). Pavilion 2.99 -> 1.97 MB on prod terms. The first staging pavilion (1.34 MB, 2026-11-12) made the display boards softer, so this version restores all colour textures at full size. Arcade exterior 0.80 -> 0.58 MB. Shisha stall 0.52 -> 0.48 MB. Textures that lost detail in the check (one arcade map, the bazaar stand, the lobster) kept their size.
+- **Where:** https://staging.clawville.world/game. Walk up to the Quest + Bounty Pavilion (behind the town-directory sign), the arcade (west side of the ring) and the shisha stall (east of the sign).
+- **Feedback wanted:** do the pavilion boards, the arcade sign and posters, and the shisha stall look the same as on prod up close?
+
 ### October 6: Next.js 16.3.8 (security upgrade) on staging
 
 - **Session:** tradeLead3, 2026-10-06. Staging first; prod only with your go.

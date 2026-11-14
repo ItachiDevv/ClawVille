@@ -109,7 +109,7 @@ const BUILDINGS: BuildingSpec[] = [
   // Slot 7 — SSW — deployment-ops (lighthouse)
   { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1-ktx.glb?v=3',                posX: ringPos(7)[0],  posZ: ringPos(7)[1]  },
   // Slot 8 — WSW — claw-arcade
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
+  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
   // Slot 9 — W — cove
   { id: 'cove',               model: '/models/cove/cove-exterior-opt1-ktx.glb?v=4',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1]  },
   // Slot 10 — WNW — agent-security (patricks-rock)

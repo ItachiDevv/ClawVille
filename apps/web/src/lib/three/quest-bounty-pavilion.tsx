@@ -4,13 +4,17 @@
  * QuestBountyPavilion — octagonal open-air pavilion housing the QUEST and
  * BOUNTY notice boards.
  *
- * Asset: /models/quest-bounty-pavilion-nonorm-256-ktx.glb (Sketchfab "Can You Dig It? Virtual
+ * Asset: /models/quest-bounty-pavilion-v3-ktx.glb (Sketchfab "Can You Dig It? Virtual
  * Drop-In" by GGLP, originally a museum display reconstruction). Optimised
  * with @gltf-transform: dedup → metalrough (KHR_materials_pbrSpecularGlossiness
  * dropped) → resize 1024 → webp. 35 MB → 8.7 MB. DO NOT re-optimise.
  * 2026-11-12 (phone load): textures 512 → 256 px from quest-bounty-pavilion.glb,
  * ETC1S q192 + meshopt (no re-quantize: i16 normals kept; unused Object_24 tangent dropped), normal maps dropped (scripts/ktx2-texture-diet.mjs):
- * 2.99 MB → 1.34 MB. Same bounds and vertex counts; boards slightly softer up close.
+ * 2.99 MB → 1.34 MB. That file (-nonorm-256-ktx) softened the display boards.
+ * 2026-11-13 (v3): all base-colour maps restored byte-for-byte from the
+ * prod file (-nonorm-ktx); only metallic-roughness and occlusion stay 256 px.
+ * 2.99 MB → 1.97 MB. scripts/models/glb-compare.mjs: geometry identical, every
+ * game-distance view keeps ≥ 98% of its fine detail.
  *
  * Visual: octagonal wooden pavilion with 4 numbered display boards inside.
  * Boards 1 + 2 → openQuestBoard(), Boards 3 + 4 → openBountyBoard(). Click
@@ -54,7 +58,7 @@ import { BootStreamedContent } from '@/lib/three/boot-streamed-content';
 
 /** The model path: ONE constant for the byte-warm, the render read
  * (QuestBountyPavilionInner) and the warm read, so they hit the same cache entry. */
-const PAVILION_MODEL = '/models/quest-bounty-pavilion-nonorm-256-ktx.glb';
+const PAVILION_MODEL = '/models/quest-bounty-pavilion-v3-ktx.glb';
 
 /** web-load T10-C: NON-HOOK read of the exact cache entry QuestBountyPavilionInner's
  * useGLTFWithKTX2 call reads (same drei call, path, flags and extender).
