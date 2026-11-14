@@ -87,7 +87,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   for (const file of process.argv.slice(2)) {
     const d = await describeGlb(file);
     console.log(`\n== ${file}`);
-    console.log(`total ${(d.bytes / 1048576).toFixed(2)} MB | textures ${(d.textureBytes / 1048576).toFixed(2)} MB (${d.textures.length}) | other ${((d.bytes - d.textureBytes) / 1048576).toFixed(2)} MB`);
+    console.log(`total ${d.bytes.toLocaleString('en-US')} bytes (${(d.bytes / 1e6).toFixed(3)} MB) | textures ${(d.textureBytes / 1e6).toFixed(3)} MB (${d.textures.length}) | other ${((d.bytes - d.textureBytes) / 1e6).toFixed(3)} MB`);
     console.log(`meshes ${d.meshes} primitives ${d.primitives} materials ${d.materials} verts ${d.verts} tris ${d.tris}`);
     console.log(`extensions: ${d.extensions.join(', ')}`);
     console.log(`attributes: ${Object.entries(d.attributes).map(([k, v]) => `${k}x${v}`).join(' ')}`);
@@ -146,6 +146,7 @@ export async function geometryDiff(fileA, fileB) {
   for (const p of A) for (let k = 0; k < p.n; k++) for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], p.pos[k * 3 + c]); hi[c] = Math.max(hi[c], p.pos[k * 3 + c]); }
   const diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
   const cell = diag * 1e-3;
+  // maxPos is already a fraction of the diagonal (dd below is divided by diag).
   let maxPos = 0, maxAng = 0, maxUv = 0, triangleMismatch = 0, unmatched = 0, nonTriangle = 0;
   const angOf = (a, i, b, k) => (a.nor && b.nor ? Math.acos(Math.max(-1, Math.min(1, a.nor[i * 3] * b.nor[k * 3] + a.nor[i * 3 + 1] * b.nor[k * 3 + 1] + a.nor[i * 3 + 2] * b.nor[k * 3 + 2]))) * 180 / Math.PI : 0);
   const uvOf = (a, i, b, k) => (a.uv && b.uv ? Math.max(Math.abs(a.uv[i * 2] - b.uv[k * 2]), Math.abs(a.uv[i * 2 + 1] - b.uv[k * 2 + 1])) : 0);
@@ -153,20 +154,22 @@ export async function geometryDiff(fileA, fileB) {
     const a = A[q], b = B[q];
     const grid = new Map(); const keyOf = (x, y, z) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
     for (let k = 0; k < a.n; k++) { const kk = keyOf(a.pos[k * 3], a.pos[k * 3 + 1], a.pos[k * 3 + 2]); let l = grid.get(kk); if (!l) grid.set(kk, (l = [])); l.push(k); }
-    // BEFORE vertices that differ by less than a tenth of each limit form one
-    // class (union-find): quantization can make such near-copies identical, so
-    // matching either one is correct.
-    const parent = Int32Array.from({ length: a.n }, (_, k) => k);
-    const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    // BEFORE vertices within a tenth of each limit of one representative vertex
+    // form one class (quantization can make such near-copies identical, so
+    // matching either one is correct). Members must be close to the
+    // representative itself, not to another member, so a class can never chain:
+    // its diameter stays under two tenths of each limit.
+    const cls = new Int32Array(a.n).fill(-1);
     for (let k = 0; k < a.n; k++) {
       const cx = Math.floor(a.pos[k * 3] / cell), cy = Math.floor(a.pos[k * 3 + 1] / cell), cz = Math.floor(a.pos[k * 3 + 2] / cell);
-      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let l = -1; l <= 1; l++) for (const o of grid.get(`${cx + i},${cy + j},${cz + l}`) ?? []) {
-        if (o <= k) continue;
+      let rep = k;
+      for (let i = -1; i <= 1 && rep === k; i++) for (let j = -1; j <= 1 && rep === k; j++) for (let l = -1; l <= 1 && rep === k; l++) for (const o of grid.get(`${cx + i},${cy + j},${cz + l}`) ?? []) {
+        if (o >= k || cls[o] !== o) continue; // only earlier representatives
         const dd = Math.hypot(a.pos[o * 3] - a.pos[k * 3], a.pos[o * 3 + 1] - a.pos[k * 3 + 1], a.pos[o * 3 + 2] - a.pos[k * 3 + 2]) / diag;
-        if (dd < 1e-5 && angOf(a, o, a, k) < 0.01 && uvOf(a, o, a, k) < 1 / 81920) { const ra = find(o), rb = find(k); if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb); }
+        if (dd < 1e-5 && angOf(a, o, a, k) < 0.01 && uvOf(a, o, a, k) < 1 / 81920) { rep = o; break; }
       }
+      cls[k] = rep;
     }
-    const cls = Int32Array.from({ length: a.n }, (_, k) => find(k));
     const match = new Int32Array(b.n).fill(-1);
     for (let k = 0; k < b.n; k++) {
       const x = b.pos[k * 3], y = b.pos[k * 3 + 1], z = b.pos[k * 3 + 2];
@@ -204,7 +207,7 @@ export async function geometryDiff(fileA, fileB) {
     }
     for (const n of count.values()) triangleMismatch += n;
   }
-  return { posErrOfDiag: unmatched ? Infinity : maxPos / diag, normalDeg: maxAng, uvErr: maxUv, triangleMismatch, unmatchedVertices: unmatched, nonTrianglePrimitives: nonTriangle };
+  return { posErrOfDiag: unmatched ? Infinity : maxPos, normalDeg: maxAng, uvErr: maxUv, triangleMismatch, unmatchedVertices: unmatched, nonTrianglePrimitives: nonTriangle };
 }
 
 // Texture-only file: BEFORE's geometry with AFTER's texture images. Works on

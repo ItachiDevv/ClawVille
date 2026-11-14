@@ -1,9 +1,11 @@
 // Self-test for glb-compare.mjs: every broken file below MUST give a BLOCK, and
 // the file against itself MUST pass. Run after any change to the check.
 // Usage: node scripts/models/glb-compare-selftest.mjs <good.glb> <work-dir>
-// Cases (from the Codex review of 8d0d1177e): a lost vertex (one vertex moved
-// onto another), all triangles collapsed, triangles re-wound, 8-bit normals,
-// and a texture slot whose settings changed.
+// Cases (from the Codex reviews of 8d0d1177e and 5b19cbc88): a lost vertex
+// (one vertex moved onto another), one vertex moved by 2e-4 of the diagonal,
+// all triangles collapsed, triangles re-wound, 8-bit normals, and a texture
+// slot whose settings changed. Use a good file with float positions (not
+// KHR_mesh_quantization) so the moved-vertex case can move a vertex exactly.
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
@@ -30,6 +32,18 @@ const cases = {
     const p = biggest(doc); const idx = p.getIndices(); const t = Math.floor(idx.getCount() / 6) * 3;
     const from = idx.getScalar(t + 1), to = idx.getScalar(t);
     for (const sem of p.listSemantics()) { const acc = p.getAttribute(sem); const el = acc.getElement(to, []); acc.setElement(from, el); }
+  },
+  'moved-vertex': (doc) => {
+    // One vertex moved by 2e-4 of the model diagonal (twice the position limit),
+    // the same size as the Codex round-2 fixture that the old check missed.
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const n of doc.getRoot().listNodes()) { const m = n.getMesh(); if (!m) continue; const w = n.getWorldMatrix(); for (const p of m.listPrimitives()) { const a = p.getAttribute('POSITION'); const v = [0, 0, 0]; for (let i = 0; i < a.getCount(); i++) { a.getElement(i, v); const x = [0, 1, 2].map((r) => w[r] * v[0] + w[4 + r] * v[1] + w[8 + r] * v[2] + w[12 + r]); for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], x[c]); hi[c] = Math.max(hi[c], x[c]); } } } }
+    const diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+    const node = doc.getRoot().listNodes().find((n) => n.getMesh()?.listPrimitives().includes(biggest(doc)));
+    const scale = Math.max(...node.getWorldMatrix().slice(0, 3).map(Math.abs), 1e-9);
+    const p = biggest(doc); const pos = p.getAttribute('POSITION'); const v = pos.getElement(0, []);
+    if (pos.getNormalized()) throw new Error('moved-vertex needs float positions; use a non-quantized good file');
+    v[1] += (2e-4 * diag) / scale; pos.setElement(0, v);
   },
   'collapsed-triangles': (doc) => {
     for (const m of doc.getRoot().listMeshes()) for (const p of m.listPrimitives()) { const idx = p.getIndices(); if (!idx) continue; const a = idx.getArray().slice(); for (let i = 0; i < a.length; i += 3) { a[i + 1] = a[i]; a[i + 2] = a[i]; } idx.setArray(a); }
