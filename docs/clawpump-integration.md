@@ -613,8 +613,12 @@ It is the first ClawVille feature that WRITES to ClawPump.
 ### Wallet transfer and history (P5 withdraw, 2026-10-02)
 
 **Status 2026-11-19:** the transfer route on ClawPump's backend host is NOT
-VERIFIED, so `transferFromArenaWallet` throws `route_not_verified` before any
-request and a withdrawal ends `failed_no_send`. The history read works on the
+VERIFIED, so arena withdraw is paused (`FLOOR_ARENA_WALLET_PAUSED`): the
+withdraw routes refuse a new request or address step with 409 `withdraw_paused`
+and store nothing, the `withdrawals` loop holds, and an earlier queued
+withdrawal waits and sends nothing. As a second guard, `transferFromArenaWallet`
+still throws `route_not_verified` before any request (a row reaching it would end
+`failed_no_send`). The history read works on the
 backend host (read-only GET, 2026-11-19). The facts below are from the old
 root (2026-10-01).
 
