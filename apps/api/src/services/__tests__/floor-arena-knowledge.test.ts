@@ -301,7 +301,7 @@ describe('Trading Arena section of the trading page', () => {
     // audit-parity: the string joins around the contest name keep their space
     // (an Edit once dropped it: "route.Trading Arena Week 1 pays").
     expect(nori).toContain(`from its skill-memory route. ${FLOOR_ARENA_CONTEST.name} pays`);
-    expect(orientation).toContain(`for network fees); ${FLOOR_ARENA_CONTEST.name} pays`);
+    expect(orientation).toContain(`so nobody should send money to an arena wallet; ${FLOOR_ARENA_CONTEST.name} pays`);
     for (const text of [orientation, nori]) expect(text).not.toMatch(/[.;,][A-Z]/);
   });
 

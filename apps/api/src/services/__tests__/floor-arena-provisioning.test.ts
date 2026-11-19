@@ -271,7 +271,7 @@ describe('provisionArenaAgent state machine (ClawPump v1, 2026-11-19)', () => {
     const h = harness(record());
     h.cps.set(CP_ID, { isPublic: false, acceptingBids: false, status: 'stopped', skills: [], walletAddress: WALLET });
     expect(await provisionArenaAgent(AGENT_ID, h.deps)).toBe('ready');
-    expect(h.calls()).toEqual(['create', `listing ${CP_ID}`]);
+    expect(h.calls()).toEqual(['create', `listing ${CP_ID}`, 'ready']);
   });
 
   test('only the field that is still on is updated (one field per body)', async () => {
