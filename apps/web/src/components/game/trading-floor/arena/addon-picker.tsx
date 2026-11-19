@@ -16,18 +16,19 @@ export const ADDON_WALLET_WARNING =
 
 /**
  * Shown under the agent's wallet address wherever a player can copy it. The
- * wallet is a ClawPump agent under ClawVille's own account (spec D8). The
- * owner can withdraw USDC or SOL from it to an address the owner proves (P5,
- * D34), and each withdrawal pays its network fee in SOL, so the player must
- * read the SOL rule BEFORE sending. Replaces the old no-withdraw note
- * (audit-money M3, D34-k). Mirrored in manual §17c. The 0.01 SOL is the fixed
- * text of contract §7: this note also shows before the agent exists (launch
- * step 3), where the withdraw `limits` payload is not available.
+ * wallet is a ClawPump agent under ClawVille's own account (spec D8). While
+ * ClawPump's new transfer and x402 routes are unverified (section 6i), the
+ * writer refuses every withdraw and the engine makes no add-on payment, so
+ * this note tells the player NOT to fund the wallet. It is the human form of
+ * FLOOR_ARENA_WALLET_PAUSE_NOTE (Codex round 2 on fix/clawpump-v1-writer).
+ * When the routes are verified, restore the P5 funding note (USDC or SOL
+ * only, keep 0.01 SOL for fees, withdraw to a proved address, the add-on cap
+ * of FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD a day).
  */
 export const ARENA_WALLET_FUNDING_NOTE =
-  `Send only USDC or SOL on Solana to this wallet. Keep at least 0.01 SOL in it, because each withdrawal pays its ` +
-  `network fee in SOL. You can withdraw to an address that you prove is yours. Add-ons spend at most ` +
-  `$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day from it.`;
+  'Paid add-ons and withdrawals are paused right now, because ClawPump changed its API and ClawVille is still ' +
+  'checking the new routes. Do not send USDC or SOL to this wallet yet: until the pause ends, money sent here can be ' +
+  'neither spent on add-ons nor withdrawn through ClawVille.';
 
 /**
  * Both wallet notes together: what to send and how to withdraw, and what the

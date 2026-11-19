@@ -504,13 +504,17 @@ describe('Paper arena and live traders are named apart (prod verify b8d52ab6, fi
 
 describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-money M3 no-withdraw note)', () => {
   const WALLET = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+  // While ClawPump's new transfer and x402 routes are unverified (section 6i),
+  // the note tells the player not to fund the wallet (Codex round 2).
   const FUNDING =
-    'Send only USDC or SOL on Solana to this wallet. Keep at least 0.01 SOL in it, because each withdrawal pays its ' +
-    'network fee in SOL. You can withdraw to an address that you prove is yours. Add-ons spend at most $5 a day from it.';
+    'Paid add-ons and withdrawals are paused right now, because ClawPump changed its API and ClawVille is still ' +
+    'checking the new routes. Do not send USDC or SOL to this wallet yet: until the pause ends, money sent here can be ' +
+    'neither spent on add-ons nor withdrawn through ClawVille.';
 
-  test('the text is the agreed wording and the $5 comes from the shared cap', () => {
+  test('the text is the pause wording and invites no deposit', () => {
     expect(ARENA_WALLET_FUNDING_NOTE).toBe(FUNDING);
-    expect(ARENA_WALLET_FUNDING_NOTE.toLowerCase()).not.toContain('cannot withdraw');
+    expect(ARENA_WALLET_FUNDING_NOTE.toLowerCase()).toContain('do not send usdc or sol');
+    expect(ARENA_WALLET_FUNDING_NOTE.toLowerCase()).not.toContain('you can withdraw');
   });
 
   test('the desk panel shows it under the wallet address, and the old test id is gone', async () => {
@@ -552,19 +556,17 @@ describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-mone
     expect(picker).not.toBeNull();
     expect(picker.textContent).toContain(FUNDING);
     expect(picker.textContent).toContain(ADDON_WALLET_WARNING);
-    // Solana USDC or SOL only, the SOL fee rule, a proved address to withdraw
-    // to, only this agent's add-ons, and no refund of spend.
+    // The pause (no deposit now), only this agent's add-ons, and no refund of spend.
     const lower = picker.textContent!.toLowerCase();
     for (const phrase of [
-      'usdc or sol on solana',
-      'keep at least 0.01 sol',
-      'withdraw to an address that you prove is yours',
+      'do not send usdc or sol to this wallet yet',
+      'paid add-ons and withdrawals are paused',
       'only for its own paid data add-ons',
       'does not refund',
     ]) {
       expect({ phrase, present: lower.includes(phrase) }).toEqual({ phrase, present: true });
     }
-    expect(lower).not.toContain('cannot withdraw');
+    expect(lower).not.toContain('you can withdraw');
   });
 
 

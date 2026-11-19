@@ -339,7 +339,7 @@ async function provisionLocked(agentId: string, deps: ArenaProvisionDeps): Promi
     }
     await deps.store.insertEvent(agent.id, {
       type: 'addon',
-      summary: 'Execution wallet ready. Fund it with USDC to use paid add-ons.',
+      summary: 'Execution wallet ready. Paid add-ons and withdrawals are paused, so do not fund it yet.',
       data: { provisionState: 'ready', paymentAddress: wallet },
     });
     return 'ready';
