@@ -5,6 +5,7 @@ import {
   FLOOR_ARENA_CONTEST,
   FLOOR_ARENA_POSITION_USD,
   FLOOR_ARENA_TEMPLATES,
+  FLOOR_ARENA_WALLET_PAUSED,
   cloneFloorArenaParams,
   diffFloorArenaParams,
   floorArenaTemplateById,
@@ -118,7 +119,10 @@ export function LaunchSuccess({ me, onOpenDesk }: { me: FloorArenaMyAgent | null
       </div>
       {address ? (
         <>
-          <ArenaCopyField value={address} label="Your agent's wallet (pays for add-ons)" />
+          <ArenaCopyField
+            value={address}
+            label={FLOOR_ARENA_WALLET_PAUSED ? "Your agent's wallet" : "Your agent's wallet (pays for add-ons)"}
+          />
           <ArenaWalletWarnings />
         </>
       ) : provision === 'failed' ? (
