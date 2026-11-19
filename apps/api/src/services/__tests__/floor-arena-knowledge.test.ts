@@ -410,8 +410,10 @@ describe('Trading Arena section of the trading page', () => {
   });
 
   test('2026-11-19 (Codex writer r1): every surface says add-ons are paused and withdraw is unavailable, so no agent funds the wallet', () => {
-    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('paid add-ons are paused and arena withdrawals are unavailable');
-    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('Do not fund the arena wallet now');
+    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('Arena wallet paused');
+    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('paymentsEnabled: false');
+    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('409 withdraw_paused');
+    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('Do not fund it now');
     // The served manual says it BEFORE the add-on and withdraw rules.
     const flat = arenaSection().replace(/\s+/g, ' ');
     expect(flat).toContain(FLOOR_ARENA_WALLET_PAUSE_NOTE);
