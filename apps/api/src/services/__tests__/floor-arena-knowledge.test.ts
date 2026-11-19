@@ -289,8 +289,11 @@ describe('Trading Arena section of the trading page', () => {
   test('says paid add-ons spend real USDC; never "no money moves" (audit-money B1)', () => {
     const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
     const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: the Trading Floor now runs the Trading Arena'))!;
-    expect(orientation).toContain("Paper only: no vCLAW is spent and no real tokens are bought; optional paid add-ons spend only USDC that the player sends to the agent's own wallet;");
-    expect(nori).toContain("Paper trades buy nothing real and spend no vCLAW; only optional paid data add-ons spend real USDC that you send to your trader's own wallet.");
+    // Codex writer r4: while the arena wallet is paused (FLOOR_ARENA_WALLET_PAUSED) neither invites a deposit.
+    expect(orientation).toContain("Paper only: no vCLAW is spent and no real tokens are bought; paid add-ons and withdrawals from the agent's own wallet are paused right now, so nobody should send money to an arena wallet;");
+    expect(nori).toContain("Paper trades buy nothing real and spend no vCLAW; paid data add-ons are paused right now, so please do not send money to your trader's wallet.");
+    expect(orientation).not.toContain('USDC that the player sends');
+    expect(nori).not.toContain('USDC that you send');
     for (const text of [orientation, nori, arenaSection()]) {
       expect(text.toLowerCase()).not.toContain('no money moves');
       expect(text).not.toContain('Nothing real is bought');
@@ -512,13 +515,14 @@ describe('Trading Arena section of the trading page', () => {
       CLAWVILLE_ORIENTATION_KNOWLEDGE.join('\n'),
     ];
     for (const text of texts) expect(text.toLowerCase()).not.toContain('cannot withdraw');
-    const L = FLOOR_ARENA_WITHDRAW_LIMITS;
-    const delay = durationLabel(L.addressDelayMs);
     const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
-    expect(orientation).toContain(`optional paid add-ons spend only USDC that the player sends to the agent's own wallet; the owner, human or agent, can withdraw USDC or SOL from that wallet to an address the owner proved (a new address works after ${delay}; keep at least ${L.recommendedSolText} SOL there for network fees);`);
+    // Codex writer r4: paused, so no withdraw promise and no "keep SOL there" advice in either.
+    expect(orientation).not.toContain('can withdraw USDC or SOL');
+    expect(orientation).not.toContain('keep at least');
     expect(orientation).not.toMatch(/[.;,][A-Z]/);
     const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: arena trader wallets are on hold'));
-    expect(nori).toBe(`Nori says: arena trader wallets are on hold right now: paid add-ons are paused and withdrawals are unavailable until ClawVille verifies ClawPump's new payment routes, so please do not send money to your trader's wallet yet. Once they open again, you take money out like this. Open your trader in the Trading Floor tab, find the Wallet block, prove an address with your wallet or pick your linked wallet, then withdraw USDC or SOL. A new address waits ${delay} before it works. Keep at least ${L.recommendedSolText} SOL in the trader's wallet for network fees. Agents find the routes on the protocol \`trading\` page (/api/skills/protocol/trading.md).`);
+    expect(nori).toBe("Nori says: arena trader wallets are on hold right now: paid add-ons are paused and withdrawals are unavailable until ClawVille verifies ClawPump's new payment routes, so please do not send money to your trader's wallet yet. Agents find the details on the protocol `trading` page (/api/skills/protocol/trading.md).");
+    expect(townGuide.knowledge.some((entry) => entry.startsWith('Nori says: you can take money out'))).toBe(false);
     expect(nori!).not.toMatch(/[.;,][A-Z]/);
     // Nori carries the orientation line too (she spreads the shared list).
     expect(townGuide.knowledge).toContain(orientation);

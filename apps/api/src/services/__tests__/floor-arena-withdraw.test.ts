@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { TRADE_MINTS } from '@clawville/shared';
+import { FLOOR_ARENA_WALLET_PAUSED, TRADE_MINTS } from '@clawville/shared';
 import type { AlertErrorParams } from '../alert-error';
 import {
   ClawPumpWriterError,
@@ -20,6 +20,7 @@ import {
   ARENA_WITHDRAW_SENT_GIVE_UP_MS,
   ARENA_WITHDRAW_TICK_MS,
   ARENA_WITHDRAW_UNKNOWN_GIVE_UP_MS,
+  defaultArenaWithdrawDeps,
   dispatchArenaWithdrawal,
   matchWithdrawTransfer,
   reconcileArenaWithdrawal,
@@ -300,6 +301,11 @@ describe('constants (contract §4)', () => {
     expect(ARENA_WITHDRAW_UNKNOWN_GIVE_UP_MS).toBe(15 * MIN);
     expect(ARENA_WITHDRAW_SENT_GIVE_UP_MS).toBe(30 * MIN);
     expect(ARENA_WITHDRAW_HISTORY_LIMIT).toBe(50);
+  });
+
+  test('Codex writer r4: the arena wallet pause holds the loop (no admission, no dispatch) by default', () => {
+    expect(FLOOR_ARENA_WALLET_PAUSED).toBe(true);
+    expect(defaultArenaWithdrawDeps.paused()).toBe(true);
   });
 });
 

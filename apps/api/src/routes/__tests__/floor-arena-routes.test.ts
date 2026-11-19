@@ -184,6 +184,7 @@ function makeDeps() {
     readWalletBalance: async () => null,
     addonCatalog: () => [FEED],
     addonPaymentsEnabled: () => true,
+    withdrawPaused: () => false,
     logArenaEvent: async (c, input) => {
       logged.push({ input: input as unknown as Record<string, unknown>, fpHash: c.get('fpHash'), ipPrefixHash: c.get('ipPrefixHash') });
     },

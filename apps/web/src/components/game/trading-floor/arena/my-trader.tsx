@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import {
+  FLOOR_ARENA_WALLET_PAUSED,
   floorArenaTemplateById,
 } from '@clawville/shared';
 
@@ -224,7 +225,8 @@ function AddonsBlock({ me, active }: { me: FloorArenaMyAgent; active: boolean })
         <ArenaMuted>No paid add-ons. Your agent reads the shared free discovery feed.</ArenaMuted>
       ) : (
         on.map((addon) => {
-          const underfunded = addonUnderfunded(addon, me.walletUsdc);
+          // No "Underfunded" pill while the wallet is paused: it reads as a request to send USDC.
+          const underfunded = !FLOOR_ARENA_WALLET_PAUSED && addonUnderfunded(addon, me.walletUsdc);
           return (
             <div key={addon.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <div style={{ color: FLOOR_TEXT.value, fontSize: 12 }}>
@@ -423,7 +425,10 @@ export function MyTrader({
       <ArenaBlock title="Wallet">
         {me.paymentAddress ? (
           <>
-            <ArenaCopyField value={me.paymentAddress} label="Your agent's wallet (pays for add-ons)" />
+            <ArenaCopyField
+              value={me.paymentAddress}
+              label={FLOOR_ARENA_WALLET_PAUSED ? "Your agent's wallet (paused: do not send money)" : "Your agent's wallet (pays for add-ons)"}
+            />
             <ArenaWalletWarnings />
             <ArenaMuted size={11}>
               USDC in the wallet: {me.walletUsdc === null ? 'not known right now' : `$${me.walletUsdc.toFixed(2)}`}
@@ -436,7 +441,7 @@ export function MyTrader({
         ) : floorArenaProvisionInProgress(me.provisionState) ? (
           <ArenaMuted>Setting up your ClawPump agent...</ArenaMuted>
         ) : (
-          <ArenaMuted>Your agent has no wallet yet. It needs one only for paid add-ons.</ArenaMuted>
+          <ArenaMuted>Your agent has no wallet yet. Paper trading does not need one.</ArenaMuted>
         )}
       </ArenaBlock>
     </div>

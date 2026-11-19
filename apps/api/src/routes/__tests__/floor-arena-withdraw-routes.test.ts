@@ -4,13 +4,16 @@ import type { MiddlewareHandler } from 'hono';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import {
+  CLAWVILLE_GAME_TOOLS,
   FLOOR_ARENA_TEMPLATES,
+  FLOOR_ARENA_WALLET_PAUSED,
+  FLOOR_ARENA_WALLET_PAUSE_NOTE,
   FLOOR_ARENA_WITHDRAW_LIMITS,
   FLOOR_ARENA_WITHDRAW_REQUEST_CODES,
   buildFloorArenaWithdrawAddressMessage,
   cloneFloorArenaParams,
 } from '@clawville/shared';
-import { createFloorArenaRoutes, type FloorArenaRouteDeps } from '../floor-arena';
+import { createFloorArenaRoutes, defaultFloorArenaRouteDeps, type FloorArenaRouteDeps } from '../floor-arena';
 import { requireLedgerCapableIdentity } from '../../middleware/require-auth-or-agent';
 import { createRateLimiter } from '../../middleware/rate-limit';
 import { buildWalletLinkMessage } from '../../services/wallet-link-challenge';
@@ -109,6 +112,8 @@ function makeStore() {
     refuseNext: null as ArenaWithdrawRequestResult | null,
     listLimits: [] as number[],
     eventTypes: [] as Array<readonly string[] | null>,
+    /** The arena wallet pause (FLOOR_ARENA_WALLET_PAUSED); off here so the open-path tests run. */
+    paused: false,
   };
 }
 
@@ -154,6 +159,7 @@ function makeDeps(store: ReturnType<typeof makeStore>): FloorArenaRouteDeps {
     readWalletBalance: async () => ({ agentId: 'cp-agent-1', walletAddress: SOURCE_WALLET, sol: 0.012, usdc: 1.5, updatedAt: NOW.toISOString() }),
     addonCatalog: () => [],
     addonPaymentsEnabled: () => true,
+    withdrawPaused: () => store.paused,
     logArenaEvent: async () => {},
     // ── Withdraw (fakes with the T3 semantics the routes rely on) ──
     issueWithdrawChallenge: async (input) => {
@@ -284,6 +290,59 @@ const WITHDRAW_ROUTES: Array<[string, string, unknown]> = [
   ['GET', '/me/withdrawals', undefined],
   ['POST', `/me/withdrawals/${UNKNOWN_ID}/cancel`, undefined],
 ];
+
+describe('the arena wallet pause (FLOOR_ARENA_WALLET_PAUSED, Codex writer r4)', () => {
+  test('the shipped switch is ON and the default route deps follow it', () => {
+    expect(FLOOR_ARENA_WALLET_PAUSED).toBe(true);
+    expect(defaultFloorArenaRouteDeps.withdrawPaused()).toBe(true);
+  });
+
+  test('human AND agent: challenge, address set and withdraw answer 409 withdraw_paused first; nothing is stored', async () => {
+    const { call, store, human, agent } = app();
+    store.paused = true;
+    // Conditions that would otherwise refuse later (needs a proved address, an arena wallet as target): the pause wins.
+    for (const headers of [human, agent]) {
+      for (const [path, body] of [
+        ['/me/withdraw-address/challenge', { address: SOURCE_WALLET }],
+        ['/me/withdraw-address', { proof: 'linked_wallet' }],
+        ['/me/withdrawals', { asset: 'USDC', amount: 'max' }],
+      ] as const) {
+        const response = await call('POST', path, body, { ...headers, 'Idempotency-Key': 'key-00000001' });
+        expect({ path, status: response.status }).toEqual({ path, status: 409 });
+        const json = await jsonOf(response);
+        expect(json.code).toBe('withdraw_paused');
+        expect(json.error).toBe(FLOOR_ARENA_WALLET_PAUSE_NOTE);
+      }
+    }
+    expect(store.requests).toHaveLength(0);
+    expect(store.setInputs).toHaveLength(0);
+    expect(store.challenges.size).toBe(0);
+    expect(store.withdrawals).toHaveLength(0);
+  });
+
+  test('reads, revoke and cancel still work while paused, and GET /me/withdrawals carries the flag and the note', async () => {
+    const { call, store, agent } = app();
+    store.paused = true;
+    const row = withdrawalRow({ state: 'requested' });
+    store.withdrawals.push(row);
+    for (const headers of [undefined, agent]) {
+      const list = await jsonOf(await call('GET', '/me/withdrawals', undefined, headers));
+      expect(list.paused).toBe(true);
+      expect(list.pauseNote).toBe(FLOOR_ARENA_WALLET_PAUSE_NOTE);
+    }
+    expect((await call('POST', `/me/withdrawals/${row.id}/cancel`)).status).toBe(200);
+    store.paused = false;
+    const open = await jsonOf(await call('GET', '/me/withdrawals'));
+    expect(open.paused).toBe(false);
+    expect(open.pauseNote).toBeNull();
+  });
+
+  test('the agent MCP tools reach the same routes and document withdraw_paused', () => {
+    for (const name of ['clawville_arena_withdraw', 'clawville_arena_withdraw_challenge', 'clawville_arena_withdraw_address']) {
+      expect(CLAWVILLE_GAME_TOOLS.find((tool) => tool.name === name)!.description).toContain('409 withdraw_paused');
+    }
+  });
+});
 
 describe('withdraw routes: auth chain (E5 parity, FLOOR_ARENA_AUTH_CHAIN)', () => {
   test('with the real default chain every withdraw route is 401 without a cookie or agent header', async () => {
@@ -707,7 +766,7 @@ describe('GET /me/withdrawals and cancel', () => {
     expect(response.headers.get('cache-control')).toBe('private, no-store');
     const text = await response.text();
     const body = JSON.parse(text) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(['address', 'agentId', 'limits', 'linkedWallet', 'wallet', 'withdrawals']);
+    expect(Object.keys(body).sort()).toEqual(['address', 'agentId', 'limits', 'linkedWallet', 'pauseNote', 'paused', 'wallet', 'withdrawals']);
     expect(body.agentId).toBe(AGENT_ID);
     expect(body.address).toMatchObject({ address: linked, proof: 'linked_wallet', state: 'active' });
     expect(body.linkedWallet).toEqual({ address: linked, linkedAt: new Date(NOW.getTime() - 2 * DAY).toISOString(), activeNow: true });

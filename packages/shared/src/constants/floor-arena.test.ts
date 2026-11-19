@@ -6,6 +6,7 @@ import {
   FLOOR_ARENA_AGENT_KINDS,
   FLOOR_ARENA_AGENT_STATUSES,
   FLOOR_ARENA_CONTEST,
+  FLOOR_ARENA_WALLET_PAUSED,
   FLOOR_ARENA_DEEP_LOW_OF_MARK,
   FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_ENTRY_FILL_SOURCES,
@@ -594,7 +595,10 @@ describe('floor arena contest window', () => {
     expect(rules[0]).toContain('paper trading only');
     expect(rules[0]).toContain('no vCLAW is spent');
     expect(rules[0]).toContain('no real tokens are bought');
-    expect(rules[0]).toContain("spend only USDC that you send to your agent's own wallet");
+    // Codex writer r4: while the arena wallet is paused, rule 1 says add-ons are paused and invites no deposit.
+    expect(FLOOR_ARENA_WALLET_PAUSED).toBe(true);
+    expect(rules[0]).toContain('paid data add-ons are paused right now, so do not send money to an arena wallet');
+    expect(rules[0]).not.toContain('USDC that you send');
     expect(all.toLowerCase()).not.toContain('no real money moves');
     // D31: an unpriceable position closes as unresolved and counts as a loss of its open stake.
     expect(rules[1]).toContain('a position with no usable price for 30 minutes closes as unresolved and counts as a loss of its open stake in the contest score');

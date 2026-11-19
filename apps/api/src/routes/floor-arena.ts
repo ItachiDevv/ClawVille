@@ -4,6 +4,8 @@ import { z } from 'zod';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import {
+  FLOOR_ARENA_WALLET_PAUSED,
+  FLOOR_ARENA_WALLET_PAUSE_NOTE,
   FLOOR_ARENA_WITHDRAW_LIMITS,
   FLOOR_ARENA_WITHDRAW_REQUEST_CODES,
   type FloorArenaWithdrawAddressProof,
@@ -270,6 +272,8 @@ export interface FloorArenaRouteDeps {
   readWalletBalance(clawpumpAgentId: string): Promise<ClawPumpWalletBalance | null>;
   addonCatalog(): readonly FloorArenaAddon[];
   addonPaymentsEnabled(): boolean;
+  /** FLOOR_ARENA_WALLET_PAUSED: withdraw refused at admission with 409 withdraw_paused (human and agent alike). */
+  withdrawPaused(): boolean;
   /**
    * Audit-contest B1: an anti-sybil `events` row. The default is
    * logEventFromContext, which stamps fp_hash and ip_prefix_hash from the
@@ -322,6 +326,7 @@ export const defaultFloorArenaRouteDeps: FloorArenaRouteDeps = {
   readWalletBalance: (clawpumpAgentId) => readArenaWalletBalance(clawpumpAgentId),
   addonCatalog: () => FLOOR_ARENA_ADDONS,
   addonPaymentsEnabled: () => arenaAddonPaymentsOpen(),
+  withdrawPaused: () => FLOOR_ARENA_WALLET_PAUSED,
   logArenaEvent: (c, input) => logEventFromContext(c, input),
   issueWithdrawChallenge: issueArenaWithdrawChallenge,
   consumeWithdrawChallenge: consumeArenaWithdrawChallenge,
@@ -942,6 +947,16 @@ export function createFloorArenaRoutes(
     return deps.readAgentByOwner(identityOf(c).userId);
   }
 
+  /**
+   * The arena wallet pause (FLOOR_ARENA_WALLET_PAUSED): the FIRST check of every route that starts a withdraw
+   * (after the rate limit), so no balance, address or row check runs and no row is written. Same answer for a
+   * human session and an agent session (the MCP tools call these routes).
+   */
+  function withdrawPausedReply(c: Context) {
+    if (!deps.withdrawPaused()) return null;
+    return c.json({ error: FLOOR_ARENA_WALLET_PAUSE_NOTE, code: 'withdraw_paused' }, 409);
+  }
+
   function noAgent(c: Context) {
     return c.json({ error: 'You have no arena agent yet. Launch one first.', code: 'no_agent' }, 404);
   }
@@ -1352,6 +1367,8 @@ export function createFloorArenaRoutes(
   routes.post('/me/withdraw-address/challenge', async (c) => {
     const blocked = writeBlocked(c);
     if (blocked) return blocked;
+    const paused = withdrawPausedReply(c);
+    if (paused) return paused;
     const parsed = withdrawChallengeBodySchema.safeParse(await readJson(c));
     if (!parsed.success) return invalidBody(c);
     const { address } = parsed.data;
@@ -1379,6 +1396,8 @@ export function createFloorArenaRoutes(
   routes.post('/me/withdraw-address', async (c) => {
     const blocked = writeBlocked(c);
     if (blocked) return blocked;
+    const paused = withdrawPausedReply(c);
+    if (paused) return paused;
     const parsed = withdrawAddressBodySchema.safeParse(await readJson(c));
     if (!parsed.success) return invalidBody(c);
     const body = parsed.data;
@@ -1464,6 +1483,8 @@ export function createFloorArenaRoutes(
   routes.post('/me/withdrawals', async (c) => {
     const blocked = writeBlocked(c);
     if (blocked) return blocked;
+    const paused = withdrawPausedReply(c);
+    if (paused) return paused;
     const idempotencyKey = c.req.header('Idempotency-Key');
     if (!idempotencyKey) {
       return c.json({ error: 'Send an Idempotency-Key header (8 to 64 letters, digits, _ or -).', code: 'idempotency_key_required' }, 400);
@@ -1545,6 +1566,9 @@ export function createFloorArenaRoutes(
           }
         : null,
       withdrawals: rows.map(toWithdrawalView),
+      // The arena wallet pause: humans and agents read the same flag and note (FLOOR_ARENA_WALLET_PAUSED).
+      paused: deps.withdrawPaused(),
+      pauseNote: deps.withdrawPaused() ? FLOOR_ARENA_WALLET_PAUSE_NOTE : null,
       // Atomic amounts and durations as JSON numbers (all are safe integers), exactly the shared constant.
       limits: FLOOR_ARENA_WITHDRAW_LIMITS,
       wallet: paymentAddress

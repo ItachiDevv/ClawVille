@@ -383,6 +383,34 @@ export interface FloorArenaContest {
 }
 
 /** D6: 2026-09-30 6 PM EDT to Sun 2026-10-04 11:59:59 PM EDT. */
+/**
+ * 2026-11-19 (job clawpump-v1-writer, Codex writer r1): ClawPump moved its API, and its new transfer and x402 pay
+ * routes are NOT VERIFIED (`CLAWPUMP_VERIFIED_BACKEND_POSTS` in apps/api/src/services/clawpump-writer.ts is empty).
+ * Every agent-facing surface that tells an agent to fund the arena wallet, turn on paid add-ons or withdraw quotes
+ * this text, so no surface recommends a deposit that ClawVille cannot spend or return. Remove it in the same diff
+ * that verifies the routes.
+ */
+/**
+ * THE switch for the arena wallet pause (2026-11-19, job clawpump-v1-writer, Codex writer r4). While true:
+ * - the withdraw routes refuse at admission with 409 `withdraw_paused` (POST /me/withdrawals, the address
+ *   challenge and the address set), before any balance, address or row check; no withdrawal row is created;
+ * - the withdraw loop does not dispatch (its pause hook), and the ClawPump writer still refuses the transfer
+ *   (`route_not_verified`) as a second guard;
+ * - every human surface (desk Wallet block, withdraw panel, launch prompt, add-on picker) shows the pause note
+ *   and never invites a deposit; agents read FLOOR_ARENA_WALLET_PAUSE_NOTE on every surface.
+ * Flip it to false ONLY in the same reviewed diff that verifies ClawPump's transfer AND x402 routes with a
+ * founder-approved live test of at most $1 and adds them to CLAWPUMP_VERIFIED_BACKEND_POSTS
+ * (apps/api/src/services/clawpump-writer.ts).
+ */
+export const FLOOR_ARENA_WALLET_PAUSED: boolean = true;
+
+export const FLOOR_ARENA_WALLET_PAUSE_NOTE =
+  'Arena wallet status: paid add-ons are paused and arena withdrawals are unavailable, because ClawPump moved its API ' +
+  'and ClawVille has not yet verified ClawPump\'s new transfer and x402 payment routes. Until then the engine makes no ' +
+  'add-on call (GET /api/floor/arena/addons answers paymentsEnabled: false), a withdrawal request ends failed_no_send ' +
+  'with clawpump_route_not_verified and nothing is sent, and USDC or SOL sent to the arena wallet can be neither spent ' +
+  'on add-ons nor withdrawn through ClawVille. Do not fund the arena wallet now, and tell your human the same.';
+
 export const FLOOR_ARENA_CONTEST: FloorArenaContest = deepFreeze({
   id: 'arena-week-1',
   name: 'Trading Arena Week 1',
@@ -394,7 +422,9 @@ export const FLOOR_ARENA_CONTEST: FloorArenaContest = deepFreeze({
     { place: 3, amount: 250_000, token: '$CLAWVILLE' },
   ],
   rules: [
-    "This contest uses paper trading only, so no vCLAW is spent and no real tokens are bought; paid data add-ons are optional and spend only USDC that you send to your agent's own wallet.",
+    FLOOR_ARENA_WALLET_PAUSED
+      ? 'This contest uses paper trading only, so no vCLAW is spent and no real tokens are bought; paid data add-ons are paused right now, so do not send money to an arena wallet.'
+      : "This contest uses paper trading only, so no vCLAW is spent and no real tokens are bought; paid data add-ons are optional and spend only USDC that you send to your agent's own wallet.",
     `Every position is $${FLOOR_ARENA_POSITION_USD}, an agent holds at most ${FLOOR_ARENA_MAX_OPEN_POSITIONS} open positions, and a position with no usable price for 30 minutes closes as unresolved and counts as a loss of its open stake in the contest score.`,
     'Each account can enter one arena agent, and guests cannot enter.',
     'House agents trade on the same board but cannot win prizes.',
@@ -1035,20 +1065,6 @@ export const FLOOR_ARENA_WITHDRAW_REQUEST_CODES = deepFreeze(['idempotency_confl
 /** Reconcile results stored in error_code. Writer codes are `clawpump_<code>`; vendor codes are `vendor_<code>` (lower case). */
 export const FLOOR_ARENA_WITHDRAW_RECONCILE_CODES = deepFreeze(['dispatch_interrupted', 'chain_error', 'chain_mismatch',
   'not_found_no_drop', 'not_found_balance_drop', 'ambiguous_match', 'tx_reused', 'reply_mismatch', 'review_timeout'] as const);
-/**
- * 2026-11-19 (job clawpump-v1-writer, Codex writer r1): ClawPump moved its API, and its new transfer and x402 pay
- * routes are NOT VERIFIED (`CLAWPUMP_VERIFIED_BACKEND_POSTS` in apps/api/src/services/clawpump-writer.ts is empty).
- * Every agent-facing surface that tells an agent to fund the arena wallet, turn on paid add-ons or withdraw quotes
- * this text, so no surface recommends a deposit that ClawVille cannot spend or return. Remove it in the same diff
- * that verifies the routes.
- */
-export const FLOOR_ARENA_WALLET_PAUSE_NOTE =
-  'Arena wallet status: paid add-ons are paused and arena withdrawals are unavailable, because ClawPump moved its API ' +
-  'and ClawVille has not yet verified ClawPump\'s new transfer and x402 payment routes. Until then the engine makes no ' +
-  'add-on call (GET /api/floor/arena/addons answers paymentsEnabled: false), a withdrawal request ends failed_no_send ' +
-  'with clawpump_route_not_verified and nothing is sent, and USDC or SOL sent to the arena wallet can be neither spent ' +
-  'on add-ons nor withdrawn through ClawVille. Do not fund the arena wallet now, and tell your human the same.';
-
 export const FLOOR_ARENA_WITHDRAW_LIMITS = deepFreeze({
   usdcDecimals: 6,
   solDecimals: 9,

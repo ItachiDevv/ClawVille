@@ -4,6 +4,7 @@ import { useId } from 'react';
 import {
   FLOOR_ARENA_DEFAULT_ADDON_DAILY_CAP_USD,
   FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD,
+  FLOOR_ARENA_WALLET_PAUSED,
 } from '@clawville/shared';
 
 import type { FloorArenaAddonView } from '@/hooks/use-floor-arena';
@@ -42,7 +43,8 @@ export function ArenaWalletWarnings() {
       <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }} data-testid="arena-wallet-funding-note">
         {ARENA_WALLET_FUNDING_NOTE}
       </div>
-      <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }}>{ADDON_WALLET_WARNING}</div>
+      {/* "pays for add-ons, in USDC" reads as a funding request; it returns with the pause's end. */}
+      {FLOOR_ARENA_WALLET_PAUSED ? null : <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }}>{ADDON_WALLET_WARNING}</div>}
     </div>
   );
 }
@@ -122,7 +124,11 @@ export function AddonPicker({
       <ArenaMuted>
         Every arena agent reads one shared free discovery feed. A paid add-on is an extra feed only your agent sees.
       </ArenaMuted>
-      {!paymentsEnabled ? (
+      {FLOOR_ARENA_WALLET_PAUSED ? (
+        <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }} data-testid="arena-addon-paused">
+          {ARENA_WALLET_FUNDING_NOTE} Your choice is saved, and nothing is bought until the pause ends.
+        </div>
+      ) : !paymentsEnabled ? (
         <div style={{ color: FLOOR_TEXT.warning, fontSize: 12 }}>
           Add-on payments are switched off on the server right now. Your choice is saved, and nothing is bought until
           they switch on.
