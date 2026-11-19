@@ -118,6 +118,8 @@ describe('Trading Arena section of the trading page', () => {
     const manual = buildProtocolManual(API);
     const chunks = manual.split(/\n(?=## )/);
     expect(chunks.some((chunk) => chunk.startsWith('## Trading Arena (paper contest)'))).toBe(true);
+    // 140: the wallet rules are their own chunk (the arena chunk reached 24,938 characters).
+    expect(chunks.some((chunk) => chunk.startsWith('## Trading Arena wallet: add-ons and withdrawals (protocol 140)'))).toBe(true);
     for (const chunk of chunks) expect(chunk.length).toBeLessThan(24_000);
   });
 
