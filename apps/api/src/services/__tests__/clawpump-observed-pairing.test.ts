@@ -21,7 +21,7 @@ const AGENT = '33333333-3333-4333-8333-333333333333';
 const GENESIS = '0f600d73-05a0-4c2e-8215-ab2a770ba192';
 const WALLET = '4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n';
 const input = { avatarId: AVATAR, clawpumpAgentId: GENESIS, objective: 'momentum-board' as const };
-const agent: ClawPumpAgent = { id: GENESIS, name: 'Genesis', userId: USER, status: 'running', walletAddress: WALLET };
+const agent: ClawPumpAgent = { id: GENESIS, name: 'Genesis', status: 'running', walletAddress: WALLET };
 const dialect = new PgDialect();
 type PairState = Parameters<typeof classifyObservedPairState>[0];
 
@@ -131,7 +131,6 @@ describe('ClawPump ownership proof', () => {
 
   test.each([
     [{ walletAddress: '11111111111111111111111111111111' }, 'agent_has_no_wallet', 409],
-    [{ userId: 'another-owner' }, 'clawpump_agent_not_owned', 404],
     [{ id: AGENT }, 'clawpump_agent_not_owned', 404],
   ] as const)('rejects disagreeing detail fields %j', async (change, code, status) => {
     await expect(readOwnedClawPumpAgent(GENESIS, reader({ getAgent: async () => ({ ...agent, ...change }) })))
@@ -162,7 +161,7 @@ describe('ClawPump ownership proof', () => {
   });
 
   test('maps a real client detail ID mismatch to ownership refusal', async () => {
-    const wire = { id: GENESIS, user_id: USER, wallet_address: WALLET, name: 'Genesis' };
+    const wire = { id: GENESIS, walletAddress: WALLET, name: 'Genesis' };
     const paths: string[] = [];
     const options = {
       env: { CLAWPUMP_API_KEY: 'synthetic-test-key' },

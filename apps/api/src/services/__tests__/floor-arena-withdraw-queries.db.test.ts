@@ -709,8 +709,6 @@ describeIfDb('floor arena withdraw queries on Postgres (P5 T3)', () => {
       expect(await q.tryWithArenaWithdrawLock(agent.agentId, async () => 'B')).toEqual({ acquired: false });
       expect(Date.now() - started).toBeLessThan(2_000);
       expect(await q.tryWithArenaWithdrawLock(other.agentId, async () => 'C')).toEqual({ acquired: true, value: 'C' });
-      // The x402 lock of the same agent is a different key.
-      expect(await q.tryWithArenaX402Lock(agent.agentId, async () => 'D')).toEqual({ acquired: true, value: 'D' });
     } finally {
       release();
     }

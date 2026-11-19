@@ -6,40 +6,70 @@ import { ClawPumpClientError, clawPumpUrl, resolveClawPumpConfig, type ClawPumpC
 import { isArenaClawPumpOwnedBy, isArenaUserClawPumpOwnedBy } from './floor-arena/queries';
 
 /**
- * ClawPump WRITE client for the Trading Floor Arena (docs/trading-floor-arena.md D8, D9).
+ * ClawPump WRITE client for the Trading Floor Arena (docs/trading-floor-arena.md D8, D9, section 6i).
  *
- * Same allowlisted host and Bearer `CLAWPUMP_API_KEY` as the read-only client
- * (`resolveClawPumpConfig`). Paths and bodies are copied from the ClawPump MCP
- * package `@clawpump/agents` 0.1.27 `dist/server.js`:
- *   create_agent  -> POST  /agents                                   (api-client L170)
- *   update_agent  -> PATCH /agents/{id}                              (api-client L176)
- *   wallets       -> GET   /wallets/summary -> { wallets: [...] }    (api-client L334)
- *   x402_pay_check-> POST  /agents/{id}/x402/x402_service_details    (server.js L4339)
- *   x402_pay      -> POST  /agents/{id}/x402/x402_service_pay        (server.js L4357)
- * P5 withdraw (shapes proved on chain, ops/house-traders/arena-review/WITHDRAW_PROBES_2026-10-01.md Run 2):
- *   wallet live   -> GET   /wallets/{id}/history?limit=N             (live balances; the summary is cached)
- *   transfer      -> POST  /wallets/{id}/transfer {to, amount, token}
+ * ClawPump moved its REST API to the v1 gateway `https://clawpump.tech/api/v1`
+ * around 2026-10-22. Two hosts now carry the arena's calls:
+ *
+ * 1. The v1 gateway (Bearer `CLAWPUMP_API_KEY`, host allowlist in
+ *    `resolveClawPumpConfig`). Contract: https://clawpump.tech/developers, read
+ *    2026-11-18. Replies are camelCase (`walletAddress`, `skills`, `isPublic`).
+ *      create -> POST /agents {name, persona, system_prompt, model?}   flat fields; no skills, no strategy
+ *      read   -> GET  /agents/{id}                                      flat agent object + meta
+ *      update -> POST /agents/{id} {is_public: false} | {accepting_bids: false}
+ *                POST, not PATCH; snake_case fields, ONE field per body (each body was verified
+ *                alone). VERIFIED by the lead 2026-11-19: `{"isPublic":false}` -> 400 "No allowed
+ *                fields in request body"; `{"is_public":false}` -> 200 and `{"accepting_bids":false}`
+ *                -> 200, the agent became private and closed to bids, skills unchanged (portal check).
+ *                The dashboard's own save sends the same snake_case names (PATCH on the backend).
+ * 2. ClawPump's internal backend ("Advanced: direct backend access" on
+ *    /developers). The key is exchanged at `POST https://clawpump.tech/api/mcp/token`
+ *    for `{access_token, api_url, expires_in: 3600}`; `api_url` was
+ *    `https://clawpump-ai-agents.clawpump-fee-collect-cloudflare.workers.dev`
+ *    (one exchange, 2026-11-19). Only that exact host is allowed
+ *    (CLAWPUMP_BACKEND_ORIGIN), and only the short-lived token goes there: the
+ *    `cpk_` key never leaves clawpump.tech. Route names come from the open
+ *    source MCP server `@clawpump/agents` 0.1.28 `dist/server.js` (its backend client).
+ *      listing  -> GET /agents/{id} -> {id, is_public, accepting_bids, ...} snake_case; v1 GET has no
+ *                  accepting_bids, so this read is the privacy proof. VERIFIED (read-only GET) 2026-11-19.
+ *      wallets  -> GET /wallets/summary -> {wallets: [{agent_id, wallet_address, sol_balance, usdc_balance, updated_at}]}
+ *      wallet   -> GET /wallets/{id}/history?limit=N -> {address, solBalance, usdcBalance, transactions}
+ *                  Both VERIFIED with read-only GETs 2026-11-19 (on an empty arena wallet, so no transaction row was seen).
+ *      transfer -> POST /wallets/{id}/transfer {to, amount, token}             NOT VERIFIED on this host
+ *      x402     -> POST /agents/{id}/x402/x402_service_details | _pay          NOT VERIFIED on this host
+ *    The backend answers 404 to any method a route does not take, so a GET
+ *    cannot prove a POST route exists, and a POST would move money. The POST
+ *    routes therefore fail closed with `route_not_verified` BEFORE any request
+ *    (CLAWPUMP_VERIFIED_BACKEND_POSTS is empty). Opening one is a reviewed code
+ *    change after a founder-approved live test, never an env flip.
  *
  * Rules: strict timeouts, typed errors that carry only a code and an HTTP
- * status, NO logging at all (so the key and the vendor body never reach a log),
- * and NO retry of a non-idempotent POST (create, pay, transfer). The provisioning job
- * retries a failed create later with a NEW create; it never adopts an
- * existing agent (Codex r18 #4).
+ * status, NO logging at all (so the key, the token and the vendor body never
+ * reach a log), and NO retry of a non-idempotent POST (create, update, pay,
+ * transfer). The provisioning job retries a failed create later with a NEW
+ * create; it never adopts an existing agent (Codex r18 #4).
+ *
+ * Skills (founder 2026-11-19): ClawVille no longer strips or adds skills. A
+ * v1 create always carries ClawPump's base bundle (x402, perps, wallet, ...,
+ * plus trading when no strategy is sent); the founder allowed them because the
+ * arena is paper only and live mode answers live_not_available. Privacy is
+ * enforced instead: every arena agent is made private and closed to
+ * marketplace bids (provisioning and the
+ * privacy repair pass in floor-arena/provisioning.ts).
  *
  * Live-trader guard (`assertArenaAgent`, checked fresh on every call): an
  * update or payment names the arena row it acts for, and the ClawPump id
- * must be that row's `clawpump_agent_id` (DB proof: a USER or HOUSE row for a
- * config PATCH, a USER row only for a payment, a live wallet read or a
+ * must be that row's `clawpump_agent_id` (DB proof: a USER or HOUSE row for the
+ * privacy update, a USER row only for a payment, a live wallet read or a
  * transfer); FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS are refused outright, even
  * when a row names one; and ClawPump's current name must carry this
  * environment's arena prefix plus that row's id suffix. A live trader
  * (Genesis, Runner, Dip Hunter, Clawville_World on the founder's staging
  * account) can therefore never be re-configured or spend through here, even
  * after a rename.
- * The guard's GET is the last read before the write (Codex r19 #3, r22): only
- * a 'stopped' agent gets a payment or a PATCH that can add capability or
- * change visibility; any other status (running, null, missing, unknown) gets
- * only a removal-only PATCH. A payment also needs x402 on the agent at that read.
+ * The guard's GET is the last read before a money write (Codex r19 #3, r22):
+ * only a 'stopped' agent gets a payment or a transfer. The privacy update only
+ * takes visibility away, so it is sent at any status.
  */
 
 export const CLAWPUMP_ARENA_AGENT_NAME_PREFIX = 'CV Arena';
@@ -70,39 +100,6 @@ export const CLAWPUMP_HOUSE_AGENT_IDS: ReadonlySet<string> = CLAWPUMP_LIVE_TRADE
 export function isLiveTraderClawPumpId(agentId: string | null | undefined): boolean {
   return typeof agentId === 'string' && CLAWPUMP_LIVE_TRADER_AGENT_IDS.has(agentId.trim().toLowerCase());
 }
-/** Skills an arena execution wallet may carry. No trading skill, ever (D8). */
-export const CLAWPUMP_ARENA_ALLOWED_SKILLS: ReadonlySet<string> = new Set(['x402']);
-/**
- * ClawPump's platform defaults. Live staging (verifier A, 2026-09-30) showed
- * they are STICKY: a PATCH of enabled_skills never removes them (['x402'] only
- * adds x402, [] only removes x402). They cannot be disabled, so they are never
- * in the deny list; the arena agent is stopped and driven only by our API.
- */
-export const CLAWPUMP_STICKY_DEFAULT_SKILLS: ReadonlySet<string> = new Set([
-  'action-plans', 'web-browsing', 'private-transfers', 'bitget-intel', 'self-learning', 'skill-management',
-]);
-
-/**
- * Skills an arena execution wallet must NEVER carry (lead order after live
- * staging, 2026-09-30): trading, launching, sniping, marketplace, paid tools
- * and wallet operations. Exact ClawPump slugs as the API returns them
- * (research-20260930-clawpump R6 per-agent lists) PLUS the MCP aliases
- * (`perps`, `laso`, `trading`) in case a response uses one. `x402` is denied
- * too unless the arena agent has an enabled add-on (the caller decides).
- * `private-transfers` is NOT here: it is a sticky platform default that cannot
- * be disabled (see CLAWPUMP_STICKY_DEFAULT_SKILLS).
- */
-export const CLAWPUMP_ARENA_DENIED_SKILLS: ReadonlySet<string> = new Set([
-  'defi-trading', 'trading',
-  'perps-trading', 'perps',
-  'token-launch', 'token-sniper',
-  'marketplace',
-  'pay-sh', 'paysh',
-  'laso-finance', 'laso',
-  'agenc-worker', 'agent-c', 'agenc',
-  'wallet-ops',
-  'x402',
-]);
 /** A single x402 call may never authorise more than this, whatever the caller asks. */
 export const CLAWPUMP_X402_MAX_CALL_USD = 5;
 /**
@@ -111,32 +108,59 @@ export const CLAWPUMP_X402_MAX_CALL_USD = 5;
  * host is a reviewed change here.
  */
 export const CLAWPUMP_X402_ALLOWED_HOSTS: ReadonlySet<string> = new Set(['api.nansen.ai']);
+
+/**
+ * ClawPump's internal backend: the ONLY host the exchanged token may go to.
+ * `POST /api/mcp/token` named it as `api_url` on 2026-11-19. Any other
+ * `api_url` (another host, a port, a path) fails closed with
+ * `backend_not_allowed`, and the token is never used.
+ */
+export const CLAWPUMP_BACKEND_ORIGIN = 'https://clawpump-ai-agents.clawpump-fee-collect-cloudflare.workers.dev';
+/** The key exchange path (outside /api/v1, on the v1 gateway host). */
+export const CLAWPUMP_TOKEN_PATH = '/api/mcp/token';
+export type ClawPumpBackendPost = 'transfer' | 'x402';
+/**
+ * Backend POST routes whose request and reply were VERIFIED on the current
+ * backend host. EMPTY (2026-11-19): neither the transfer route nor the x402
+ * routes were verified after the 10-22 move (a POST moves money; a GET cannot
+ * prove the route). Every such call throws `route_not_verified` before any request.
+ */
+export const CLAWPUMP_VERIFIED_BACKEND_POSTS: ReadonlySet<ClawPumpBackendPost> = new Set<ClawPumpBackendPost>();
 const X402_TIMEOUT_MS = 45_000;
 const MAX_RESPONSE_CHARS = 1_000_000;
 /** GET /wallets/summary grows with every arena player (one ClawPump agent each). */
 const MAX_LIST_RESPONSE_CHARS = 8_000_000;
 const MAX_LIST_AGENTS = 5_000;
+/** The exchanged token is renewed this long before ClawPump's `expires_in` ends (at most half its life). */
+const BACKEND_TOKEN_MARGIN_MS = 5 * 60_000;
 
 export type ClawPumpWriterErrorCode =
   | 'not_configured' | 'invalid_base_url' | 'invalid_agent_id' | 'invalid_input' | 'not_arena_agent'
   | 'unauthorized' | 'not_found' | 'payment_required' | 'rate_limited' | 'http_error'
   | 'timeout' | 'network_error' | 'response_too_large' | 'schema_invalid' | 'host_not_allowed'
-  | 'agent_running' | 'agent_not_stopped' | 'x402_not_enabled' | 'budget_exhausted' | 'wallet_mismatch';
+  | 'agent_running' | 'agent_not_stopped' | 'x402_not_enabled' | 'budget_exhausted' | 'wallet_mismatch'
+  | 'backend_not_allowed' | 'route_not_verified';
 
 export class ClawPumpWriterError extends Error {
   constructor(readonly code: ClawPumpWriterErrorCode, readonly status: number | null = null) {
-    // Code and HTTP status only: never the key, a URL, or a vendor body.
+    // Code and HTTP status only: never the key, a token, a URL, or a vendor body.
     super(`clawpump_${code}${status === null ? '' : `_${status}`}`);
     this.name = 'ClawPumpWriterError';
   }
 }
 
-/** 'removal' calls may use the reserved end of the shared call budget (x402 removals only). */
+/** 'removal' calls may use the reserved end of the shared call budget (the privacy repair). */
 export type ClawPumpCallPriority = 'removal' | 'normal';
 
 export interface ClawPumpWriterOptions extends ClawPumpClientOptions {
   /** Budget priority for this call (default 'normal'). */
   priority?: ClawPumpCallPriority;
+  /**
+   * TEST SEAM ONLY: backend POST routes to treat as verified, so the unit tests
+   * can still exercise the request and reply handling. No production caller
+   * passes it (the exported writer surfaces never do).
+   */
+  _testVerifiedBackendPosts?: ReadonlySet<ClawPumpBackendPost>;
 }
 
 export interface ClawPumpCreatedAgent {
@@ -144,7 +168,15 @@ export interface ClawPumpCreatedAgent {
   name: string | null;
   status: string | null;
   walletAddress: string | null;
-  enabledSkills: string[] | null;
+  /** v1 public skill slugs (`trading`, `x402`, ...); null when the reply has no list. */
+  skills: string[] | null;
+  /** null when the reply has no `isPublic`: never read as "private". */
+  isPublic: boolean | null;
+}
+
+/** The marketplace visibility of an agent, from the backend read. null = the field is missing: never read as "off". */
+export interface ClawPumpAgentListing {
+  id: string;
   isPublic: boolean | null;
   acceptingBids: boolean | null;
 }
@@ -167,33 +199,26 @@ export interface ClawPumpX402Result {
 }
 
 const agentIdSchema = z.string().uuid();
-const skillSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9_-]{1,64}$/);
-/** CREATE: nothing but `x402` (when an add-on is on). */
-const skillsSchema = z.array(skillSchema).max(10).refine(
-  (skills) => skills.every((skill) => CLAWPUMP_ARENA_ALLOWED_SKILLS.has(skill)),
-  'skill_not_allowed',
-);
-/** PATCH: ClawPump's harmless defaults may stay; no denied skill except `x402`. */
-const patchSkillsSchema = z.array(skillSchema).max(40).refine(
-  (skills) => skills.every((skill) => skill === 'x402' || !CLAWPUMP_ARENA_DENIED_SKILLS.has(skill)),
-  'skill_not_allowed',
-);
 
+/** v1 POST /agents body (flat). No `skills` and no `strategy`: ClawPump's default bundle stays (founder 2026-11-19). */
 export const createAgentInputSchema = z.object({
   name: z.string().trim().min(1).max(48),
   persona: z.string().trim().min(1).max(2_000),
   system_prompt: z.string().trim().min(1).max(4_000),
-  enabled_skills: skillsSchema,
-  is_public: z.boolean(),
   model: z.string().trim().min(1).max(120).optional(),
 }).strict();
 export type CreateClawPumpAgentInput = z.infer<typeof createAgentInputSchema>;
 
-export const updateAgentPatchSchema = z.object({
-  accepting_bids: z.boolean().optional(),
-  is_public: z.boolean().optional(),
-  enabled_skills: patchSkillsSchema.optional(),
-}).strict().refine((patch) => Object.keys(patch).length > 0, 'empty_patch');
+/**
+ * v1 POST /agents/{id} body: EXACTLY one of `{is_public: false}` or
+ * `{accepting_bids: false}` (each body verified live alone, 2026-11-19). The
+ * writer can only take visibility away: never make an agent public, never
+ * change skills, persona or model.
+ */
+export const updateAgentPatchSchema = z.union([
+  z.object({ is_public: z.literal(false) }).strict(),
+  z.object({ accepting_bids: z.literal(false) }).strict(),
+]);
 export type UpdateClawPumpAgentPatch = z.infer<typeof updateAgentPatchSchema>;
 
 const httpsUrlSchema = z.string().url().max(2_000).refine((value) => {
@@ -223,17 +248,24 @@ export function isAllowedX402Url(value: string): boolean {
 }
 
 // Vendor wire: type and bound only what we read, pass the rest through.
+// v1 agent replies are camelCase (GET /api/v1/agents reply keys, 2026-11-18).
 const agentWire = z.object({
   id: z.string().min(1).max(128),
   name: z.string().max(200).nullish(),
   status: z.string().max(40).nullish(),
-  wallet_address: z.string().max(64).nullish(),
-  enabled_skills: z.array(z.string().max(80)).max(100).nullish(),
+  walletAddress: z.string().max(64).nullish(),
+  skills: z.array(z.string().max(80)).max(100).nullish(),
+  isPublic: z.boolean().nullish(),
+}).passthrough();
+const wrappedAgentWire = z.object({ agent: agentWire }).passthrough();
+// Backend GET /agents/{id} is snake_case (read 2026-11-19).
+const listingWire = z.object({
+  id: z.string().min(1).max(128),
   is_public: z.boolean().nullish(),
   accepting_bids: z.boolean().nullish(),
 }).passthrough();
-const wrappedAgentWire = z.object({ agent: agentWire }).passthrough();
 const amountWire = z.union([z.number(), z.string().max(40)]).nullish();
+// Backend /wallets/summary rows are snake_case (read 2026-11-19).
 const walletWire = z.object({
   agent_id: z.string().min(1).max(128),
   wallet_address: z.string().max(64).nullish(),
@@ -242,6 +274,11 @@ const walletWire = z.object({
   updated_at: z.string().max(64).nullish(),
 }).passthrough();
 const walletSummaryWire = z.object({ wallets: z.array(walletWire).max(MAX_LIST_AGENTS) }).passthrough();
+const backendTokenWire = z.object({
+  access_token: z.string().min(20).max(8_192),
+  api_url: z.string().max(500),
+  expires_in: z.number().positive().max(86_400),
+}).passthrough();
 
 function toWriterError(error: unknown): ClawPumpWriterError {
   if (error instanceof ClawPumpWriterError) return error;
@@ -251,26 +288,23 @@ function toWriterError(error: unknown): ClawPumpWriterError {
 
 /**
  * Codex r20 (3) / audit-money B: a per-process token bucket over EVERY call this
- * writer makes (create, PATCH, x402 pay and check, agent GET, wallet summary,
- * wallet history, transfer),
+ * writer makes (create, update, agent GET, wallet summary, wallet history, the
+ * backend key exchange, and the x402 and transfer POSTs once verified),
  * checked BEFORE the request, so the arena can never flood the ClawPump key
  * the house traders share. 60 calls a minute, burst 10 (code constants, no env
- * var). The last REMOVAL_RESERVE tokens are for removal-priority calls only, so
- * x402 removals always get the first claim: half of the burst (5 of 10) is
- * theirs alone; normal calls (provisioning, adds, re-checks, payments) stop
- * above that floor. Empty -> 'budget_exhausted' (our own code, distinct from
- * ClawPump's HTTP 429 'rate_limited') before any request, so nothing can have
- * been charged; the next tick retries. Scope: every ClawPump call the ARENA
- * makes through this writer, the arena's agent GETs included. The house
- * traders' own calls and the paper-fill quotes (other subsystems, other
- * clients) are out of scope.
+ * var). The last REMOVAL_RESERVE tokens are for removal-priority calls only
+ * (the privacy repair, which only takes visibility away), so it always gets
+ * the first claim: half of the burst (5 of 10) is theirs alone; normal calls
+ * (provisioning, add-on checks, wallet reads) stop above that floor. Empty ->
+ * 'budget_exhausted' (our own code, distinct from ClawPump's HTTP 429
+ * 'rate_limited') before any request, so nothing can have been charged; the
+ * next tick retries. Scope: every ClawPump call the ARENA makes through this
+ * writer. The house traders' own calls and the paper-fill quotes (other
+ * subsystems, other clients) are out of scope.
  * Quota: ClawPump's /developers page lists 10,000,000 calls a month for the
  * Enterprise tier (about 230 a minute on average) and says call limits are
  * "recorded but not enforced", with no per-second limit and no documented
- * burst ceiling (ops/house-traders/research-20260930-clawpump/R2-api.md
- * :92-94, R1-docs.md :252). 60 a minute leaves most of that for the house
- * traders. Load: a removal is 4 calls (GET, guard GET, PATCH, verifying GET),
- * so about 15 removals a minute when the budget is the limit.
+ * burst ceiling. 60 a minute leaves most of that for the house traders.
  */
 export const CLAWPUMP_WRITER_CALLS_PER_MINUTE = 60;
 export const CLAWPUMP_WRITER_BURST = 10;
@@ -304,49 +338,160 @@ export function _resetClawPumpWriterRateForTest(tokens: number = CLAWPUMP_WRITER
   writerRefilledAt = Date.now();
 }
 
-async function sendJson(
-  method: 'GET' | 'POST' | 'PATCH',
-  path: string,
-  body: unknown,
-  options: ClawPumpWriterOptions,
-  timeoutOverrideMs?: number,
-  maxChars: number = MAX_RESPONSE_CHARS,
-): Promise<unknown> {
-  let config: ReturnType<typeof resolveClawPumpConfig>;
-  try {
-    config = resolveClawPumpConfig(options.env ?? process.env);
-  } catch (error) {
-    throw toWriterError(error);
-  }
+// ─── Backend session (key exchange) ─────────────────────────────────────────
+
+interface BackendSession { token: string; expiresAtMs: number; forKey: string }
+let backendSession: BackendSession | null = null;
+let backendSessionInflight: Promise<BackendSession> | null = null;
+
+/** Test seam: forget the cached backend token. */
+export function _resetClawPumpBackendSessionForTest(): void {
+  backendSession = null;
+  backendSessionInflight = null;
+}
+
+/** True only for exactly CLAWPUMP_BACKEND_ORIGIN: https, that host, no port, no credentials, no path, query or hash. */
+export function isAllowedBackendApiUrl(value: string): boolean {
   let url: URL;
   try {
-    url = clawPumpUrl(config, path);
-  } catch (error) {
-    throw toWriterError(error);
+    url = new URL(value);
+  } catch {
+    return false;
   }
+  return url.protocol === 'https:' && !url.username && !url.password && !url.port && !url.search && !url.hash
+    && url.pathname === '/' && url.origin === CLAWPUMP_BACKEND_ORIGIN;
+}
+
+/** Maps a non-2xx status to the writer's error (shared by every call). */
+function statusError(status: number): ClawPumpWriterError {
+  if (status === 401 || status === 403) return new ClawPumpWriterError('unauthorized', status);
+  if (status === 404) return new ClawPumpWriterError('not_found', 404);
+  if (status === 402) return new ClawPumpWriterError('payment_required', 402);
+  if (status === 429) return new ClawPumpWriterError('rate_limited', 429);
+  return new ClawPumpWriterError('http_error', status);
+}
+
+function transportError(error: unknown): ClawPumpWriterError {
+  const name = (error as { name?: string } | null)?.name;
+  return new ClawPumpWriterError(name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network_error');
+}
+
+/**
+ * ONE `POST /api/mcp/token` with the `cpk_` key, to clawpump.tech only (the
+ * origin `resolveClawPumpConfig` allows). The reply's `api_url` must be
+ * CLAWPUMP_BACKEND_ORIGIN exactly. Counted in the call budget (the caller's
+ * priority). Not retried: a failure throws and the next call tries again.
+ */
+async function exchangeBackendToken(
+  config: ReturnType<typeof resolveClawPumpConfig>,
+  options: ClawPumpWriterOptions,
+): Promise<BackendSession> {
   if (!takeWriterToken(options.priority ?? 'normal')) throw new ClawPumpWriterError('budget_exhausted');
   let response: Response;
   try {
-    response = await (options.fetchImpl ?? fetch)(url, {
+    response = await (options.fetchImpl ?? fetch)(new URL(config.origin + CLAWPUMP_TOKEN_PATH), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.apiKey}`, Accept: 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+  } catch (error) {
+    throw transportError(error);
+  }
+  if (!response.ok) throw statusError(response.status);
+  let text: string;
+  try { text = await response.text(); } catch { throw new ClawPumpWriterError('timeout', response.status); }
+  if (text.length > MAX_RESPONSE_CHARS) throw new ClawPumpWriterError('response_too_large', response.status);
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { throw new ClawPumpWriterError('schema_invalid', response.status); }
+  const parsed = backendTokenWire.safeParse(body);
+  if (!parsed.success) throw new ClawPumpWriterError('schema_invalid', response.status);
+  if (!isAllowedBackendApiUrl(parsed.data.api_url)) throw new ClawPumpWriterError('backend_not_allowed');
+  const lifetimeMs = parsed.data.expires_in * 1_000;
+  return {
+    token: parsed.data.access_token,
+    expiresAtMs: Date.now() + lifetimeMs - Math.min(BACKEND_TOKEN_MARGIN_MS, lifetimeMs / 2),
+    forKey: config.apiKey,
+  };
+}
+
+/** The cached backend token, or ONE exchange shared by every caller waiting for it (single flight). */
+async function readBackendToken(
+  config: ReturnType<typeof resolveClawPumpConfig>,
+  options: ClawPumpWriterOptions,
+): Promise<string> {
+  const cached = backendSession;
+  if (cached && cached.forKey === config.apiKey && cached.expiresAtMs > Date.now()) return cached.token;
+  backendSessionInflight ??= exchangeBackendToken(config, options)
+    .then((session) => {
+      backendSession = session;
+      return session;
+    })
+    .finally(() => {
+      backendSessionInflight = null;
+    });
+  return (await backendSessionInflight).token;
+}
+
+type ClawPumpHost = 'v1' | 'backend';
+
+interface ResolvedCall { url: URL; bearer: string; timeoutMs: number }
+
+/**
+ * Config, URL and Bearer for one call, every check BEFORE the request: the key
+ * and the v1 base (`resolveClawPumpConfig`), the path, the backend token (an
+ * exchange when none is cached), then the call budget. The `cpk_` key goes
+ * only to the v1 gateway; the backend gets only the exchanged token.
+ */
+async function resolveCall(host: ClawPumpHost, path: string, options: ClawPumpWriterOptions): Promise<ResolvedCall> {
+  let config: ReturnType<typeof resolveClawPumpConfig>;
+  let url: URL;
+  try {
+    config = resolveClawPumpConfig(options.env ?? process.env);
+    url = host === 'v1'
+      ? clawPumpUrl(config, path)
+      : clawPumpUrl({ origin: CLAWPUMP_BACKEND_ORIGIN, basePath: '' }, path);
+  } catch (error) {
+    throw toWriterError(error);
+  }
+  const bearer = host === 'v1' ? config.apiKey : await readBackendToken(config, options);
+  if (!takeWriterToken(options.priority ?? 'normal')) throw new ClawPumpWriterError('budget_exhausted');
+  return { url, bearer, timeoutMs: config.timeoutMs };
+}
+
+/** A 401 or 403 from the backend ends the cached token, so the next call exchanges a new one. */
+function noteBackendStatus(host: ClawPumpHost, status: number): void {
+  if (host === 'backend' && (status === 401 || status === 403)) backendSession = null;
+}
+
+async function sendJson(
+  method: 'GET' | 'POST',
+  path: string,
+  body: unknown,
+  options: ClawPumpWriterOptions,
+  host: ClawPumpHost = 'v1',
+  timeoutOverrideMs?: number,
+  maxChars: number = MAX_RESPONSE_CHARS,
+): Promise<unknown> {
+  const call = await resolveCall(host, path, options);
+  let response: Response;
+  try {
+    response = await (options.fetchImpl ?? fetch)(call.url, {
       method,
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `Bearer ${call.bearer}`,
         Accept: 'application/json',
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutOverrideMs ?? config.timeoutMs),
+      signal: AbortSignal.timeout(timeoutOverrideMs ?? call.timeoutMs),
     });
   } catch (error) {
-    const name = (error as { name?: string } | null)?.name;
-    throw new ClawPumpWriterError(name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network_error');
+    throw transportError(error);
   }
-  if (response.status === 401 || response.status === 403) throw new ClawPumpWriterError('unauthorized', response.status);
-  if (response.status === 404) throw new ClawPumpWriterError('not_found', 404);
-  if (response.status === 402) throw new ClawPumpWriterError('payment_required', 402);
-  if (response.status === 429) throw new ClawPumpWriterError('rate_limited', 429);
-  if (!response.ok) throw new ClawPumpWriterError('http_error', response.status);
+  noteBackendStatus(host, response.status);
+  if (!response.ok) throw statusError(response.status);
   if (Number(response.headers.get('content-length') ?? 0) > maxChars) {
     throw new ClawPumpWriterError('response_too_large', response.status);
   }
@@ -354,6 +499,12 @@ async function sendJson(
   try { text = await response.text(); } catch { throw new ClawPumpWriterError('timeout', response.status); }
   if (text.length > maxChars) throw new ClawPumpWriterError('response_too_large', response.status);
   try { return JSON.parse(text); } catch { throw new ClawPumpWriterError('schema_invalid', response.status); }
+}
+
+/** Throws `route_not_verified` (nothing sent) unless the backend POST route is verified. */
+function assertBackendPostVerified(route: ClawPumpBackendPost, options: ClawPumpWriterOptions): void {
+  const verified = options._testVerifiedBackendPosts ?? CLAWPUMP_VERIFIED_BACKEND_POSTS;
+  if (!verified.has(route)) throw new ClawPumpWriterError('route_not_verified');
 }
 
 function toCreatedAgent(body: unknown): ClawPumpCreatedAgent {
@@ -365,10 +516,9 @@ function toCreatedAgent(body: unknown): ClawPumpCreatedAgent {
     id: wire.id,
     name: wire.name ?? null,
     status: wire.status ?? null,
-    walletAddress: wire.wallet_address?.trim() || null,
-    enabledSkills: wire.enabled_skills ?? null,
-    isPublic: wire.is_public ?? null,
-    acceptingBids: wire.accepting_bids ?? null,
+    walletAddress: wire.walletAddress?.trim() || null,
+    skills: wire.skills ?? null,
+    isPublic: wire.isPublic ?? null,
   };
 }
 
@@ -409,7 +559,7 @@ export function arenaAgentNameSuffix(arenaAgentId: string): string {
 }
 
 export interface ClawPumpWriterOwnership {
-  /** Arena row this ClawPump agent must belong to (`floor_arena_agents.id`; kind 'user', or 'house' for a config PATCH). */
+  /** Arena row this ClawPump agent must belong to (`floor_arena_agents.id`; kind 'user', or 'house' for the privacy update). */
   arenaAgentId: string;
   /** Ownership proof; default: the `floor_arena_agents` row read fresh (no cache). */
   isOwnedBy?: (clawpumpAgentId: string, arenaAgentId: string) => Promise<boolean>;
@@ -417,7 +567,7 @@ export interface ClawPumpWriterOwnership {
 
 /**
  * Which arena rows may own the agent for this call. 'arena' (user or house):
- * the config PATCH only. 'user': every call that can move money (x402 pay,
+ * the privacy update only. 'user': every call that can move money (x402 pay,
  * live wallet read for a withdraw, transfer); house rows have no owner and
  * no withdraw (SPEC house-clawpump-x402 T3).
  */
@@ -456,8 +606,9 @@ async function assertOwnedArenaAgent(agentId: string, ownership: ClawPumpWriterO
   if (!owned) throw new ClawPumpWriterError('not_arena_agent');
 }
 
-function normalisedSkills(skills: readonly string[]): string[] {
-  return skills.map((skill) => skill.trim().toLowerCase()).filter((skill) => skill.length > 0);
+/** True when the agent's skill list (v1 public slugs) holds `skill` (trimmed, any case). */
+export function agentHasSkill(agent: { skills: string[] | null }, skill: string): boolean {
+  return (agent.skills ?? []).some((have) => have.trim().toLowerCase() === skill);
 }
 
 /**
@@ -473,20 +624,10 @@ function assertStopped(status: string | null): void {
 }
 
 /**
- * Codex r19 #3: a PATCH that can only take capability away: `enabled_skills`
- * alone, no x402, and every skill in it already on the agent (`current`, the
- * writer's own last read). The only PATCH allowed on an agent that is not
- * 'stopped' (Codex r22).
+ * v1 POST /agents with the flat documented fields. NOT idempotent and never
+ * retried here. ClawPump creates agents PUBLIC with its default skill bundle;
+ * the caller makes the agent private after it saved the id (provisioning).
  */
-export function isRemovalOnlyPatch(patch: UpdateClawPumpAgentPatch, current: ClawPumpCreatedAgent): boolean {
-  const keys = Object.keys(patch).filter((key) => patch[key as keyof UpdateClawPumpAgentPatch] !== undefined);
-  if (keys.length !== 1 || keys[0] !== 'enabled_skills' || !patch.enabled_skills || current.enabledSkills === null) return false;
-  const have = new Set(normalisedSkills(current.enabledSkills));
-  const next = normalisedSkills(patch.enabled_skills);
-  return !next.includes('x402') && next.every((skill) => have.has(skill));
-}
-
-/** POST /agents. NOT idempotent and never retried here. */
 export async function createClawPumpAgent(
   input: CreateClawPumpAgentInput,
   options: ClawPumpWriterOptions = {},
@@ -494,17 +635,11 @@ export async function createClawPumpAgent(
   const parsed = createAgentInputSchema.safeParse(input);
   if (!parsed.success) throw new ClawPumpWriterError('invalid_input');
   if (!isArenaAgentName(parsed.data.name, options.env ?? process.env)) throw new ClawPumpWriterError('not_arena_agent');
-  // Same body the MCP builds: persona / system_prompt / model live under `config`.
-  const config: Record<string, string> = {
-    persona: parsed.data.persona,
-    system_prompt: parsed.data.system_prompt,
-  };
-  if (parsed.data.model) config.model = parsed.data.model;
   const created = toCreatedAgent(await sendJson('POST', '/agents', {
     name: parsed.data.name,
-    config,
-    enabled_skills: parsed.data.enabled_skills,
-    is_public: parsed.data.is_public,
+    persona: parsed.data.persona,
+    system_prompt: parsed.data.system_prompt,
+    ...(parsed.data.model ? { model: parsed.data.model } : {}),
   }, options));
   if (!agentIdSchema.safeParse(created.id).success) throw new ClawPumpWriterError('schema_invalid');
   // A create can never hand back a live trader for an arena row to save.
@@ -512,34 +647,33 @@ export async function createClawPumpAgent(
   return created;
 }
 
-/** PATCH /agents/{id} with only accepting_bids, is_public and enabled_skills, for the arena row that owns it. */
+/**
+ * v1 POST /agents/{id} with `{is_public: false}` or `{accepting_bids: false}`
+ * for the arena row that owns it, at any status (it only takes visibility
+ * away). The reply body is not proof (its shape is not documented): the caller
+ * confirms with readClawPumpArenaListing.
+ */
 export async function updateClawPumpAgent(
   agentId: string,
   patch: UpdateClawPumpAgentPatch,
   ownership: ClawPumpWriterOwnership,
   options: ClawPumpWriterOptions = {},
-): Promise<ClawPumpCreatedAgent> {
+): Promise<void> {
   assertAgentId(agentId);
   const parsed = updateAgentPatchSchema.safeParse(patch);
   if (!parsed.success) throw new ClawPumpWriterError('invalid_input');
-  const current = await assertArenaAgent(agentId, ownership, options, 'arena');
-  // Codex r19 #3 / r22: the guarantee holds at the LAST read before the PATCH.
-  // An agent that is not 'stopped' gets only a removal-only PATCH (a later
-  // status change is a separate vendor race the caller's read-back catches).
-  if (!isRemovalOnlyPatch(parsed.data, current)) assertStopped(current.status);
-  const updated = toCreatedAgent(await sendJson('PATCH', `/agents/${agentId}`, parsed.data, options));
-  if (updated.id !== agentId) throw new ClawPumpWriterError('schema_invalid');
-  return updated;
+  await assertArenaAgent(agentId, ownership, options, 'arena');
+  await sendJson('POST', `/agents/${agentId}`, parsed.data, options);
 }
 
 /**
- * GET /wallets/summary: SOL + USDC (UI units) for every agent of the account,
- * EXCEPT the live traders: their rows are dropped here, so no caller can ever
- * read a live trader's wallet or balance through the arena writer.
+ * Backend GET /wallets/summary: SOL + USDC (UI units) for every agent of the
+ * account, EXCEPT the live traders: their rows are dropped here, so no caller
+ * can ever read a live trader's wallet or balance through the arena writer.
  */
 export async function getClawPumpWalletBalances(options: ClawPumpWriterOptions = {}): Promise<ClawPumpWalletBalance[]> {
   const parsed = walletSummaryWire.safeParse(
-    await sendJson('GET', '/wallets/summary', undefined, options, undefined, MAX_LIST_RESPONSE_CHARS),
+    await sendJson('GET', '/wallets/summary', undefined, options, 'backend', undefined, MAX_LIST_RESPONSE_CHARS),
   );
   if (!parsed.success) throw new ClawPumpWriterError('schema_invalid');
   return parsed.data.wallets.filter((wire) => !isLiveTraderClawPumpId(wire.agent_id)).map((wire) => ({
@@ -551,7 +685,11 @@ export async function getClawPumpWalletBalances(options: ClawPumpWriterOptions =
   }));
 }
 
-/** POST /agents/{id}/x402/x402_service_details. Free: reads the 402 challenge, pays nothing. */
+/**
+ * Backend POST /agents/{id}/x402/x402_service_details. Free: reads the 402
+ * challenge, pays nothing. NOT VERIFIED on the current backend: it fails
+ * closed with `route_not_verified` after the static checks, before any request.
+ */
 export async function x402PayCheck(
   agentId: string,
   url: string,
@@ -563,15 +701,18 @@ export async function x402PayCheck(
     throw new ClawPumpWriterError('invalid_input');
   }
   if (!isAllowedX402Url(url)) throw new ClawPumpWriterError('host_not_allowed');
-  const payload = await sendJson('POST', `/agents/${agentId}/x402/x402_service_details`, { url, method }, options);
+  assertBackendPostVerified('x402', options);
+  const payload = await sendJson('POST', `/agents/${agentId}/x402/x402_service_details`, { url, method }, options, 'backend');
   const error = vendorError(payload);
   return { ok: error === null, error, payload };
 }
 
 /**
- * POST /agents/{id}/x402/x402_service_pay. Spends the agent's on-chain USDC,
- * hard-capped by ClawPump at `maxAmountAtomic` (USDC 6 decimals). NOT retried:
- * a timeout may still have paid, so the caller must book it as spent.
+ * Backend POST /agents/{id}/x402/x402_service_pay. Spends the agent's on-chain
+ * USDC, hard-capped by ClawPump at `maxAmountAtomic` (USDC 6 decimals). NOT
+ * retried: a timeout may still have paid, so the caller must book it as spent.
+ * NOT VERIFIED on the current backend: it fails closed with
+ * `route_not_verified` after the static checks, before any request.
  */
 export async function x402PayViaClawPump(
   agentId: string,
@@ -583,34 +724,37 @@ export async function x402PayViaClawPump(
   const parsed = x402PayInputSchema.safeParse(input);
   if (!parsed.success) throw new ClawPumpWriterError('invalid_input');
   if (!isAllowedX402Url(parsed.data.url)) throw new ClawPumpWriterError('host_not_allowed');
+  assertBackendPostVerified('x402', options);
   const current = await assertArenaAgent(agentId, ownership, options, 'user');
   // Pay only through an agent reported 'stopped' that holds x402 now (every
   // refusal happens before the POST, so nothing can have been charged).
   assertStopped(current.status);
-  if (!normalisedSkills(current.enabledSkills ?? []).includes('x402')) throw new ClawPumpWriterError('x402_not_enabled');
+  if (!agentHasSkill(current, 'x402')) throw new ClawPumpWriterError('x402_not_enabled');
   const payload = await sendJson('POST', `/agents/${agentId}/x402/x402_service_pay`, {
     url: parsed.data.url,
     method: parsed.data.method,
     ...(parsed.data.body === undefined ? {} : { body: parsed.data.body }),
     ...(parsed.data.query === undefined ? {} : { query: parsed.data.query }),
     maxAmountAtomic: Math.round(parsed.data.maxAmountUsd * 1e6),
-  }, options, X402_TIMEOUT_MS);
+  }, options, 'backend', X402_TIMEOUT_MS);
   const error = vendorError(payload);
   return { ok: error === null, error, payload };
 }
 
 /** The writer surface the arena jobs depend on, so tests inject a fake. */
 export interface ClawPumpArenaWriter {
-  /** GET /agents/{id} with its enabled skills (the post-provisioning check). */
+  /** v1 GET /agents/{id}: status, wallet, skills and `isPublic` (the privacy check). */
   readAgent(agentId: string, priority?: ClawPumpCallPriority): Promise<ClawPumpCreatedAgent>;
   createAgent(input: CreateClawPumpAgentInput): Promise<ClawPumpCreatedAgent>;
-  /** `arenaAgentId` = the user or house arena row that must own this ClawPump agent (Codex r17 #4). */
-  updateAgent(agentId: string, patch: UpdateClawPumpAgentPatch, arenaAgentId: string, priority?: ClawPumpCallPriority): Promise<ClawPumpCreatedAgent>;
+  /** Backend GET /agents/{id}: `is_public` and `accepting_bids` (the privacy proof). */
+  readListing(agentId: string, priority?: ClawPumpCallPriority): Promise<ClawPumpAgentListing>;
+  /** The privacy update. `arenaAgentId` = the user or house arena row that must own this ClawPump agent (Codex r17 #4). */
+  updateAgent(agentId: string, patch: UpdateClawPumpAgentPatch, arenaAgentId: string, priority?: ClawPumpCallPriority): Promise<void>;
   getWalletBalances(): Promise<ClawPumpWalletBalance[]>;
   x402Pay(agentId: string, input: X402PayInput, arenaAgentId: string): Promise<ClawPumpX402Result>;
 }
 
-/** GET /agents/{id}: the agent as ClawPump holds it now, enabled skills included. */
+/** v1 GET /agents/{id}: the agent as ClawPump holds it now (camelCase: walletAddress, skills, isPublic). */
 export async function readClawPumpArenaAgent(
   agentId: string,
   options: ClawPumpWriterOptions = {},
@@ -621,8 +765,24 @@ export async function readClawPumpArenaAgent(
   return agent;
 }
 
+/**
+ * Backend GET /agents/{id}: `is_public` and `accepting_bids` as ClawPump
+ * stores them (v1 replies carry no `accepting_bids`). Read only, no guard
+ * beyond the live-trader id refusal.
+ */
+export async function readClawPumpArenaListing(
+  agentId: string,
+  options: ClawPumpWriterOptions = {},
+): Promise<ClawPumpAgentListing> {
+  assertAgentId(agentId);
+  const parsed = listingWire.safeParse(await sendJson('GET', `/agents/${agentId}`, undefined, options, 'backend'));
+  if (!parsed.success || parsed.data.id !== agentId) throw new ClawPumpWriterError('schema_invalid');
+  return { id: agentId, isPublic: parsed.data.is_public ?? null, acceptingBids: parsed.data.accepting_bids ?? null };
+}
+
 export const clawPumpArenaWriter: ClawPumpArenaWriter = {
   readAgent: (agentId, priority) => readClawPumpArenaAgent(agentId, { priority }),
+  readListing: (agentId, priority) => readClawPumpArenaListing(agentId, { priority }),
   createAgent: (input) => createClawPumpAgent(input),
   updateAgent: (agentId, patch, arenaAgentId, priority) => updateClawPumpAgent(agentId, patch, { arenaAgentId }, { priority }),
   getWalletBalances: () => getClawPumpWalletBalances(),
@@ -757,10 +917,13 @@ const walletHistoryWire = z.object({
 }).passthrough();
 
 /**
- * GET /wallets/{id}/history: the LIVE balances of an arena agent's wallet
- * (Run 2 fact 3: /wallets/summary is cached, so it is never used here).
- * Order: agent id -> house id refused -> DB ownership (no network) -> one
- * normal-priority GET. A missing or unreadable balance throws schema_invalid.
+ * Backend GET /wallets/{id}/history: the LIVE balances of an arena agent's
+ * wallet (Run 2 fact 3: /wallets/summary is cached, so it is never used here).
+ * Order: agent id -> house id refused -> DB ownership (no network) -> the
+ * backend token (cached, or one exchange) -> one normal-priority GET. A missing
+ * or unreadable balance throws schema_invalid. Reply shape VERIFIED 2026-11-19
+ * on an empty wallet (`transactions: []`); the transaction row shape is from
+ * the 10-01 probes on the old host.
  */
 export async function readArenaWalletLive(
   agentId: string,
@@ -773,7 +936,7 @@ export async function readArenaWalletLive(
   await assertOwnedArenaAgent(agentId, ownership, 'user');
   const readAt = new Date();
   const parsed = walletHistoryWire.safeParse(
-    await sendJson('GET', `/wallets/${agentId}/history?limit=${limit}`, undefined, { ...rest, priority: 'normal' }),
+    await sendJson('GET', `/wallets/${agentId}/history?limit=${limit}`, undefined, { ...rest, priority: 'normal' }, 'backend'),
   );
   if (!parsed.success) throw new ClawPumpWriterError('schema_invalid');
   const addressProblem = arenaDestinationProblem(parsed.data.address);
@@ -822,33 +985,22 @@ function transportCode(error: unknown): 'timeout' | 'network_error' {
 }
 
 /**
- * The transfer POST. Same config, host check and call budget as sendJson. It
- * throws only not_configured, invalid_base_url or budget_exhausted, all BEFORE
- * fetch. After fetch starts it never throws and never retries: it returns the
- * HTTP status and the JSON body (read up to 1 MB) for ANY status, or the
- * transport failure.
+ * The backend transfer POST. Same config, host check, backend token and call
+ * budget as sendJson (resolveCall). Every throw (not_configured,
+ * invalid_base_url, budget_exhausted, or an error of the key exchange) comes
+ * BEFORE the transfer fetch. After fetch starts it never throws and never
+ * retries: it returns the HTTP status and the JSON body (read up to 1 MB) for
+ * ANY status, or the transport failure.
  */
 async function sendTransferPost(path: string, body: unknown, options: ClawPumpWriterOptions): Promise<TransferPostReply> {
-  let config: ReturnType<typeof resolveClawPumpConfig>;
-  try {
-    config = resolveClawPumpConfig(options.env ?? process.env);
-  } catch (error) {
-    throw toWriterError(error);
-  }
-  let url: URL;
-  try {
-    url = clawPumpUrl(config, path);
-  } catch (error) {
-    throw toWriterError(error);
-  }
   const requestBody = JSON.stringify(body);
-  if (!takeWriterToken('normal')) throw new ClawPumpWriterError('budget_exhausted');
+  const call = await resolveCall('backend', path, { ...options, priority: 'normal' });
   let response: Response;
   try {
-    response = await (options.fetchImpl ?? fetch)(url, {
+    response = await (options.fetchImpl ?? fetch)(call.url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${config.apiKey}`,
+        Authorization: `Bearer ${call.bearer}`,
         Accept: 'application/json',
         'Content-Type': 'application/json',
       },
@@ -859,6 +1011,7 @@ async function sendTransferPost(path: string, body: unknown, options: ClawPumpWr
   } catch (error) {
     return { kind: 'no_reply', code: transportCode(error) };
   }
+  noteBackendStatus('backend', response.status);
   try {
     const status = response.status;
     if (Number(response.headers.get('content-length') ?? 0) > MAX_RESPONSE_CHARS) {
@@ -936,10 +1089,12 @@ function classifyTransferReply(reply: TransferPostReply, transfer: CheckedTransf
 }
 
 /**
- * POST /wallets/{id}/transfer ONCE from the arena agent's wallet. Guard order
- * (every throw is BEFORE the POST, so a throw always means "nothing sent"):
- * agent id -> input -> assertArenaAgent (house id, DB ownership, env prefix and
- * row suffix; one GET) -> status 'stopped' -> wallet = expectedSource -> POST.
+ * Backend POST /wallets/{id}/transfer ONCE from the arena agent's wallet. Guard
+ * order (every throw is BEFORE the POST, so a throw always means "nothing sent"):
+ * agent id -> input -> route verified (NOT VERIFIED on the current backend, so
+ * today every call throws `route_not_verified` here) -> assertArenaAgent (house
+ * id, DB ownership, env prefix and row suffix; one GET) -> status 'stopped' ->
+ * wallet = expectedSource -> backend token -> POST.
  * Both calls use a normal-priority token (the removal reserve stays free).
  * No whitelist call (D34-a). Not retried: a timeout or any unclear reply is
  * 'unknown', and the caller reconciles on chain.
@@ -952,6 +1107,7 @@ export async function transferFromArenaWallet(
 ): Promise<ArenaTransferOutcome> {
   assertAgentId(agentId);
   const transfer = checkTransferInput(input);
+  assertBackendPostVerified('transfer', options);
   const callOptions: ClawPumpWriterOptions = { ...options, priority: 'normal' };
   const current = await assertArenaAgent(agentId, ownership, callOptions, 'user');
   assertStopped(current.status);

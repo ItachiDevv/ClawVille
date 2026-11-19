@@ -346,7 +346,7 @@ export async function readOwnedClawPumpAgent(
   } catch (error) {
     throw clawPumpFailure(error);
   }
-  if (single.id !== clawpumpAgentId || (listed.userId && single.userId && listed.userId !== single.userId)) {
+  if (single.id !== clawpumpAgentId) {
     throw new TradingProvisioningError('clawpump_agent_not_owned', 404, 'The ClawPump agent reads disagree.');
   }
   const walletPubkey = listed.walletAddress ?? '';

@@ -85,8 +85,6 @@ interface Harness {
   events: string[];
   /** How many x402 checks (fresh ClawPump GETs) the tick made. */
   x402Checks: number;
-  /** The allowAdd flag of each x402 check, in order. */
-  allowAdds: boolean[];
 }
 
 /**
@@ -102,10 +100,9 @@ function harness(options: {
   balance?: number | null;
   pay?: (input: X402PayInput) => Promise<ClawPumpX402Result>;
   enabled?: boolean;
-  /** The leader's locked x402 check/add before pay (default: 'on'). */
-  x402Ready?: (agentId: string, allowAdd: boolean) => Promise<ArenaX402Outcome>;
+  /** The leader's read-only x402 check before pay (default: 'on'). */
+  x402Ready?: (agentId: string) => Promise<ArenaX402Outcome>;
   budgetOk?: (calls: number) => boolean;
-  removalsDeferred?: () => boolean;
   finalize?: () => Promise<void>;
   ledger?: LedgerRow[];
   /** The agent row as the reservation transaction re-reads it (Codex r3 #10). */
@@ -144,7 +141,7 @@ function harness(options: {
       || now.clawpumpAgentId !== clawpumpAgentId || !entry?.enabled;
   };
   const h: Harness = {
-    pays: [], released: [], calls: ledger, mints: [], symbols: [], events: [], x402Checks: 0, allowAdds: [],
+    pays: [], released: [], calls: ledger, mints: [], symbols: [], events: [], x402Checks: 0,
     deps: {
       catalog: () => options.catalog ?? [FEED],
       paymentsEnabled: () => options.enabled ?? true,
@@ -195,13 +192,11 @@ function harness(options: {
       },
       insertEvent: async (_agentId, event) => { h.events.push(event.summary); },
       walletUsdc: async () => ('balance' in options ? options.balance ?? null : 10),
-      x402Ready: async (agentId, allowAdd) => {
+      x402Ready: async (agentId) => {
         h.x402Checks += 1;
-        h.allowAdds.push(allowAdd);
-        return options.x402Ready ? options.x402Ready(agentId, allowAdd) : 'on';
+        return options.x402Ready ? options.x402Ready(agentId) : 'on';
       },
       budgetOk: (calls) => options.budgetOk?.(calls) ?? true,
-      removalsDeferred: () => options.removalsDeferred?.() ?? false,
       pay: async (clawpumpAgentId, input, arenaAgentId) => {
         h.pays.push({ clawpumpAgentId, input, arenaAgentId });
         return options.pay ? options.pay(input) : { ok: true, error: null, payload: { data: [{ mint: USDC }, { mint: BONK }] } };
@@ -635,15 +630,15 @@ describe('runArenaAddonsTick', () => {
     expect(a.pays.length + b.pays.length).toBe(1);
   });
 
-  test('audit-money S5: an OFF that lands after the x402 add but before confirmDispatch releases the reservation at 0', async () => {
+  test('audit-money S5: an OFF that lands after the x402 check but before confirmDispatch releases the reservation at 0', async () => {
     const bob = agent([{ id: 'feed-a', enabled: true, dailyCapUsd: 1 }]);
     let current = bob;
     const asked: string[] = [];
     const h = harness({
       agents: [bob],
       current: () => current,
-      // The leader just added x402 for this arena agent.
-      x402Ready: async (agentId) => { asked.push(agentId); return 'added'; },
+      // The leader just read x402 on this arena agent.
+      x402Ready: async (agentId) => { asked.push(agentId); return 'on'; },
       afterReserve: () => { current = { ...bob, addons: [{ id: 'feed-a', enabled: false, dailyCapUsd: 1 }] }; },
     });
     await runArenaAddonsTick(NOW, h.deps);
@@ -651,7 +646,6 @@ describe('runArenaAddonsTick', () => {
     expect(h.pays).toHaveLength(0);
     expect(h.released).toEqual([{ id: 1, reason: 'agent_changed' }]);
     expect(h.calls).toEqual([expect.objectContaining({ state: 'done', priceUsd: 0, error: 'released_before_pay' })]);
-    // The x402 left on ClawPump is removed by the provisioning tick's no-cap pass (provisioning tests).
   });
 
   test('Codex r21 (5) / audit-money P3: a payment refused by our call budget (or a ClawPump 429) books 0 and releases the reservation', async () => {
@@ -803,7 +797,7 @@ describe('runArenaAddonsTick', () => {
   test('O1: the not-sent list is the dispatch release plus the writer refusals thrown before the POST, and the SQL uses it', async () => {
     const preRequest: ClawPumpWriterErrorCode[] = [
       'budget_exhausted', 'not_configured', 'invalid_base_url', 'invalid_agent_id', 'invalid_input', 'host_not_allowed',
-      'not_arena_agent', 'agent_running', 'agent_not_stopped', 'x402_not_enabled',
+      'not_arena_agent', 'agent_running', 'agent_not_stopped', 'x402_not_enabled', 'route_not_verified', 'backend_not_allowed',
     ];
     expect([...ARENA_ADDON_NOT_SENT_ERRORS].sort())
       .toEqual(['released_before_pay', ...preRequest.map((code) => new ClawPumpWriterError(code).message)].sort());
@@ -822,8 +816,8 @@ describe('runArenaAddonsTick', () => {
     expect(rendered.sql.replace(/\s+/g, ' ')).toContain('COALESCE(SUM(price_usd) FILTER (WHERE at >= $');
   });
 
-  test('audit-money P2: a busy x402 lock (another process) is never "ready": nothing reserved, nothing paid', async () => {
-    const h = harness({ x402Ready: async () => 'busy' });
+  test('an x402 check that is not "on" (off or skipped) never pays: nothing reserved, nothing paid', async () => {
+    const h = harness({ x402Ready: async () => 'off' });
     await runArenaAddonsTick(NOW, h.deps);
     expect(h.calls).toHaveLength(0);
     expect(h.pays).toHaveLength(0);
@@ -845,21 +839,7 @@ describe('runArenaAddonsTick', () => {
     }
   });
 
-  test('audit-money F: at most 8 adds a tick, and no add while a removal is deferred', async () => {
-    const ten = Array.from({ length: 10 }, (_, index) => agent([{ id: 'feed-a', enabled: true, dailyCapUsd: 1 }], { id: `agent-${index}` }));
-    const h = harness({ agents: ten, current: () => ten[0]!, x402Ready: async (_id, allowAdd) => (allowAdd ? 'added' : 'skipped') });
-    h.deps.confirmDispatch = async () => ({ ok: true });
-    h.deps.reserveCall = async () => ({ reserved: true, id: 1, callNumber: 0 });
-    await runArenaAddonsTick(NOW, h.deps);
-    expect(h.allowAdds).toEqual([true, true, true, true, true, true, true, true, false, false]);
-    _resetArenaAddonsForTest();
-    const deferred = harness({ removalsDeferred: () => true, x402Ready: async (_id, allowAdd) => (allowAdd ? 'added' : 'skipped') });
-    await runArenaAddonsTick(NOW, deferred.deps);
-    expect(deferred.allowAdds).toEqual([false]);
-    expect(deferred.pays).toHaveLength(0);
-  });
-
-  test('Codex r19 single writer: the tick reconciles x402 once per agent per tick (never cached across ticks)', async () => {
+  test('Codex r19 single writer: the tick checks x402 once per agent per tick (never cached across ticks)', async () => {
     const two = agent([{ id: 'feed-a', enabled: true, dailyCapUsd: 1 }, { id: 'feed-b', enabled: true, dailyCapUsd: 1 }]);
     const ok = harness({ catalog: [FEED, FEED_B], agents: [two], current: () => two });
     await runArenaAddonsTick(NOW, ok.deps);
@@ -870,7 +850,7 @@ describe('runArenaAddonsTick', () => {
     expect(ok.x402Checks).toBe(2);
     // x402 missing or the agent running: nothing reserved, nothing paid, the owner is told.
     _resetArenaAddonsForTest();
-    const missing = harness({ x402Ready: async () => 'skipped' });
+    const missing = harness({ x402Ready: async () => 'off' });
     await runArenaAddonsTick(NOW, missing.deps);
     expect(missing.pays).toHaveLength(0);
     expect(missing.calls).toHaveLength(0);
@@ -881,7 +861,7 @@ describe('runArenaAddonsTick', () => {
     await runArenaAddonsTick(NOW, broken.deps);
     expect(broken.pays).toHaveLength(0);
     expect(broken.calls).toHaveLength(0);
-    // One x402 dependency only: the leader's reconcile-before-pay (no cached 'synced' state).
+    // One x402 dependency only: the leader's read-only check before pay (no cached state).
     expect(Object.keys(ok.deps).filter((key) => /skill|ensure|sync|x402/i.test(key))).toEqual(['x402Ready']);
   });
 

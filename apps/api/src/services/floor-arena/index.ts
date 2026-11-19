@@ -8,7 +8,7 @@ import { ensureHouseAgents, entriesPaused, refreshHouseTemplates, runEntryTick, 
 import { pruneArenaEvents } from './events';
 import { createPgLeaderLock, LeaderElector } from './leader';
 import { clawpumpQuoteBreakerState, currentSolPriceUsd, dexscreenerCallsLastMinute } from './pricing';
-import { runArenaProvisioningTick, startArenaX402LeaderTerm } from './provisioning';
+import { runArenaProvisioningTick } from './provisioning';
 import { PUMPPORTAL_TICK_MS, runPumpPortalTick } from './pumpportal-feed';
 import { ARENA_WITHDRAW_TICK_MS, runArenaWithdrawTick } from './withdraw';
 
@@ -16,11 +16,11 @@ import { ARENA_WITHDRAW_TICK_MS, runArenaWithdrawTick } from './withdraw';
  * Trading Floor Arena engine wiring (docs/trading-floor-arena.md §6). `startFloorArena()` is called from
  * apps/api/src/index.ts; only the leader (advisory lock) runs the loops:
  *   discovery pollers (one per source, 30-60 s, jittered backoff on failure), enrichment 20 s, chain checks 30 s,
- *   entries 15 s, exits 10 s, provisioning + x402 reconcile 30 s, wallet withdrawals 30 s (withdraw.ts),
+ *   entries 15 s, exits 10 s, provisioning + privacy repair 30 s, wallet withdrawals 30 s (withdraw.ts),
  *   analysis / add-ons 60 s, discovery expiry 5 min, event prune 1 h. Only the leader writes to ClawPump
  *   (single writer, Codex r19); the withdrawals loop is the only caller of the transfer POST (P5 I4).
  * Kill switch: FLOOR_ARENA_ENGINE_ENABLED='false'. Admin pause stops new entries, paid add-on calls, ClawPump
- * creates and config writes, x402 adds, and withdrawal admission (no new transfer); exits, x402 removals and
+ * creates, and withdrawal admission (no new transfer); exits, the ClawPump privacy repair and
  * withdrawal reconcile keep running.
  */
 
@@ -200,8 +200,6 @@ export function startFloorArena(): void {
       lock: createPgLeaderLock(url),
       onElected: async () => {
         state.electedAt = new Date().toISOString();
-        // Codex r21 (2): the first x402 pass of a new term checks every add-on-free agent.
-        startArenaX402LeaderTerm();
         try {
           const inserted = await ensureHouseAgents();
           const templatesReset = await refreshHouseTemplates();

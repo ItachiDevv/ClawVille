@@ -1243,9 +1243,9 @@ export function createFloorArenaRoutes(
     const updated = await deps.setAddons(agent.id, addons.addons, summary);
     if (!updated) return noAgent(c);
     // Codex r19 (single writer): this request writes ONLY the DB row (under the
-    // per-agent advisory lock). The engine leader's x402 reconcile applies the
-    // change on ClawPump on its next tick (every 30 s): off also while paused,
-    // on only when not paused. No ClawPump call happens here.
+    // per-agent advisory lock). The engine leader's add-on tick reads it; ClawVille
+    // no longer adds or removes ClawPump skills (founder 2026-11-19). No ClawPump
+    // call happens here.
     forgetPublic();
     return c.json(await meBody(updated, deps.now()));
   });

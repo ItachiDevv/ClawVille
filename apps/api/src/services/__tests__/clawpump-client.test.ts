@@ -1,5 +1,4 @@
 import { describe, expect, mock, spyOn, test } from 'bun:test';
-import genesis from './__fixtures__/clawpump/get-agent-genesis.json';
 import {
   CLAWPUMP_API_BASE_PATH,
   CLAWPUMP_DEFAULT_API_BASE_URL,
@@ -15,6 +14,25 @@ import {
 const KEY = 'cpk_TESTSECRET_x';
 const env = { CLAWPUMP_API_KEY: KEY };
 const AGENT_ID = '0f600d73-05a0-4c2e-8215-ab2a770ba192';
+/**
+ * A v1 GET /api/v1/agents/{id} reply (camelCase keys as read live 2026-11-18: avatarUrl, createdAt, id, isPublic,
+ * model, name, persona, skills, status, updatedAt, walletAddress, plus tokenAddress and meta). No owner id on v1.
+ */
+const genesis = {
+  id: AGENT_ID,
+  name: 'Genesis',
+  status: 'running',
+  walletAddress: '4FMiFU1Dv4qwfMHn3YukvaonhwrPt1T7VZ3yGuNRyY9n',
+  tokenAddress: null,
+  skills: ['trading', 'portfolio', 'market-intelligence', 'wallet', 'news', 'bitget-intel'],
+  model: null,
+  persona: '',
+  avatarUrl: null,
+  isPublic: true,
+  createdAt: '2026-09-16T04:45:13.453768+00:00',
+  updatedAt: '2026-09-24T17:45:00.000000+00:00',
+  meta: { timestamp: '2026-11-18T03:45:13.322Z', requestId: 'req-not-real' },
+};
 
 function fetchStub(reply: () => Response | Promise<Response>) {
   const calls = mock(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) => reply());
@@ -157,16 +175,16 @@ describe('ClawPump read-only client', () => {
     const wire = { ...genesis, config: { private: 'vendor-only' }, runtime_tier: 'enterprise' };
     const stub = fetchStub(() => Response.json(format === 'array' ? [wire] : { agents: [wire], total: 1 }));
     expect(await listClawPumpAgents({ env, fetchImpl: stub.fetchImpl })).toEqual([{
-      id: AGENT_ID, userId: genesis.user_id, name: genesis.name,
-      status: genesis.status, walletAddress: genesis.wallet_address,
+      id: AGENT_ID, name: genesis.name,
+      status: genesis.status, walletAddress: genesis.walletAddress,
     }]);
   });
 
   test.each(['bare', 'wrapped'])('accepts %s fixture agent', async (format) => {
     const stub = fetchStub(() => Response.json(format === 'bare' ? genesis : { agent: genesis }));
     expect(await getClawPumpAgent(AGENT_ID, { env, fetchImpl: stub.fetchImpl })).toEqual({
-      id: AGENT_ID, userId: genesis.user_id, name: genesis.name,
-      status: genesis.status, walletAddress: genesis.wallet_address,
+      id: AGENT_ID, name: genesis.name,
+      status: genesis.status, walletAddress: genesis.walletAddress,
     });
   });
 
@@ -185,22 +203,22 @@ describe('ClawPump read-only client', () => {
   });
 
   test.each([null, '', '   ', undefined])('normalizes wallet %p to null', async (wallet) => {
-    const stub = fetchStub(() => Response.json({ ...genesis, wallet_address: wallet }));
+    const stub = fetchStub(() => Response.json({ ...genesis, walletAddress: wallet }));
     expect((await getClawPumpAgent(AGENT_ID, { env, fetchImpl: stub.fetchImpl })).walletAddress).toBeNull();
   });
 
   test('trims wallet whitespace and normalizes absent optional fields', async () => {
-    const stub = fetchStub(() => Response.json({ id: AGENT_ID, wallet_address: ` ${genesis.wallet_address} ` }));
+    const stub = fetchStub(() => Response.json({ id: AGENT_ID, walletAddress: ` ${genesis.walletAddress} ` }));
     expect(await getClawPumpAgent(AGENT_ID, { env, fetchImpl: stub.fetchImpl })).toEqual({
-      id: AGENT_ID, userId: null, name: null, status: null, walletAddress: genesis.wallet_address,
+      id: AGENT_ID, name: null, status: null, walletAddress: genesis.walletAddress,
     });
   });
 
   test.each([
     {}, { agents: {} }, [null], [{ ...genesis, id: '' }], [{ ...genesis, id: 'x'.repeat(129) }],
-    [{ ...genesis, user_id: '' }], [{ ...genesis, name: 'x'.repeat(201) }],
-    [{ ...genesis, status: 'x'.repeat(41) }], [{ ...genesis, wallet_address: 'x'.repeat(65) }],
-    [{ ...genesis, wallet_address: 1 }], Array.from({ length: 201 }, () => genesis),
+    [{ ...genesis, name: 'x'.repeat(201) }],
+    [{ ...genesis, status: 'x'.repeat(41) }], [{ ...genesis, walletAddress: 'x'.repeat(65) }],
+    [{ ...genesis, walletAddress: 1 }], Array.from({ length: 201 }, () => genesis),
     { agents: Array.from({ length: 201 }, () => genesis) },
   ])('refuses invalid schema or excessive agent count case %#', async (body) => {
     const stub = fetchStub(() => Response.json(body));
