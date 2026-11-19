@@ -571,6 +571,23 @@ describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-mone
 
 
 
+  test('an underfunded add-on asks for no USDC while add-on payments are paused (Codex round 3)', async () => {
+    const WALLET_UNDER = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const addon = { id: 'feed-1', name: 'Paid feed', vendor: 'Vendor', priceUsd: 0.1, enabled: true, dailyCapUsd: 1, spentTodayUsd: 0, lastCallAt: null, lastOk: null, lastError: null };
+    meBody = {
+      ...myAgentBody({ paymentAddress: WALLET_UNDER, provisionState: 'ready' }),
+      paymentAddress: WALLET_UNDER,
+      provision: { state: 'ready', error: null },
+      wallet: { usdc: 0, sol: 0 },
+      addons: [addon],
+    };
+    addonsBody = { addons: [], paymentsEnabled: false };
+    useFloorArenaUi.setState({ panel: 'desk' });
+    const host = await render();
+    expect(host.querySelector('[data-testid="arena-addon-underfunded"]')).not.toBeNull();
+    expect(host.textContent!.toLowerCase()).not.toContain('until you send');
+  });
+
   test('no address yet means no wallet text and no withdraw panel', async () => {
     meBody = myAgentBody();
     useFloorArenaUi.setState({ panel: 'desk' });

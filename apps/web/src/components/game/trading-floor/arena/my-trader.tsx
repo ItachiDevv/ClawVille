@@ -240,7 +240,7 @@ function AddonsBlock({ me, active }: { me: FloorArenaMyAgent; active: boolean })
                 {addon.dailyCapUsd !== null ? ` of a $${addon.dailyCapUsd.toFixed(2)} daily cap` : ''}
                 {addon.lastOk === false && addon.lastError ? ` · last call failed: ${addon.lastError}` : ''}
               </div>
-              {underfunded ? (
+              {underfunded && catalog.data?.paymentsEnabled === true ? (
                 <div style={{ color: FLOOR_TEXT.danger, fontSize: 11 }}>
                   The agent&apos;s wallet holds less USDC than one call costs, so this add-on is skipped until you send
                   USDC to the wallet below.
