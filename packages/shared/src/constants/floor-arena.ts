@@ -1035,6 +1035,20 @@ export const FLOOR_ARENA_WITHDRAW_REQUEST_CODES = deepFreeze(['idempotency_confl
 /** Reconcile results stored in error_code. Writer codes are `clawpump_<code>`; vendor codes are `vendor_<code>` (lower case). */
 export const FLOOR_ARENA_WITHDRAW_RECONCILE_CODES = deepFreeze(['dispatch_interrupted', 'chain_error', 'chain_mismatch',
   'not_found_no_drop', 'not_found_balance_drop', 'ambiguous_match', 'tx_reused', 'reply_mismatch', 'review_timeout'] as const);
+/**
+ * 2026-11-19 (job clawpump-v1-writer, Codex writer r1): ClawPump moved its API, and its new transfer and x402 pay
+ * routes are NOT VERIFIED (`CLAWPUMP_VERIFIED_BACKEND_POSTS` in apps/api/src/services/clawpump-writer.ts is empty).
+ * Every agent-facing surface that tells an agent to fund the arena wallet, turn on paid add-ons or withdraw quotes
+ * this text, so no surface recommends a deposit that ClawVille cannot spend or return. Remove it in the same diff
+ * that verifies the routes.
+ */
+export const FLOOR_ARENA_WALLET_PAUSE_NOTE =
+  'Arena wallet status: paid add-ons are paused and arena withdrawals are unavailable, because ClawPump moved its API ' +
+  'and ClawVille has not yet verified ClawPump\'s new transfer and x402 payment routes. Until then the engine makes no ' +
+  'add-on call (GET /api/floor/arena/addons answers paymentsEnabled: false), a withdrawal request ends failed_no_send ' +
+  'with clawpump_route_not_verified and nothing is sent, and USDC or SOL sent to the arena wallet can be neither spent ' +
+  'on add-ons nor withdrawn through ClawVille. Do not fund the arena wallet now, and tell your human the same.';
+
 export const FLOOR_ARENA_WITHDRAW_LIMITS = deepFreeze({
   usdcDecimals: 6,
   solDecimals: 9,

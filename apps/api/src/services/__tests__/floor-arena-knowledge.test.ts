@@ -16,6 +16,7 @@ import {
   FLOOR_ARENA_TEMPLATE_VERSION,
   FLOOR_ARENA_TEMPLATES,
   FLOOR_ARENA_TRADEABLE_SOURCE_PREFIXES,
+  FLOOR_ARENA_WALLET_PAUSE_NOTE,
   FLOOR_ARENA_WITHDRAW_LIMITS,
   FLOOR_ARENA_WITHDRAW_REFUSAL_CODES,
 } from '@clawville/shared';
@@ -315,7 +316,7 @@ describe('Trading Arena section of the trading page', () => {
     expect(section).toMatch(new RegExp(`Add-ons\\s+spend at most \\$${FLOOR_ARENA_MAX_ADDON_DAILY_CAP_USD} a day\\. ClawVille does not refund add-on spend\\.`));
     expect(section.match(/Send only USDC or SOL on Solana/g)?.length).toBe(1);
     expect(tool('clawville_arena_addons').description).toContain(
-      'Send only USDC or SOL on Solana; you can withdraw both to an address you prove (clawville_arena_withdraw)',
+      'Send only USDC or SOL on Solana; withdrawals go to an address you prove (clawville_arena_withdraw)',
     );
     // audit-parity M1: a user agent's reason is dropped from every public view (queries.ts redactArenaParamChangeForPublic).
     expect(section).toMatch(/every change is logged publicly \(the diff and its source\); your\s+`reason`, at most 280 characters, stays private and shows only in\s+`GET \/me\/events`/);
@@ -401,6 +402,23 @@ describe('Trading Arena section of the trading page', () => {
     expect(seatTool.input_schema.properties.seatIndex?.description).toBe('Optional desk index, 0 to 9.');
     const route = readFileSync(join(import.meta.dir, '..', '..', 'routes', 'floor-arena.ts'), 'utf8');
     expect(route).toContain('const SEAT_MAX_INDEX = FLOOR_ARENA_DESK_COUNT - 1;');
+  });
+
+  test('2026-11-19 (Codex writer r1): every surface says add-ons are paused and withdraw is unavailable, so no agent funds the wallet', () => {
+    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('paid add-ons are paused and arena withdrawals are unavailable');
+    expect(FLOOR_ARENA_WALLET_PAUSE_NOTE).toContain('Do not fund the arena wallet now');
+    // The served manual says it BEFORE the add-on and withdraw rules.
+    const flat = arenaSection().replace(/\s+/g, ' ');
+    expect(flat).toContain(FLOOR_ARENA_WALLET_PAUSE_NOTE);
+    expect(flat.indexOf(FLOOR_ARENA_WALLET_PAUSE_NOTE)).toBeLessThan(flat.indexOf('Add-ons. Optional paid discovery feeds'));
+    expect(flat.indexOf(FLOOR_ARENA_WALLET_PAUSE_NOTE)).toBeLessThan(flat.indexOf('Wallet and withdrawals.'));
+    // Orientation, and Nori through the orientation spread.
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE).toContain(FLOOR_ARENA_WALLET_PAUSE_NOTE);
+    expect(townGuide.knowledge).toContain(FLOOR_ARENA_WALLET_PAUSE_NOTE);
+    // The MCP / tools.json descriptions that send money in or out.
+    for (const name of ['clawville_arena_addons', 'clawville_arena_withdraw', 'clawville_arena_my_trader']) {
+      expect(CLAWVILLE_GAME_TOOLS.find((t) => t.name === name)!.description).toContain(FLOOR_ARENA_WALLET_PAUSE_NOTE);
+    }
   });
 
   test('v80 (P5): states the wallet and withdraw rules, every number rendered from FLOOR_ARENA_WITHDRAW_LIMITS', () => {
@@ -499,8 +517,8 @@ describe('Trading Arena section of the trading page', () => {
     const orientation = CLAWVILLE_ORIENTATION_KNOWLEDGE.find((entry) => entry.startsWith('The Trading Arena is a PAPER trading contest'))!;
     expect(orientation).toContain(`optional paid add-ons spend only USDC that the player sends to the agent's own wallet; the owner, human or agent, can withdraw USDC or SOL from that wallet to an address the owner proved (a new address works after ${delay}; keep at least ${L.recommendedSolText} SOL there for network fees);`);
     expect(orientation).not.toMatch(/[.;,][A-Z]/);
-    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: you can take money out of your arena trader'));
-    expect(nori).toBe(`Nori says: you can take money out of your arena trader's wallet. Open your trader in the Trading Floor tab, find the Wallet block, prove an address with your wallet or pick your linked wallet, then withdraw USDC or SOL. A new address waits ${delay} before it works. Keep at least ${L.recommendedSolText} SOL in the trader's wallet for network fees. Agents find the routes on the protocol \`trading\` page (/api/skills/protocol/trading.md).`);
+    const nori = townGuide.knowledge.find((entry) => entry.startsWith('Nori says: arena trader wallets are on hold'));
+    expect(nori).toBe(`Nori says: arena trader wallets are on hold right now: paid add-ons are paused and withdrawals are unavailable until ClawVille verifies ClawPump's new payment routes, so please do not send money to your trader's wallet yet. Once they open again, you take money out like this. Open your trader in the Trading Floor tab, find the Wallet block, prove an address with your wallet or pick your linked wallet, then withdraw USDC or SOL. A new address waits ${delay} before it works. Keep at least ${L.recommendedSolText} SOL in the trader's wallet for network fees. Agents find the routes on the protocol \`trading\` page (/api/skills/protocol/trading.md).`);
     expect(nori!).not.toMatch(/[.;,][A-Z]/);
     // Nori carries the orientation line too (she spreads the shared list).
     expect(townGuide.knowledge).toContain(orientation);

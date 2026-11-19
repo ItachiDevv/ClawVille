@@ -586,6 +586,19 @@ describe('privacy repair (agents created public before the fix)', () => {
     expect(failing.cpOf('cp-2')).toMatchObject({ isPublic: false, acceptingBids: false });
   });
 
+  test('Codex writer r1: a throttle on every first call still walks the cursor a, b, c, d, then wraps (never a, a, a)', async () => {
+    const h = many();
+    // Four agents, so a full page (4) is followed by an empty page that must wrap at once.
+    for (const id of READY_IDS.slice(4)) h.rows.delete(id);
+    const attempted: string[] = [];
+    h.deps.writer.readListing = async (id) => {
+      attempted.push(id);
+      throw new ClawPumpWriterError('budget_exhausted');
+    };
+    for (let pass = 0; pass < 6; pass += 1) await runArenaPrivacyRepair(h.deps);
+    expect(attempted).toEqual(['cp-0', 'cp-1', 'cp-2', 'cp-3', 'cp-0', 'cp-1']);
+  });
+
   test('a store failure never throws out of the pass', async () => {
     const h = many();
     h.deps.store.listClawPumpSweepAgents = async () => { throw new Error('db down'); };

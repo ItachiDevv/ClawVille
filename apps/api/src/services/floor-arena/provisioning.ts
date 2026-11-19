@@ -455,15 +455,24 @@ function isThrottled(error: unknown): boolean {
  * from a cursor over every ready or failed user and house agent with a
  * ClawPump id (wraps at the end), so N agents are all checked within
  * ceil(N / 4) ticks. Each check is ensureArenaAgentPrivate with removal
- * priority (it may use the writer's reserved budget). A throttle ends the
- * pass; any other error is logged once per agent and cause, then hourly.
+ * priority (it may use the writer's reserved budget). The cursor moves past
+ * each agent as it is attempted, so a throttle (which ends the pass) never
+ * starves the agents after it; an empty page wraps at once. Any other error
+ * is logged once per agent and cause, then hourly.
  * Never throws.
  */
 export async function runArenaPrivacyRepair(deps: ArenaProvisionDeps = defaultArenaProvisionDeps): Promise<void> {
   try {
-    const batch = await deps.store.listClawPumpSweepAgents(privacyCursor, ARENA_PRIVACY_CHECKS_PER_TICK);
-    privacyCursor = batch.length < ARENA_PRIVACY_CHECKS_PER_TICK ? '' : batch[batch.length - 1]!;
+    let batch = await deps.store.listClawPumpSweepAgents(privacyCursor, ARENA_PRIVACY_CHECKS_PER_TICK);
+    if (batch.length === 0 && privacyCursor !== '') {
+      // Past the last agent: wrap now, so no tick is spent on an empty page.
+      privacyCursor = '';
+      batch = await deps.store.listClawPumpSweepAgents(privacyCursor, ARENA_PRIVACY_CHECKS_PER_TICK);
+    }
     for (const agentId of batch) {
+      // Codex writer r1: the cursor moves past each agent as it is attempted (a throttled one too), so a
+      // throttle that ends the pass never makes the agents after it wait for a full wrap (or starve).
+      privacyCursor = agentId;
       const row = await deps.store.read(agentId);
       if (!reconcilable(row)) continue;
       try {
@@ -479,6 +488,7 @@ export async function runArenaPrivacyRepair(deps: ArenaProvisionDeps = defaultAr
         }
       }
     }
+    if (batch.length < ARENA_PRIVACY_CHECKS_PER_TICK) privacyCursor = '';
   } catch (error) {
     console.error('[floor-arena] privacy repair pass failed:', logText(error));
   }
