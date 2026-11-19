@@ -545,12 +545,15 @@ It is the first ClawVille feature that WRITES to ClawPump.
   `clawpump_agent_id` of the USER arena row the call acts for (DB proof), and
   ClawPump's current name must carry this environment's arena prefix plus that
   row's 12-character id suffix; any failure answers `not_arena_agent`.
-  Provisioning and add-ons also skip every `house` row. The arena's house rows carry the live Genesis
-  (`0f600d73-05a0-4c2e-8215-ab2a770ba192`) and Runner
-  (`1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1`) ClawPump ids for reference only;
-  their prompts, skills and wallets are untouched by any arena code path.
-- **x402 pay route (NOT VERIFIED since the 2026-10-22 API move; the writer
-  throws `route_not_verified` before any request, booked at 0; the text
+  Add-ons skip every `house` row. Since 2026-10-16 the house rows have their
+  OWN new private arena agents (migration 0086 cleared the live trader ids);
+  the writer refuses every call for the three live trader ids
+  (`FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS`), even when a row names one, so their
+  prompts, skills and wallets are untouched by any arena code path.
+- **x402 pay route (NOT VERIFIED since the 2026-10-22 API move; the add-on
+  tick stops before any reservation and `GET /api/floor/arena/addons` answers
+  `paymentsEnabled: false`; the writer would also throw `route_not_verified`
+  before any request; the text
   below is the 2026-09-30 contract on the old root, kept for when the backend
   route is verified).** `POST /agents/{id}/x402/x402_service_pay` with `{ url,
   method, body | query, maxAmountAtomic }` (USDC 6 decimals, set to the

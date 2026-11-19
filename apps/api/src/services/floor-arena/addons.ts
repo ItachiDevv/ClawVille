@@ -4,6 +4,7 @@ import {
   type FloorArenaAddon,
 } from '@clawville/shared';
 import {
+  CLAWPUMP_VERIFIED_BACKEND_POSTS,
   CLAWPUMP_WRITER_REMOVAL_RESERVE,
   CLAWPUMP_X402_MAX_CALL_USD,
   ClawPumpWriterError,
@@ -93,6 +94,15 @@ const EPSILON = 1e-9;
 
 export function addonPaymentsEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return (env.FLOOR_ARENA_ADDON_PAYMENTS_ENABLED ?? '').trim().toLowerCase() !== 'false';
+}
+
+/**
+ * True when the add-on tick may pay: the kill switch is not 'false' AND ClawPump's x402 pay route is verified.
+ * 2026-11-19: the route is NOT VERIFIED on ClawPump's backend, so this is false and the tick stops before any
+ * reservation, ledger row, event or ClawPump call; `GET /api/floor/arena/addons` shows `paymentsEnabled: false`.
+ */
+export function arenaAddonPaymentsOpen(env: Record<string, string | undefined> = process.env): boolean {
+  return addonPaymentsEnabled(env) && CLAWPUMP_VERIFIED_BACKEND_POSTS.has('x402');
 }
 
 export function utcDayStart(now: Date): Date {
@@ -433,7 +443,7 @@ export interface ArenaAddonDeps {
 
 export const defaultArenaAddonDeps: ArenaAddonDeps = {
   catalog: () => FLOOR_ARENA_ADDONS,
-  paymentsEnabled: () => addonPaymentsEnabled(),
+  paymentsEnabled: () => arenaAddonPaymentsOpen(),
   listAgents: readArenaAddonAgents,
   readStats: readArenaAddonStats,
   reserveCall: reserveArenaAddonCall,

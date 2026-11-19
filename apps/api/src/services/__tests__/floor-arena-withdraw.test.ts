@@ -336,6 +336,13 @@ describe('dispatch', () => {
     expect(world.transfers).toHaveLength(1);
   });
 
+  test('2026-11-19: the unverified backend transfer route books failed_no_send clawpump_route_not_verified', async () => {
+    const row = world.add(withdrawal());
+    world.transferImpl = async () => { throw new ClawPumpWriterError('route_not_verified'); };
+    await tick(world);
+    expect(world.get(row.id)).toMatchObject({ state: 'failed_no_send', errorCode: 'clawpump_route_not_verified', txSignature: null });
+  });
+
   test('a transfer that resolves with no known outcome books unknown, never failed_no_send', async () => {
     const row = world.add(withdrawal());
     world.transferImpl = async () => undefined as unknown as ArenaTransferOutcome;

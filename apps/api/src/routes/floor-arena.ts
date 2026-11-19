@@ -47,7 +47,7 @@ import type { ClawPumpWalletBalance } from '../services/clawpump-writer';
 // PURE helpers only (no network, no DB): the destination check and the atomic
 // amount text. Every ClawPump call stays with the engine leader (I4, D8).
 import { arenaDestinationProblem, formatAtomicAmount } from '../services/clawpump-writer';
-import { ARENA_ADDON_MIN_INTERVAL_S, addonPaymentsEnabled, readArenaWalletBalance, utcDayStart } from '../services/floor-arena/addons';
+import { ARENA_ADDON_MIN_INTERVAL_S, arenaAddonPaymentsOpen, readArenaWalletBalance, utcDayStart } from '../services/floor-arena/addons';
 import { readArenaContest, type ArenaContestView } from '../services/floor-arena/contest';
 import {
   isArenaTextOffensive,
@@ -321,7 +321,7 @@ export const defaultFloorArenaRouteDeps: FloorArenaRouteDeps = {
   readAddonStats: readArenaAddonStats,
   readWalletBalance: (clawpumpAgentId) => readArenaWalletBalance(clawpumpAgentId),
   addonCatalog: () => FLOOR_ARENA_ADDONS,
-  addonPaymentsEnabled: () => addonPaymentsEnabled(),
+  addonPaymentsEnabled: () => arenaAddonPaymentsOpen(),
   logArenaEvent: (c, input) => logEventFromContext(c, input),
   issueWithdrawChallenge: issueArenaWithdrawChallenge,
   consumeWithdrawChallenge: consumeArenaWithdrawChallenge,

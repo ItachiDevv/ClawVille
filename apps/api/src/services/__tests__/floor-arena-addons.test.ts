@@ -16,6 +16,7 @@ import {
   ARENA_ADDON_DISPATCH_CALLS,
   ARENA_ADDON_PAY_CALLS,
   addonPaymentsEnabled,
+  arenaAddonPaymentsOpen,
   defaultArenaAddonDeps,
   buildAddonRequest,
   extractAddonMints,
@@ -238,6 +239,9 @@ describe('runArenaAddonsTick', () => {
     expect(addonPaymentsEnabled({ FLOOR_ARENA_ADDON_PAYMENTS_ENABLED: 'false' })).toBe(false);
     expect(addonPaymentsEnabled({ FLOOR_ARENA_ADDON_PAYMENTS_ENABLED: ' FALSE ' })).toBe(false);
     expect(addonPaymentsEnabled({ FLOOR_ARENA_ADDON_PAYMENTS_ENABLED: 'true' })).toBe(true);
+    // 2026-11-19: the x402 pay route is NOT VERIFIED, so the default tick stops before any reservation.
+    expect(defaultArenaAddonDeps.paymentsEnabled()).toBe(false);
+    expect(arenaAddonPaymentsOpen({})).toBe(false);
   });
 
   test('respects a catalog interval above the 600 s floor, measured from the last attempt', async () => {
