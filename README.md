@@ -185,7 +185,7 @@ See `.env.example` for the full list (incl. Phase 5.1 wallet-identity and wager-
 
 ## 📄 License
 
-Proprietary — © 2026 ClawVille. All rights reserved.
+MIT. See [LICENSE](LICENSE).
 
 ---
 
