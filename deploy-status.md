@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-19 (session trading). **STAGING API + WEB = branch `fix/clawpump-v1-writer`: ClawPump v1 writer + arena wallet pause (PROTOCOL 140, given by claw2.0; no migration), on top of `f20aa9925`. Code `ce3a10c66` (CI fixes `68d17d42d`, `1cd1e1874`, `ce3a10c66` after runs 44596935815 and 44598817604 failed tests and deployed nothing). VERIFIED 19:52Z: CI run 44599746077 all jobs success; both Coolify deploys finished; `/health` commit `ce3a10c66`; `GET /api/floor/arena/addons` paymentsEnabled false; public play manual protocol_version 140; the two failed staging bots (i7505 Probe, NerdStrat) reset to pending and the engine made both `ready`; ClawPump shows both private with 14 skills (DEPLOY LOG 2026-11-19).** PROD = `f87ec1734` (promotion #29) unchanged. SCHEMA: synced (no migration in this push).
+Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = `0053461bd` BrainChain partner feedback (PROTOCOL 141, no migration) on top of `e8beca549`. Verification pending: CI run, SOURCE_COMMIT and the Learn tab check follow in the next docs commit.**
+
+Prior - Last Audited: 2026-11-19 (session trading). **STAGING API + WEB = branch `fix/clawpump-v1-writer`: ClawPump v1 writer + arena wallet pause (PROTOCOL 140, given by claw2.0; no migration), on top of `f20aa9925`. Code `ce3a10c66` (CI fixes `68d17d42d`, `1cd1e1874`, `ce3a10c66` after runs 44596935815 and 44598817604 failed tests and deployed nothing). VERIFIED 19:52Z: CI run 44599746077 all jobs success; both Coolify deploys finished; `/health` commit `ce3a10c66`; `GET /api/floor/arena/addons` paymentsEnabled false; public play manual protocol_version 140; the two failed staging bots (i7505 Probe, NerdStrat) reset to pending and the engine made both `ready`; ClawPump shows both private with 14 skills (DEPLOY LOG 2026-11-19).** PROD = `f87ec1734` (promotion #29) unchanged. SCHEMA: synced (no migration in this push).
 
 Prior - Last Audited: 2026-11-14 02:06Z (session new-ville). **STAGING WEB = `9004a6c20` smaller pavilion / arcade / shisha GLBs, each checked with the new `scripts/models/glb-compare.mjs`, on top of session brainchain's `0101ee469`, VERIFIED 02:05Z: CI run 43542785583 all jobs success; both containers SOURCE_COMMIT `9004a6c20`; `/health` commit `9004a6c20`; staging serves `quest-bounty-pavilion-v3-ktx.glb` (2,068,664 bytes), `arcade/claw-arcade-exterior-opt2-mo-ktx.glb` (604,816) and `shisha-oasis-v2-mo-ktx.glb` (498,756), all 200; desktop Chrome /game loads all three (200), renders the world, 0 console errors (DEPLOY LOG 2026-11-14 02:06Z).** Web assets + scripts only; no PROTOCOL change (staging stays 139), no migration. PROD = `f87ec1734` (promotion #29) unchanged. SCHEMA: see session trading and brainchain entries.
 
@@ -788,6 +790,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-23 (session brainchain) - BrainChain partner feedback: teacher leads with paid work, Solana cash-out live (PROTOCOL 141, no migration)
+- **What changed:** `0053461bd` applies the BrainChain developer's staging review. Cortex opens with how an agent joins, takes tasks and earns USDG; the API lesson follows. Safety and credit text use the partner copy where public evidence supports it. Capabilities show Solana funding, mainnet Solana cash-out and Priors credit (up to 50 USDG) as available through the external worker CLI 0.21.1; the Office itself runs no payment and lends nothing. Curriculum version 2, worker pin 0.21.1. Tracker: `docs/brainchain-partner-feedback-2026-11-23.md`.
+- **PROTOCOL:** 141 taken by session brainchain. claw2.0 held 141+ but was not reachable on 2026-11-23 and no remote branch used 141; claw2.0 takes 142 or later next.
+- **What broke:** nothing yet. Static gates only on itachi222 (doc paths pass, coupling gate exit 0); CI is the test.
+- **Who it is for:** the BrainChain developer (review follow-up) and the founder (Learn tab and Cortex copy on staging `/brainchain`).
+- **SCHEMA:** synced (no migration).
 
 ### 2026-11-21 (session hydra-plugin) - README license line matches LICENSE (docs only, no deploy)
 - **What changed:** `README.md` License section said "Proprietary, all rights reserved"; `LICENSE` is MIT. The founder confirmed MIT (2026-11-20), so the README now says MIT and points at `LICENSE`.
