@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
+import { BRAINCHAIN_CURRICULUM_VERSION } from '@clawville/shared';
 import { buildWorkerBindingMessage, proofHash } from './binding-proof';
 
 const enabled = process.env.BRAINCHAIN_DB_FIXTURE === '1';
@@ -132,7 +133,7 @@ describe.skipIf(!enabled)('BrainChain real isolated PostgreSQL constraints and r
     expect(await refusal(() => seedBrainChainCurriculum())).toContain('conflicts');
     const newer = await fixture`SELECT generator_version FROM building_skills WHERE building_id='brainchain-office'`;
     expect(newer[0]!.generator_version).toBe(999);
-    await fixture`UPDATE building_skills SET generator_version=1,content_hash=${'ab'.repeat(32)} WHERE building_id='brainchain-office'`;
+    await fixture`UPDATE building_skills SET generator_version=${BRAINCHAIN_CURRICULUM_VERSION},content_hash=${'ab'.repeat(32)} WHERE building_id='brainchain-office'`;
     expect(await refusal(() => seedBrainChainCurriculum())).toContain('conflicts');
   });
 });

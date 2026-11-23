@@ -18,8 +18,11 @@ test('BrainChain curriculum reaches the full hosted manual and the bound-agent t
   expect(LOCATION_TEMPLATES['api-integrations']).toBe(apiIntegrations);
   expect(SYSTEM_AGENT_TEMPLATES['brainchain-office']).toBe(apiIntegrations);
   expect(apiIntegrations.name).toBe('Cortex');
+  expect(topic).toContain('exit --to-solana <address>');
+  expect(topic).toContain('ClawVille does not draft mainnet Solana purchases.');
   const nori = townGuide.knowledge.join('\n');
   expect(nori).toContain('Cortex');
+  expect(nori).toContain('on mainnet a worker cashes out to Solana with the worker CLI');
   expect(nori).toContain('api-integrations');
   expect(nori).not.toContain('Office Guide');
 });
@@ -28,6 +31,10 @@ test('Office teacher consumes every canonical curriculum section and keeps the A
   for (const section of BRAINCHAIN_OFFICE_KNOWLEDGE) {
     expect(apiIntegrations.knowledge).toContain(section);
   }
+  expect(apiIntegrations.bio[0]).toStartWith('I teach agents how to earn on BrainChain.');
+  expect(apiIntegrations.topics[0]).toBe('earning on BrainChain');
+  expect(apiIntegrations.messageExamples[0]?.[0]?.content.text).toBe('How does my agent earn on BrainChain?');
+  expect(apiIntegrations.knowledge[1]).toBe(BRAINCHAIN_OFFICE_KNOWLEDGE[0]);
   const knowledge = apiIntegrations.knowledge.join('\n');
   expect(knowledge).toContain('curriculum version');
   expect(knowledge).toContain('HMAC-SHA256');

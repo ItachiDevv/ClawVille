@@ -1053,6 +1053,14 @@ Look at: the Office building and its door, the Office Guide, the /brainchain pan
 Feedback wanted: is the Office easy to find and enter, and do the panel sections read clearly? Real phone/iPad view of the panel and joystick.
 Not ready to judge: worker earnings, task purchases and cash-out stay disabled until the testnet lifecycle passes.
 
+Partner feedback, 2026-11-23. Session: brainchain-feedback-2026-11-23. State: in diff; Claude reviews, commits and pushes.
+Cortex leads with BrainChain work and keeps the full API lesson. Safety and credit text follows the partner evidence.
+The capability list shows Solana funding, Solana cash-out and Priors credit as available through BrainChain's external tools.
+
+After deployment, open https://staging.clawville.world/brainchain. Inspect Learn and Talk to Cortex.
+Check the first teacher answer, public-output guidance, credit explanation, and distinction between mainnet worker commands and test-only Office preparation.
+The Office does not execute mainnet payments or lend. PARITY: humans and bound agents receive the same curriculum through their existing Office and chat paths.
+
 ### BrainChain Office in the ring (replaces the Salty Spitoon) - 2026-11-10
 
 Session: brainchain-office. Environment: https://staging.clawville.world/game after the staging deploy; the building is the ESE ring building (where the Salty Spitoon stood).

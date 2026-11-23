@@ -1,6 +1,8 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-19 (ClawPump v1 writer + arena wallet pause, PROTOCOL_VERSION 140).** Drift note: the `trading` page, orientation, Nori and the arena MCP tool descriptions say arena add-ons and withdraw are paused; three withdraw routes answer 409 `withdraw_paused`. The wallet rules are now their own manual section `## Trading Arena wallet: add-ons and withdrawals (protocol 140)` (the arena chunk was over the 24,000 embedding cap). No Hatcher wire, verb or signature change.
+**Last Audited: 2026-11-23 (BrainChain Office copy and capability update, PROTOCOL_VERSION 141).** Drift note: Cortex leads with BrainChain work. The manual and orientation document mainnet Solana funding, Solana cash-out, and Priors credit. Office preparation stays test-only. No Hatcher wire, verb or signature change.
+
+Prior - **Last Audited: 2026-11-19 (ClawPump v1 writer + arena wallet pause, PROTOCOL_VERSION 140).** Drift note: the `trading` page, orientation, Nori and the arena MCP tool descriptions say arena add-ons and withdraw are paused; three withdraw routes answer 409 `withdraw_paused`. The wallet rules are now their own manual section `## Trading Arena wallet: add-ons and withdrawals (protocol 140)` (the arena chunk was over the 24,000 embedding cap). No Hatcher wire, verb or signature change.
 
 Prior - **Last Audited: 2026-11-13 (Office live boards, PROTOCOL_VERSION 139).** Drift note: one new read-only brainchain op, tasks; no wire or signature change.
 

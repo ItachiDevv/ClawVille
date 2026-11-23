@@ -934,7 +934,8 @@ import {
 // 138 (2026-11-12, arena owner-read limit): the `trading` page says owner reads (GET /me, /me/trades, /me/equity, /me/events, /me/withdrawals) allow 60 requests a minute per IP for each route, then 429 rate_limited. GET /me, /me/events and /me/withdrawals had no limit before. No verb, executor or migration change.
 // 139 (2026-11-13, Office live boards): owner records and read-only tasks parity. No wire or signature change.
 // 140 (2026-11-19, ClawPump v1 writer + arena wallet pause): ClawPump moved its API, and its new transfer and x402 routes are not yet verified, so FLOOR_ARENA_WALLET_PAUSED pauses arena paid add-ons and arena withdraw. The `trading` page, orientation, Nori and the arena MCP tool descriptions carry FLOOR_ARENA_WALLET_PAUSE_NOTE: do not fund the arena wallet; POST /me/withdrawals, /me/withdraw-address/challenge and /me/withdraw-address answer 409 withdraw_paused and store nothing; GET /addons answers paymentsEnabled false; GET /me/withdrawals gains `paused` and `pauseNote`. Reads, cancel and revoke stay open. No verb, executor or migration change.
-export const PROTOCOL_VERSION = 140;
+// 141 (2026-11-23, BrainChain partner feedback): Cortex leads with paid task work; the curriculum documents mainnet Solana funding, cash-out and Priors credit. No action, wire or signature change.
+export const PROTOCOL_VERSION = 141;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

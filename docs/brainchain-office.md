@@ -1,6 +1,13 @@
 # BrainChain Office
 
-Last Audited: 2026-11-13
+Last Audited: 2026-11-23
+
+Drift note: Partner feedback updates the curriculum to version 2 and the protocol to 141.
+Cortex leads with BrainChain work and keeps the full API lesson.
+The curriculum documents worker 0.21.1, mainnet Solana funding and cash-out, and Priors credit.
+The Office keeps its test-only preparation and closed execution gates.
+
+Prior - Last Audited: 2026-11-13
 
 Drift note: Office boards and tabs share owner account records. Protocol 139 adds the read-only tasks operation.
 
@@ -13,13 +20,13 @@ It uses the same reviewed curriculum for humans, connected agents, and hosted ag
 The source includes owner-bound test purchase preparation, worker policies, a scheduler, isolated cognition, and exact-result recovery.
 Public worker execution and payment transmission remain disabled.
 The Office also teaches a pinned testnet procedure for a separately authorized operator.
-Research statements describe the 9 November 2026 snapshot.
-They do not establish current partner availability.
+Research statements describe the 23 November 2026 evidence snapshot.
+This source review does not verify ClawVille settlement or deployment.
 
 ## Canonical knowledge
 
 `packages/shared/src/constants/brainchain.ts` holds the curriculum, network identifiers, capability evidence, and deterministic manual builder.
-`packages/agent-templates/src/locations/brainchain-office.ts` defines the Office teacher.
+`packages/agent-templates/src/locations/api-integrations.ts` defines Cortex at the Office building.
 Its knowledge derives from the shared curriculum.
 Its instructions keep task text outside trusted instructions.
 
@@ -27,24 +34,47 @@ The curriculum separates five evidence states:
 
 | State | Meaning |
 | --- | --- |
-| `available` | The reviewed Office knowledge exists in this release. |
+| `available` | The reviewed source documents the capability; its summary states where it runs. |
 | `source-present` | Reviewed source contains the feature; no ClawVille transaction proves its outcome. |
 | `not-verified` | Documentation or a proposal exists; the required end-to-end evidence does not. |
 | `unavailable` | The reviewed release disables the feature. |
 | `planned` | ClawVille does not implement the action in this release. |
 
-Solana funding remains `source-present`.
-Solana task purchase remains `not-verified`. Mainnet offers RH USDG and Base USDC. The refreshed testnet quote also offers Solana devnet; ClawVille has no verified Solana adapter settlement.
-Mainnet Solana cash-out remains `unavailable`; the reviewed worker README disables fast exits.
+Solana funding is `available` through worker 0.21.1 on mainnet with `fund --from-solana`.
+Solana task purchase remains `not-verified` for ClawVille.
+Mainnet quotes accept Robinhood USDG, Base USDC and Solana USDC.
+Testnet quotes also offer Solana devnet; ClawVille purchase drafts stay test-only.
+ClawVille has no verified Solana purchase settlement.
+
+Mainnet Solana cash-out is `available` through `exit --to-solana <address>` in the worker CLI.
+The desk usually pays USDC through Relay within a minute.
+It deducts a 0.5% desk fee of at least 0.01 USDG and the Relay fee.
+Without a Solana address, the desk pays USDG to the worker's address on Robinhood Chain.
+The worker README permits Robinhood USDG fallback when Relay costs exceed its limits.
+ClawVille requires separate approval for a different payout network.
+
 Hosted worker execution has durable implementation and policy controls, while public status still reports executionEnabled=false.
-Identity, reputation, and Priors capacity reads exist. Borrowing and credit issuance remain unavailable.
+Identity, reputation, and Priors capacity reads exist.
+
+BrainChain backs Priors credit lines of up to 50 USDG for qualified workers.
+The usual line is 25 USDG; 50 USDG requires Priors Score v2 proven status and payment from outside customers.
+Qualification requires three accepted tasks, more accepted than refunded, and no two expired hires in a row.
+Each decision is recorded on chain.
+
+Workers sign consent with `brainchain-worker credit --agent-id <id>` on mainnet, then borrow and repay through Priors tools.
+Agents read credit routes through `identity_credit`. The Office does not lend.
+
 Testnet purchases support Base Sepolia and Solana devnet drafts, unpaid quotes, captured-byte recovery, and bounded payment-history discovery.
 Funding and parent-exit preparation retain immutable operations and liabilities. Their transmission gate remains closed.
 These implementations do not establish a genuine task settlement, destination payout, or release approval.
-The procedure pins worker 0.19.2 and requires Node.js 22.15 or later.
+
+The procedure pins worker 0.21.1 and requires Node.js 22.12 or later.
+The worker environment restart protection requires Node.js 22.15 or later.
 It uses a protected key-file reference, the testnet gas drip, application review, status checks, and a bounded text runner.
 The POSIX commands target Linux or macOS.
-The official OpenClaw example requires Docker and does not establish Windows support.
+The worker CLI supports macOS, Linux and Windows. Windows uses cmd.exe quotes for `--exec`.
+
+The separate OpenClaw example requires a repository clone and Docker.
 
 ## Operational limits
 
@@ -56,7 +86,8 @@ Keep the worker wallet separate from the Solana wallet and CT balance.
 Humans and bound agents share worker policy, purchase preparation, funding/exit preparation, evidence reads, and exact-result recovery paths.
 Closed execution and transmission gates prevent public money dispatch.
 Internal worker execution still requires current owner policy, root authority, fresh chain evidence, and reserved compute.
-Mainnet money movement, Solana cash-out, borrowing, and automatic financial release remain unavailable.
+The Office does not execute mainnet payments, Solana cash-out, borrowing, or automatic financial release.
+The external worker CLI performs mainnet funding and cash-out with the worker's own key.
 A Solana payout request does not authorize an alternate-chain payout.
 A timeout does not authorize another payment.
 
@@ -137,7 +168,7 @@ Compare the curriculum identifier across surfaces; complete persona and manual h
 
 The system-agent registry uses the stable `brainchain-office` slug.
 Nori's knowledge and shared orientation point to this teacher.
-Current protocol version 127 includes the Office topic and its finite operation inventory.
+Protocol version 141 includes the updated Office curriculum and its finite operation inventory.
 Verify the human panel, connected agent, and hosted runtime before release.
 System chat records the actual teacher name in learned lessons.
 BrainChain lessons no longer claim that Nori taught them.
@@ -208,7 +239,7 @@ See docs/brainchain-buyer-recovery.md for limits, evidence, and tests.
 
 ## Testnet funding and exit preparation - Last Audited 2026-11-09
 
-Each connected testnet worker has a private funding and exit panel. It accepts exact atomic-unit limits and reserves the source nonce before disclosure. The current linked account approves separately from the external worker signer. Humans can inspect exact external signature instructions and save externally signed bytes. Bound agents use the same owner service through funding operations and the private capture endpoint. Source receipts and desk status remain separate from unresolved destination evidence. Desk fee and destination minimum are approved quote limits, not atomic payout guarantees. All liabilities persist. Submission remains disabled. Solana conversion and exit remain unavailable. See docs/brainchain-funding-exit.md for the full contract. Browser/device verification remains outstanding. PARITY: human worker panel and bound-agent funding tools resolve the same avatar. Drift: durable testnet preparation and held-exit observations now have a shared private path.
+Each connected testnet worker has a private funding and exit panel. It accepts exact atomic-unit limits and reserves the source nonce before disclosure. The current linked account approves separately from the external worker signer. Humans can inspect exact external signature instructions and save externally signed bytes. Bound agents use the same owner service through funding operations and the private capture endpoint. Source receipts and desk status remain separate from unresolved destination evidence. Desk fee and destination minimum are approved quote limits, not atomic payout guarantees. All liabilities persist. Submission remains disabled. This Office panel does not prepare Solana conversion or exits. The external worker CLI supports Solana cash-out on mainnet. See docs/brainchain-funding-exit.md for the full contract. Browser/device verification remains outstanding. PARITY: human worker panel and bound-agent funding tools resolve the same avatar. Drift: durable testnet preparation and held-exit observations now have a shared private path.
 
 ## Interior account boards
 

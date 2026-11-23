@@ -26,10 +26,12 @@ test('a failed observation never becomes a fabricated empty success', async () =
 });
 
 test('evidence links reject executable URLs and look-alike hosts', () => {
-  for (const value of ['javascript:alert(1)', 'https://docs.usebrainchain.com.evil.test/', 'https://user@docs.usebrainchain.com/', 'https://github.com/evil/brainchain']) {
+  for (const value of ['javascript:alert(1)', 'https://docs.usebrainchain.com.evil.test/', 'https://user@docs.usebrainchain.com/', 'https://github.com/evil/brainchain', 'http://usebrainchain.com/credit', 'https://user@usebrainchain.com/credit', 'https://usebrainchain.com:8443/credit', 'https://usebrainchain.com/credit/other', 'https://usebrainchain.com.evil.test/credit', 'https://www.npmjs.com/package/other/v/0.21.1', 'https://www.npmjs.com/package/brainchain-worker/v/0.21.2', 'https://usebrainchain.com/credit?redirect=evil', 'https://www.npmjs.com/package/brainchain-worker/v/0.21.1#other']) {
     expect(officialEvidenceUrl(value)).toBeNull();
   }
   expect(officialEvidenceUrl('https://docs.usebrainchain.com/network')).toBe('https://docs.usebrainchain.com/network');
+  expect(officialEvidenceUrl('https://usebrainchain.com/credit')).toBe('https://usebrainchain.com/credit');
+  expect(officialEvidenceUrl('https://www.npmjs.com/package/brainchain-worker/v/0.21.1')).toBe('https://www.npmjs.com/package/brainchain-worker/v/0.21.1');
 });
 test('a running worker request remains a local request rather than task or income proof', () => {
   expect(workerRequestDescription('running')).toBe('Testnet work requested. This status does not confirm a task or payment.');

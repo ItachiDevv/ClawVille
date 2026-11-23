@@ -23,10 +23,10 @@ describe('reviewed BrainChain curriculum', () => {
 
   test('the capability menu never enables unsupported payment or execution actions', () => {
     const available = BRAINCHAIN_CAPABILITIES.filter((capability) => capability.status === 'available');
-    expect(available.map((capability) => capability.id)).toEqual(['office_knowledge']);
-    expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_funding')?.status).toBe('source-present');
+    expect(available.map((capability) => capability.id)).toEqual(['office_knowledge', 'solana_funding', 'solana_cash_out', 'credit']);
+    expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_funding')?.status).toBe('available');
     expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_task_purchase')?.status).toBe('not-verified');
-    expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_cash_out')?.status).toBe('unavailable');
+    expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_cash_out')?.status).toBe('available');
     expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'hosted_worker')?.status).toBe('planned');
   });
 
@@ -37,11 +37,16 @@ describe('reviewed BrainChain curriculum', () => {
     expect(manual).toContain('48-hour mainnet application timelock');
     expect(manual).not.toMatch(/(?:export|set|\$env:)\s*BRAINCHAIN_(?:WORKER|SOLANA)_KEY\s*=/i);
     expect(manual).not.toContain('BRAINCHAIN_PAY_ON=solana');
-    expect(manual).toContain('brainchain-worker@0.19.2');
+    expect(manual).toContain('brainchain-worker@0.21.1');
     expect(manual).toContain('export BRAINCHAIN_NETWORK=testnet');
     expect(manual).toContain('new-key --file "$BRAINCHAIN_WORKER_KEY_FILE"');
     expect(manual).toContain('https://brain.testnet.usebrainchain.com/testnet/gas');
     expect(manual).toContain('brainchain-worker join --name');
     expect(manual).toContain('brainchain-worker run --exec');
+    expect(manual).toContain('--strict-mcp-config');
+    expect(manual).toContain('exit --to-solana');
+    expect(manual).toContain('up to 50 USDG');
+    expect(manual).not.toContain('disables mainnet fast exits');
+    expect(manual).not.toContain('no outside contract audit');
   });
 });
