@@ -10,7 +10,7 @@ import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import type { BrainchainBuyerOrder, BrainchainBuyerState } from '@clawville/shared';
 import { BUYER_LANE, BrainchainPurchaseError, buyerAddress, buyerDigest, buyerHumanApprovalMessage, buyerPaymentHeader, buyerTypedData,
-  canonical, createBuyerTerms, purchaseBodySchema, verifyBuyerSignatures, type BuyerTaskBody, type BuyerQuote, type BuyerTerms } from './purchase-policy';
+  BRAINCHAIN_DAILY_DRAFT_LIMIT, canonical, createBuyerTerms, purchaseBodySchema, verifyBuyerSignatures, type BuyerTaskBody, type BuyerQuote, type BuyerTerms } from './purchase-policy';
 import { BrainchainPurchaseClient, type BuyerRemoteOrder } from './purchase-client';
 import { BrainchainBuyerReceipts, type BuyerReceiptEvidence } from './purchase-receipts';
 import {accountSpendLockKey,readAccountSpendLiability} from '../account-spend-liability';
@@ -98,6 +98,10 @@ export class BrainchainPurchases {
   async draft(owner:BuyerOwner,raw:unknown){const input=draftSchema.parse(raw),bodyHash=buyerDigest(input.body);return this.database.begin(async tx=>{await this.context(tx,owner);
     const [old]=await tx<BuyerRow[]>`SELECT * FROM brainchain_buyer_orders WHERE avatar_id=${owner.avatarId} AND idempotency_key=${input.idempotencyKey}`;
     if(old){if(old.user_id!==owner.userId||old.body_hash!==bodyHash||old.network!==input.network)throw new BrainchainPurchaseError('order_conflict');return this.view(tx,old);}
+    // Row bound per avatar: canceled drafts count, so create-cancel loops cannot grow the table (agent-path audit 2026-11-23).
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`brainchain-draft:${owner.avatarId}`},0))`;
+    const [recent]=await tx<{count:number}[]>`SELECT count(*)::int AS count FROM brainchain_buyer_orders WHERE avatar_id=${owner.avatarId} AND created_at>clock_timestamp()-interval '24 hours'`;
+    if(recent!.count>=BRAINCHAIN_DAILY_DRAFT_LIMIT)throw new BrainchainPurchaseError('daily_draft_limit');
     const [row]=await tx<BuyerRow[]>`INSERT INTO brainchain_buyer_orders(id,avatar_id,user_id,actor,idempotency_key,body,body_hash,network) VALUES(${randomUUID()},${owner.avatarId},${owner.userId},${owner.actor},${input.idempotencyKey},${tx.typed(canonical(input.body),25)}::jsonb,${bodyHash},${input.network}) RETURNING *`;
     await this.event(tx,row!.id,'draft',{publicDataConsent:true,bodyHash});return this.view(tx,row!);});}
   async quote(owner:BuyerOwner,id:string){const before=await this.get(owner,id);if(!['draft','quoted'].includes(before.state))throw new BrainchainPurchaseError('order_conflict');

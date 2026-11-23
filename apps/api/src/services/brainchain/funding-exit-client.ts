@@ -17,7 +17,7 @@ export class FundingExitClient{
   const work=async()=>{const checked=await(this.deps.validateUrl??validateOutboundUrlResolved)(url);if(!checked.ok||controller.signal.aborted)throw Error('refused');
    if(beforeSend){await beforeSend();if(controller.signal.aborted)throw Error('expired');}
    const response=await(this.deps.fetch??fetch)(url,{method:body?'POST':'GET',redirect:'manual',credentials:'omit',signal:controller.signal,headers:{Accept:'application/json',...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
-   if(response.status!==200||response.redirected||(response.url&&response.url!==url)||!response.body||!response.headers.get('content-type')?.startsWith('application/json'))throw Error('response');
+   if(response.status!==200||response.redirected||(response.url&&response.url!==new URL(url).href)||!response.body||!response.headers.get('content-type')?.startsWith('application/json'))throw Error('response');
    const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;const cancel=()=>{void reader.cancel().catch(()=>{});};controller.signal.addEventListener('abort',cancel,{once:true});
    try{for(;;){const p=await reader.read();if(p.done)break;size+=p.value.length;if(size>262144)throw Error('size');chunks.push(p.value);}}
    finally{controller.signal.removeEventListener('abort',cancel);if(size>262144)void reader.cancel().catch(()=>{});reader.releaseLock();}

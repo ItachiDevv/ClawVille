@@ -84,6 +84,7 @@ const PRIVATE_ERRORS: Record<string, string> = {
   over_per_call_cap:'This purchase exceeds your per-call limit.',
   over_daily_cap:'Your purchase holds and daily spend exceed the daily limit.',
   order_conflict:'Refresh this order. Do not create another payment.',
+  daily_draft_limit:'You reached 20 purchase drafts in 24 hours. Cancelled drafts count. Try again later.',
   quote_refused:'The current quote does not match the reviewed test network and price.',
   receipt_unavailable:'The Office cannot verify the receipt. Its hold remains reserved.',
   payer_conflict:'This payer address belongs to another avatar.',

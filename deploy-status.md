@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = `0053461bd` BrainChain partner feedback (PROTOCOL 141, no migration) on top of `e8beca549`. VERIFIED 18:46Z: CI run 45238394804 all jobs success; both containers SOURCE_COMMIT `6edb7d1cf` (flip 18:42Z); `/api/ecosystem/catalog` protocolVersion 141; `/api/brainchain/knowledge` curriculum version 2 with the new capabilities; signed-in Cortex reply leads with BrainChain earning and confirms mainnet Solana cash-out; Office Learn and Earnings tabs show the new copy.**
+Last Audited: 2026-11-23 21:30Z (session brainchain). **STAGING API + WEB = BrainChain agent-path audit fixes (PROTOCOL 142, no migration) on top of `af1fd9e0f` (hosted probe Nori check fix). PUSHED, verification pending (see DEPLOY LOG 21:30Z).**
+
+Prior - Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = `0053461bd` BrainChain partner feedback (PROTOCOL 141, no migration) on top of `e8beca549`. VERIFIED 18:46Z: CI run 45238394804 all jobs success; both containers SOURCE_COMMIT `6edb7d1cf` (flip 18:42Z); `/api/ecosystem/catalog` protocolVersion 141; `/api/brainchain/knowledge` curriculum version 2 with the new capabilities; signed-in Cortex reply leads with BrainChain earning and confirms mainnet Solana cash-out; Office Learn and Earnings tabs show the new copy.**
 
 Prior - Last Audited: 2026-11-19 (session trading). **STAGING API + WEB = branch `fix/clawpump-v1-writer`: ClawPump v1 writer + arena wallet pause (PROTOCOL 140, given by claw2.0; no migration), on top of `f20aa9925`. Code `ce3a10c66` (CI fixes `68d17d42d`, `1cd1e1874`, `ce3a10c66` after runs 44596935815 and 44598817604 failed tests and deployed nothing). VERIFIED 19:52Z: CI run 44599746077 all jobs success; both Coolify deploys finished; `/health` commit `ce3a10c66`; `GET /api/floor/arena/addons` paymentsEnabled false; public play manual protocol_version 140; the two failed staging bots (i7505 Probe, NerdStrat) reset to pending and the engine made both `ready`; ClawPump shows both private with 14 skills (DEPLOY LOG 2026-11-19).** PROD = `f87ec1734` (promotion #29) unchanged. SCHEMA: synced (no migration in this push).
 
@@ -790,6 +792,15 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-23 21:30Z (session brainchain) - BrainChain agent-path audit fixes: response URL check, draft and policy request limits (PROTOCOL 142, no migration)
+- **What changed:** (1) `funding-exit-client.ts` and `purchase-solana-rpc.ts` compare `response.url` with `new URL(rpc).href`. fetch reports `https://host/` for a bare-origin RPC, so every testnet funding prepare and every Solana devnet read refused with `receipt_unavailable` since they shipped. (2) One avatar can create 20 purchase drafts in any 24 hours, canceled drafts included (429 `daily_draft_limit`, advisory lock per avatar). One worker binding accepts 20 policy requests in any 24 hours (`worker_policy_refused`); narrowing stays unlimited. Manual, web message, GameFeatures, ARCHITECTURE and the partner spec updated.
+- **Why:** the E5 adversarial agent-path audit on staging `af1fd9e0f` (two test agents) APPROVED promotion and listed these SHOULD-FIX items. Owner isolation, identity resolution, parity and disabled money paths showed no issue. Codex review of this diff: one test type fix, applied.
+- **Checked before push:** the fixed clients ran inside the staging API container against the live testnets: funding prepare `parent_eth` succeeds (nonce 0), Solana devnet genesis succeeds. Exit prepare still answers `terms_unavailable` because BrainChain turned testnet fast exits off (`GET https://brain.testnet.usebrainchain.com/exits`: "Fast exits are off on this network.").
+- **PROTOCOL:** 142 taken by session brainchain (claw2.0 unreachable; no remote branch used 142). claw2.0 takes 143 or later.
+- **Audit leftovers on staging:** two test agents (sessions expire by TTL), one draft order with injected text, one testnet worker binding (unfunded throwaway key) and one requested policy.
+- **Who it is for:** the founder (promotion) and BrainChain users on staging.
+- **SCHEMA:** synced (no migration). Prod still pending `0101`-`0121c`.
 
 ### 2026-11-23 20:50Z (session brainchain) - E6 release gates on staging before promotion; hosted probe Nori check fix (no PROTOCOL change, no migration)
 - **What changed:** `apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts` reads Nori's lesson prefix from the `town-guide` template name. Since `fd277c818` (2026-11-09) `system-agent-chat.ts` writes `${platformAgent.name} told me: ` so the BrainChain Office slug records "Cortex told me"; Nori's lessons read "Nori the Town Guide told me: ". The probe still expected "Nori told me: ".

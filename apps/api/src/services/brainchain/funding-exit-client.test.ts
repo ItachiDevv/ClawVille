@@ -22,3 +22,13 @@ test('authority abort rejects an uncooperative transport and never starts anothe
  const client=new FundingExitClient({validateUrl:async url=>({ok:true as const,url}),fetch:(async(_input:Parameters<typeof fetch>[0],init?:RequestInit)=>{calls++;seen=init?.signal;entered();return new Promise<Response>(resolve=>{release=resolve;});}) as unknown as typeof fetch}),controller=new AbortController();
  const pending=client.verifyAuthority(artifact(),controller.signal);await inside;controller.abort();await expect(pending).rejects.toThrow();expect(seen?.aborted).toBe(true);release(Response.json({jsonrpc:'2.0',id:1,result:'0xb626'}));await new Promise(resolve=>setTimeout(resolve,20));expect(calls).toBe(1);
 });
+test('fixed RPC accepts the normalized response URL and refuses another host',async()=>{
+ // fetch reports `https://host/` for the bare-origin RPC constant; staging failed every prepare on this before 2026-11-23.
+ expect(new URL(P.parentRpc).href).toBe(`${P.parentRpc}/`);
+ const results:Record<string,string>={eth_chainId:'0xb626',eth_getTransactionCount:'0x0',eth_gasPrice:'0x1',eth_getCode:'0x'};
+ const reply=(url:string)=>(async(_input:Parameters<typeof fetch>[0],init?:RequestInit)=>{const req=JSON.parse(String(init?.body));const response=Response.json({jsonrpc:'2.0',id:req.id,result:results[req.method]});Object.defineProperty(response,'url',{value:url});return response;}) as unknown as typeof fetch;
+ const ok=new FundingExitClient({validateUrl:async url=>({ok:true as const,url}),fetch:reply(`${P.parentRpc}/`)});
+ expect(await ok.prepare('parent_eth',source,1n)).toMatchObject({nonce:0,maxFeePerGas:2n});
+ const moved=new FundingExitClient({validateUrl:async url=>({ok:true as const,url}),fetch:reply('https://evil.invalid/')});
+ await expect(moved.prepare('parent_eth',source,1n)).rejects.toMatchObject({code:'receipt_unavailable'});
+});

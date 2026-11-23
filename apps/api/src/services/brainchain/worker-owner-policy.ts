@@ -19,6 +19,8 @@ export const workerOwnerPolicySchema=z.object({environment:z.literal('testnet'),
 export type WorkerOwnerPolicy=z.infer<typeof workerOwnerPolicySchema>;
 export type WorkerPolicyOwner={avatarId:string;userId:string;actor:'human'|'agent';assertCurrent:()=>Promise<void>};
 export class WorkerPolicyError extends Error{readonly code='worker_policy_refused';}
+/** Policy requests one worker binding accepts in any 24 hours. */
+export const WORKER_POLICY_DAILY_REQUEST_LIMIT=20;
 export function workerPolicyBytes(raw:unknown){const value=workerOwnerPolicySchema.parse(raw);return JSON.stringify({...value,actions:[...value.actions].sort(),taskKinds:[...value.taskKinds].sort()});}
 export const workerPolicyHash=(raw:unknown)=>createHash('sha256').update(workerPolicyBytes(raw)).digest('hex');
 const digest=(raw:string)=>createHash('sha256').update(raw).digest('hex');
@@ -62,6 +64,8 @@ export class WorkerOwnerPolicies{
     return this.database.begin(async tx=>{
       await this.owner(tx,owner,workerId);const [clock]=await tx`SELECT clock_timestamp() AS now`;
       if(Date.parse(payload.expiresAt)<=date(clock!.now).getTime()||Date.parse(payload.expiresAt)>date(clock!.now).getTime()+86400000)throw new WorkerPolicyError('Policy expiry must be within one day');
+      const [recent]=await tx<{count:number}[]>`SELECT count(*)::int AS count FROM brainchain_worker_policies WHERE binding_id=${workerId} AND created_at>clock_timestamp()-interval '24 hours'`;
+      if(recent!.count>=WORKER_POLICY_DAILY_REQUEST_LIMIT)throw new WorkerPolicyError('Daily policy request limit reached');
       const [last]=await tx`SELECT COALESCE(MAX(revision),0)::int AS revision FROM brainchain_worker_policies WHERE binding_id=${workerId}`;
       await tx`INSERT INTO brainchain_worker_policy_budgets(binding_id,avatar_id) VALUES(${workerId},${owner.avatarId}) ON CONFLICT DO NOTHING`;
       const [row]=await tx<PolicyRow[]>`INSERT INTO brainchain_worker_policies(binding_id,avatar_id,user_id,revision,payload,payload_hash,expires_at)

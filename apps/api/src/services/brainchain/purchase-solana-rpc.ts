@@ -5,6 +5,8 @@ import { SOLANA_BUYER_LANE as L, solanaBuyerAddress } from './purchase-solana-po
 import type { SolanaBuyerArtifact } from './purchase-solana-transaction';
 
 const integer = z.number().int().nonnegative().safe();
+/** fetch reports the normalized URL (`https://host/`), never the bare origin in `L.rpc`. */
+const SOLANA_RPC_HREF = new URL(L.rpc).href;
 export class SolanaBuyerRpc {
   constructor(private readonly fetcher: typeof fetch = fetch) {}
   /** Fixed read-only RPC. There is no sendTransaction operation. */
@@ -17,7 +19,7 @@ export class SolanaBuyerRpc {
     const operation = async () => {
       const response = await this.fetcher(L.rpc, {method: 'POST', redirect: 'manual', credentials: 'omit', signal: controller.signal,
         headers: {'Content-Type': 'application/json'}, body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params})});
-      if (controller.signal.aborted || !response.ok || !response.headers.get('content-type')?.startsWith('application/json') || response.redirected || response.url && response.url !== L.rpc || !response.body) throw new Error();
+      if (controller.signal.aborted || !response.ok || !response.headers.get('content-type')?.startsWith('application/json') || response.redirected || response.url && response.url !== SOLANA_RPC_HREF || !response.body) throw new Error();
       const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
       const cancel = () => { void reader.cancel().catch(() => {}); }; controller.signal.addEventListener('abort', cancel, {once: true});
       try { for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength; if (size > 262144) { await reader.cancel(); throw new Error(); } chunks.push(part.value); } }

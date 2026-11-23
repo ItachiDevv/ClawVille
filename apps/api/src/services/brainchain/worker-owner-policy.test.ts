@@ -6,7 +6,7 @@ import postgres from 'postgres';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import {getBrainchainFixtureSettings} from './test-fixtures/database';
-import {WorkerOwnerPolicies,workerPolicyHash,policyNarrows,type WorkerOwnerPolicy,type WorkerPolicyOwner} from './worker-owner-policy';
+import {WORKER_POLICY_DAILY_REQUEST_LIMIT,WorkerOwnerPolicies,workerPolicyHash,policyNarrows,type WorkerOwnerPolicy,type WorkerPolicyOwner} from './worker-owner-policy';
 import {WorkerAuthorityIssuer} from './worker-authority-issuer';
 import type {SignerObservation} from './signer-policy';
 import {DurableInferenceProxy} from './inference-proxy';
@@ -51,6 +51,12 @@ describe.skipIf(process.env.BRAINCHAIN_DB_FIXTURE!=='1')('Worker owner grants wi
     const challenge=await service.challenge(f.owner,f.workerId,policyId);
     return{nonce:challenge.nonce,signature:bs58.encode(nacl.sign.detached(Buffer.from(challenge.messageToSign),f.wallet.secretKey))};
   }
+  test('policy requests stop at the daily limit per worker binding',async()=>{
+    const f=await fixture(),agent={...f.owner,actor:'agent' as const};
+    for(let i=0;i<WORKER_POLICY_DAILY_REQUEST_LIMIT;i++)await service.request(agent,f.workerId,payload());
+    expect(await refusal(()=>service.request(agent,f.workerId,payload()))).toContain('Daily policy request limit');
+    const g=await fixture();expect((await service.request(g.owner,g.workerId,payload())).revision).toBe(1);
+  });
   test('agents request and narrow but cannot approve; concurrent proof consumes once',async()=>{
     const f=await fixture(),agent={...f.owner,actor:'agent' as const},policy=await service.request(agent,f.workerId,payload());
     expect(await refusal(()=>service.challenge(agent,f.workerId,policy.id))).toContain('Human owner');

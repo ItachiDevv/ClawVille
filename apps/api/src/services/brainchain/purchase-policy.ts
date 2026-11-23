@@ -5,8 +5,10 @@ import { BRAINCHAIN_BUYER_LANE } from '@clawville/shared';
 
 export const BUYER_LANE = BRAINCHAIN_BUYER_LANE;
 export class BrainchainPurchaseError extends Error {
-  constructor(readonly code: 'invalid_request'|'purchase_not_found'|'unsupported_payment_lane'|'quote_refused'|'owner_grant_required'|'human_approval_required'|'over_per_call_cap'|'over_daily_cap'|'payer_conflict'|'invalid_proof'|'order_conflict'|'purchase_unavailable'|'execution_disabled'|'payment_uncertain'|'receipt_unavailable'|'associated_token_account_required') { super(`BrainChain purchase refused: ${code}`); }
+  constructor(readonly code: 'invalid_request'|'purchase_not_found'|'unsupported_payment_lane'|'quote_refused'|'owner_grant_required'|'human_approval_required'|'over_per_call_cap'|'over_daily_cap'|'payer_conflict'|'invalid_proof'|'order_conflict'|'purchase_unavailable'|'execution_disabled'|'payment_uncertain'|'receipt_unavailable'|'associated_token_account_required'|'daily_draft_limit') { super(`BrainChain purchase refused: ${code}`); }
 }
+/** Purchase drafts one avatar can create in any 24 hours, canceled drafts included. */
+export const BRAINCHAIN_DAILY_DRAFT_LIMIT = 20;
 export const buyerAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/).transform(value => value.toLowerCase());
 export const buyerHash = z.string().regex(/^0x[0-9a-f]{64}$/);
 export const buyerSignature = z.string().regex(/^0x[0-9a-fA-F]{130}$/);

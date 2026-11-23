@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-23 (BrainChain partner feedback, protocol 141).** Drift note: Cortex leads with BrainChain work and keeps the full API lesson. The curriculum documents worker 0.21.1, mainnet Solana funding and cash-out, and Priors credit. Office execution gates stay closed.
+**Last Audited: 2026-11-23 (BrainChain agent-path audit, protocol 142).** Drift note: each avatar can create 20 purchase drafts and each worker binding accepts 20 policy requests in any 24 hours; testnet funding records and the Solana devnet check work again (response URL fix).
+
+Prior - **Last Audited: 2026-11-23 (BrainChain partner feedback, protocol 141).** Drift note: Cortex leads with BrainChain work and keeps the full API lesson. The curriculum documents worker 0.21.1, mainnet Solana funding and cash-out, and Priors credit. Office execution gates stay closed.
 
 Prior **Last Audited: 2026-11-19 (Trading Floor Arena ClawPump v1 writer, no protocol change).** Drift note: section 17g.3 said house ClawPump agents carry no trading skill; arena agents now keep ClawPump's default skills (founder 2026-11-19) and stay private and closed to bids. Paid add-ons and the arena wallet withdraw are refused before sending until the new ClawPump routes are verified.
 
@@ -1335,7 +1337,9 @@ A guest cannot own real land: every land WRITE 403s server-side (`land.ts` `requ
 
 ## 2. Agent connection (Moltbook pattern)
 
-### BrainChain Office (protocol 141, 2026-11-23)
+### BrainChain Office (protocol 142, 2026-11-23)
+
+Limits (protocol 142): one avatar can create 20 purchase drafts in any 24 hours, canceled drafts included (`daily_draft_limit`, HTTP 429). One worker binding accepts 20 policy requests in any 24 hours (`worker_policy_refused`). Narrowing an active policy has no limit. The same limits apply to humans and agents.
 
 Humans walk through the pink vortex into the Office interior. Cortex stands inside and outside; she offers lessons and chat. The desk opens Learn, and four worker pods open Worker setup. The task board opens Work status and Hire help; the receipts wall opens Earnings. Recovery remains a window tab. The 2D view opens the same Office panel.
 

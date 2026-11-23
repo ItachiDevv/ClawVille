@@ -13,7 +13,7 @@ import {getBrainchainFixtureSettings} from './test-fixtures/database';
 import {BrainchainPurchases,type BuyerOwner} from './purchases';
 import {BrainchainPurchaseClient} from './purchase-client';
 import {BrainchainBuyerReceipts} from './purchase-receipts';
-import {BUYER_LANE,selectBuyerQuote,type BuyerQuote,type BuyerTaskBody,type BuyerTerms} from './purchase-policy';
+import {BRAINCHAIN_DAILY_DRAFT_LIMIT,BUYER_LANE,selectBuyerQuote,type BuyerQuote,type BuyerTaskBody,type BuyerTerms} from './purchase-policy';
 const enabled=process.env.BRAINCHAIN_DB_FIXTURE==='1';
 let sql:Sql;
 const account=privateKeyToAccount(generatePrivateKey());
@@ -168,4 +168,9 @@ test.skipIf(!enabled)('actual Drizzle serializers preserve full capture, final f
 test.skipIf(!enabled)('captured order DTO follows a later owner restriction to require approval',async()=>{
  const o=await owner(),{service:s,client}=service(),id=await captured(s,o);await sql`UPDATE user_spend_policies SET require_approval=true WHERE avatar_id=${o.avatarId}`;
  const read=await s.get(o,id);expect(read.requiresHumanApproval).toBe(true);expect(read.humanApproved).toBe(false);await refuses(()=>s.submit(o,id),'human_approval_required');expect(client.calls).toBe(0);
+});
+test.skipIf(!enabled)('daily draft limit counts canceled drafts and keeps idempotent replays',async()=>{const o=await owner(),{service:s}=service();const keys:ReturnType<typeof randomUUID>[]=[];
+ for(let i=0;i<BRAINCHAIN_DAILY_DRAFT_LIMIT;i++){const key=randomUUID();keys.push(key);const row=await draft(s,o,key);await s.cancel(o,row.id);}
+ await refuses(()=>draft(s,o),'daily_draft_limit');expect((await draft(s,o,keys[0])).state).toBe('canceled');
+ const other=await owner();expect((await draft(s,other)).state).toBe('draft');
 });

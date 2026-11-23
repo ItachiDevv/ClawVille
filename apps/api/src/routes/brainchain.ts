@@ -215,7 +215,7 @@ export function createBrainChainRoutes(status = brainChainStatus, options: {
     const codes: Record<string, 403 | 400 | 404 | 409 | 429 | 503> = {
       operation_not_found:404,operation_conflict:409,owner_required:403,approval_required:409,unsupported_route:400,terms_unavailable:503,operation_uncertain:409,
       exact_result_recovery_refused:409,exact_recovery_owner_required:403,worker_policy_refused:409,owner_policy_proof_required:403,invalid_request:400,purchase_not_found:404,unsupported_payment_lane:400,quote_refused:409,owner_grant_required:409,human_approval_required:409,over_per_call_cap:409,over_daily_cap:409,payer_conflict:409,order_conflict:409,purchase_unavailable:503,execution_disabled:503,payment_uncertain:409,receipt_unavailable:503,associated_token_account_required:409,
-      rate_limited: 429, invalid_proof: 400, binding_conflict: 409, worker_not_found: 404,
+      rate_limited: 429, daily_draft_limit: 429, invalid_proof: 400, binding_conflict: 409, worker_not_found: 404,
       skill_not_found: 503, agent_not_connected: 409, runtime_unavailable: 503,
       chain_read_unavailable: 503, task_state_conflict: 409,
     };
