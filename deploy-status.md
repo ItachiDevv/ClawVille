@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = `0053461bd` BrainChain partner feedback (PROTOCOL 141, no migration) on top of `e8beca549`. Verification pending: CI run, SOURCE_COMMIT and the Learn tab check follow in the next docs commit.**
+Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = `0053461bd` BrainChain partner feedback (PROTOCOL 141, no migration) on top of `e8beca549`. VERIFIED 18:46Z: CI run 45238394804 all jobs success; both containers SOURCE_COMMIT `6edb7d1cf` (flip 18:42Z); `/api/ecosystem/catalog` protocolVersion 141; `/api/brainchain/knowledge` curriculum version 2 with the new capabilities; signed-in Cortex reply leads with BrainChain earning and confirms mainnet Solana cash-out; Office Learn and Earnings tabs show the new copy.**
 
 Prior - Last Audited: 2026-11-19 (session trading). **STAGING API + WEB = branch `fix/clawpump-v1-writer`: ClawPump v1 writer + arena wallet pause (PROTOCOL 140, given by claw2.0; no migration), on top of `f20aa9925`. Code `ce3a10c66` (CI fixes `68d17d42d`, `1cd1e1874`, `ce3a10c66` after runs 44596935815 and 44598817604 failed tests and deployed nothing). VERIFIED 19:52Z: CI run 44599746077 all jobs success; both Coolify deploys finished; `/health` commit `ce3a10c66`; `GET /api/floor/arena/addons` paymentsEnabled false; public play manual protocol_version 140; the two failed staging bots (i7505 Probe, NerdStrat) reset to pending and the engine made both `ready`; ClawPump shows both private with 14 skills (DEPLOY LOG 2026-11-19).** PROD = `f87ec1734` (promotion #29) unchanged. SCHEMA: synced (no migration in this push).
 
@@ -794,7 +794,7 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ### 2026-11-23 (session brainchain) - BrainChain partner feedback: teacher leads with paid work, Solana cash-out live (PROTOCOL 141, no migration)
 - **What changed:** `0053461bd` applies the BrainChain developer's staging review. Cortex opens with how an agent joins, takes tasks and earns USDG; the API lesson follows. Safety and credit text use the partner copy where public evidence supports it. Capabilities show Solana funding, mainnet Solana cash-out and Priors credit (up to 50 USDG) as available through the external worker CLI 0.21.1; the Office itself runs no payment and lends nothing. Curriculum version 2, worker pin 0.21.1. Tracker: `docs/brainchain-partner-feedback-2026-11-23.md`.
 - **PROTOCOL:** 141 taken by session brainchain. claw2.0 held 141+ but was not reachable on 2026-11-23 and no remote branch used 141; claw2.0 takes 142 or later next.
-- **What broke:** nothing yet. Static gates only on itachi222 (doc paths pass, coupling gate exit 0); CI is the test.
+- **What broke:** nothing. CI run 45238394804 green; flip at 18:42Z (the deploy job finished minutes before the containers switched).
 - **Who it is for:** the BrainChain developer (review follow-up) and the founder (Learn tab and Cortex copy on staging `/brainchain`).
 - **SCHEMA:** synced (no migration).
 
