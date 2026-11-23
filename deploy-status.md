@@ -797,6 +797,11 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-24 00:05Z (session brainchain) - flaky signer RPC tests fixed (test-only, no PROTOCOL change)
+- **What broke:** promotion PR #343 failed "BrainChain isolated pure suites" on `signer-rpc-send.test.ts` ("Configured authority anchor changed"); the same suite passed on the staging push. Root cause: the fake RPC built each block timestamp from `Date.now()` per call, so two reads that straddle a second boundary looked like a changed anchor. `signer-rpc.test.ts` has the same pattern. Neither file changed in the lane removal.
+- **Fix:** both tests compute one block time per test. Test files only.
+- **SCHEMA:** synced.
+
 ### 2026-11-23 (session brainchain) - BrainChain expired testnet lanes removed (PROTOCOL 143, curriculum 3, no migration)
 - **What changed:** the FEATURE_GATEs `brainchain_testnet_purchases` and `brainchain_testnet_funding_exit` lapsed on 2026-11-16; by rule they are deleted. Removed for humans and agents: `/api/brainchain/purchases*` and `/api/brainchain/funding-exit*` routes, their services and clients, MCP `purchase_*` / `funding_*` ops, the hosted grammar ops, the Office "Hire help" tab and funding panel, the board lines for orders and funding receipts, and the manual, curriculum, orientation, Nori and Cortex text. `GET /api/brainchain/status` no longer returns `observation.executionEnabled`. Kept: tables, schema files, migrations 0109-0117, `accountSpendLiabilityQuery` (still counts any reserved buyer row), the spend vendor id. 86 files, about 2,700 lines removed.
 - **Why now:** BrainChain moved to mainnet; the testnet fast-exit desk is off and the testnet chain is idle. Prod had 0 purchase and 0 funding rows (read-only query 2026-11-23); staging had 2 unpaid drafts.

@@ -18,6 +18,8 @@ test('fixed transport sends captured bytes once and never retries ambiguous subm
       data:encodeFunctionData({abi:policy.signerAbi,functionName:'faucet'}),gas:100n,maxFeePerGas:2n,maxPriorityFeePerGas:1n},
       {r:'0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',s:`0x${'1'.padStart(64,'0')}`,yParity:0});
     let sent=0,ambiguous=false;const blockHash=`0x${'b'.repeat(64)}`;
+    // One block time for every read: a per-call Date.now() made two reads straddle a second and fail the anchor check.
+    const blockTime=`0x${Math.floor(Date.now()/1000).toString(16)}`;
     const fetcher=async(url:unknown,init?:RequestInit)=>{
       expect(url).toBe(BRAINCHAIN_CONTRACTS.testnet.rpc);
       const request=JSON.parse(String(init?.body));let result:unknown;
@@ -25,7 +27,7 @@ test('fixed transport sends captured bytes once and never retries ambiguous subm
         case 'eth_call':result=authorityResult(request);break;
         case 'eth_chainId':result='0x430c6';break;
         case 'eth_blockNumber':result='0x64';break;
-        case 'eth_getBlockByNumber':result={number:'0x64',hash:blockHash,timestamp:`0x${Math.floor(Date.now()/1000).toString(16)}`};break;
+        case 'eth_getBlockByNumber':result={number:'0x64',hash:blockHash,timestamp:blockTime};break;
         case 'eth_getCode':expect(request.params[1]).toBe('0x64');result=code;break;
         case 'eth_sendRawTransaction':sent++;expect(request.params).toEqual([bytes]);if(ambiguous)throw Error('Controlled connection loss after acceptance');result=keccak256(bytes);break;
         default:throw Error('Unexpected RPC');

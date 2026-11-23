@@ -27,7 +27,9 @@ describe('BrainChain fixed signer RPC',()=>{
     const stale=fixture(method=>method==='eth_chainId'?'0x430c6':method==='eth_blockNumber'?'0x64':{number:'0x64',hash,timestamp:'0x1'});
     await expect(stale.transport.assertTestnet()).rejects.toThrow('Fresh testnet head');
     expect(stale.calls.some(call=>call.method==='eth_getCode')).toBe(false);
-    const wrong=fixture(method=>method==='eth_chainId'?'0x430c6':method==='eth_blockNumber'?'0x64':method==='eth_getCode'?'0x6000':{number:'0x64',hash,timestamp:`0x${Math.floor(Date.now()/1000).toString(16)}`});
+    // One block time for every read, so two reads cannot straddle a second.
+    const wrongTime=`0x${Math.floor(Date.now()/1000).toString(16)}`;
+    const wrong=fixture(method=>method==='eth_chainId'?'0x430c6':method==='eth_blockNumber'?'0x64':method==='eth_getCode'?'0x6000':{number:'0x64',hash,timestamp:wrongTime});
     await expect(wrong.transport.assertTestnet()).rejects.toThrow('bytecode mismatch');
   });
   test('receipt inclusion remains provisional with exact fee evidence',async()=>{
