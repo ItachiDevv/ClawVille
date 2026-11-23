@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-23 21:30Z (session brainchain). **STAGING API + WEB = BrainChain agent-path audit fixes (PROTOCOL 142, no migration) on top of `af1fd9e0f` (hosted probe Nori check fix). PUSHED, verification pending (see DEPLOY LOG 21:30Z).**
+Last Audited: 2026-11-23 21:30Z (session brainchain). **STAGING API + WEB = BrainChain agent-path audit fixes (PROTOCOL 142, no migration) on top of `af1fd9e0f` (hosted probe Nori check fix). VERIFIED 21:22Z: CI run 45265941886 all jobs success (incl. BrainChain PostgreSQL fixtures with the new limit tests); both containers SOURCE_COMMIT `34ed4aa63` at 21:21Z; `/api/ecosystem/catalog` protocolVersion 142; release gates in the deployed API container: `agent-onboarding-smoke.ts` 13 PASS, `hosted-skill-runtime-probe.ts --autonomous-decision` ALL PASS (149); deployed `FundingExitClient.prepare('parent_eth')` and `SolanaBuyerRpc.genesis()` succeed against the live testnets.** PROD = `f87ec1734` (promotion #29) unchanged; promotion of all staging waits for the founder's scope decision.
 
 Prior - Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = `0053461bd` BrainChain partner feedback (PROTOCOL 141, no migration) on top of `e8beca549`. VERIFIED 18:46Z: CI run 45238394804 all jobs success; both containers SOURCE_COMMIT `6edb7d1cf` (flip 18:42Z); `/api/ecosystem/catalog` protocolVersion 141; `/api/brainchain/knowledge` curriculum version 2 with the new capabilities; signed-in Cortex reply leads with BrainChain earning and confirms mainnet Solana cash-out; Office Learn and Earnings tabs show the new copy.**
 
