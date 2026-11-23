@@ -14,7 +14,7 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = BrainChain expired testnet lanes removed (PROTOCOL 143, no migration) on top of prod `827034950`. PUSHED, verification pending.**
+Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = BrainChain expired testnet lanes removed (PROTOCOL 143, no migration) on top of prod `827034950`. VERIFIED 23:55Z: CI run 45289573246 all jobs success; API + web `da16e0677`; catalog protocolVersion 143; knowledge version 3; `/api/brainchain/purchases` and `/funding-exit` 404, `/workers` 401; onboarding smoke 14 PASS; hosted probe ALL PASS (149) after the staging OpenAI key fix below; headless `/brainchain` renders the room with no Hire help or funding text, 0 console errors. Staging `OPENAI_API_KEY` had no credits (embeddings 429 insufficient_quota, probe step 5 failed 503); set to the founder's org key (same as prod) via the Coolify model setter, API redeployed 23:53Z.**
 
 Prior - Last Audited: 2026-11-23 23:10Z (session brainchain). **PROD API + WEB = `827034950` (promotion #30, PR #342, all of staging, PROTOCOL 142, migrations `0101`-`0121c` applied), VERIFIED 23:06Z (see DEPLOY LOG 23:10Z); prod `OPENAI_API_KEY` rotated to the founder's org key. STAGING = same tree (fast-forward to the master merge).**
 
