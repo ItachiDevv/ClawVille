@@ -1,3 +1,5 @@
+> Retired 2026-11-23: this lane was removed (expired FEATURE_GATE; BrainChain moved to mainnet). Tables remain; code deleted.
+
 # BrainChain task purchase design
 
 Date: 2026-11-09. Status: implementation specification; no payment adapter or purchase is proved by this document.

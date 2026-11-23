@@ -1,3 +1,5 @@
+> Retired 2026-11-23: this lane was removed (expired FEATURE_GATE; BrainChain moved to mainnet). Tables remain; code deleted.
+
 # BrainChain testnet funding and exit recovery
 
 Last Audited: 2026-11-09. Source and controlled fixtures only. Transmission remains disabled.

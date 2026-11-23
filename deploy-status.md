@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-23 23:10Z (session brainchain). **PROD API + WEB = `827034950` (promotion #30, PR #342, all of staging, PROTOCOL 142, migrations `0101`-`0121c` applied), VERIFIED 23:06Z (see DEPLOY LOG 23:10Z); prod `OPENAI_API_KEY` rotated to the founder's org key. STAGING = same tree (fast-forward to the master merge).**
+Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = BrainChain expired testnet lanes removed (PROTOCOL 143, no migration) on top of prod `827034950`. PUSHED, verification pending.**
+
+Prior - Last Audited: 2026-11-23 23:10Z (session brainchain). **PROD API + WEB = `827034950` (promotion #30, PR #342, all of staging, PROTOCOL 142, migrations `0101`-`0121c` applied), VERIFIED 23:06Z (see DEPLOY LOG 23:10Z); prod `OPENAI_API_KEY` rotated to the founder's org key. STAGING = same tree (fast-forward to the master merge).**
 
 Prior - Last Audited: 2026-11-23 21:30Z (session brainchain). **STAGING API + WEB = BrainChain agent-path audit fixes (PROTOCOL 142, no migration) on top of `af1fd9e0f` (hosted probe Nori check fix). VERIFIED 21:22Z: CI run 45265941886 all jobs success (incl. BrainChain PostgreSQL fixtures with the new limit tests); both containers SOURCE_COMMIT `34ed4aa63` at 21:21Z; `/api/ecosystem/catalog` protocolVersion 142; release gates in the deployed API container: `agent-onboarding-smoke.ts` 13 PASS, `hosted-skill-runtime-probe.ts --autonomous-decision` ALL PASS (149); deployed `FundingExitClient.prepare('parent_eth')` and `SolanaBuyerRpc.genesis()` succeed against the live testnets.** PROD = `f87ec1734` (promotion #29) unchanged; promotion of all staging waits for the founder's scope decision.
 
@@ -794,6 +796,14 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-23 (session brainchain) - BrainChain expired testnet lanes removed (PROTOCOL 143, curriculum 3, no migration)
+- **What changed:** the FEATURE_GATEs `brainchain_testnet_purchases` and `brainchain_testnet_funding_exit` lapsed on 2026-11-16; by rule they are deleted. Removed for humans and agents: `/api/brainchain/purchases*` and `/api/brainchain/funding-exit*` routes, their services and clients, MCP `purchase_*` / `funding_*` ops, the hosted grammar ops, the Office "Hire help" tab and funding panel, the board lines for orders and funding receipts, and the manual, curriculum, orientation, Nori and Cortex text. `GET /api/brainchain/status` no longer returns `observation.executionEnabled`. Kept: tables, schema files, migrations 0109-0117, `accountSpendLiabilityQuery` (still counts any reserved buyer row), the spend vendor id. 86 files, about 2,700 lines removed.
+- **Why now:** BrainChain moved to mainnet; the testnet fast-exit desk is off and the testnet chain is idle. Prod had 0 purchase and 0 funding rows (read-only query 2026-11-23); staging had 2 unpaid drafts.
+- **Review:** Codex implemented from a written brief; independent Opus review APPROVED with 3 SHOULD-FIX + 3 NIT items, all applied (retired GameFeatures sections, dead `readAccountSpendLiability`, spending-card label "BrainChain (retired test purchases)", dead CI glob, retired note on the funding panel review doc, status drift note). Static: `git diff --check`, doc-path guard, UTF-8 pass. No local test run (founder rule); CI verifies.
+- **PROTOCOL:** 143 taken by session brainchain; claw2.0 takes 144 or later.
+- **Who it is for:** players and agents (no dead buttons), the founder (expired-gate rule).
+- **SCHEMA:** synced (no migration).
 
 ### 2026-11-23 23:10Z (session brainchain) - PROMOTION #30 to prod: all of staging (PR #342, merge `827034950`, PROTOCOL 142, migrations 0101-0121c) + prod OpenAI key rotation
 - **What shipped:** BrainChain Office (slot 4, interior, Cortex, curriculum v2, boards, agent tool/action; testnet purchase and funding/exit sending stay OFF), arena ClawPump v1 writer + wallet pause (138/140), Trading Floor terminal (133/134), claw2.0 MCP App screens (130/131) and fee payer code (132; NO prod fee wallet row, so the avatar pays as before), new-ville GLB diet / buildings-first hold / emote hotbar hidden / shadows off. Founder go 2026-11-23 ("go live as soon as possible"; "go ahead with your best judgment").

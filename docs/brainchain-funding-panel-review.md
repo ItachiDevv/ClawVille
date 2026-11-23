@@ -1,3 +1,5 @@
+> Retired 2026-11-23: this lane was removed (expired FEATURE_GATE; BrainChain moved to mainnet). Tables remain; code deleted.
+
 # Funding approval panel review
 
 Last Audited: 2026-11-09. Reviewer: root. Status: scoped component correction approval.

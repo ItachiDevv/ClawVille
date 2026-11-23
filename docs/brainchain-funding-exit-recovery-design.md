@@ -1,3 +1,5 @@
+> Retired 2026-11-23: this lane was removed (expired FEATURE_GATE; BrainChain moved to mainnet). Tables remain; code deleted.
+
 # Funding and exit recovery implementation contract
 
 Date:2026-11-09. Status: researched design; implementation and independent review remain required.

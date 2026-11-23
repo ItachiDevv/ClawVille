@@ -23,7 +23,6 @@ export interface OfficeStatus {
   observation: {
     observedAt: string;
     expiresAt: string;
-    executionEnabled: false;
     payment: PaymentObservation;
     exits: { mainnet: ExitObservation; testnet: ExitObservation };
   };
@@ -77,17 +76,6 @@ export function officialEvidenceUrl(value: string): string | null {
 }
 
 const PRIVATE_ERRORS: Record<string, string> = {
-  associated_token_account_required:'Create the payer devnet USDC token account in your wallet. Ask the desk to provision its receive account. The Office creates neither account.',
-  execution_disabled:'Test-token signing and submission await the payment review.',
-  owner_grant_required:'Set BrainChain spend rules in your account before a test purchase.',
-  human_approval_required:'The account owner must approve this purchase with the linked wallet.',
-  over_per_call_cap:'This purchase exceeds your per-call limit.',
-  over_daily_cap:'Your purchase holds and daily spend exceed the daily limit.',
-  order_conflict:'Refresh this order. Do not create another payment.',
-  daily_draft_limit:'You reached 20 purchase drafts in 24 hours. Cancelled drafts count. Try again later.',
-  quote_refused:'The current quote does not match the reviewed test network and price.',
-  receipt_unavailable:'The Office cannot verify the receipt. Its hold remains reserved.',
-  payer_conflict:'This payer address belongs to another avatar.',
   authentication_required: 'Sign in with your own account before this action.',
   access_denied: 'Your account cannot use this action. Check your avatar connection.',
   invalid_request: 'Check the address, network, and signature fields.',
@@ -102,7 +90,7 @@ const PRIVATE_ERRORS: Record<string, string> = {
 
 /** Private writes use the account cookie and never create a guest session or retry. */
 export async function officeAccountRequest<T>(
-  path: `workers/${string}/tasks` | 'funding-exit' | `funding-exit/${string}` | `workers/${string}/recovery` | `workers/${string}/recovery/${string}/${'challenge'|'approve'|'revoke'|'narrow'}` | `workers/${string}/policy` | `workers/${string}/policy/control` | `workers/${string}/policy/narrow` | `workers/${string}/policy/${string}/challenge` | `workers/${string}/policy/${string}/approve` | 'purchases' | `purchases/${string}` | 'workers' | 'workers/challenge' | 'workers/bind' | 'install' | `workers/${string}/control` | `workers/${string}/earnings${'' | `?${string}`}` | `workers/${string}/identity-credit?agentId=${string}`,
+  path: `workers/${string}/tasks` | `workers/${string}/recovery` | `workers/${string}/recovery/${string}/${'challenge'|'approve'|'revoke'|'narrow'}` | `workers/${string}/policy` | `workers/${string}/policy/control` | `workers/${string}/policy/narrow` | `workers/${string}/policy/${string}/challenge` | `workers/${string}/policy/${string}/approve` | 'workers' | 'workers/challenge' | 'workers/bind' | 'install' | `workers/${string}/control` | `workers/${string}/earnings${'' | `?${string}`}` | `workers/${string}/identity-credit?agentId=${string}`,
   signal: AbortSignal,
   body?: Record<string, unknown>,
 ): Promise<T> {

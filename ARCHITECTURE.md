@@ -1,6 +1,9 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-11-23 (BrainChain agent-path audit, protocol 142).** Drift note: `POST /api/brainchain/purchases` refuses a 21st draft per avatar in 24 hours with 429 `daily_draft_limit` (advisory transaction lock per avatar); worker policy requests stop at 20 per binding in 24 hours. `funding-exit-client.ts` and `purchase-solana-rpc.ts` compare the response URL with the normalized `new URL(...).href`, because fetch reports `https://host/` for a bare-origin RPC; before this every testnet funding prepare and Solana devnet read failed with `receipt_unavailable`. No schema change.
+**Last Audited: 2026-11-23 (BrainChain testnet lanes removed, protocol 143).** `GET /api/brainchain/status` no longer returns `observation.executionEnabled`; `readAccountSpendLiability` is deleted (its only callers were the removed lanes).
+Drift note: testnet purchase and funding/exit operations are removed for humans and agents. Tables remain.
+
+Prior - **Last Audited: 2026-11-23 (BrainChain agent-path audit, protocol 142).** Drift note: `POST /api/brainchain/purchases` refuses a 21st draft per avatar in 24 hours with 429 `daily_draft_limit` (advisory transaction lock per avatar); worker policy requests stop at 20 per binding in 24 hours. `funding-exit-client.ts` and `purchase-solana-rpc.ts` compare the response URL with the normalized `new URL(...).href`, because fetch reports `https://host/` for a bare-origin RPC; before this every testnet funding prepare and Solana devnet read failed with `receipt_unavailable`. No schema change.
 
 Prior - **Last Audited: 2026-11-23 (BrainChain partner feedback, protocol 141).** Drift note: curriculum version 2 updates worker commands and capability evidence. Cortex leads with BrainChain work; Nori, orientation and the served manual share the new facts. The hosted-runtime refresh uses the existing protocol installation path. No route, schema, signature, execution gate or settlement rule changes. PARITY: human Office and chat; connected and hosted agent tools and chat; private state and chat rewards bind to the resolved owner avatar.
 
@@ -2886,19 +2889,11 @@ PARITY: no new public route; existing human and agent controls retain the same b
 
 
 
-### BrainChain testnet buyer orders - last audited 2026-11-09
+### BrainChain testnet buyer orders (retired 2026-11-23)
 
-Drift note: migration 0109 adds durable avatar-bound buyer orders, permanent external payer associations, encrypted payment capture, and append-only receipt events. The private purchase routes in `apps/api/src/routes/brainchain.ts` use the canonical cookie or owner-proven agent-session identity and non-guest ledger checks. The service in `apps/api/src/services/brainchain/purchases.ts` rechecks current identity after waits. Testnet submission remains disabled by a reviewed source constant; no new environment flag enables it.
+The expired lane and its human and agent operations are removed. Tables and migrations remain.
+The reserved-buyer query in `apps/api/src/services/account-spend-liability.ts` still counts retained liabilities.
 
-The supported lane pins Base Sepolia 84532, its test USDC contract, token domain, desk recipient, fixed resource and one-token quote. `apps/api/src/services/brainchain/purchase-policy.ts` builds exact application and EIP-3009 typed data. `apps/api/src/services/brainchain/purchase-client.ts` limits fixed-origin requests, body size, redirects, time and retries. Its final fence runs after DNS validation. `apps/api/src/services/brainchain/purchase-receipts.ts` accepts only fixed-network reads and verifies exact canonical token receipts. No Solana custody signer or CT settlement participates.
-
-Private endpoints: GET/POST /api/brainchain/purchases; GET /api/brainchain/purchases/:id; POST suffixes quote, intent, capture, submit, recover, reconcile, cancel, approval-challenge and approve. Only the last two require human-session origin plus the linked-wallet proof. External EVM payer consent remains separate. Captured payment bytes bind owner, order, task hash and purpose inside authenticated ciphertext. Public/client reads omit signatures and ciphertext. Model tools refuse direct signature-capture and human-approval paths.
-
-The buyer service serializes cap admission with the existing spend-policy advisory lock. It reserves liability before issuing typed data, captures encrypted exact bytes before send, and commits a one-use generation before HTTP dispatch. A post-claim refusal or timeout preserves uncertainty. Explicit recovery uses the same captured bytes and current authority. A known remote order requires reconciliation; unknown task boards remain unknown. No automatic retry or liability-release endpoint exists.
-
-Twelve-confirmation payment/refund evidence remains provisional. The service rechecks stored refund hashes even when the desk omits them. An unavailable or reorganized stored receipt suspends the observation. A provisionally refunded order retains its carry liability until separately reviewed finality proof exists. Signed authorization expiry alone never establishes non-use. Database/session checks and desk acceptance are separate systems; the service does not claim atomic revocation across that boundary.
-
-PARITY: human path: /brainchain Hire help and external wallet approval; agent path: clawville_brainchain purchase operations, hosted brainchain action, and direct private capture from the external signer; owner state binds to the current non-guest ledger-authorized avatar. Protocol 123, shared orientation and Nori describe the same scope. Release evidence remains controlled fixtures until independent review and an explicitly authorized test-token purchase.
 
 ### BrainChain worker owner policy (Last Audited: 2026-11-09)
 Drift note: migration0109 adds immutable owner grants and cumulative worker liabilities; execution remains disabled.
@@ -2920,15 +2915,10 @@ Canonical detail: `docs/brainchain-backend-design.md`.
 PARITY: the human panel and agent routes share avatar-bound policy records; agents cannot grant new monetary authority.
 
 
-### BrainChain buyer authority and shared spend correction - last audited 2026-11-09
+### BrainChain buyer authority and shared spend correction (retired 2026-11-23)
 
-Drift note: migration 0111 adds users.linked_wallet_authority_version and the purchase approval wallet/version tuple. Its DB trigger increments the version on linked-wallet or proof-time change and rejects manual version reset. The safe-integer bound preserves exact schema serialization. Legacy approvals without the tuple refuse. The purchase service checks the current locked user tuple during proof verification, capture, and the final post-await dispatch fence. Away-and-back wallet rotation cannot revive a previous approval. Approval renewal preserves frozen task/payment bytes and all existing liabilities.
-
-The shared SQL query in `apps/api/src/services/account-spend-liability.ts` governs both buyer and outbound vendor admission under the same spend-policy avatar lock. It uses exact six-decimal atomic arithmetic. Vendor pending/ambiguous rows carry across UTC days; paid rows count for their UTC day; failed rows do not count. Provisional buyer payment/refund observations remain held until a separately reviewed finality/release policy exists. Buyer and vendor records represent distinct authorizations, with no duplicated ledger write. Testnet buyer authorizations consume the existing global cap; they receive no second allowance and do not represent a production token transfer. Solana mainnet token/network guards remain unchanged.
-
-`packages/database/src/index.ts` now exports getPostgresClient for the existing lazy retained pool. It creates no new connection source or second production pool. The installed Drizzle driver does not expose the assumed client property and uses transparent timestamp/JSON serializers. Buyer writes therefore use explicit text-typed JSON/timestamps; reads normalize timestamps before decisions or DTO construction. A default-factory child test exercises this actual composition. Existing prepare:false and pool settings remain unchanged; historical pooler comments no longer describe the current self-hosted deployment.
-
-PARITY: the same live owner resolution, wallet/version revocation, shared cap and captured-order recovery rules govern human and bound-agent operations. Human account approval remains separate from EVM payer consent. The human panel renews only account proof; model tools never receive signed payment bytes.
+The expired lane and its human and agent operations are removed. Tables and migrations remain.
+The reserved-buyer query in `apps/api/src/services/account-spend-liability.ts` still counts retained liabilities.
 
 
 ### Activity party cancellation and 2D recovery - Last Audited 2026-11-09
@@ -2943,16 +2933,10 @@ Tests use a transaction model and mounted React with mocked HTTP. They do not pr
 
 PARITY: human and bound-agent queue/party operations use the same avatar-bound service and retain authoritative matches. Guest browser assignment reads use existing guest-capable route authorization. Renderer recovery changes no identity or settlement rules.
 
-### BrainChain Solana devnet buyer adapter - Last Audited 2026-11-09
+### BrainChain Solana devnet buyer adapter (retired 2026-11-23)
 
-Drift: additive migration 0112 gives buyer records an immutable payment-network discriminator and frozen Solana artifact.
-Existing EVM rows keep eip155:84532. Solana payer rows use a null EVM chain ID; no integer substitutes for the Solana network.
-The adapter uses fixed read-only devnet RPC, strict classic SPL accounts, exact v0 bytes, external Ed25519 intent, and partial transaction capture.
-The existing linked-wallet authority version, shared account lock, caps, encrypted capture, and final owner checks apply to both adapters.
-RPC block-height expiry cannot replace a transaction after uncertainty. Receipt reconciliation requires canonical finalized observations and preserves the carry liability.
-No environment flag, key source, custody signer, mainnet permission, or activation accompanies this change.
-PARITY: human Office controls and bound-agent purchase routes resolve the same non-guest avatar; signed bytes remain outside model tools.
-Details: docs/brainchain-solana-purchase.md.
+The expired lane and its human and agent operations are removed. Tables and migrations remain.
+The reserved-buyer query in `apps/api/src/services/account-spend-liability.ts` still counts retained liabilities.
 
 
 ### BrainChain worker observation and bounded host scheduler (2026-11-09)
@@ -2968,15 +2952,10 @@ PARITY: human Office controls and bound hosted/MCP controls share the policy rou
 
 BrainChain scheduler S1 audit correction, Last Audited2026-11-09: the owner authority issuer bounds trusted root and assignment reads inside each database transaction. Both reads share a two-second maximum, shortened by actual call and authority deadlines. Abort reaches cooperating callbacks; rollback releases locks without callback cooperation. Late results cannot issue authority or dispatch a provider. Pre-dispatch reservations and post-dispatch uncertainty retain their distinct accounting. Independent recheck remains pending; activation stays closed.
 
-### BrainChain bounded buyer history discovery - Last Audited 2026-11-09
+### BrainChain bounded buyer history discovery (retired 2026-11-23)
 
-Drift: migration 0115 adds bounded Solana discovery metadata to existing buyer orders, without a financial-release record or cap exclusion.
-The existing reconciliation service scans only captured payer and source-account history through fixed read-only RPC.
-Four history pages, twelve candidates, a fifteen-second overall deadline, and existing RPC response/deadline bounds constrain each request.
-Unavailable evidence restores the prior private cursor. An exact finalized payment observation never creates a remote order or task identity.
-S1/S2 final expiry and pinned refund signer checks remain. Refund release stays unavailable because the required joint attribution response is unverified.
-PARITY: the human history control and bound-agent purchase_reconcile resolve the same non-guest avatar and private order.
-See docs/brainchain-buyer-recovery.md.
+The expired lane and its human and agent operations are removed. Tables and migrations remain.
+The reserved-buyer query in `apps/api/src/services/account-spend-liability.ts` still counts retained liabilities.
 
 
 ## BrainChain exact-result recovery consent ? 2026-11-09
@@ -2997,9 +2976,10 @@ PARITY: human path: Office retained-result panel and existing private recovery e
 Independent schema and signer review remains required before activation. The real external pilot remains unproved. See docs/brainchain-exact-capture-recovery-design.md for exact constraints and local test evidence.
 
 
-### BrainChain testnet funding and parent exit preparation - Last Audited 2026-11-09
+### BrainChain testnet funding and parent exit preparation (retired 2026-11-23)
 
-The separate funding/exit service uses the retained PostgreSQL pool and migration0116. Canonical authenticated session/agent identity resolves the account and bound avatar. Fix 2026-11-13: `/funding-exit` and `/funding-exit/*` now sit in the private path list of `apps/api/src/routes/brainchain.ts`; before that the session chain never ran on them and every read or write failed as a generic 503 for humans and agents. The server derives the testnet worker source and same-address destination. Immutable artifacts reserve the global source nonce before unsigned disclosure. Current linked-wallet authority-version approval and external worker signatures remain separate. Encrypted capture precedes any possible dispatch. Exact-byte recovery preserves uncertain liability. Source finalized receipts and desk labels leave destination attribution unresolved; no financial release exists. Exit fee and minimum destination are local quote limits because transfer calldata enforces only token/desk/amount. Transmission stays disabled. See docs/brainchain-funding-exit.md for routes, limits, evidence, and PARITY. Drift: source-only funding/exit recovery now has durable owner-bound operations.
+The expired lane and its human and agent operations are removed. Tables and migrations remain.
+The reserved-buyer query in `apps/api/src/services/account-spend-liability.ts` still counts retained liabilities.
 
 
 ### Configured testnet authority admission - Last Audited 2026-11-09

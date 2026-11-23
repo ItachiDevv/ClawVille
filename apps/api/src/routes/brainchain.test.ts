@@ -51,7 +51,7 @@ describe('BrainChain public routes', () => {
     expect(z.object({ error: z.string() }).parse(await rejected.json()).error).toBe('rate_limited');
   });
 
-  test('returns sanitized live failure observations without enabling execution', async () => {
+  test('returns sanitized live failure observations', async () => {
     const client = createBrainChainPublicClient({
       validateUrl: async (url) => ({ ok: true as const, url }),
       fetch: (async () => { throw new Error('private upstream detail'); }) as unknown as typeof fetch,
@@ -61,10 +61,9 @@ describe('BrainChain public routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('cache-control')).toBe('no-store');
     const body = z.object({ observation: z.object({
-      executionEnabled: z.boolean(), payment: z.object({ reason: z.string() }),
+      payment: z.object({ reason: z.string() }),
       exits: z.object({ testnet: z.object({ state: z.string() }) }),
     }) }).passthrough().parse(await response.json());
-    expect(body.observation.executionEnabled).toBe(false);
     expect(body.observation.payment.reason).toBe('request_failed');
     expect(body.observation.exits.testnet.state).toBe('unavailable');
     expect(JSON.stringify(body)).not.toContain('private upstream detail');

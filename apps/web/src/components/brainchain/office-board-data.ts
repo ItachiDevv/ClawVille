@@ -7,8 +7,6 @@ import { z } from 'zod';
 import { AUTH_ME_QUERY_KEY, useAuthMe, type AuthMe } from '@/hooks/use-auth-me';
 import { useStageStore } from '@/components/three/world-stage/stage-store';
 import { officeAccountRequest } from './office-api';
-import { purchaseQueryOptions } from './office-purchases';
-import { fundingQueryOptions } from './office-funding-exit';
 import { EMPTY_OFFICE_BOARDS, formatOfficeBoards, officeBoardPublication, officeBoardRefreshInterval, type OfficeWorker } from './office-board-summary';
 import { useBrainchainInteriorStore } from './brainchain-interior-store';
 
@@ -42,8 +40,6 @@ export function useOfficeBoardData(room = false) {
   const enabled = !!ownerId && !auth.isError && (!room || active);
   const policy = { enabled, refetchInterval: officeBoardRefreshInterval(room, active, visible), refetchIntervalInBackground: false, refetchOnWindowFocus: false, refetchOnReconnect: false, refetchOnMount: room ? 'always' as const : false as const };
   const workers = useQuery({...workerQueryOptions(ownerId), ...policy});
-  const purchases = useQuery({...purchaseQueryOptions(ownerId), ...policy});
-  const funding = useQuery({...fundingQueryOptions(ownerId), ...policy});
   const shownWorkers = workers.data?.workers.slice(0, 2) ?? [];
   const tasks = useQueries({queries: shownWorkers.map(worker => ({...taskQueryOptions(ownerId, worker.id), ...policy}))});
   const rows = tasks.flatMap((query, index) => (query.data?.tasks ?? []).map(task => ({worker: shownWorkers[index]!, task})))
@@ -51,13 +47,11 @@ export function useOfficeBoardData(room = false) {
   const summary = formatOfficeBoards({ ownerId, authLoading: auth.isLoading, authError: auth.isError,
     workers: {data: workers.data?.workers, loading: workers.isPending, error: workers.isError, updatedAt: workers.dataUpdatedAt},
     tasks: {data: rows, loading: tasks.some(query => query.isPending), error: tasks.some(query => query.isError), updatedAt: Math.max(0, ...tasks.map(query => query.dataUpdatedAt))},
-    purchases: {data: purchases.data?.orders, loading: purchases.isPending, error: purchases.isError, updatedAt: purchases.dataUpdatedAt},
-    funding: {data: funding.data?.operations, loading: funding.isPending, error: funding.isError, updatedAt: funding.dataUpdatedAt},
   });
   return { summary, workers: auth.isError ? [] : shownWorkers, retry: () => {
     const current = client.getQueryData<AuthMe>(AUTH_ME_QUERY_KEY);
     if (!ownerId || current?.user?.isGuest || current?.user?.id !== ownerId || client.getQueryState(AUTH_ME_QUERY_KEY)?.status !== 'success') { void auth.refetch(); return; }
-    void workers.refetch(); void purchases.refetch(); void funding.refetch(); for (const query of tasks) void query.refetch();
+    void workers.refetch(); for (const query of tasks) void query.refetch();
   } };
 }
 

@@ -12,7 +12,7 @@ const pg = ['bindings-db.test.ts', 'tasks-db.test.ts', 'signer-db.test.ts', 'sig
   'inference-budget-db.test.ts', 'execution-db.test.ts', 'inference-proxy-db.test.ts', 'task-delivery-db.test.ts',
   'delivery-recovery.test.ts', 'worker-coordinator.test.ts', 'result-signing-pool.test.ts', 'root-compute-store.test.ts',
   'worker-owner-policy.test.ts', 'signer-receipts-db.test.ts', 'worker-scheduler.test.ts', 'worker-scheduler-flow.test.ts',
-  'exact-result-recovery-consent.test.ts', 'purchases.test.ts', 'purchase-solana.test.ts', 'exact-capture-recovery.test.ts', 'funding-exit-operations.test.ts', 'configured-authority-db.test.ts', 'probe-embedding-budget.test.ts', 'probe-bootstrap.test.ts'];
+  'exact-result-recovery-consent.test.ts', 'exact-capture-recovery.test.ts', 'configured-authority-db.test.ts', 'probe-embedding-budget.test.ts', 'probe-bootstrap.test.ts'];
 const protectedFiles = ['signer-linux-fixture.test.ts', 'signer-payload-store.test.ts', 'root-compute-store.test.ts', 'paid-trial.test.ts'];
 export const image = 'oven/bun@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4';
 const bundleDirectory = resolve(root, '.brainchain-work/ci-linux-bundles');
@@ -57,7 +57,7 @@ if (mode === 'pure') {
     if (!pg.includes(name) && !protectedFiles.includes(name)) await suite(file);
   }
   for (const pattern of ['apps/api/src/routes/brainchain*.test.ts', 'apps/api/src/services/__tests__/brainchain*.test.ts',
-    'apps/web/src/components/brainchain/*.test.{ts,tsx}', 'apps/web/src/lib/brainchain*.test.ts', 'apps/web/src/lib/{three,pixi}/brainchain*.test.ts',
+    'apps/web/src/components/brainchain/*.test.{ts,tsx}', 'apps/web/src/lib/{three,pixi}/brainchain*.test.ts',
     'packages/shared/src/constants/brainchain*.test.ts', 'packages/agent-runtime/src/isolated-task/**/*.test.ts']) {
     for (const file of await files(pattern)) await suite(file);
   }
@@ -81,7 +81,7 @@ if (mode === 'pure') {
   await run([process.execPath, 'build', '--target=bun', 'packages/agent-runtime/src/isolated-task/process-entry.ts', '--outfile=.brainchain-work/isolated-task-parent-worker.js']);
   await bootstrapBrainchainFixture();
   for (const name of pg) {
-    try { await suite(service + name, name === 'root-compute-store.test.ts' ? ['--test-name-pattern', 'actual PostgreSQL reconciliation'] : name === 'funding-exit-operations.test.ts' ? ['--timeout', '15000'] : []); }
+    try { await suite(service + name, name === 'root-compute-store.test.ts' ? ['--test-name-pattern', 'actual PostgreSQL reconciliation'] : []); }
     finally { await restoreBrainchainFixtureWrappers(); }
   }
   try { await suite('apps/api/scripts/brainchain/probe-runtime-cleanup.test.ts'); }

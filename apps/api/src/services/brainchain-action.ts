@@ -1,8 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { BRAINCHAIN_BUYER_STATES, BRAINCHAIN_SOLANA_BUYER_NETWORK } from '@clawville/shared';
-import {fundingDraftSchema} from './brainchain/funding-exit-policy';
-import { purchaseBodySchema } from './brainchain/purchase-policy';
 import {exactCaptureIntentSchema} from './brainchain/exact-capture-policy';
 import {exactRecoveryRequestSchema} from './brainchain/exact-result-recovery-consent';
 import {workerOwnerPolicySchema} from './brainchain/worker-owner-policy';
@@ -23,29 +20,14 @@ export function decodeBrainchainRecoveryDraft(op:string,draft:string):Record<str
  const raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
  return op==='recovery_request'?exactRecoveryRequestSchema.parse(raw):exactRecoveryRequestSchema.omit({resultId:true,observationPolicy:true}).parse(raw);
 }
-export function decodeBrainchainPurchaseDraft(value: string) {
-  if (!/^[A-Za-z0-9_-]{1,86000}$/.test(value)) throw new Error('Invalid purchase draft');
-  const bytes=Buffer.from(value,'base64url');
-  if(bytes.toString('base64url')!==value||bytes.byteLength>64000)throw new Error('Invalid purchase draft');
-  return z.object({idempotencyKey:z.string().regex(/^[A-Za-z0-9:_-]{1,64}$/),body:purchaseBodySchema,publicDataConsent:z.literal(true),environment:z.literal('testnet'),network:z.enum(['eip155:84532',BRAINCHAIN_SOLANA_BUYER_NETWORK])}).strict().parse(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));
-}
-
-export function decodeBrainchainFundingDraft(draft:string){if(!/^[A-Za-z0-9_-]{1,2048}$/.test(draft))throw Error('Invalid funding draft');const bytes=Buffer.from(draft,'base64url');if(bytes.toString('base64url')!==draft)throw Error('Invalid funding draft');return fundingDraftSchema.parse(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));}
 const operationSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('tasks'), workerId: z.string().uuid() }).strict(),
- z.object({op:z.literal('funding_list')}).strict(),
- z.object({op:z.literal('funding_create'),draft:z.string().max(2048)}).strict(),
- z.object({op:z.enum(['funding_get','funding_intent','funding_submit','funding_recover','funding_reconcile']),operationId:z.string().uuid()}).strict(),
   z.object({op:z.literal('recovery'),workerId:z.string().uuid()}).strict(),
   z.object({op:z.literal('recovery_request'),workerId:z.string().uuid(),draft:z.string().max(6000)}).strict(),
   z.object({op:z.literal('recovery_narrow'),workerId:z.string().uuid(),consentId:z.string().uuid(),draft:z.string().max(6000)}).strict(),
   z.object({op:z.literal('recovery_revoke'),workerId:z.string().uuid(),consentId:z.string().uuid()}).strict(),
   z.object({op:z.literal('policy'),workerId:z.string().uuid()}).strict(),
   z.object({op:z.enum(['policy_request','policy_narrow','policy_start','policy_pause','policy_revoke']),workerId:z.string().uuid(),draft:z.string().max(6000)}).strict(),
-  z.object({op:z.literal('purchase_list')}).strict(),
-  z.object({op:z.literal('purchase_draft'),draft:z.string().max(86000).refine(value=>{try{decodeBrainchainPurchaseDraft(value);return true;}catch{return false;}})}).strict(),
-  z.object({op:z.enum(['purchase_get','purchase_quote','purchase_submit','purchase_recover','purchase_reconcile','purchase_cancel']),orderId:z.string().uuid()}).strict(),
-  z.object({op:z.literal('purchase_intent'),orderId:z.string().uuid(),payer:z.string().regex(/^(0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/)}).strict(),
   z.object({ op: z.enum(['knowledge', 'status', 'install', 'workers']) }).strict(),
   z.object({ op: z.literal('binding_challenge'), environment: z.enum(['testnet', 'mainnet']), address: z.string().regex(/^0x[0-9a-fA-F]{40}$/) }).strict(),
   z.object({ op: z.literal('bind'), nonce: z.string().regex(/^[0-9a-f]{64}$/), signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/) }).strict(),
@@ -66,7 +48,7 @@ export interface BrainchainActionResult {
 
 /** No free text, duplicate keys, authority fields, or wallet secrets enter this grammar. */
 export function parseBrainchainActionParams(raw: string): BrainchainActionInput | null {
-  if (!raw || raw.length > (raw.startsWith('op=purchase_draft,') ? 86500 : raw.startsWith('op=funding_create,')?2200: (raw.startsWith('op=policy_')||raw.startsWith('op=recovery_'))?6500:1024)) return null;
+  if (!raw || raw.length > ((raw.startsWith('op=policy_')||raw.startsWith('op=recovery_'))?6500:1024)) return null;
   const params: Record<string, string> = Object.create(null);
   for (const part of raw.split(',')) {
     const match = /^\s*([a-zA-Z][a-zA-Z0-9]*)\s*=\s*([a-zA-Z0-9:_-]+)\s*$/.exec(part);
@@ -79,13 +61,11 @@ export function parseBrainchainActionParams(raw: string): BrainchainActionInput 
 export function validateBrainchainAction(input: unknown): BrainchainActionInput | null {
   const result = operationSchema.safeParse(input);
   if(!result.success)return null;
-  if(result.data.op==='funding_create'){try{decodeBrainchainFundingDraft(result.data.draft);}catch{return null;}}
   if(result.data.op.startsWith('policy_')&&'draft'in result.data){try{decodeBrainchainPolicyDraft(result.data.op,result.data.draft);}catch{return null;}}
   if(result.data.op.startsWith('recovery_')&&'draft'in result.data){try{decodeBrainchainRecoveryDraft(result.data.op,result.data.draft);}catch{return null;}}
   return result.data;
 }
 
-const purchaseOrder = z.object({id:z.string().uuid(),environment:z.literal('testnet'),chainId:z.literal(84532).nullable(),network:z.enum(['eip155:84532',BRAINCHAIN_SOLANA_BUYER_NETWORK]).optional(),state:z.enum(BRAINCHAIN_BUYER_STATES),bodyHash:z.string().regex(/^[a-f0-9]{64}$/),payer:z.string().regex(/^(0x[0-9a-f]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/).nullable(),amountAtomic:z.literal('1000000'),remoteOrder:z.string().regex(/^0x[0-9a-f]{64}$/).nullable(),remoteState:z.string().regex(/^[a-z-]{1,24}$/).nullable(),taskId:z.string().regex(/^[1-9][0-9]{0,77}$/).nullable(),taskBoard:z.string().regex(/^0x[0-9a-f]{40}$/).nullable(),paymentTransaction:z.string().regex(/^(0x[0-9a-f]{64}|[1-9A-HJ-NP-Za-km-z]{64,88})$/).nullable(),refundTransaction:z.string().regex(/^(0x[0-9a-f]{64}|[1-9A-HJ-NP-Za-km-z]{64,88})$/).nullable(),recovery:z.object({state:z.enum(['not_started','incomplete','not_found','unavailable','ambiguous','payment_observed']),checkedAt:z.string().datetime().nullable(),scannedTransactions:z.number().int().min(0).max(12),hasMore:z.boolean(),refundRelease:z.literal('unavailable'),refundReleaseReason:z.literal('order_attribution_unverified')}).optional(),requiresHumanApproval:z.boolean(),humanApproved:z.boolean(),provisional:z.literal(true)});
 const worker = z.object({ id: z.string().uuid(), environment: z.enum(['testnet', 'mainnet']),
   chainId: z.number().int(), address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   requestedState: z.enum(['paused', 'draining', 'running']), observedEligibility: z.enum(['eligible', 'ineligible', 'unknown']).nullable() });
@@ -148,7 +128,7 @@ const identityCredit = z.object({ workerId: z.string().uuid(), agentId: amount, 
     z.object({ state: z.enum(['unavailable', 'not_requested', 'unsupported_id']) }),
   ]),
 });
-const observation = z.object({ observedAt: z.string().datetime(), expiresAt: z.string().datetime(), executionEnabled: z.literal(false),
+const observation = z.object({ observedAt: z.string().datetime(), expiresAt: z.string().datetime(),
   payment: z.union([
     z.object({ state: z.literal('observed'), offers: z.array(z.object({ network: z.string().regex(/^(?:eip155:\d{1,20}|solana:[A-Za-z0-9]{1,64})$/), amount: z.string().regex(/^\d{1,78}$/), asset: z.string().regex(/^(?:0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/) })).max(16) }),
     z.object({ state: z.literal('unavailable') }),
@@ -162,12 +142,7 @@ export function selectBrainchainActionResult(op: BrainchainActionInput['op'], st
     result.data = { error: code.success ? code.data.error : 'brainchain_unavailable' };
     return result;
   }
-  if(op.startsWith('funding_')){
-   const view=z.object({id:z.string().uuid(),workerId:z.string().uuid(),kind:z.enum(['parent_eth','parent_exit']),state:z.enum(['reserved','captured','sending','uncertain','source_observed','reorg_suspended']),source:address,destination:address,sourceChain:z.union([z.literal(46630),z.literal(274630)]),destinationChain:z.union([z.literal(46630),z.literal(274630)]),amountAtomic:amount,feeAtomic:amount,minimumDestinationAtomic:amount,maxGasCostWei:amount,artifactHash:z.string().regex(/^[a-f0-9]{64}$/),artifactExpiresAt:sourceTime,sourceToken:address.nullable(),destinationToken:address.nullable(),sourceTransaction:hash.nullable(),sourceEvidence:z.object({transaction:hash,blockNumber:amount,blockHash:hash,observedAt:sourceTime,finalized:z.boolean(),destination:z.literal('unresolved')}).nullable(),deskReport:z.object({state:z.enum(['waiting','paying','paid','returning','returned','held']),payoutTransaction:hash.nullable(),returnTransaction:hash.nullable(),observedAt:sourceTime,attribution:z.literal('unverified')}).nullable(),destinationState:z.literal('unresolved'),liabilityState:z.literal('reserved'),executionEnabled:z.boolean(),createdAt:sourceTime,updatedAt:sourceTime});
-   if(op==='funding_list')result.data=z.object({operations:z.array(view).max(30),executionEnabled:z.boolean()}).parse(body);
-   else if(op==='funding_intent')result.data={notice:'Use the private external wallet endpoint. Signing payloads stay outside model observations.'};
-   else result.data=z.object({operation:view}).parse(body);
-  }else if(op==='recovery'||op.startsWith('recovery_')){
+  if(op==='recovery'||op.startsWith('recovery_')){
     const view=z.object({id:z.string().uuid(),workerId:z.string().uuid(),resultId:z.string().uuid(),state:z.enum(['requested','approved','revoked']),payloadHash:z.string().regex(/^[a-f0-9]{64}$/),expiresAt:z.string().datetime(),executionEnabled:z.literal(false),payload:z.object({resultHash:hash,resultSha256:z.string().regex(/^[a-f0-9]{64}$/),hireSnapshotHash:z.string().regex(/^[a-f0-9]{64}$/),taskGeneration:z.number().int().positive(),signerGeneration:z.number().int().positive(),stages:z.array(z.enum(['signature','upload','prepare-submit','capture-submit','broadcast','reconcile'])).max(6),captureIntent:exactCaptureIntentSchema.optional(),captured:z.object({operationId:z.string().uuid(),nonce:amount.nullable(),transactionHash:hash.nullable(),gasWei:amount}).nullable().optional(),maxGasWei:amount,observationPolicy:z.enum(['legacy-depth12-age120-v1','nitro-testnet-latest-v1'])})});
     result.data=op==='recovery'?z.object({consents:z.array(view).max(2),results:z.array(z.object({id:z.string().uuid(),resultHash:hash,resultSha256:z.string().regex(/^[a-f0-9]{64}$/),hireSnapshotHash:z.string().regex(/^[a-f0-9]{64}$/),state:z.string().max(32)})).max(5)}).parse(body):view.parse(body);
     // Decision receipts describe state; they never grant execution authority.
@@ -181,9 +156,7 @@ export function selectBrainchainActionResult(op: BrainchainActionInput['op'], st
     result.data = challenge.parse(body);
     result.expiresAt = Date.parse(String(result.data.expiresAt));
     if (result.expiresAt <= now || result.expiresAt > now + 125_000) throw new Error('Invalid challenge lifetime');
-  } else if(op==='purchase_list'){const selected=z.object({orders:z.array(purchaseOrder).max(30),availability:z.object({environment:z.literal('testnet'),network:z.enum(['eip155:84532',BRAINCHAIN_SOLANA_BUYER_NETWORK]),executionEnabled:z.boolean()})}).parse(body);result.data={...selected,orders:selected.orders.slice(0,10)};}
-  else if(op.startsWith('purchase_'))result.data=z.object({order:purchaseOrder}).parse(body);
-  else if (op === 'tasks') {
+  } else if (op === 'tasks') {
     const selected = brainchainTasksResponseSchema.parse(body);
     result.data = { tasks: selected.tasks.slice(0, 5), provisional: true, indexedCount: selected.tasks.length, truncated: selected.tasks.length > 5 };
   }
@@ -239,10 +212,7 @@ export async function runBrainchainHostedAction(input: {
   });
   let path: string, body: Record<string, unknown> | undefined;
   const op = input.operation;
-  if(op.op==='funding_list')path='/funding-exit';
-  else if(op.op==='funding_create'){path='/funding-exit';body=decodeBrainchainFundingDraft(op.draft);}
-  else if('operationId'in op){path=`/funding-exit/${op.operationId}${op.op==='funding_get'?'':`/${op.op.slice(8)}`}`;if(op.op!=='funding_get')body={};}
-  else if(op.op==='recovery')path=`/workers/${op.workerId}/recovery`;
+  if(op.op==='recovery')path=`/workers/${op.workerId}/recovery`;
   else if(op.op==='recovery_request'){path=`/workers/${op.workerId}/recovery`;body=decodeBrainchainRecoveryDraft(op.op,op.draft);}
   else if(op.op==='recovery_narrow'){path=`/workers/${op.workerId}/recovery/${op.consentId}/narrow`;body=decodeBrainchainRecoveryDraft(op.op,op.draft);}
   else if(op.op==='recovery_revoke'){path=`/workers/${op.workerId}/recovery/${op.consentId}/revoke`;body={};}
@@ -250,10 +220,6 @@ export async function runBrainchainHostedAction(input: {
   else if(op.op==='policy_request'||op.op==='policy_narrow'||op.op==='policy_start'||op.op==='policy_pause'||op.op==='policy_revoke'){
     path=`/workers/${op.workerId}/policy${op.op==='policy_request'?'':op.op==='policy_narrow'?'/narrow':'/control'}`;body=decodeBrainchainPolicyDraft(op.op,op.draft);
   }
-  else if(op.op==='purchase_list')path='/purchases';
-  else if(op.op==='purchase_draft'){path='/purchases';body=decodeBrainchainPurchaseDraft(op.draft);}
-  else if(op.op==='purchase_intent'){path=`/purchases/${op.orderId}/intent`;body={payer:op.payer};}
-  else if('orderId'in op){path=`/purchases/${op.orderId}${op.op==='purchase_get'?'':`/${op.op.slice(9)}`}`;if(op.op!=='purchase_get')body={};}
   else if (op.op === 'binding_challenge') { path = '/workers/challenge'; body = { environment: op.environment, address: op.address }; }
   else if (op.op === 'bind') { path = '/workers/bind'; body = { nonce: op.nonce, signature: op.signature }; }
   else if (op.op === 'control') { path = `/workers/${op.workerId}/control`; body = { requestedState: op.requestedState }; }

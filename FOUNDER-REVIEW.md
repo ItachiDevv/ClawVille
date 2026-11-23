@@ -6,6 +6,11 @@
 
 
 
+### BrainChain Office: "Hire help" tab and testnet funding panel removed (session brainchain, 2026-11-23, STAGING then PRODUCTION)
+- **What:** the two expired testnet lanes are gone for humans and agents (PROTOCOL 143). The Office keeps Learn, Worker setup, Work status, Earnings and Recovery. The Task Board shows workers and tasks; the Receipts wall points to Earnings.
+- **Where:** `https://staging.clawville.world/game`, walk into the BrainChain Office (ring slot 4), open the Office window from the desk or the task board.
+- **Feedback wanted:** does the Office still read complete without "Hire help"? Logo on the Task Board: preview sent 2026-11-23, build after your yes.
+
 ### Trading Floor terminal: its own window, six tabs, trade history and equity curve (session new-ville, 2026-11-11, STAGING)
 
 - **WHERE:** https://staging.clawville.world/game, open Economy, then Trading Floor (or walk into the Trading Floor and use the monitor). The Exchange window now has only listings and orders.

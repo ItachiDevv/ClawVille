@@ -1,3 +1,5 @@
+> Retired 2026-11-23: this lane was removed (expired FEATURE_GATE; BrainChain moved to mainnet). Tables remain; code deleted.
+
 # BrainChain Solana devnet purchase adapter
 
 Last Audited: 2026-11-09. Status: local implementation; independent review and activation remain required.

@@ -359,10 +359,7 @@ describe('clawville_docs', () => {
 describe('game tool execution', () => {
   test('BrainChain operations call the declared subject-bound REST routes and drop authority fields', async () => {
     const cases: Array<[Record<string, unknown>, HttpMethod, string, Record<string, unknown> | undefined]> = [
-      [{op:'purchase_list'},'GET','/api/brainchain/purchases',undefined],
       [{op:'tasks',workerId:'worker-id'},'GET','/api/brainchain/workers/worker-id/tasks',undefined],
-      [{op:'purchase_quote',orderId:'purchase-id'},'POST','/api/brainchain/purchases/purchase-id/quote',{}],
-      [{op:'purchase_reconcile',orderId:'purchase-id'},'POST','/api/brainchain/purchases/purchase-id/reconcile',{}],
       [{ op: 'knowledge' }, 'GET', '/api/brainchain/knowledge', undefined],
       [{ op: 'status' }, 'GET', '/api/brainchain/status', undefined],
       [{ op: 'install' }, 'POST', '/api/brainchain/install', {}],
@@ -580,9 +577,6 @@ describe('answer size cap', () => {
   });
 });
 
-test('MCP refuses payment bearer capture and owner approval routes',()=>{
- for(const operation of ['capture','approve','approval-challenge'])expect(validateCallPath(`/api/brainchain/purchases/00000000-0000-4000-8000-000000000001/${operation}`,'POST')).not.toBeNull();
-});
 
 
 describe('arena terminal read tools', () => {

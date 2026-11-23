@@ -182,26 +182,3 @@ describe('BrainChain HTTP session composition', () => {
     expect((await routes.request('/workers/challenge', { method: 'POST', headers, body: '{broken' })).status).toBe(400);
   });
 });
-
-
-test('funding-exit routes run the session chain before the service (no generic 503 without a session)',async()=>{
- const routes=createBrainChainRoutes();
- for(const path of ['/funding-exit','/funding-exit/00000000-0000-4000-8000-000000000001'])
-  for(const [headers,status]of [[{},401],[{'X-Clawville-Agent-Session':'non-ledger'},403],[{'X-Clawville-Agent-Session':'bound','X-Fixture-Guest':'yes'},403]] as const)
-   expect((await routes.request(path,{headers})).status).toBe(status);
-});
-
-test('purchase routes bind the canonical human or agent and recheck the current session',async()=>{
- const owners:unknown[]=[];
- const service={list:async(owner:import('../services/brainchain/purchases').BuyerOwner)=>{await owner.assertCurrent();owners.push({avatarId:owner.avatarId,userId:owner.userId,actor:owner.actor});return {orders:[],availability:{executionEnabled:false}};}} as unknown as import('../services/brainchain/purchases').BrainchainPurchases;
- const routes=createBrainChainRoutes(undefined,{purchases:async()=>service});
- for(const [headers,status]of [[{},401],[{'X-Clawville-Agent-Session':'non-ledger'},403],[{'X-Clawville-Agent-Session':'bound','X-Fixture-Guest':'yes'},403]] as const)expect((await routes.request('/purchases',{headers})).status).toBe(status);
- expect(owners).toHaveLength(0);
- expect((await routes.request('/purchases',{headers:{'X-Clawville-Agent-Session':'bound'}})).status).toBe(200);
- expect(owners).toEqual([{avatarId:'owned-avatar',userId:'agent-owner',actor:'agent'}]);
- const cookie=lucia.createSessionCookie((await lucia.createSession(user.id,{createdVia:'password'})).id).serialize();
- expect((await routes.request('/purchases',{headers:{Cookie:cookie}})).status).toBe(200);
- expect(owners[1]).toEqual({avatarId:'owned-avatar',userId:'human-owner',actor:'human'});
- const approval=await routes.request('/purchases/00000000-0000-4000-8000-000000000001/approval-challenge',{method:'POST',headers:{'X-Clawville-Agent-Session':'bound','Content-Type':'application/json'},body:'{}'});
- expect(approval.status).toBe(403);
-});
