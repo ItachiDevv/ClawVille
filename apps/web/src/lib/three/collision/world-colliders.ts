@@ -34,6 +34,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildingZones, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { buildOfficeApproachColliders } from '@clawville/shared';
 import { NORI_WORLD_X, NORI_WORLD_Z } from '@/lib/three/town-guide-position';
 
 const HALF_W = MAP_WIDTH / 2;  // 11264 (704 × 32 / 2)
@@ -113,8 +114,10 @@ export interface Collider2D {
  * Special cases:
  *   - cove: uses box3Recenter=true in arena-buildings.tsx, which re-centers
  *     the geometry to (0,0,0) after load. Center = tile-zone center, no offset.
- *   - messaging-channels (sandy-treedome-v3) and api-integrations (salty-spitoon):
+ *   - messaging-channels (sandy-treedome-v3):
  *     targetMaxDim=2500 exceeds MAX_FOOTPRINT=2000wu, so worldX=worldZ=2000.
+ *   - api-integrations (BrainChain Office exterior): the box is the world AABB
+ *     of the ROTATED footprint (rotY -2.093), not the authored-frame box.
  *   - cron-automation (trading-floor exterior): maxDim is the Y axis (the
  *     rooftop claw sign), not an XZ axis, so neither footprint axis caps.
  *
@@ -138,9 +141,13 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   // Native size: 25.873×25.873, scale≈96.6 → footprint cap → worldX=worldZ=2000 → ×0.85
   'messaging-channels': { halfX: 850, halfZ: 850 },
 
-  // GLB: salty-spitoon.glb, targetMaxDim=2500
-  // footprint cap applied → worldX=worldZ=2000 → ×0.85
-  'api-integrations':   { halfX: 850, halfZ: 850 },
+  // GLB: brainchain/brainchain-office-v3-ktx.glb, targetMaxDim=1400.
+  // Scene bbox 1.8990 x 1.3639 x 1.4047, maxDim = X.
+  // Scale = 1400 / 1.8990 = 737.2; authored footprint 1400 x 1035.6 (no cap).
+  // rotY -2.093 (|cos| 0.5, |sin| 0.866) gives world AABB:
+  // X = 0.5*1400 + 0.866*1035.6 = 1596.8;
+  // Z = 0.866*1400 + 0.5*1035.6 = 1730.2; times 0.85 / 2.
+  'api-integrations':   { halfX: 679, halfZ: 735 },
 
   // GLB: boating-school.glb, targetMaxDim=1000
   // Approximately square footprint → worldX=1000, worldZ=995 → ×0.85
@@ -265,6 +272,12 @@ function buildColliders(): Collider2D[] {
   for (const zone of buildingZones) {
     const centerTileX = zone.x + zone.width / 2;   // zone.x + 7 (zone.width=14)
     const centerTileY = zone.y + zone.height / 2;  // zone.y + 7
+    if (zone.id === 'api-integrations') {
+      for (const wall of buildOfficeApproachColliders(centerTileX * TILE_SIZE - HALF_W, centerTileY * TILE_SIZE - HALF_H)) {
+        colliders.push({ ...wall, kind: 'building' });
+      }
+      continue;
+    }
     const extents = BUILDING_EXTENTS[zone.id];
     colliders.push({
       id: zone.id,
@@ -339,7 +352,6 @@ function buildColliders(): Collider2D[] {
     // OTHER colliders. No client collider exists by design; the arch is passable.
   ];
   colliders.push(...PROPS);
-
   return colliders;
 }
 

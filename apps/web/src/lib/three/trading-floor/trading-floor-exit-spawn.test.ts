@@ -172,8 +172,8 @@ describe('Trading Floor exit spawn', () => {
     ).toBe(false);
   });
 
-  // There is deliberately NO auto-enter band here, so walking toward town can
-  // never re-enter. This walks the whole return path and proves the prompt
+  // The door-face auto-enter re-arms only outside the prompt band, and the
+  // exit sits outside it, so walking toward town can never re-enter. This walks the whole return path and proves the prompt
   // only reappears when the player turns back around.
   test('walking toward town from the exit never re-enters the door band', () => {
     for (let z = TRADING_FLOOR_EXIT_WORLD_Z; z >= 0; z -= 10) {

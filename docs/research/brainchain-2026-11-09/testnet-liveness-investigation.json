@@ -1,0 +1,83 @@
+{
+  "observedAt": "2026-11-09T16:59:30.715Z",
+  "endpoint": "https://rpc.testnet.usebrainchain.com",
+  "purpose": "Read-only liveness investigation; Nitro idle blocks versus stalled endpoint; no signing authorization",
+  "results": [
+    {
+      "method": "eth_chainId",
+      "status": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": "0x430c6"
+      }
+    },
+    {
+      "method": "eth_getBlockByNumber",
+      "status": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "baseFeePerGas": "0x5f5e100",
+          "difficulty": "0x1",
+          "extraData": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "gasLimit": "0x4000000000000",
+          "gasUsed": "0x0",
+          "hash": "0xe3484924e3fd6e5613bfe5ba54801350f350b8d0d725adabb66fa3590dedf4c6",
+          "l1BlockNumber": "0xb89cda",
+          "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "miner": "0x79721b6d02c5d2bafa583e4a8d9584f13d00474d",
+          "mixHash": "0x00000000000000000000000000b89cda00000000000000330000000000000000",
+          "nonce": "0x00000000000002a3",
+          "number": "0x13ec",
+          "parentHash": "0x1d9b96a9a25af95e0ae642d4ad682be7423d0e102506316dca0fc48e4b11dd91",
+          "receiptsRoot": "0xf08cf5553e1dae52e3df19b356b8320e17c39fb055f635739c31052db5c3e45e",
+          "sendCount": "0x0",
+          "sendRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+          "size": "0x3a7",
+          "stateRoot": "0x5c0e7dfb0868fdb5d4bc06c8ba2332feef71eec47b6a2d28125eded0aec17430",
+          "timestamp": "0x6af1f830",
+          "transactions": [
+            "0xeb4ef596e3726b8685c74b0ddfcf67b8689ba992e235529d94571903248cf81b",
+            "0xf2a1f99a72251e5cc72d993d7069010ffca97f107160afe0f1d8e090c7d971c7"
+          ],
+          "transactionsRoot": "0xf918e6a328c7e5265cea082754b24020027d6f8e99c765702d3d0cc6aee2dcb3",
+          "uncles": []
+        }
+      }
+    },
+    {
+      "method": "eth_syncing",
+      "status": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": false
+      }
+    },
+    {
+      "method": "arb_syncStatus",
+      "status": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "error": {
+          "code": -32601,
+          "message": "the method arb_syncStatus does not exist/is not available"
+        }
+      }
+    },
+    {
+      "method": "web3_clientVersion",
+      "status": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": "nitro/v3.11.5-7d41882/linux-amd64/go1.25.14"
+      }
+    }
+  ],
+  "headAgeSeconds": 962
+}

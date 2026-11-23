@@ -59,6 +59,8 @@ const EDITOR_EPSILON_Y = 0.3;
 const HALF_MAP_WIDTH = MAP_WIDTH / 2;
 const HALF_MAP_HEIGHT = MAP_HEIGHT / 2;
 const EMPTY_PIECES: readonly PlacedPiece[] = Object.freeze([]);
+/** Two-step yard-piece remove: the confirming tap must come this long after the arming tap. */
+const REMOVE_CONFIRM_MIN_MS = 400;
 
 /**
  * Floor for a click target's span. A `path-stone` is only 8 wu tall, which is
@@ -331,6 +333,8 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
   );
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
   const mutationPending = useRef(false);
+  /** performance.now() when remove mode armed a piece (two-step remove). */
+  const removeArmedAt = useRef(0);
   const parcelPieces = piecesMap.get(parcel.id) ?? EMPTY_PIECES;
   const level = Math.min(
     5,
@@ -614,6 +618,7 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
       }
       if (mode === "place") void placeAtCell(cell);
       else if (mode === "move" && selectedPlacedPieceId) void moveToCell(cell);
+      else if (mode === "remove") setSelectedPlacedPieceId(null);
     },
     [
       mode,
@@ -657,8 +662,23 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
           .addToast("!", "Remove the top piece first.", 3500);
         return;
       }
-      if (!window.confirm("No refund — remove?")) return;
+      // Two-step confirm without window.confirm() (always false inside the
+      // Claude MCP App sandbox iframe): the first tap arms the piece through
+      // the existing selection highlight, a second tap on it removes it.
+      // The handler runs on pointerdown, so a desktop double-click would arm
+      // and remove in ~150 ms: the confirming tap counts only after
+      // REMOVE_CONFIRM_MIN_MS.
+      if (selectedPlacedPieceId !== piece.id) {
+        setSelectedPlacedPieceId(piece.id);
+        removeArmedAt.current = performance.now();
+        useGameStore
+          .getState()
+          .addToast("!", "Tap the highlighted piece again to remove it. No refund.", 3500);
+        return;
+      }
+      if (performance.now() - removeArmedAt.current < REMOVE_CONFIRM_MIN_MS) return;
       if (mutationPending.current) return;
+      setSelectedPlacedPieceId(null);
       mutationPending.current = true;
       void api
         .deleteLandPiece(piece.id)

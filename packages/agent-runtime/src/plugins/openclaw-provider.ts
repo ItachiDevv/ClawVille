@@ -1,3 +1,4 @@
+import type { ProbeRuntimeBoundary } from '../probe-runtime';
 /**
  * OpenClaw Provider Plugin for ElizaOS
  *
@@ -99,9 +100,43 @@ async function generateViaGateway(
  * Creates an ElizaOS plugin that intercepts TEXT_SMALL and TEXT_LARGE
  * model calls, routing them through the OpenClaw gateway.
  */
-export function createOpenClawProviderPlugin(config: OpenClawGatewayConfig): Plugin {
+export function createOpenClawProviderPlugin(config: OpenClawGatewayConfig, probe?: ProbeRuntimeBoundary): Plugin {
+  let decisions = 0; let chats = 0;
+  const scopedGenerate = async (params: GenerateTextParams): Promise<string> => {
+    if (!probe) throw new Error('probe_runtime_refused');
+    const url = new URL(config.gatewayUrl);
+    if (config.protocol !== 'openai-compat' || config.gatewayUrl !== probe.scope.gatewayUrl || url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) probe.refuse();
+    const decision = params.prompt.includes('Available actions (choose exactly one');
+    if (decision ? ++decisions > 8 : ++chats > 1) probe.refuse();
+    const signal = await probe.current();
+    try {
+      const response = await fetch(`${config.gatewayUrl.replace(/\/+$/, '')}/v1/chat/completions`, {
+        method: 'POST', redirect: 'error', signal,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.authToken}` },
+        body: JSON.stringify({ model: config.modelName ?? `openclaw:${config.agentId}`, messages: [{ role: 'user', content: params.prompt }], max_tokens: Math.min(params.maxTokens ?? 1000, 1000), temperature: 0 }),
+      });
+      if (!response.ok || !response.body) return probe.refuse();
+      const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
+      try {
+        for (;;) {
+          const result = await reader.read();
+          if (signal.aborted) probe.refuse();
+          if (result.done) break;
+          bytes += result.value.byteLength;
+          if (bytes > 131072) probe.refuse();
+          chunks.push(result.value);
+        }
+      } finally { await reader.cancel().catch(() => {}); }
+      const combined = new Uint8Array(bytes); let offset = 0;
+      for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.length; }
+      const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(combined));
+      const text = (value as { choices?: { message?: { content?: unknown } }[] })?.choices?.[0]?.message?.content;
+      if (typeof text !== 'string' || text.length > 32768 || signal.aborted) return probe.refuse();
+      await probe.current(); return text;
+    } catch { return probe.refuse(); }
+  };
   const handler = async (_runtime: IAgentRuntime, params: GenerateTextParams): Promise<string> => {
-    return generateViaGateway(config, params);
+    return probe ? scopedGenerate(params) : generateViaGateway(config, params);
   };
 
   return {

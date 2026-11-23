@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Suspense, Component, type ReactNode } from 'react';
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
+import { BrainchainOfficeVortex } from './brainchain-office-vortex';
 import {
   BOOT_STREAM_TIER_BUILDINGS,
   ackBuildingCommit,
@@ -28,7 +29,6 @@ import {
   useSceneFrame,
 } from '@/components/three/world-stage/use-scene-frame';
 import { addStageWindowListener } from '@/components/three/world-stage/stage-store';
-import { requestWorldStageNavigation } from '@/components/three/world-stage/stage-navigation';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { mergeStaticMeshesByMaterial } from '@/lib/three/utils/merge-static-meshes';
 import {
@@ -60,9 +60,6 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { preloadKTX2Bytes, readGLTFWithKTX2, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
-import { useGameStore, avatarPositionRef } from '@/stores/game';
-import { useTransitionStore } from '@/components/transitions/SceneTransition';
-import { TRADING_FLOOR_DOOR_PX } from '@/lib/three/trading-floor/trading-floor-location';
 
 // Shared raycaster -- only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
@@ -79,248 +76,8 @@ const _buildRayDir = new THREE.Vector3(0, -1, 0);
 // 1000 is the ring floor; lighthouse stays at 1400 as the tallest landmark.
 const BUILDING_TARGET_HEIGHT = 1000;
 
-// ---------------------------------------------------------------------------
-// Cove walk-in flow — Phase 6.0.3
-//
-// 1. Avatar pathfinds toward the cove door position (game-px coords).
-//    Door target: ~300 game-px east of cove building center so the avatar
-//    approaches from the plaza rather than teleporting inside the building.
-//    The door sits at WORLD (−4820, 0) — invariant across world grows.
-//    Derived from the map center so a future grow re-centers automatically:
-//      game-px x = MAP_WIDTH/2 − 4820,  game-px y = MAP_HEIGHT/2 (center row).
-//    Phase 0 land (2026-06-15): center 5760→9216 ⇒ door (940,5760)→(4396,9216).
-// 2. When within DOOR_ARRIVE_DIST (200 game-px) of door target OR after
-//    MAX_WAIT_MS (1500ms) — whichever comes first — trigger the SceneTransition.
-// 3. SceneTransition fades to black (500ms), mid-fade pushes to /cove,
-//    cove page fades in (500ms). Total flow ≤ 3s per plan acceptance criteria.
-// ---------------------------------------------------------------------------
-
-// Tunnel corridor (pass 4): group anchor world X = -3510; mouth at local X=+135 = world -3375.
-// Door target = mid-tunnel (local X≈+60 = world -3450) so avatar walks INTO the corridor
-// before the fade fires, making it feel like they're stepping through.
-// Pass 1–3 value: MAP_WIDTH/2 - 3650 (outside arch). Pass 4: MAP_WIDTH/2 - 3450.
-// Pass 5: tunnel extended to 470wu; mouth at world -3275, mid-tunnel at world -3400.
-// MAP_WIDTH/2 - 3400 = world X -3400 = local X+110, well inside the 470wu corridor.
-/** Cove door position in game-px — targets mid-tunnel interior so avatar walks through. */
-const COVE_DOOR_PX = { x: MAP_WIDTH / 2 - 3400, y: MAP_HEIGHT / 2 };
-// Trading Floor door target — derived from the `cron-automation` ring zone in
-// trading-floor-location.ts, so a ring move or a world grow carries it.
-/** Avatar must be within this distance (game-px) to trigger the fade. */
-const DOOR_ARRIVE_DIST = 200;
-/** Hard timeout before triggering fade even if avatar hasn't arrived. */
-const MAX_WALK_WAIT_MS = 1500;
-/** Idempotency guard: true while a venue walk-in is in flight (clickPath + poll
- *  running, before the SceneTransition fires). A second trigger for the SAME
- *  venue — double-click, the click/E race, or a fast-travel arrival landing
- *  here — is a no-op so the walk is not restarted from the current position.
- *  One box per venue; cross-venue supersede is the token below. */
-const _coveWalkInPending = { value: false };
-const _tradingFloorWalkInPending = { value: false };
-
-/**
- * Cross-venue supersede token (Codex adversarial finding, 2026-09-19).
- *
- * Per-venue guards alone let TWO polls run at once: click the Cove, then the
- * Trading Floor inside the 1500 ms window, and the cove poll still owns the
- * click path it no longer set. Whichever poll fires first clears the path and
- * navigates, so the player's LATER choice silently loses.
- *
- * Every start bumps this counter and captures its value. A poll whose captured
- * value no longer matches is stale: it returns without clearing the path and
- * without navigating, leaving the newest walk-in untouched. Monotonic, so a
- * stale poll can never alias a live one.
- */
-let _walkInToken = 0;
-/** The guard box of the walk-in currently in flight, if any. */
-let _activeWalkInPending: { value: boolean } | null = null;
-
-/** Invalidate the in-flight walk-in (if any) and return the new token. */
-function supersedeActiveWalkIn(): number {
-  _walkInToken += 1;
-  if (_activeWalkInPending) {
-    _activeWalkInPending.value = false;
-    _activeWalkInPending = null;
-  }
-  return _walkInToken;
-}
-
-/**
- * True when the world no longer owns the walk: the body was dropped for the
- * free-flying explore camera, or the route already left /game by some other
- * path. An environment with no real `location` (tests, SSR) must NOT count as
- * "left /game", or the poll would cancel itself immediately.
- */
-function walkInAbandoned(controlMode: string): boolean {
-  if (controlMode === 'explore') return true;
-  if (typeof window === 'undefined') return false;
-  const pathname = window.location?.pathname;
-  return typeof pathname === 'string' && pathname.length > 0 && pathname !== '/game';
-}
-
-/** Stage venues reachable by a walk-in from /game. */
-type WalkInVenuePath = '/cove' | '/trading-floor';
-
-function navigateToStageVenue(to: WalkInVenuePath): void {
-  if (
-    requestWorldStageNavigation({
-      to,
-      onExpired: () => {
-        if (
-          typeof window !== 'undefined' &&
-          window.location.pathname === '/game'
-        ) {
-          useTransitionStore.getState().triggerTransition({ to });
-        }
-      },
-    })
-  ) {
-    return;
-  }
-  useTransitionStore.getState().triggerTransition({ to });
-}
-
-interface WalkInSpec {
-  /** Door target in game-px. */
-  readonly doorPx: { readonly x: number; readonly y: number };
-  readonly to: WalkInVenuePath;
-  /** DOM event the camera controller listens for, or null for no camera push. */
-  readonly cameraEvent: string | null;
-}
-
-/**
- * Shared walk-in: set a two-waypoint click-path to the venue door, poll
- * `avatarPositionRef` until arrival (or timeout), then hand the crossing to the
- * persistent stage.
- *
- * Deliberately avoids React state so it can be called from the module-scope
- * BUILDING_MODELS onClick without needing a hook context.
- */
-function startVenueWalkIn(
-  spec: WalkInSpec,
-  pending: { value: boolean },
-): void {
-  const store = useGameStore.getState();
-
-  // Only walk in player/npc mode — in explore mode there is no avatar to walk.
-  if (store.controlMode === 'explore') {
-    // Fallback for explore mode: direct transition, no walk. Still supersedes,
-    // so a poll started before the mode flip cannot navigate afterwards.
-    supersedeActiveWalkIn();
-    navigateToStageVenue(spec.to);
-    return;
-  }
-
-  // Idempotent for the SAME venue: a second click must not restart the walk
-  // from wherever the avatar has got to.
-  if (pending.value) return;
-
-  // A DIFFERENT venue was in flight: the newest choice wins outright.
-  const token = supersedeActiveWalkIn();
-  pending.value = true;
-  _activeWalkInPending = pending;
-
-  /** Release this walk-in's ownership. Safe to call from a stale poll. */
-  function release(): void {
-    pending.value = false;
-    if (_activeWalkInPending === pending) _activeWalkInPending = null;
-  }
-
-  // Two waypoints: current position → door target.
-  // player-avatar.tsx (the clickPath consumer) drives the avatar along it.
-  store.setClickPath(
-    [
-      { x: avatarPositionRef.x, y: avatarPositionRef.y },
-      { x: spec.doorPx.x, y: spec.doorPx.y },
-    ],
-    null,
-  );
-
-  // Signal the camera controller to push toward the venue. The handler in
-  // World3DCanvas.tsx reads this event and drifts the camera for ~1.2s.
-  if (spec.cameraEvent !== null && typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(spec.cameraEvent));
-  }
-
-  const startMs = Date.now();
-
-  function poll() {
-    // Superseded by a later walk-in: do NOTHING. Clearing the click path or
-    // navigating here is exactly the bug this token exists to stop.
-    if (_walkInToken !== token) return;
-
-    const current = useGameStore.getState();
-    if (walkInAbandoned(current.controlMode)) {
-      release();
-      current.clearClickPath();
-      return;
-    }
-
-    const dx = avatarPositionRef.x - spec.doorPx.x;
-    const dy = avatarPositionRef.y - spec.doorPx.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const elapsed = Date.now() - startMs;
-
-    if (dist <= DOOR_ARRIVE_DIST || elapsed >= MAX_WALK_WAIT_MS) {
-      // Avatar has arrived (or timed out) — clear the path and fade.
-      release();
-      current.clearClickPath();
-      navigateToStageVenue(spec.to);
-      return;
-    }
-
-    requestAnimationFrame(poll);
-  }
-
-  requestAnimationFrame(poll);
-}
-
-const COVE_WALK_IN: WalkInSpec = {
-  doorPx: COVE_DOOR_PX,
-  to: '/cove',
-  cameraEvent: 'cove-walkin-start',
-};
-
-const TRADING_FLOOR_WALK_IN: WalkInSpec = {
-  doorPx: TRADING_FLOOR_DOOR_PX,
-  to: '/trading-floor',
-  // No bespoke camera push yet — the stage fade covers the crossing. Adding
-  // one means a second listener in World3DCanvas, which is not worth a slot
-  // whose door already faces the default camera heading.
-  cameraEvent: null,
-};
-
-/** triggerCoveWalkIn() — called when the user clicks/presses E on the cove. */
-export function triggerCoveWalkIn(): void {
-  startVenueWalkIn(COVE_WALK_IN, _coveWalkInPending);
-}
-
-/**
- * triggerTradingFloorWalkIn() — the Trading Floor's cove-shaped entry
- * (founder order 2026-09-19). Walks the avatar to the building's north face,
- * then crosses to the `/trading-floor` stage slot.
- */
-export function triggerTradingFloorWalkIn(): void {
-  startVenueWalkIn(TRADING_FLOOR_WALK_IN, _tradingFloorWalkInPending);
-}
-
-/** Test seam — both walk-in guards, so a test can assert idempotency. */
-export function readVenueWalkInPendingForTests(): {
-  cove: boolean;
-  tradingFloor: boolean;
-} {
-  return {
-    cove: _coveWalkInPending.value,
-    tradingFloor: _tradingFloorWalkInPending.value,
-  };
-}
-
-/** Test seam — clears both guards and the supersede token between cases. */
-export function resetVenueWalkInPendingForTests(): void {
-  _coveWalkInPending.value = false;
-  _tradingFloorWalkInPending.value = false;
-  _activeWalkInPending = null;
-  _walkInToken += 1;
-}
+export { triggerCoveWalkIn, triggerTradingFloorWalkIn, readVenueWalkInPendingForTests, resetVenueWalkInPendingForTests } from './venue-walk-in';
+import { triggerCoveWalkIn, triggerTradingFloorWalkIn } from './venue-walk-in';
 
 // Map each building ID to a GLB model + display config.
 // rotY: each building faces the village center at tile (120, 120) = world (0, 0).
@@ -429,14 +186,17 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // component for the messaging building instead of loading the GLB.
   'messaging-channels':  { model: '/models/sandy-treedome-v3-opt1.glb?v=2',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 2500 },
   // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
-  // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  // Phase 6.2.2: targetMaxDim 1300→2500. salty-spitoon.glb is authored at km-scale
-  // (bbox ~655k×340k×655k GLB units — the base Circle.002 flat plane is stripped by
-  // stripGroundPlanes). After strip, max-dim ≈507198. Scale = 2500/507198 = 0.00493.
-  // Height = 340557×0.00493 = 1679wu — hits MAX_FOOTPRINT=2000: cap adjusts to
-  // scale×(2000/XZ_scaled). Final height ≈ 1209wu (≈6.7× avatar). Visible improvement.
-  // rotYOffset -π/2: the spitoon GLB is authored facing +X; rotate to face village center.
-  'api-integrations':    { model: '/models/salty-spitoon-opt1-ktx.glb?v=3',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 2500 },
+  // BRAINCHAIN OFFICE: slot 4 keeps api-integrations for quests and tools.
+  // brainchain-office-v3-ktx.glb: one mesh, one material, 11,999 triangles,
+  // meshopt + KHR_mesh_quantization; KTX2 base color and emissive glow maps.
+  // Scene bounds: X -0.9506..0.9484, Y -0.6838..0.6801, Z -0.7040..0.7006.
+  // Size 1.8990 x 1.3639 x 1.4047, centred in XZ; maxDim = X.
+  // Entrance faces +Z at rotY 0, so the ring needs no rotYOffset.
+  // targetMaxDim 1400 / 1.8990 = scale 737.2: authored footprint X 1400 x
+  // Z 1035.6, height 1005.5; no MAX_FOOTPRINT cap applies.
+  // computeBuildingScale returns bbox.min.y * scale; the inner group subtracts
+  // it (+504.1 wu), grounding the centred Y bounds with yOffset 0.
+  'api-integrations':    { model: '/models/brainchain/brainchain-office-v3-ktx.glb', yOffset: 0, rotY: -2.093, targetMaxDim: 1400 },
   // Slot 5 — SSE (cx=245, cy=293): dx=-65, dz=-113 → atan2(-65,-113)≈-2.620 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
   'app-publishing':      { model: '/models/boating-school-opt1-ktx.glb?v=3',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
@@ -470,14 +230,18 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'deployment-ops':      { model: '/models/building-lighthouse-opt1-ktx.glb?v=3', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
   // Slot 8 — WSW (cx=67, cy=245): dx=113, dz=-65 → atan2(113,-65)≈2.093 (2π/3)
   // Phase 6.1 swap preserved: claw-arcade at slot 8/WSW. Cove is at slot 9/W (2 slots away).
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
+  // 2026-11-13 opt2-mo: 16-bit quantized geometry + meshopt, 3 of 4 1024 maps at 512
+  // (835,240 → 604,816 bytes); the 4th failed scripts/models/glb-compare.mjs and stays 1024.
+  // stripGroundPlanes finds no flat mesh in either file, so the quantized local
+  // bounds change nothing here.
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
   // Slot 9 — W (cx=50, cy=180): dx=130, dz=0 → atan2(130,0)=π/2≈1.571  ← entertainment district
   // cove-exterior.glb = "Pyramid Cove" by tl0615 (CC-BY-4.0, Sketchfab).
   // box3Recenter=true: geometry authored at ~(-1800, 166, 4540) Blender origin — centering handled by pivotOffset.
   // targetMaxDim: 1300 — cove is the entertainment-district landmark, deserves more visual mass.
   // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /cove.
-  // Door target in game-px derived from map center (COVE_DOOR_PX above): cove zone
+  // Door target in game-px derived from map center (COVE_DOOR_PX in venue-walk-in.ts): cove zone
   // slot 9 W; door is ~east of building center, toward town center (origin).
   'cove':              { model: '/models/cove/cove-exterior-opt1-ktx.glb?v=4', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
                            onClick: () => { triggerCoveWalkIn(); } },
@@ -718,7 +482,8 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
 //   2000 wu — Phase 6.2.2 fix (2026-05-18). Sandy's Treedome dome is square (aspect ≈ 1.0)
 //             and hits the 1800 cap, rendering at only 738wu (4.1× avatar). R=130 ring arc
 //             spacing is 2178wu so allowing 2000wu footprint keeps a 178wu clearance between
-//             the widest adjacent pair. Only the dome and km-scale Salty Spitoon hit this cap.
+//             the widest adjacent pair. Only the dome and km-scale Salty Spitoon hit this cap
+//             (the Spitoon left the ring 2026-11-10; the BrainChain Office is uncapped).
 const MAX_FOOTPRINT = 2000;
 
 // Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
@@ -1293,6 +1058,7 @@ function GLBBuilding({
             Applied on top of -pivotOffsetZ. Zero for all buildings except those with explicit pivotZBias config. */}
         <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ + (config.pivotZBias ?? 0)]}>
           <primitive object={cloned} scale={buildingScale} />
+          {zone.id === 'api-integrations' && <BrainchainOfficeVortex scale={buildingScale} attached={attachmentVisible} />}
         </group>
         {/* Invisible click volume — used by entertainment buildings (cove, claw-arcade)
             that have a config.onClick handler. Sized to ~1/8 of BUILDING_TARGET_HEIGHT

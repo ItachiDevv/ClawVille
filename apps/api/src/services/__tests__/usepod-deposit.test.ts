@@ -148,6 +148,10 @@ function deps(extra: Partial<UsepodDepositDeps> = {}): Partial<UsepodDepositDeps
     deferReconcile: async () => {},
     settings: async () => settings,
     precheck: async () => null,
+    feePayer: async () => null,
+    solBalance: async () => 1_000_000_000,
+    sponsoredToday: async () => 0,
+    avatarSponsoredToday: async () => 0,
     balance: async () => ({
       usdcMicro: balanceReads++ ? 500100 : 100,
       isActive: true,
@@ -382,6 +386,8 @@ describe('flow boundaries', () => {
       usdCents: 50,
       creditStatus: 'seen' as const,
       balance: null,
+      feePayer: 'avatar' as const,
+      feeCharged: true,
     };
     expect(
       await depositUsepod(
@@ -839,5 +845,585 @@ describe('first deposit on a token UsePod has not activated', () => {
     );
     expect(r).toEqual({ ok: false, code: 'provider_error' });
     expect(history).toEqual([]);
+  });
+});
+
+// ── ClawVille fee wallet (founder 2026-11-11) ────────────────────────────────
+const { SystemProgram, TransactionInstruction } = await import('@solana/web3.js');
+const {
+  assertDepositTransaction,
+  signDepositTransaction,
+  chooseFeePayer,
+  readUsepodFeeStatus,
+  FEE_PAYER_MISMATCH,
+  USEPOD_MEMO_PROGRAM,
+} = service;
+const {
+  USEPOD_SPONSORED_DEPOSITS_PER_DAY,
+  USEPOD_SPONSORED_DEPOSITS_PER_AVATAR_PER_DAY,
+  USEPOD_FEE_WALLET_MIN_LAMPORTS,
+  USEPOD_FEE_WALLET_LOW_LAMPORTS,
+  OWN_AI_USEPOD_MIN_SOL_LAMPORTS,
+} = await import('@clawville/shared');
+const feeWallet = Keypair.generate();
+const FEE = feeWallet.publicKey.toBase58();
+const sponsoredTerms: DepositTerms = { ...terms, feePayer: FEE };
+const BLOCKHASH = '11111111111111111111111111111111';
+function secretBytes(k: Keypair): Uint8Array {
+  return (k as unknown as { _keypair: { secretKey: Uint8Array } })._keypair.secretKey;
+}
+function sponsoredProof(): DepositProof {
+  const tx = buildDepositTransaction(sponsoredTerms, BLOCKHASH);
+  return {
+    ...proof(),
+    feePayer: FEE,
+    signatures: ['signature', 'depositor-signature'],
+    instructions: tx.instructions.map((ix) => ({
+      programId: ix.programId.toBase58(),
+      data: ix.data,
+      keys: ix.keys.map((key) => ({ ...key, pubkey: key.pubkey.toBase58() })),
+    })),
+  };
+}
+function captureLogs(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((level) =>
+    spyOn(console, level).mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((a) => (a instanceof Uint8Array ? Buffer.from(a).toString('hex') : String(a))).join(' '));
+    }),
+  );
+  return { lines, restore: () => spies.forEach((s) => s.mockRestore()) };
+}
+function secretForms(k: Keypair): string[] {
+  const s = Buffer.from(k.secretKey);
+  return [bs58.encode(s), s.toString('hex'), s.toString('base64'), bs58.encode(s.subarray(0, 32))];
+}
+/** Counts reads of the Keypair `secretKey` getter (each read makes an unwiped copy). */
+function countSecretGetter(): { count: () => number; restore: () => void } {
+  const proto = Keypair.prototype as object;
+  const original = Object.getOwnPropertyDescriptor(proto, 'secretKey')!;
+  let n = 0;
+  Object.defineProperty(proto, 'secretKey', {
+    configurable: true,
+    get(this: Keypair) {
+      n++;
+      return original.get!.call(this);
+    },
+  });
+  return { count: () => n, restore: () => Object.defineProperty(proto, 'secretKey', original) };
+}
+type FeeDeps = Parameters<typeof chooseFeePayer>[0];
+function feeDeps(o: { sponsor?: string | null; fee?: number; avatar?: number; global?: number; mine?: number }): FeeDeps {
+  return {
+    feePayer: async () => (o.sponsor === undefined ? FEE : o.sponsor),
+    solBalance: async (key) => (key === FEE ? (o.fee ?? 10 ** 9) : (o.avatar ?? 0)),
+    sponsoredToday: async () => o.global ?? 0,
+    avatarSponsoredToday: async () => o.mine ?? 0,
+  };
+}
+
+describe('fee wallet: transaction checked against its terms', () => {
+  test('sponsored tx: fee wallet is fee payer, exactly deposit + memo, depositor signs as account 3', () => {
+    const tx = buildDepositTransaction(sponsoredTerms, BLOCKHASH);
+    expect(tx.feePayer!.toBase58()).toBe(FEE);
+    expect(tx.instructions).toHaveLength(2);
+    expect(tx.instructions[0]!.programId.toBase58()).toBe(USEPOD_PROGRAM_ID);
+    expect(tx.instructions[1]!.programId.toBase58()).toBe(USEPOD_MEMO_PROGRAM);
+    expect(tx.instructions[1]!.keys).toHaveLength(0);
+    expect(tx.instructions.flatMap((ix) => ix.keys).some((k) => k.pubkey.equals(feeWallet.publicKey))).toBe(false);
+    expect(assertDepositTransaction(tx, sponsoredTerms)).toEqual({ depositor: terms.depositor, feePayer: FEE, sponsored: true });
+    const msg = tx.compileMessage();
+    expect(msg.header.numRequiredSignatures).toBe(2);
+    expect(msg.accountKeys[0]!.toBase58()).toBe(FEE);
+    // The fee wallet is writable only as the fee payer (account 0); it is in no instruction.
+    expect(msg.instructions.every((ix) => !ix.accounts.includes(0))).toBe(true);
+  });
+  test('unsponsored tx keeps the depositor as fee payer (old behaviour)', () => {
+    const tx = buildDepositTransaction(terms, BLOCKHASH);
+    expect(tx.feePayer!.toBase58()).toBe(terms.depositor);
+    expect(assertDepositTransaction(tx, terms).sponsored).toBe(false);
+    expect(tx.compileMessage().header.numRequiredSignatures).toBe(1);
+  });
+  test('fee payer equal to depositor in terms is refused', () => {
+    expect(() => buildDepositTransaction({ ...terms, feePayer: terms.depositor }, BLOCKHASH)).toThrow('invalid_deposit_terms');
+  });
+  test('any other transaction is refused before signing', () => {
+    const mutations: ((tx: InstanceType<typeof Transaction>) => void)[] = [
+      (tx) => {
+        tx.add(SystemProgram.transfer({ fromPubkey: feeWallet.publicKey, toPubkey: wallet.publicKey, lamports: 1 }));
+      },
+      (tx) => {
+        tx.instructions[1] = new TransactionInstruction({
+          programId: new PublicKey(USEPOD_MEMO_PROGRAM),
+          keys: [{ pubkey: feeWallet.publicKey, isSigner: true, isWritable: false }],
+          data: Buffer.from(`clawville:usepod:${terms.ledgerId}`),
+        });
+      },
+      (tx) => {
+        tx.instructions[0]!.keys[2] = { pubkey: feeWallet.publicKey, isSigner: false, isWritable: true };
+      },
+      (tx) => {
+        tx.instructions[0]!.programId = new PublicKey(USEPOD_MEMO_PROGRAM);
+      },
+      (tx) => {
+        tx.instructions.pop();
+      },
+      (tx) => {
+        tx.instructions[0]!.keys[0]!.isWritable = false;
+      },
+      // Bound to the terms: another amount, another code, another ledger memo.
+      (tx) => {
+        tx.instructions[0]!.data = buildDepositData(terms.code, BigInt(terms.amount) + 1n);
+      },
+      (tx) => {
+        tx.instructions[0]!.data = buildDepositData('ffffffffffffffff', BigInt(terms.amount));
+      },
+      (tx) => {
+        tx.instructions[1]!.data = Buffer.from('clawville:usepod:other-ledger');
+      },
+      // A durable nonce is never signed.
+      (tx) => {
+        tx.nonceInfo = {
+          nonce: BLOCKHASH,
+          nonceInstruction: SystemProgram.nonceAdvance({ noncePubkey: Keypair.generate().publicKey, authorizedPubkey: feeWallet.publicKey }),
+        };
+      },
+      // Another fee payer than the terms name.
+      (tx) => {
+        tx.feePayer = Keypair.generate().publicKey;
+      },
+      (tx) => {
+        tx.feePayer = wallet.publicKey;
+      },
+    ];
+    for (const mutate of mutations) {
+      const tx = buildDepositTransaction(sponsoredTerms, BLOCKHASH);
+      mutate(tx);
+      expect(() => assertDepositTransaction(tx, sponsoredTerms)).toThrow('unexpected_transaction_shape');
+    }
+    // Terms for another depositor or ledger refuse an otherwise valid transaction.
+    const tx = buildDepositTransaction(sponsoredTerms, BLOCKHASH);
+    expect(() => assertDepositTransaction(tx, { ...sponsoredTerms, ledgerId: 'other' })).toThrow('unexpected_transaction_shape');
+    expect(() => assertDepositTransaction(tx, terms)).toThrow('unexpected_transaction_shape');
+  });
+});
+
+describe('fee wallet: signing and key wipe', () => {
+  test('sponsored: the fee wallet signs first (tx id), the avatar wallet signs as depositor, both keys wiped', () => {
+    const tx = buildDepositTransaction(sponsoredTerms, BLOCKHASH);
+    const depositorKey = Keypair.fromSecretKey(wallet.secretKey);
+    const feeKey = Keypair.fromSecretKey(feeWallet.secretKey);
+    const signed = signDepositTransaction(tx, sponsoredTerms, depositorKey, feeKey);
+    const parsed = Transaction.from(signed.bytes);
+    expect(parsed.verifySignatures()).toBe(true);
+    expect(parsed.signatures.map((s) => s.publicKey.toBase58())).toEqual([FEE, terms.depositor]);
+    expect(signed.signature).toBe(bs58.encode(parsed.signatures[0]!.signature!));
+    expect(secretBytes(depositorKey).every((b) => b === 0)).toBe(true);
+    expect(secretBytes(feeKey).every((b) => b === 0)).toBe(true);
+  });
+  test('signing never reads the secretKey getter (no unwiped copies); the held buffers are zero after', () => {
+    const depositorKey = Keypair.fromSecretKey(wallet.secretKey);
+    const feeKey = Keypair.fromSecretKey(feeWallet.secretKey);
+    const held = [secretBytes(depositorKey), secretBytes(feeKey)];
+    expect(held.every((b) => b.some((x) => x !== 0))).toBe(true);
+    const getter = countSecretGetter();
+    try {
+      signDepositTransaction(buildDepositTransaction(sponsoredTerms, BLOCKHASH), sponsoredTerms, depositorKey, feeKey);
+      expect(getter.count()).toBe(0);
+    } finally {
+      getter.restore();
+    }
+    for (const buffer of held) expect(buffer.every((b) => b === 0)).toBe(true);
+  });
+  test('unsponsored: one signature from the avatar wallet; key wiped', () => {
+    const depositorKey = Keypair.fromSecretKey(wallet.secretKey);
+    const signed = signDepositTransaction(buildDepositTransaction(terms, BLOCKHASH), terms, depositorKey, null);
+    const parsed = Transaction.from(signed.bytes);
+    expect(parsed.signatures).toHaveLength(1);
+    expect(parsed.verifySignatures()).toBe(true);
+    expect(secretBytes(depositorKey).every((b) => b === 0)).toBe(true);
+  });
+  test('wrong fee key, missing fee key, extra fee key, wrong avatar key or wrong terms refuse and still wipe', () => {
+    const cases: [DepositTerms, DepositTerms, Keypair, Keypair | null, string][] = [
+      [sponsoredTerms, sponsoredTerms, Keypair.fromSecretKey(wallet.secretKey), Keypair.generate(), 'fee_wallet_changed'],
+      [sponsoredTerms, sponsoredTerms, Keypair.fromSecretKey(wallet.secretKey), null, 'fee_wallet_changed'],
+      [terms, terms, Keypair.fromSecretKey(wallet.secretKey), Keypair.fromSecretKey(feeWallet.secretKey), 'fee_wallet_unexpected'],
+      [sponsoredTerms, sponsoredTerms, Keypair.generate(), Keypair.fromSecretKey(feeWallet.secretKey), 'wallet_changed'],
+      [sponsoredTerms, { ...sponsoredTerms, amount: '1' }, Keypair.fromSecretKey(wallet.secretKey), Keypair.fromSecretKey(feeWallet.secretKey), 'unexpected_transaction_shape'],
+    ];
+    for (const [built, checked, depositorKey, feeKey, message] of cases) {
+      expect(() => signDepositTransaction(buildDepositTransaction(built, BLOCKHASH), checked, depositorKey, feeKey)).toThrow(message);
+      expect(secretBytes(depositorKey).every((b) => b === 0)).toBe(true);
+      if (feeKey) expect(secretBytes(feeKey).every((b) => b === 0)).toBe(true);
+    }
+  });
+});
+
+describe('fee wallet: finalized proof and reconcile', () => {
+  test('sponsored proof accepted only with the pinned fee wallet as fee payer and two signatures', () => {
+    expect(checkDepositProof(sponsoredProof(), sponsoredTerms, 'signature')).toBe(true);
+    for (const change of [
+      (p: DepositProof) => { p.feePayer = terms.depositor; },
+      (p: DepositProof) => { p.feePayer = Keypair.generate().publicKey.toBase58(); },
+      (p: DepositProof) => { p.signatures = ['signature']; },
+      (p: DepositProof) => { p.signatures = ['signature', 'b', 'c']; },
+    ]) {
+      const p = sponsoredProof();
+      change(p);
+      expect(checkDepositProof(p, sponsoredTerms, 'signature')).toBe(false);
+    }
+  });
+  test('an old (unsponsored) row accepts the depositor as fee payer and nothing else', () => {
+    expect(checkDepositProof(proof(), terms, 'signature')).toBe(true);
+    const p = proof();
+    p.feePayer = FEE;
+    expect(checkDepositProof(p, terms, 'signature')).toBe(false);
+  });
+  test('reconcile of a sponsored row uses the fee payer pinned in its stored terms', async () => {
+    const decisions = await reconcileUsepodDeposits({
+      apply: true,
+      deps: deps({ reconcileRows: async () => [row({ depositTerms: sponsoredTerms, feePayer: FEE })], proof: async () => sponsoredProof() }),
+    });
+    expect(decisions[0]!.status).toBe('paid');
+    const wrong = await reconcileUsepodDeposits({
+      apply: true,
+      deps: deps({ reconcileRows: async () => [row({ depositTerms: terms })], proof: async () => sponsoredProof() }),
+    });
+    expect(wrong[0]!.status).toBe('ambiguous');
+  });
+  test('ledger fee_payer differing from the signed terms: ambiguous for the operator, no proof read, never paid', async () => {
+    for (const patch of [
+      { depositTerms: sponsoredTerms, feePayer: null },
+      { depositTerms: terms, feePayer: FEE },
+      { depositTerms: sponsoredTerms, feePayer: Keypair.generate().publicKey.toBase58() },
+    ]) {
+      finishes = [];
+      let proofReads = 0;
+      const decisions = await reconcileUsepodDeposits({
+        apply: true,
+        deps: deps({
+          reconcileRows: async () => [row(patch as Partial<VendorSpendRow>)],
+          proof: async () => {
+            proofReads++;
+            return sponsoredProof();
+          },
+        }),
+      });
+      expect(decisions[0]).toMatchObject({ status: 'ambiguous', operatorReview: true });
+      expect(finishes).toEqual([{ status: 'ambiguous', fields: { failureReason: FEE_PAYER_MISMATCH } }]);
+      expect(proofReads).toBe(0);
+    }
+  });
+});
+
+describe('fee wallet: who pays (chooseFeePayer)', () => {
+  test('no fee wallet row: the avatar pays when it has SOL, else needs_sol_for_fee', async () => {
+    expect(await chooseFeePayer(feeDeps({ sponsor: null, avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }), 'avatar', terms.depositor))
+      .toEqual({ ok: true, feePayer: null, avatarCanPay: true });
+    expect(await chooseFeePayer(feeDeps({ sponsor: null }), 'avatar', terms.depositor))
+      .toEqual({ ok: false, code: 'needs_sol_for_fee' });
+  });
+  test('funded fee wallet pays even when the avatar has no SOL; no log above 0.01 SOL', async () => {
+    const logs = captureLogs();
+    try {
+      expect(await chooseFeePayer(feeDeps({ fee: USEPOD_FEE_WALLET_LOW_LAMPORTS }), 'avatar', terms.depositor))
+        .toEqual({ ok: true, feePayer: FEE, avatarCanPay: false });
+      expect(logs.lines).toEqual([]);
+    } finally {
+      logs.restore();
+    }
+  });
+  test('low fee wallet logs a warning (public key and lamports only) and still pays above the minimum', async () => {
+    const logs = captureLogs();
+    try {
+      expect(await chooseFeePayer(feeDeps({ fee: USEPOD_FEE_WALLET_LOW_LAMPORTS - 1 }), 'avatar', terms.depositor))
+        .toEqual({ ok: true, feePayer: FEE, avatarCanPay: false });
+      expect(logs.lines).toHaveLength(1);
+      expect(logs.lines[0]).toContain(FEE);
+      expect(logs.lines[0]).toContain('low');
+      for (const form of secretForms(feeWallet)) expect(logs.lines.join('\n')).not.toContain(form);
+    } finally {
+      logs.restore();
+    }
+  });
+  test('empty fee wallet: falls back to the avatar wallet, else fee_wallet_empty', async () => {
+    const logs = captureLogs();
+    try {
+      expect(await chooseFeePayer(feeDeps({ fee: USEPOD_FEE_WALLET_MIN_LAMPORTS - 1, avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }), 'avatar', terms.depositor))
+        .toEqual({ ok: true, feePayer: null, avatarCanPay: true });
+      expect(await chooseFeePayer(feeDeps({ fee: USEPOD_FEE_WALLET_MIN_LAMPORTS - 1 }), 'avatar', terms.depositor))
+        .toEqual({ ok: false, code: 'fee_wallet_empty' });
+    } finally {
+      logs.restore();
+    }
+  });
+  test('global cap reached: falls back to the avatar wallet, else fee_sponsor_daily_limit', async () => {
+    expect(await chooseFeePayer(feeDeps({ global: USEPOD_SPONSORED_DEPOSITS_PER_DAY, avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }), 'avatar', terms.depositor))
+      .toEqual({ ok: true, feePayer: null, avatarCanPay: true });
+    expect(await chooseFeePayer(feeDeps({ global: USEPOD_SPONSORED_DEPOSITS_PER_DAY }), 'avatar', terms.depositor))
+      .toEqual({ ok: false, code: 'fee_sponsor_daily_limit' });
+  });
+  test('per-avatar sponsored cap reached: falls back to the avatar wallet, else fee_sponsor_avatar_daily_limit', async () => {
+    expect(USEPOD_SPONSORED_DEPOSITS_PER_AVATAR_PER_DAY).toBe(2);
+    expect(await chooseFeePayer(feeDeps({ mine: 2, avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }), 'avatar', terms.depositor))
+      .toEqual({ ok: true, feePayer: null, avatarCanPay: true });
+    expect(await chooseFeePayer(feeDeps({ mine: 2 }), 'avatar', terms.depositor))
+      .toEqual({ ok: false, code: 'fee_sponsor_avatar_daily_limit' });
+    expect(await chooseFeePayer(feeDeps({ mine: 1 }), 'avatar', terms.depositor))
+      .toEqual({ ok: true, feePayer: FEE, avatarCanPay: false });
+  });
+  test('a fee wallet row equal to the depositor is never used as a sponsor', async () => {
+    expect(await chooseFeePayer(feeDeps({ sponsor: terms.depositor, avatar: 10 ** 9 }), 'avatar', terms.depositor))
+      .toEqual({ ok: true, feePayer: null, avatarCanPay: true });
+  });
+});
+
+describe('fee wallet: GET /usepod/fee answer (readUsepodFeeStatus)', () => {
+  const base = { sponsoredPerAvatarPerDay: 2, avatarMinSolLamports: 15000 };
+  test('sponsored only when ClawVille can pay NOW', async () => {
+    const logs = captureLogs();
+    try {
+      expect(await readUsepodFeeStatus('avatar', feeDeps({ mine: 1 }))).toEqual({ sponsored: true, reason: null, avatarSponsoredToday: 1, ...base });
+      expect(await readUsepodFeeStatus('avatar', feeDeps({ sponsor: null }))).toEqual({ sponsored: false, reason: 'no_fee_wallet', avatarSponsoredToday: 0, ...base });
+      expect(await readUsepodFeeStatus('avatar', feeDeps({ mine: 2 }))).toEqual({ sponsored: false, reason: 'avatar_daily_limit', avatarSponsoredToday: 2, ...base });
+      expect(await readUsepodFeeStatus('avatar', feeDeps({ global: USEPOD_SPONSORED_DEPOSITS_PER_DAY }))).toMatchObject({ sponsored: false, reason: 'daily_limit' });
+      expect(await readUsepodFeeStatus('avatar', feeDeps({ fee: USEPOD_FEE_WALLET_MIN_LAMPORTS - 1 }))).toMatchObject({ sponsored: false, reason: 'fee_wallet_empty' });
+      expect(await readUsepodFeeStatus('avatar', { ...feeDeps({}), solBalance: async () => { throw new Error('rpc down'); } }))
+        .toEqual({ sponsored: false, reason: 'unavailable', avatarSponsoredToday: null, ...base });
+    } finally {
+      logs.restore();
+    }
+  });
+});
+
+describe('fee wallet: deposit flow', () => {
+  function sponsoredDeps(extra: Partial<UsepodDepositDeps> = {}): Partial<UsepodDepositDeps> {
+    return deps({
+      ...feeDeps({}),
+      sign: async (_avatar, tx, t) => {
+        history.push('sign');
+        return signDepositTransaction(tx, t, Keypair.fromSecretKey(wallet.secretKey), Keypair.fromSecretKey(feeWallet.secretKey));
+      },
+      proof: async () => ({ ...sponsoredProof(), signatures: [persisted!.signature, 'depositor-signature'] }),
+      ...extra,
+    });
+  }
+  test('sponsored deposit: admission gets the fee wallet, the signed tx pays from it, terms pin it, no secret logged', async () => {
+    let admittedSponsor: unknown;
+    let persistedTerms: DepositTerms | undefined;
+    let signedBytes: Uint8Array | undefined;
+    const logs = captureLogs();
+    let result;
+    try {
+      result = await depositUsepod(
+        input,
+        sponsoredDeps({
+          admit: async (_i, _s, _f, sponsor) => {
+            admittedSponsor = sponsor;
+            return { ok: true, ledgerId: 'ledger', feePayer: sponsor!.feePayer };
+          },
+          persist: async (_id, signed, _h, t) => {
+            persisted = signed;
+            persistedTerms = t;
+            signedBytes = signed.bytes;
+            return true;
+          },
+        }),
+      );
+    } finally {
+      logs.restore();
+    }
+    expect(result).toMatchObject({ ok: true, status: 'paid', feePayer: 'clawville', feeCharged: true });
+    expect(admittedSponsor).toEqual({ feePayer: FEE, avatarCanPay: false });
+    expect(persistedTerms!.feePayer).toBe(FEE);
+    const parsed = Transaction.from(signedBytes!);
+    expect(parsed.feePayer!.toBase58()).toBe(FEE);
+    expect(parsed.instructions).toHaveLength(2);
+    expect(parsed.verifySignatures()).toBe(true);
+    const all = logs.lines.join('\n');
+    for (const form of [...secretForms(feeWallet), ...secretForms(wallet)]) expect(all).not.toContain(form);
+  });
+  test('admission fell back to the avatar wallet: the tx and the reply say the avatar paid', async () => {
+    let signedTerms: DepositTerms | undefined;
+    const r = await depositUsepod(
+      input,
+      sponsoredDeps({
+        ...feeDeps({ avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }),
+        admit: async () => ({ ok: true, ledgerId: 'ledger', feePayer: null }),
+        sign: async (_a, tx, t) => {
+          signedTerms = t;
+          history.push('sign');
+          expect(tx.feePayer!.toBase58()).toBe(terms.depositor);
+          return { bytes: new Uint8Array([1]), signature: 'signature' };
+        },
+        proof: async () => proof(),
+      }),
+    );
+    expect(r).toMatchObject({ ok: true, status: 'paid', feePayer: 'avatar', feeCharged: true });
+    expect(signedTerms!.feePayer).toBeUndefined();
+  });
+  test('admission can never add a sponsor that was not chosen', async () => {
+    const r = await depositUsepod(input, deps({ admit: async () => ({ ok: true, ledgerId: 'ledger', feePayer: FEE }) }));
+    expect(r).toEqual({ ok: false, code: 'payment_prepare_failed', ledgerId: 'ledger' });
+    expect(history).toEqual([]);
+  });
+  test('no fee wallet row: the old flow, feePayer avatar, admission gets no sponsor', async () => {
+    let admittedSponsor: unknown = 'unset';
+    const r = await depositUsepod(
+      input,
+      deps({
+        admit: async (_i, _s, _f, sponsor) => {
+          admittedSponsor = sponsor;
+          return { ok: true, ledgerId: 'ledger' };
+        },
+      }),
+    );
+    expect(r).toMatchObject({ ok: true, status: 'paid', feePayer: 'avatar', feeCharged: true });
+    expect(admittedSponsor).toBeNull();
+  });
+  test('fee wallet empty and avatar without SOL refuses before admission', async () => {
+    const logs = captureLogs();
+    try {
+      const r = await depositUsepod(input, sponsoredDeps(feeDeps({ fee: 0 })));
+      expect(r).toEqual({ ok: false, code: 'fee_wallet_empty' });
+      expect(history).toEqual([]);
+    } finally {
+      logs.restore();
+    }
+  });
+  test('a fee wallet read error refuses (fail closed), never signs', async () => {
+    const r = await depositUsepod(input, sponsoredDeps({ feePayer: async () => { throw new Error('db down'); } }));
+    expect(r).toEqual({ ok: false, code: 'provider_error' });
+    expect(history).toEqual([]);
+  });
+});
+
+describe('fee wallet: admission under the locks (race at the cap)', () => {
+  function sponsoredAdmission(extra: Partial<UsepodDepositDeps> = {}) {
+    return actualAdmission({
+      ...feeDeps({}),
+      proof: async () => sponsoredProof(),
+      ...extra,
+    });
+  }
+  test('under the cap: global lock after the avatar lock, the row records the fee payer', async () => {
+    admissionFixture();
+    executeQueue.push([], [{ n: USEPOD_SPONSORED_DEPOSITS_PER_DAY - 1 }]);
+    const r = await depositUsepod(input, sponsoredAdmission());
+    expect(r).toMatchObject({ ok: true, feePayer: 'clawville' });
+    expect(inserts).toHaveLength(1);
+    expect((inserts[0] as { feePayer: string }).feePayer).toBe(FEE);
+    const texts = queries.map((q) => new PgDialect().sqlToQuery(q));
+    expect(texts[0]!.sql).toContain('pg_advisory_xact_lock');
+    expect(texts[1]!.sql).toContain('AS sponsored');
+    expect(texts[2]!.sql).toContain('pg_advisory_xact_lock');
+    expect(texts[2]!.params).toContain('usepod:fee-payer:global');
+    expect(texts[3]!.sql).toContain('fee_payer IS NOT NULL');
+    expect(texts[3]!.sql).toContain("failure_reason NOT LIKE 'not_sent_%'");
+  });
+  test('race: two requests chose sponsorship at 199; the loser falls back to the avatar wallet when it has SOL', async () => {
+    admissionFixture();
+    executeQueue.push([], [{ n: USEPOD_SPONSORED_DEPOSITS_PER_DAY }]);
+    const r = await depositUsepod(
+      input,
+      sponsoredAdmission({
+        ...feeDeps({ global: USEPOD_SPONSORED_DEPOSITS_PER_DAY - 1, avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }),
+        proof: async () => proof(),
+      }),
+    );
+    expect(r).toMatchObject({ ok: true, status: 'paid', feePayer: 'avatar', feeCharged: true });
+    expect((inserts[0] as { feePayer: string | null }).feePayer).toBeNull();
+  });
+  test('race: the loser without SOL is refused with fee_sponsor_daily_limit, no row, no signature', async () => {
+    admissionFixture();
+    executeQueue.push([], [{ n: USEPOD_SPONSORED_DEPOSITS_PER_DAY }]);
+    const r = await depositUsepod(input, sponsoredAdmission(feeDeps({ global: USEPOD_SPONSORED_DEPOSITS_PER_DAY - 1 })));
+    expect(r).toEqual({ ok: false, code: 'fee_sponsor_daily_limit' });
+    expect(inserts).toEqual([]);
+    expect(history).toEqual([]);
+  });
+  test('per-avatar sponsored cap under the spend lock: falls back with SOL, else refuses; no global lock taken', async () => {
+    admissionFixture({}, 2);
+    executeQueue[1] = [{ spent: '0', attempts: 2, sponsored: USEPOD_SPONSORED_DEPOSITS_PER_AVATAR_PER_DAY }];
+    const ok = await depositUsepod(
+      input,
+      sponsoredAdmission({ ...feeDeps({ mine: 1, avatar: OWN_AI_USEPOD_MIN_SOL_LAMPORTS }), proof: async () => proof() }),
+    );
+    expect(ok).toMatchObject({ ok: true, feePayer: 'avatar' });
+    expect(queries.map((q) => new PgDialect().sqlToQuery(q).params).flat()).not.toContain('usepod:fee-payer:global');
+    inserts = [];
+    history = [];
+    admissionFixture({}, 2);
+    executeQueue[1] = [{ spent: '0', attempts: 2, sponsored: USEPOD_SPONSORED_DEPOSITS_PER_AVATAR_PER_DAY }];
+    expect(await depositUsepod(input, sponsoredAdmission(feeDeps({ mine: 1 })))).toEqual({
+      ok: false,
+      code: 'fee_sponsor_avatar_daily_limit',
+    });
+    expect(inserts).toEqual([]);
+  });
+  test('a cap refusal comes before the approval nonce is consumed: the same signature still works after', async () => {
+    const kp = nacl.sign.keyPair();
+    const walletPubkey = bs58.encode(kp.publicKey);
+    const challenge = proofService.issueUsepodDepositChallenge('user', service.approvalTerms(input, settings));
+    const signature = bs58.encode(nacl.sign.detached(new TextEncoder().encode(challenge.messageToSign), kp.secretKey));
+    admissionFixture({ requireApproval: true });
+    executeQueue.push([], [{ n: USEPOD_SPONSORED_DEPOSITS_PER_DAY }]);
+    selectQueue.push([{ wallet: walletPubkey }]);
+    expect(
+      await depositUsepod({ ...input, nonce: challenge.nonce, signature }, sponsoredAdmission(feeDeps({ global: 0 }))),
+    ).toEqual({ ok: false, code: 'fee_sponsor_daily_limit' });
+    // The nonce was not consumed: the human can retry once SOL or the cap allows it.
+    admissionFixture({ requireApproval: true });
+    executeQueue.push([], [{ n: 0 }]);
+    selectQueue.push([{ wallet: walletPubkey }]);
+    expect(await depositUsepod({ ...input, nonce: challenge.nonce, signature }, sponsoredAdmission())).toMatchObject({
+      ok: true,
+      feePayer: 'clawville',
+    });
+  });
+  test('the per-avatar five-per-day cap still applies to sponsored deposits', async () => {
+    admissionFixture({}, 5);
+    expect(await depositUsepod(input, sponsoredAdmission())).toMatchObject({ code: 'deposit_daily_limit' });
+    expect(inserts).toEqual([]);
+  });
+  test('unsponsored admission takes no global lock and records fee payer null', async () => {
+    admissionFixture();
+    await depositUsepod(input, actualAdmission());
+    expect(queries.map((q) => new PgDialect().sqlToQuery(q).params).flat()).not.toContain('usepod:fee-payer:global');
+    expect((inserts[0] as { feePayer: string | null }).feePayer).toBeNull();
+  });
+});
+
+describe('fee payer chosen vs fee charged (Codex re-review)', () => {
+  const { feeChargedFor } = service;
+  test('send timeout: ambiguous, the fee is charged only if it lands (null)', async () => {
+    const r = await depositUsepod(input, deps({ ...feeDeps({}), sign: async (_a, tx, t) => {
+      history.push('sign');
+      return signDepositTransaction(tx, t, Keypair.fromSecretKey(wallet.secretKey), Keypair.fromSecretKey(feeWallet.secretKey));
+    }, send: async () => { throw new Error('timeout'); }, proof: async () => null }));
+    expect(r).toMatchObject({ ok: true, status: 'ambiguous', feePayer: 'clawville', feeCharged: null });
+  });
+  test('finalized on-chain error: failed, the fee was charged', async () => {
+    const r = await depositUsepod(input, deps({ proof: async () => ({ ...proof(), err: { InstructionError: 1 } }) }));
+    expect(r).toMatchObject({ ok: true, status: 'failed', feePayer: 'avatar', feeCharged: true });
+  });
+  test('finalized with mismatched evidence: ambiguous, but it landed, so the fee was charged', async () => {
+    const r = await depositUsepod(input, deps({ proof: async () => ({ ...proof(), logs: [] }) }));
+    expect(r).toMatchObject({ ok: true, status: 'ambiguous', feeCharged: true });
+  });
+  test('not sent (simulation failed): a refusal with no fee fields', async () => {
+    const r = await depositUsepod(input, deps({ simulate: async () => false }));
+    expect(r).toEqual({ ok: false, code: 'simulation_failed', ledgerId: 'ledger' });
+  });
+  test('stored rows (replay): paid and on-chain failure charged; not sent and expired not charged; others unknown', () => {
+    expect(feeChargedFor('paid', null)).toBe(true);
+    expect(feeChargedFor('failed', 'onchain_error_finalized')).toBe(true);
+    expect(feeChargedFor('failed', 'not_sent_simulation_failed')).toBe(false);
+    expect(feeChargedFor('failed', 'not_sent_interrupted')).toBe(false);
+    expect(feeChargedFor('failed', 'expired_signature_unknown')).toBe(false);
+    expect(feeChargedFor('ambiguous', 'finalized_proof_missing')).toBeNull();
+    expect(feeChargedFor('ambiguous', FINALIZED_EVIDENCE_MISMATCH)).toBe(true);
+    expect(feeChargedFor('ambiguous', FEE_PAYER_MISMATCH)).toBeNull();
+    expect(feeChargedFor('pending', null)).toBeNull();
   });
 });

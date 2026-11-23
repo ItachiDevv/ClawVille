@@ -3,6 +3,11 @@
  * REAL MONEY path: every refusal must happen before the POST, the POST runs once (no retry), and only a reply
  * that proves "nothing sent" is 'rejected'. Fixtures are the raw ClawPump replies of Run 2 (2026-10-01,
  * withdraw-probe-2-out.txt and withdraw-probe-3-out.txt). No real request is made: fetch is a fake.
+ *
+ * 2026-11-19 (ClawPump v1): the wallet history and the transfer live on ClawPump's backend host, reached with a
+ * token from POST https://clawpump.tech/api/mcp/token. The history GET is VERIFIED there; the transfer POST is NOT
+ * VERIFIED, so the writer refuses it with `route_not_verified` before any request. The request and reply tests
+ * below pass the `_testVerifiedBackendPosts` test seam to keep the reviewed P5 contract covered.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { TRADE_MINTS } from '@clawville/shared';
@@ -24,6 +29,11 @@ const OFF_CURVE = 'CdoCkEofQMZgWUPvfoiVagAsw2woNpZy67pYazLE6Y4c';
 const USDC_SIG = '2PXo2yyYa2Bqw8M7SsdJusGcfgj7xLQmVZZ1x3EDx2eHFvFMN5HizScJkkCJu3LjMXWY1MBsxRfscFn9pntwRFUz';
 const SOL_SIG = '45fqnTLZCCaK1rqqm5t4p5Va9KwLzEpW34h3DKUMCwdRGpgzteFK8g8WwooG4vEjiCnQW1swV3qA5CXy8kDJZJX3';
 const CODE_RE = /^[a-z0-9_.:-]{1,64}$/;
+const BACKEND = 'https://clawpump-ai-agents.clawpump-fee-collect-cloudflare.workers.dev';
+const TOKEN = 'eyJ.test-backend-token.not-real';
+/** The key exchange reply (POST /api/mcp/token, 2026-11-19 shape, token redacted). */
+const TOKEN_REPLY = { access_token: TOKEN, api_url: BACKEND, user_id: 'user-not-real', expires_in: 3600, tier: 'enterprise' };
+const VERIFIED: W.ClawPumpWriterOptions = { _testVerifiedBackendPosts: new Set(['transfer']) };
 
 /** withdraw-probe-2-out.txt, P3: POST /wallets/{LandTest1}/transfer 0.01 USDC -> 200. */
 const USDC_SENT_REPLY = {
@@ -68,17 +78,28 @@ interface Call {
 }
 type Handler = (call: Call) => Response | Promise<Response>;
 
-/** The path after the ClawPump /api/v1 base; a URL without the base path gets a marker that routes to 404. */
+/**
+ * The v1 path after /api/v1, `be:<path>` on the backend host, `TOKEN` for the key exchange; anything else gets a
+ * marker that routes to 404.
+ */
 function apiPath(url: URL): string {
+  if (url.origin === 'https://clawpump.tech' && url.pathname === '/api/mcp/token') return 'TOKEN';
+  if (url.origin === BACKEND) return `be:${url.pathname}`;
   if (url.origin !== 'https://clawpump.tech' || !url.pathname.startsWith('/api/v1/')) return `MISSING_BASE:${url.href}`;
   return url.pathname.slice('/api/v1'.length);
 }
 
+/** `calls` holds every request except the key exchange, which goes to `tokenCalls` (answered by default). */
 function fakeFetch(routes: Record<string, Handler>) {
   const calls: Call[] = [];
+  const tokenCalls: Array<{ method: string; auth: string | null }> = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const headers = new Headers(init?.headers);
+    if (apiPath(url) === 'TOKEN') {
+      tokenCalls.push({ method: init?.method ?? 'GET', auth: headers.get('authorization') });
+      return routes['POST TOKEN'] ? routes['POST TOKEN']({} as Call) : json(TOKEN_REPLY);
+    }
     const call: Call = {
       method: init?.method ?? 'GET',
       path: `${apiPath(url)}${url.search}`,
@@ -93,18 +114,18 @@ function fakeFetch(routes: Record<string, Handler>) {
     if (!handler) return new Response('{"error":"Not Found"}', { status: 404 });
     return handler(call);
   }) as typeof fetch;
-  return { fetchImpl, calls, posts: () => calls.filter((call) => call.method === 'POST') };
+  return { fetchImpl, calls, tokenCalls, posts: () => calls.filter((call) => call.method === 'POST') };
 }
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const agentBody = (extra: Record<string, unknown> = {}) => ({
-  id: ARENA_ID, name: NAME, status: 'stopped', wallet_address: SOURCE, enabled_skills: [], ...extra,
+  id: ARENA_ID, name: NAME, status: 'stopped', walletAddress: SOURCE, skills: [], isPublic: false, ...extra,
 });
 const transferRoutes = (reply: Handler, agent: Record<string, unknown> = {}) => fakeFetch({
   [`GET /agents/${ARENA_ID}`]: () => json(agentBody(agent)),
-  [`POST /wallets/${ARENA_ID}/transfer`]: reply,
+  [`POST be:/wallets/${ARENA_ID}/transfer`]: reply,
 });
-const historyRoutes = (reply: Handler) => fakeFetch({ [`GET /wallets/${ARENA_ID}/history`]: reply });
+const historyRoutes = (reply: Handler) => fakeFetch({ [`GET be:/wallets/${ARENA_ID}/history`]: reply });
 
 const usdcInput: W.ArenaTransferInput = { to: DEST, asset: 'USDC', amountAtomic: 10_000n, expectedSource: SOURCE };
 const solInput: W.ArenaTransferInput = { to: DEST, asset: 'SOL', amountAtomic: 2_000_000n, expectedSource: SOURCE };
@@ -114,13 +135,14 @@ const send = (
   fake: { fetchImpl: typeof fetch },
   ownership: W.ClawPumpWriterOwnership = OWNED,
   extra: W.ClawPumpWriterOptions = {},
-) => W.transferFromArenaWallet(ARENA_ID, input, ownership, { env, fetchImpl: fake.fetchImpl, ...extra });
+) => W.transferFromArenaWallet(ARENA_ID, input, ownership, { env, fetchImpl: fake.fetchImpl, ...VERIFIED, ...extra });
 
 const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const;
 let consoleSpies: Array<{ mock: { calls: unknown[][] }; mockRestore: () => void }> = [];
 
 beforeEach(() => {
   W._resetClawPumpWriterRateForTest();
+  W._resetClawPumpBackendSessionForTest();
   consoleSpies = CONSOLE_METHODS.map((method) => spyOn(console, method));
 });
 
@@ -180,7 +202,7 @@ describe('transferFromArenaWallet: every refusal is thrown before the POST', () 
   test('the agent wallet is not the expected source: wallet_mismatch, no POST', async () => {
     for (const walletAddress of [OTHER_WALLET, null, undefined]) {
       W._resetClawPumpWriterRateForTest();
-      const fake = transferRoutes(() => json(USDC_SENT_REPLY), { wallet_address: walletAddress });
+      const fake = transferRoutes(() => json(USDC_SENT_REPLY), { walletAddress });
       const error = await send(usdcInput, fake).catch((thrown: unknown) => thrown);
       expect(error).toBeInstanceOf(W.ClawPumpWriterError);
       expect(error).toMatchObject({ code: 'wallet_mismatch' });
@@ -238,7 +260,7 @@ describe('transferFromArenaWallet: every refusal is thrown before the POST', () 
 
   test('no key: not_configured before any request', async () => {
     const fake = transferRoutes(() => json(USDC_SENT_REPLY));
-    await expect(W.transferFromArenaWallet(ARENA_ID, usdcInput, OWNED, { env: { CLAWVILLE_ENV: 'production' }, fetchImpl: fake.fetchImpl }))
+    await expect(W.transferFromArenaWallet(ARENA_ID, usdcInput, OWNED, { env: { CLAWVILLE_ENV: 'production' }, fetchImpl: fake.fetchImpl, ...VERIFIED }))
       .rejects.toMatchObject({ code: 'not_configured' });
     expect(fake.calls).toHaveLength(0);
   });
@@ -252,16 +274,18 @@ describe('transferFromArenaWallet: one POST with the exact body', () => {
       const outcome = await send(usdcInput, fake);
       expect(outcome).toEqual({ kind: 'sent', txSignature: USDC_SIG, recipientAccountCreated: false });
       expect(fake.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
-        `GET /agents/${ARENA_ID}`, `POST /wallets/${ARENA_ID}/transfer`,
+        `GET /agents/${ARENA_ID}`, `POST be:/wallets/${ARENA_ID}/transfer`,
       ]);
       const post = fake.posts()[0]!;
       expect(post.body).toEqual({ to: DEST, amount: '0.01', token: TRADE_MINTS.USDC });
-      expect(post.auth).toBe(`Bearer ${KEY}`);
+      // The backend gets the exchanged token, never the cpk_ key; the key goes only to the exchange.
+      expect(post.auth).toBe(`Bearer ${TOKEN}`);
+      expect(fake.tokenCalls).toEqual([{ method: 'POST', auth: `Bearer ${KEY}` }]);
       expect(post.contentType).toBe('application/json');
       expect(post.redirect).toBe('error');
       expect(post.hasSignal).toBe(true);
-      // Guard GET at the default read timeout, the POST at CLAWPUMP_TRANSFER_TIMEOUT_MS.
-      expect(timeouts.mock.calls.map((args) => args[0])).toEqual([15_000, W.CLAWPUMP_TRANSFER_TIMEOUT_MS]);
+      // Guard GET and key exchange at the default read timeout, the POST at CLAWPUMP_TRANSFER_TIMEOUT_MS.
+      expect(timeouts.mock.calls.map((args) => args[0])).toEqual([15_000, 15_000, W.CLAWPUMP_TRANSFER_TIMEOUT_MS]);
       expect(W.CLAWPUMP_TRANSFER_TIMEOUT_MS).toBe(45_000);
     } finally {
       timeouts.mockRestore();
@@ -439,7 +463,7 @@ describe('transferFromArenaWallet: reply classification (contract §3)', () => {
   test('the withdraw path never calls the whitelist or the wallet summary', async () => {
     const fake = transferRoutes(() => json(USDC_SENT_REPLY));
     await send(usdcInput, fake);
-    expect(fake.calls.some((call) => call.path.startsWith('/whitelist') || call.path.startsWith('/wallets/summary'))).toBe(false);
+    expect(fake.calls.some((call) => call.path.includes('/whitelist') || call.path.includes('/wallets/summary'))).toBe(false);
   });
 });
 
@@ -458,8 +482,9 @@ describe('readArenaWalletLive: GET /wallets/{id}/history (live), never /wallets/
     expect(live.readAt).toBeInstanceOf(Date);
     // readAt is taken before the request (the add-on rule subtracts calls since readAt).
     expect(live.readAt.getTime()).toBeLessThanOrEqual(seenAt);
-    expect(fake.calls.map((call) => `${call.method} ${call.path}`)).toEqual([`GET /wallets/${ARENA_ID}/history?limit=50`]);
-    expect(fake.calls[0]!.auth).toBe(`Bearer ${KEY}`);
+    expect(fake.calls.map((call) => `${call.method} ${call.path}`)).toEqual([`GET be:/wallets/${ARENA_ID}/history?limit=50`]);
+    expect(fake.calls[0]!.auth).toBe(`Bearer ${TOKEN}`);
+    expect(fake.tokenCalls).toEqual([{ method: 'POST', auth: `Bearer ${KEY}` }]);
   });
 
   test('0.003985 SOL -> 3985000n and 0 USDC -> 0n; a missing status maps to null', async () => {
@@ -520,7 +545,7 @@ describe('readArenaWalletLive: GET /wallets/{id}/history (live), never /wallets/
   test('limit: passed through; 0, 201 or a fraction -> invalid_input before any request', async () => {
     const fake = historyRoutes(() => json(HISTORY_REPLY));
     await read(fake, OWNED, { limit: 3 });
-    expect(fake.calls.map((call) => call.path)).toEqual([`/wallets/${ARENA_ID}/history?limit=3`]);
+    expect(fake.calls.map((call) => call.path)).toEqual([`be:/wallets/${ARENA_ID}/history?limit=3`]);
     for (const limit of [0, 201, 1.5, Number.NaN]) {
       await expect(read(fake, OWNED, { limit })).rejects.toMatchObject({ code: 'invalid_input' });
     }
@@ -541,11 +566,78 @@ describe('readArenaWalletLive: GET /wallets/{id}/history (live), never /wallets/
 
   test('never calls /wallets/summary', async () => {
     const fake = fakeFetch({
-      [`GET /wallets/${ARENA_ID}/history`]: () => json(HISTORY_REPLY),
-      'GET /wallets/summary': () => json({ wallets: [] }),
+      [`GET be:/wallets/${ARENA_ID}/history`]: () => json(HISTORY_REPLY),
+      'GET be:/wallets/summary': () => json({ wallets: [] }),
     });
     await read(fake);
-    expect(fake.calls.some((call) => call.path.startsWith('/wallets/summary'))).toBe(false);
+    expect(fake.calls.some((call) => call.path.includes('/wallets/summary'))).toBe(false);
+  });
+});
+
+describe('2026-11-19: the transfer route is NOT VERIFIED on the current backend', () => {
+  test('without the test seam every transfer throws route_not_verified before any request (key exchange included)', async () => {
+    const fake = transferRoutes(() => json(USDC_SENT_REPLY));
+    for (const input of [usdcInput, solInput]) {
+      const error = await W.transferFromArenaWallet(ARENA_ID, input, OWNED, { env, fetchImpl: fake.fetchImpl }).catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(W.ClawPumpWriterError);
+      expect((error as Error).message).toBe('clawpump_route_not_verified');
+    }
+    // The production surface (no seam) refuses the same way.
+    await expect(W.clawPumpArenaWithdrawWriter.transfer(ARENA_ID, usdcInput, ROW_ID)).rejects.toMatchObject({ code: 'route_not_verified' });
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.tokenCalls).toHaveLength(0);
+    expect(W.CLAWPUMP_VERIFIED_BACKEND_POSTS.size).toBe(0);
+    // Static input checks still come first.
+    await expect(W.transferFromArenaWallet(ARENA_ID, { ...usdcInput, to: OFF_CURVE }, OWNED, { env, fetchImpl: fake.fetchImpl }))
+      .rejects.toMatchObject({ code: 'invalid_input' });
+  });
+
+  test('the backend token is exchanged once and reused; a backend 401 drops it so the next call exchanges again', async () => {
+    let status = 200;
+    const fake = historyRoutes(() => (status === 200 ? json(HISTORY_REPLY) : json({ error: 'expired' }, status)));
+    await W.readArenaWalletLive(ARENA_ID, OWNED, { env, fetchImpl: fake.fetchImpl });
+    await W.readArenaWalletLive(ARENA_ID, OWNED, { env, fetchImpl: fake.fetchImpl });
+    expect(fake.tokenCalls).toHaveLength(1);
+    status = 401;
+    await expect(W.readArenaWalletLive(ARENA_ID, OWNED, { env, fetchImpl: fake.fetchImpl })).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
+    status = 200;
+    W._resetClawPumpWriterRateForTest();
+    await W.readArenaWalletLive(ARENA_ID, OWNED, { env, fetchImpl: fake.fetchImpl });
+    expect(fake.tokenCalls).toHaveLength(2);
+  });
+
+  test('an api_url other than the one allowed backend fails closed: backend_not_allowed, the token is never sent', async () => {
+    for (const apiUrl of [
+      'https://evil.example', 'http://clawpump-ai-agents.clawpump-fee-collect-cloudflare.workers.dev',
+      `${BACKEND}:8443`, `${BACKEND}/api`, 'https://ai-agents-production-6ca0.up.railway.app', 'not a url',
+    ]) {
+      W._resetClawPumpBackendSessionForTest();
+      W._resetClawPumpWriterRateForTest();
+      const fake = fakeFetch({
+        'POST TOKEN': () => json({ ...TOKEN_REPLY, api_url: apiUrl }),
+        [`GET be:/wallets/${ARENA_ID}/history`]: () => json(HISTORY_REPLY),
+      });
+      await expect(W.readArenaWalletLive(ARENA_ID, OWNED, { env, fetchImpl: fake.fetchImpl })).rejects.toMatchObject({ code: 'backend_not_allowed' });
+      expect(fake.calls).toHaveLength(0);
+    }
+    expect(W.isAllowedBackendApiUrl(BACKEND)).toBe(true);
+    expect(W.isAllowedBackendApiUrl(`${BACKEND}/`)).toBe(true);
+  });
+
+  test('a failed or malformed key exchange throws before the backend call', async () => {
+    const cases: Array<[Handler, string]> = [
+      [() => json({ error: 'bad key' }, 401), 'unauthorized'],
+      [() => json({ api_url: BACKEND, expires_in: 3600 }), 'schema_invalid'],
+      [() => new Response('<html>', { status: 200 }), 'schema_invalid'],
+      [() => { throw new TypeError('fetch failed'); }, 'network_error'],
+    ];
+    for (const [reply, code] of cases) {
+      W._resetClawPumpBackendSessionForTest();
+      W._resetClawPumpWriterRateForTest();
+      const fake = fakeFetch({ 'POST TOKEN': reply, [`GET be:/wallets/${ARENA_ID}/history`]: () => json(HISTORY_REPLY) });
+      await expect(W.readArenaWalletLive(ARENA_ID, OWNED, { env, fetchImpl: fake.fetchImpl })).rejects.toMatchObject({ code });
+      expect(fake.calls).toHaveLength(0);
+    }
   });
 });
 
@@ -597,7 +689,7 @@ describe('formatAtomicAmount and parseUiAmountToAtomic', () => {
 describe('writer surface', () => {
   test('clawPumpArenaWithdrawWriter has exactly readWalletLive and transfer; ClawPumpArenaWriter is not extended', () => {
     expect(Object.keys(W.clawPumpArenaWithdrawWriter).sort()).toEqual(['readWalletLive', 'transfer']);
-    expect(Object.keys(W.clawPumpArenaWriter).sort()).toEqual(['createAgent', 'getWalletBalances', 'readAgent', 'updateAgent', 'x402Pay']);
+    expect(Object.keys(W.clawPumpArenaWriter).sort()).toEqual(['createAgent', 'getWalletBalances', 'readAgent', 'readListing', 'updateAgent', 'x402Pay']);
   });
 
   test('no console call across a full send, a refusal, an unknown outcome, a throw and a read', async () => {

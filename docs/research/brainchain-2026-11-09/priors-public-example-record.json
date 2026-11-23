@@ -1,0 +1,62 @@
+{
+  "observedAt": "2026-11-09T16:01:26.578Z",
+  "endpoint": "https://mcp.priors.trade/mcp",
+  "scope": "Read-only public documented example identity462; not a worker eligibility proof or credit offer",
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Agent #462 \"atlas\" (owner 0xb240FbfADEdD77aB8300BEE42e4942CD18efB6Ca)\nBacked by: root #6234 \"seat-vault-v3\".\nLine 5.00 USDG: drawn 0.00 USDG, available 5.00 USDG.\nRecord: 565 loans repaid (0 qualified), 3483.90 USDG repaid in total, 4.137454 USDG in fees. Score 121/1000. Never defaulted.\nOn Priors since 2026-09-21T09:32:18Z.\nOwner since 2026-09-21T09:32:15Z, the wallet that registered it: it never changed hands, so its whole record is this owner's.\nPaid by customers, 30 days: none yet.\nOpen loans: none.\n(Priors snapshot as of 2026-11-09T15:59:54Z.)"
+        }
+      ],
+      "structuredContent": {
+        "agentId": 462,
+        "name": "atlas",
+        "owner": "0xb240FbfADEdD77aB8300BEE42e4942CD18efB6Ca",
+        "isRoot": false,
+        "backer": {
+          "agentId": 6234,
+          "name": "seat-vault-v3"
+        },
+        "premiumBps": 0,
+        "line": "5.00",
+        "available": "5.00",
+        "drawn": "0.00",
+        "collateral": null,
+        "loansRepaid": 565,
+        "qualifiedRepaid": 0,
+        "volumeRepaid": "3483.90",
+        "feesPaid": "4.137454",
+        "score": 121,
+        "defaulted": false,
+        "frozen": false,
+        "enrolledAt": "2026-09-21T09:32:18Z",
+        "openLoans": [],
+        "x": null,
+        "asOf": "2026-11-09T15:59:54Z",
+        "paidWork": {
+          "days": 30,
+          "usdg": "0.00",
+          "customers": 0
+        },
+        "owners": {
+          "since": "2026-09-21T09:32:15Z",
+          "changes": 0,
+          "registeredAt": "2026-09-21T09:32:15Z",
+          "loansRepaidByOwner": 565,
+          "owners": [
+            {
+              "owner": "0xb240fbfadedd77ab8300bee42e4942cd18efb6ca",
+              "from": "2026-09-21T09:32:15Z",
+              "to": null,
+              "kind": "registered"
+            }
+          ]
+        }
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 2
+  }
+}

@@ -1,4 +1,4 @@
-import { FLOOR_ARENA_WITHDRAW_LIMITS, TRADE_MINTS, type FloorArenaWithdrawState } from '@clawville/shared';
+import { FLOOR_ARENA_WALLET_PAUSED, FLOOR_ARENA_WITHDRAW_LIMITS, TRADE_MINTS, type FloorArenaWithdrawState } from '@clawville/shared';
 import type { PublicKey, VersionedTransactionResponse } from '@solana/web3.js';
 import { alertError, type AlertErrorParams } from '../alert-error';
 import {
@@ -206,7 +206,10 @@ async function readFinalizedTransaction(signature: string): Promise<ArenaWithdra
 }
 
 export const defaultArenaWithdrawDeps: ArenaWithdrawDeps = {
-  paused: () => entriesPaused(),
+  // The operator pause OR the arena wallet pause (FLOOR_ARENA_WALLET_PAUSED): no admission, no dispatch.
+  // A row requested before the pause waits (its owner can cancel it); the writer's route_not_verified stays
+  // the second guard.
+  paused: () => entriesPaused() || FLOOR_ARENA_WALLET_PAUSED,
   clock: () => new Date(),
   // Same formula as addons.ts: the writer refuses a normal call when tokens - 1 < reserve.
   budgetOk: (calls) => clawPumpWriterBudget().tokens - calls >= CLAWPUMP_WRITER_REMOVAL_RESERVE,

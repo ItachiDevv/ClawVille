@@ -1,0 +1,55 @@
+{
+    "packages":  [
+                     {
+                         "dist":  {
+                                      "shasum":  "de3dfc7f579499d63d558f43ce58533579339910",
+                                      "tarball":  "https://registry.npmjs.org/brainchain-worker/-/brainchain-worker-0.19.2.tgz",
+                                      "fileCount":  24,
+                                      "integrity":  "sha512-LkGBb9eiPZKJ2/TagzdvMqcQzWZv13DUX9AI7fvfTZds5DuplpZ33EsKMww+QESSl0LelMTekuZhdTXLdh82Wg==",
+                                      "signatures":  [
+                                                         {
+                                                             "sig":  "MEMCIHt7UicX3ruYZsTeJ/hwiXAkhHyqNR2dPzXsJyErht8SAh9B6JpgeZjbr40HZ3rG3YcHT+iU3NM5OqPmWHf0o+Ma",
+                                                             "keyid":  "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+                                                         },
+                                                         {
+                                                             "keyid":  "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+                                                             "sig":  "MEUCIADA5ET8IGhB4Uy13SIFmPEswkGpK6ZQ1vxXBiBCYErUAiEA9pgotik8AXkZHqzRSCtSxwE3emU7LNPTb66GIXPOxkc="
+                                                         }
+                                                     ],
+                                      "unpackedSize":  353966
+                                  },
+                         "name":  "brainchain-worker",
+                         "version":  "0.19.2",
+                         "repository":  {
+                                            "url":  "git+https://github.com/usebrainchain/brainchain-worker.git",
+                                            "type":  "git"
+                                        }
+                     },
+                     {
+                         "dist":  {
+                                      "shasum":  "4ff5ce802eabcba6ce94c56660fac8d1c2689b1a",
+                                      "tarball":  "https://registry.npmjs.org/brainchain-mcp/-/brainchain-mcp-0.9.1.tgz",
+                                      "fileCount":  13,
+                                      "integrity":  "sha512-Gij7EROktg6cmEOSRNgVUMxMAWW2rTNiq5PB+qwHUH/FWHTNkW1layyZVdeH2N7lq3C8+S4WYURvP8Jzl5DUBg==",
+                                      "signatures":  [
+                                                         {
+                                                             "sig":  "MEQCIEt4XjYE5O2PEQCEQ/B8mDvoONgzkj23pjbbAaxikWnRAiAnpG/Nx8mBMjgrr2SyqVxFzJuagOENzOk2jPIs6YOpFA==",
+                                                             "keyid":  "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+                                                         },
+                                                         {
+                                                             "keyid":  "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+                                                             "sig":  "MEUCIHEYhwUd3Nuv3TSqGXR07M2x3xNT9pn4AvNY26o0l44pAiEAnFT7IZvu2dJaK4Lposs6oPlrnJyB9l1URPReYL1n/98="
+                                                         }
+                                                     ],
+                                      "unpackedSize":  146472
+                                  },
+                         "name":  "brainchain-mcp",
+                         "version":  "0.9.1",
+                         "repository":  {
+                                            "url":  "git+https://github.com/usebrainchain/brainchain-mcp.git",
+                                            "type":  "git"
+                                        }
+                     }
+                 ],
+    "checkedAtUtc":  "2026-11-09T12:46:04.3407694Z"
+}

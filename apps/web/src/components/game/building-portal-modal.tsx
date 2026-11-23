@@ -3,11 +3,9 @@
 /**
  * BuildingPortalModal — the "Learn or Play?" decision modal.
  *
- * Shown when the player clicks a building that hosts at least one `live`
- * activity in `ACTIVITY_REGISTRY` (at Q2 launch: Salty Spitoon / Bumper
- * Shells, Boating School / Reef Race). Buildings without a live activity
- * skip this modal entirely — `enterBuilding()` falls through to the chat
- * path unchanged. See `apps/web/src/stores/game.ts#enterBuilding`.
+ * Shown for buildings with a live activity and for the BrainChain Office.
+ * The Boating School offers Bumper Shells and Reef Race. The Office offers
+ * its Office entry and Cortex chat cards even with no activity.
  *
  * Layout (per frontend-spec §1.4):
  *
@@ -22,6 +20,10 @@
  * The Learn card calls the existing chat-open action (currentLocation +
  * chatOpen + movementFrozen). The Play card opens the ActivityLobbyModal
  * for that activity. Coming-soon activities render greyed + disabled.
+ *
+ * Ring slot 4 (`api-integrations`, the BrainChain Office since 2026-11-10) leads
+ * with an "Enter BrainChain Office" card (openBrainchainOffice → the
+ * `/brainchain` panel); its Learn card stays available without a Play card.
  *
  * Spec: `.claude/plans/q2-research/frontend-spec.md` §1.4.
  */
@@ -41,6 +43,10 @@ import {
 } from '@/components/rpg';
 import { useGameStore } from '@/stores/game';
 import ActivityThumbnail from '@/components/game/activity/ActivityThumbnail';
+import {
+  BRAINCHAIN_OFFICE_BUILDING_ID,
+  openBrainchainOffice,
+} from '@/lib/three/brainchain-office-transition';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -331,6 +337,56 @@ function LearnCard({
   );
 }
 
+// ─── BrainChain Office card (api-integrations only) ───────────────────────────────────
+
+function BrainchainOfficeCard({ onEnter }: { onEnter: () => void }) {
+  return (
+    <RuneFrame
+      tier="rare"
+      glow="subtle"
+      style={{
+        flex: '1 1 0',
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        padding: 16,
+        gap: 12,
+      }}
+    >
+      <div
+        style={{
+          color: '#7dd3c0',
+          fontSize: 11,
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: '0.14em',
+        }}
+      >
+        🧠 BrainChain
+      </div>
+      <div style={{ color: '#e2f2fc', fontSize: 15, fontWeight: 700 }}>
+        BrainChain Office
+      </div>
+      <div
+        style={{
+          color: 'rgba(226, 242, 252, 0.85)',
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}
+      >
+        Open the BrainChain Office panel for your account and workers.
+      </div>
+
+      <div style={{ flex: 1 }} />
+
+      {/* size lg + minHeight: tap target >= 44px on touch devices. */}
+      <RpgButton variant="primary" size="lg" style={{ minHeight: 44 }} onClick={onEnter}>
+        Enter BrainChain Office
+      </RpgButton>
+    </RuneFrame>
+  );
+}
+
 // ─── Modal shell ────────────────────────────────────────────────────────────
 
 export default function BuildingPortalModal() {
@@ -392,6 +448,14 @@ export default function BuildingPortalModal() {
     openActivityLobby(activityId);
   };
 
+  const isBrainchainOffice = currentPortalBuildingId === BRAINCHAIN_OFFICE_BUILDING_ID;
+  const handleEnterOffice = () => {
+    // The helper sees this open portal as "at the Office", navigates to
+    // /brainchain and closes the portal itself. If the stage refuses the
+    // navigation it returns false and the portal stays open (no dead state).
+    openBrainchainOffice();
+  };
+
   return (
     <RpgModal
       open
@@ -410,6 +474,7 @@ export default function BuildingPortalModal() {
           gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
         }}
       >
+        {isBrainchainOffice && <BrainchainOfficeCard onEnter={handleEnterOffice} />}
         <LearnCard
           characterName={characterName}
           buildingLabel={buildingLabel}

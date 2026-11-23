@@ -1,3 +1,4 @@
+import { assertProbeHttpOperation, probeMarkerChecksEnabled } from '../services/brainchain/probe-runtime-scope';
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { z } from 'zod';
@@ -2656,9 +2657,12 @@ agentGatewayRoutes.post('/join', async (c) => {
 // `session_expires_at > now`, NULL = expired, unregister stale body), so the TTL
 // can never drift between the two. Async because the liveness check hits the DB;
 // every caller awaits.
-async function resolveSession(sessionId: string) {
+async function resolveSession(sessionId: string, request:Request, readBody:()=>Promise<unknown>) {
   const live = await validateLiveAgentSession(sessionId);
   if (!live) return null;
+  // The probe-subject read happens only where probe markers can exist (staging).
+  const probeSubject=probeMarkerChecksEnabled()?await resolveAgentSession(sessionId):null;
+  if(probeSubject)await assertProbeHttpOperation({userId:probeSubject.userId,avatarId:probeSubject.avatarId,platformAgentId:probeSubject.agentId},request,readBody);
   const npcId = npcSimulation.getNpcIdForSession(sessionId);
   if (!npcId) return null;
   const npc = npcSimulation.getNpcById(npcId);
@@ -2711,7 +2715,7 @@ const SSE_REPLAY_MAX_PAGES = 20;
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/perception', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const perception = npcSimulation.buildPerception(resolved.npcId);
@@ -2741,7 +2745,7 @@ export const agentMoveSchemaForTest = moveSchema;
 
 agentGatewayRoutes.post(AGENT_MOVE_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
   if (controlConflict) return controlConflict;
@@ -2790,7 +2794,7 @@ const chatSchema = z.object({
 
 agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
   if (controlConflict) return controlConflict;
@@ -2976,7 +2980,7 @@ const visitSchema = z.object({
 
 agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
   if (controlConflict) return controlConflict;
@@ -3176,7 +3180,7 @@ const buildingChatSchema = z.object({
 agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
   if (controlConflict) return controlConflict;
@@ -3423,7 +3427,7 @@ const combatActionSchema = z.object({
 
 agentGatewayRoutes.post(AGENT_COMBAT_ACTION_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
   if (controlConflict) return controlConflict;
@@ -3451,7 +3455,7 @@ const emoteSchema = z.object({
 
 agentGatewayRoutes.post(AGENT_EMOTE_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
   if (controlConflict) return controlConflict;
@@ -3499,7 +3503,7 @@ agentGatewayRoutes.get('/:sessionId/knowledge', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const { npcId, npc } = resolved;
@@ -3549,7 +3553,7 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/pending-installs', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
   const events = drainKnowledgeEvents(sessionId);
   return c.json({ events, drainedAt: new Date().toISOString() });
@@ -3616,7 +3620,7 @@ agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
   }
 
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   // Protocol 83 owner-proof gate, BEFORE any history read. The scope's agentId
@@ -3650,7 +3654,7 @@ agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/tools.json', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   return new Response(JSON.stringify(CLAWVILLE_GAME_TOOLS, null, 2), {
@@ -3676,7 +3680,7 @@ agentGatewayRoutes.get('/:sessionId/tools.json', async (c) => {
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
@@ -3742,7 +3746,7 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) =>
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
 
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
@@ -3877,7 +3881,7 @@ agentGatewayRoutes.post('/:sessionId/skills/:buildingId/tools/:toolName', async 
   const buildingId = c.req.param('buildingId');
   const toolName = c.req.param('toolName');
 
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
@@ -3959,7 +3963,7 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
 
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
@@ -4062,7 +4066,7 @@ const sseCatchupRateLimiter = createRateLimiter({ maxPerWindow: 30, windowMs: 60
 
 agentGatewayRoutes.get('/:sessionId/events', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   const { npcId } = resolved;
@@ -4144,7 +4148,7 @@ agentGatewayRoutes.get('/:sessionId/events', async (c) => {
       if (clientGone()) break;
 
       // Re-validate session each tick — break if expired
-      const current = await resolveSession(sessionId);
+      const current = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
       if (!current) break;
 
       const npc = npcSimulation.getNpcById(npcId);
@@ -5117,7 +5121,7 @@ const COVE_BJ_TOOL_ROUTES: Record<
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/cove/blackjack/tools.json', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   return new Response(JSON.stringify(COVE_BLACKJACK_TOOLS, null, 2), {
@@ -5460,7 +5464,7 @@ const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 // ---------------------------------------------------------------------------
 agentGatewayRoutes.get('/:sessionId/cove/poker/tools.json', async (c) => {
   const sessionId = c.req.param('sessionId');
-  const resolved = await resolveSession(sessionId);
+  const resolved = await resolveSession(sessionId,c.req.raw,()=>c.req.json());
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
 
   return new Response(JSON.stringify(COVE_POKER_TOOLS, null, 2), {

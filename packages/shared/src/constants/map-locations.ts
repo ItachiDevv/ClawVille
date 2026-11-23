@@ -83,10 +83,14 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // Slot 4 — ESE (cx=465, cy=417) → zone(458,410) → posX=458*32=14656, posY=410*32=13120
+  // 2026-11-10 founder decision: the BrainChain Office REPLACES the Salty Spitoon
+  // here. The `id` stays `api-integrations` (books, skills, visit events,
+  // and skill folders key on it). Cortex teaches BrainChain task work AND
+  // the full APIs and Integrations lesson. The separate Office venue is removed.
   {
     id: 'api-integrations',
-    name: 'Salty Spitoon',
-    description: 'Master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
+    name: 'BrainChain Office',
+    description: 'Learn BrainChain external task work and testnet worker setup, and master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
     icon: '🌊',
     positionX: 14656,
     positionY: 13120,

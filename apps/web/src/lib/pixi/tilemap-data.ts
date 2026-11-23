@@ -85,7 +85,7 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 //   Slot  1 ( 30/NNE) -> code-development   (Chum Bucket)       cx=417,   cy~=239
 //   Slot  2 ( 60/ENE) -> mcp-tool-use       (Krusty Krab)       cx~=465,  cy=287
 //   Slot  3 ( 90/E)   -> messaging-channels (Sandy's Treedome)  cx=482,   cy=352
-//   Slot  4 (120/ESE) -> api-integrations   (Salty Spitoon)     cx~=465,  cy=417
+//   Slot  4 (120/ESE) -> api-integrations   (BrainChain Office) cx~=465,  cy=417
 //   Slot  5 (150/SSE) -> app-publishing     (Boating School)    cx=417,   cy~=465
 //   Slot  6 (180/S)   -> cron-automation    (Trading Floor)     cx=352,   cy=482
 //   Slot  7 (210/SSW) -> deployment-ops     (Lighthouse)        cx=287,   cy~=465

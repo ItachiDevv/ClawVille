@@ -21,6 +21,8 @@ mock.module('../../services/hydra-coin-chatter', () => ({
   HYDRA_NPC_ID: 'hydra-analyst',
   pickHydraCoin,
   hydraCoinPromptContext: (coin: Coin | null) => `CTX:${coin ? coin.symbol : 'none'}`,
+  // npc-simulation (reached through the shared agent-session middleware) imports this template.
+  hydraAmbientLine: () => 'ambient',
 }));
 
 const { transientChatRoutes } = await import('../chat-transient');

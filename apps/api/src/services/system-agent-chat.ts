@@ -133,8 +133,8 @@ export async function conductSystemAgentChat(input: {
     if (beforeMemory?.userId === subject.userId && beforeMemory.avatarId === subject.avatarId && beforeMemory.agentId === subject.agentId) {
       await recordEarnedSkillLesson({
         platformAgentId: rewardAvatar.platformAgentId ?? '', avatarId: rewardAvatar.id,
-        agentId: subject.agentId!, buildingId: input.slug, teacherName: 'Nori',
-        lesson: `Nori told me: ${content}`,
+        agentId: subject.agentId!, buildingId: input.slug, teacherName: agent.platformAgent.name,
+        lesson: `${agent.platformAgent.name} told me: ${content}`,
       });
     }
   }

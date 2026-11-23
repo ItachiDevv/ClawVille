@@ -32,7 +32,6 @@ export class ClawPumpAgentMismatchError extends ClawPumpClientError {
 
 export interface ClawPumpAgent {
   id: string;
-  userId: string | null;
   name: string | null;
   status: string | null;
   walletAddress: string | null;
@@ -49,12 +48,15 @@ export interface ClawPumpClientOptions {
 }
 
 // Vendor wire: type and bound only the fields ClawVille reads; pass the rest through.
+// The v1 gateway answers in camelCase (`walletAddress`) and sends no owner id
+// (GET /api/v1/agents reply keys, 2026-11-18: avatarUrl, createdAt, id, isPublic,
+// model, name, persona, skills, status, updatedAt, walletAddress). The old
+// snake_case `wallet_address` / `user_id` came from the retired backend host.
 const agentWire = z.object({
   id: z.string().min(1).max(128),
-  user_id: z.string().min(1).max(128).nullish(),
   name: z.string().max(200).nullish(),
   status: z.string().max(40).nullish(),
-  wallet_address: z.string().max(64).nullish(),
+  walletAddress: z.string().max(64).nullish(),
 }).passthrough();
 const listWire = z.union([
   z.array(agentWire).max(MAX_AGENTS),
@@ -167,10 +169,9 @@ export async function getClawPumpJson(path: string, options: ClawPumpClientOptio
 function toAgent(wire: z.infer<typeof agentWire>): ClawPumpAgent {
   return {
     id: wire.id,
-    userId: wire.user_id ?? null,
     name: wire.name ?? null,
     status: wire.status ?? null,
-    walletAddress: wire.wallet_address?.trim() || null,
+    walletAddress: wire.walletAddress?.trim() || null,
   };
 }
 

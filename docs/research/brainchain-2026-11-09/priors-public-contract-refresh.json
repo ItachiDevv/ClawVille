@@ -1,0 +1,8 @@
+{
+    "observedAt":  "2026-11-09T19:17:08.6464639Z",
+    "source":  "https://api.github.com/repos/priors-agents/priors/git/trees/main?recursive=1",
+    "commit":  "48fccb75f8c0423823953f7214fcc04047d1fc0b",
+    "truncated":  false,
+    "finding":  "Current public tree matches the previously reviewed commit. No new hosted preparation output contract was found.",
+    "scope":  "Public tree and web search only. No request_borrow, request_repay, debt, signature or provider call."
+}

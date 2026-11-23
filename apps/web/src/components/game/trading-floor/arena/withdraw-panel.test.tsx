@@ -5,7 +5,9 @@ import { Window } from 'happy-dom';
 import bs58 from 'bs58';
 import type { Root } from 'react-dom/client';
 
+import { FLOOR_ARENA_WALLET_PAUSED } from '@clawville/shared';
 import {
+  ARENA_WITHDRAW_PAUSED_COPY,
   arenaWithdrawErrorCopy,
   formatArenaAtomic,
   readWithdrawState,
@@ -208,13 +210,14 @@ async function type(element: Element, value: string): Promise<void> {
   await flush();
 }
 
-async function render(compact = false): Promise<HTMLElement> {
+/** `walletPaused` false by default: most tests cover the open panel; the pause tests pass true. */
+async function render(compact = false, walletPaused = false): Promise<HTMLElement> {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
   await act(async () => {
-    root?.render(createElement(QueryClientProvider, { client: client! }, createElement(ArenaWithdrawPanel, { compact })));
+    root?.render(createElement(QueryClientProvider, { client: client! }, createElement(ArenaWithdrawPanel, { compact, walletPaused })));
   });
   await flush();
   return container;
@@ -400,15 +403,41 @@ describe('Arena withdraw panel (P5 T6)', () => {
     }
   });
 
-  test('a row refused with needs_sol shows its copy', async () => {
+  test('a row refused with needs_sol never asks for SOL while the arena wallet is paused', async () => {
     state = baseState({
       address: addressView('active'),
       withdrawals: [withdrawal({ state: 'refused', errorCode: 'needs_sol' })],
     });
     const host = await render();
-    expect(host.textContent).toContain(
-      'Not sent: The wallet needs more SOL for the network fee. Send at least 0.01 SOL to it, then try again.',
-    );
+    expect(FLOOR_ARENA_WALLET_PAUSED).toBe(true);
+    expect(host.textContent).toContain('Not sent: The wallet did not hold enough SOL for the network fee.');
+    expect(host.textContent!.toLowerCase()).not.toMatch(/send (at least )?[\d.]* ?sol/);
+  });
+
+  test('paused: the pause note replaces the address step and the form; history and Cancel stay; no deposit invitation', async () => {
+    state = baseState({
+      address: addressView('active'),
+      withdrawals: [withdrawal({ state: 'requested' })],
+    });
+    const host = await render(false, true);
+    expect(host.querySelector('[data-testid="arena-withdraw-paused"]')?.textContent).toBe(ARENA_WITHDRAW_PAUSED_COPY);
+    expect(host.querySelector('[data-testid="arena-withdraw-form"]')).toBeNull();
+    expect(host.querySelector('[data-testid="arena-withdraw-submit"]')).toBeNull();
+    expect(hasButton(host, 'Cancel request')).toBe(true);
+    const text = host.textContent!.toLowerCase();
+    expect(text).not.toContain('you can withdraw');
+    expect(text).not.toMatch(/send (at least )?[\d.]* ?(sol|usdc) to/);
+    expect(text).not.toContain('keep at least');
+  });
+
+  test('paused by the server flag alone also hides the form (the API and the web share FLOOR_ARENA_WALLET_PAUSED)', async () => {
+    state = { ...baseState({ address: addressView('active') }), paused: true, pauseNote: 'x' };
+    const host = await render(false, false);
+    expect(host.querySelector('[data-testid="arena-withdraw-paused"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="arena-withdraw-form"]')).toBeNull();
+    expect(readWithdrawState({ paused: true }).paused).toBe(true);
+    expect(readWithdrawState({}).paused).toBe(false);
+    expect(arenaWithdrawErrorCopy(new ApiError('paused', 409, 'withdraw_paused'))).toBe(ARENA_WITHDRAW_PAUSED_COPY);
   });
 
   test('Cancel request shows only on a requested row, and it cancels that row', async () => {

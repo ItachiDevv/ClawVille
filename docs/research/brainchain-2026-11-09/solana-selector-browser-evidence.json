@@ -1,0 +1,198 @@
+{
+  "host": "itachi222",
+  "buildLog": ".brainchain-work/web-build-party-solana.log",
+  "buildExitCode": 0,
+  "scope": "Synthetic intercepted private API; real local production browser; no wallet or server-auth proof",
+  "report": [
+    {
+      "width": 390,
+      "height": 844,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 390,
+      "viewportHeight": 844,
+      "selectWidth": 298,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 844,
+      "viewportHeight": 390,
+      "selectWidth": 720.5,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    },
+    {
+      "width": 744,
+      "height": 1133,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 744,
+      "viewportHeight": 1133,
+      "selectWidth": 628.5,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    },
+    {
+      "width": 1133,
+      "height": 744,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 1133,
+      "viewportHeight": 744,
+      "selectWidth": 568.1875,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    },
+    {
+      "width": 820,
+      "height": 1180,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 820,
+      "viewportHeight": 1180,
+      "selectWidth": 698.40625,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    },
+    {
+      "width": 1180,
+      "height": 820,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 1180,
+      "viewportHeight": 820,
+      "selectWidth": 589.8125,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    },
+    {
+      "width": 1024,
+      "height": 1366,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 1024,
+      "viewportHeight": 1366,
+      "selectWidth": 518.046875,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    },
+    {
+      "width": 1366,
+      "height": 1024,
+      "value": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "options": [
+        "Base Sepolia",
+        "Solana devnet"
+      ],
+      "viewportWidth": 1366,
+      "viewportHeight": 1024,
+      "selectWidth": 675.375,
+      "selectHeight": 44,
+      "overflow": false,
+      "devnetText": true,
+      "canvas": 1
+    }
+  ],
+  "errors": [],
+  "loadedScripts": [
+    "http://localhost:3000/_next/static/chunks/15fybx__tox5c.js",
+    "http://localhost:3000/_next/static/chunks/2v7w36bf69pl9.js",
+    "http://localhost:3000/_next/static/chunks/1y8s12aau7jx0.js",
+    "http://localhost:3000/_next/static/chunks/3qbj-fchfg01u.js",
+    "http://localhost:3000/_next/static/chunks/2818obikkhuv3.js",
+    "http://localhost:3000/_next/static/chunks/turbopack-1rn6xlay1v0cs.js",
+    "http://localhost:3000/_next/static/chunks/2pk_6d6wxj0pd.js",
+    "http://localhost:3000/_next/static/chunks/1sg35-es1y-xa.js",
+    "http://localhost:3000/_next/static/chunks/0n5_hnfbnmijw.js",
+    "http://localhost:3000/_next/static/chunks/0qilm65mjo6wu.js",
+    "http://localhost:3000/_next/static/chunks/3aru0cmvznjd-.js",
+    "http://localhost:3000/_next/static/chunks/3jdud7k685yga.js",
+    "http://localhost:3000/_next/static/chunks/1nvze2e5-7zxy.js",
+    "http://localhost:3000/_next/static/chunks/1_88hk7pp_37d.js",
+    "http://localhost:3000/_next/static/chunks/109tvvqoc6eh0.js",
+    "http://localhost:3000/_next/static/chunks/1ssbhvgh5gqrg.js",
+    "http://localhost:3000/_next/static/chunks/04h5zztd6of5f.js",
+    "http://localhost:3000/_next/static/chunks/435xt3d4aeff-.js",
+    "http://localhost:3000/_next/static/chunks/2n-0y45qz39bi.js",
+    "http://localhost:3000/_next/static/chunks/0x8d49-zexgpw.js",
+    "http://localhost:3000/_next/static/chunks/2o1bx5nvsbqwh.js",
+    "http://localhost:3000/_next/static/chunks/2ud39tzqoipcu.js",
+    "http://localhost:3000/_next/static/chunks/41_7rfghv5i93.js",
+    "http://localhost:3000/_next/static/chunks/2j58vke_3n51z.js",
+    "http://localhost:3000/_next/static/chunks/14sjeraq1d3vs.js",
+    "http://localhost:3000/_next/static/chunks/1t0eo4x_nzvps.js",
+    "http://localhost:3000/_next/static/chunks/3cbplncv40poh.js",
+    "http://localhost:3000/_next/static/chunks/0ixwlxvx0y14_.js",
+    "http://localhost:3000/_next/static/chunks/3x1o2vo0mc1di.js",
+    "http://localhost:3000/_next/static/chunks/2qy_6ke7g2zdd.js",
+    "http://localhost:3000/_next/static/chunks/3zl-4aybxtl_2.js",
+    "http://localhost:3000/_next/static/chunks/11wuo74k-orgc.js",
+    "http://localhost:3000/_next/static/chunks/1yd0kromemcf_.js",
+    "http://localhost:3000/_next/static/chunks/2oswgt9be9hvm.js",
+    "http://localhost:3000/_next/static/chunks/2jzrefqtl-77q.js",
+    "http://localhost:3000/_next/static/chunks/112oy0eknah78.js",
+    "http://localhost:3000/_next/static/chunks/30edh-gzfqe2s.js",
+    "http://localhost:3000/_next/static/chunks/173-hkhnb2dw-.js",
+    "http://localhost:3000/_next/static/chunks/2tt-5obpb576k.js",
+    "http://localhost:3000/_next/static/chunks/0a-wm5m2-_qb0.js",
+    "http://localhost:3000/_next/static/chunks/1tf5dmidt5pxr.js",
+    "http://localhost:3000/_next/static/chunks/2aqpzg6zdne9s.js",
+    "http://localhost:3000/_next/static/chunks/1exddyuhkl4bf.js"
+  ],
+  "bundle": {
+    "loadedChunkCount": 43,
+    "sdkMarkerChunks": [
+      {
+        "file": "0m63z8jhnwxeg.js",
+        "loadedBeforeSigning": false,
+        "markers": [
+          "Versioned messages must be deserialized with VersionedMessage.deserialize()",
+          "Transaction message version",
+          "Cannot sign with non signer key"
+        ],
+        "bytes": 216846
+      }
+    ],
+    "scope": "Observed Office and hire tab script responses across eight viewports before any wallet action; marker scan of same local build"
+  }
+}

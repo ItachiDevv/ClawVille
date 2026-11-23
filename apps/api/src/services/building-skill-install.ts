@@ -1,3 +1,5 @@
+import { resolveProbeRuntimeScope } from './brainchain/probe-runtime-scope';
+import { ProbeRuntimeBoundary } from '@clawville/agent-runtime';
 import { createHash } from "node:crypto";
 import {
   agentBots,
@@ -73,6 +75,7 @@ export interface BuildingSkillLockedStore {
 }
 
 export interface BuildingSkillInstallDependencies {
+  resolveProbeScope?: typeof resolveProbeRuntimeScope;
   loadSkill: (buildingId: string) => Promise<BuildingSkillSource | null>;
   resolvePlatformAgentId: (input: {
     userId: string;
@@ -160,6 +163,7 @@ export function mergeBuildingSkillMarker(
 }
 
 const defaultDependencies: BuildingSkillInstallDependencies = {
+  resolveProbeScope: resolveProbeRuntimeScope,
   async loadSkill(buildingId) {
     const row = await db.query.buildingSkills.findFirst({
       where: eq(buildingSkills.buildingId, buildingId),
@@ -374,6 +378,8 @@ export async function installBuildingSkillIntoAgent(
     buildingId: string;
     /** Exact live agent proven by the caller, when the subject is an agent. */
     provenAgentId?: string;
+    /** Require a database readback of every hosted section before reporting runtime installation. */
+    requireComplete?: boolean;
   },
   dependencies: BuildingSkillInstallDependencies = defaultDependencies,
 ): Promise<BuildingSkillInstallResult> {
@@ -393,6 +399,9 @@ export async function installBuildingSkillIntoAgent(
   }
 
   const platformAgentId = await dependencies.resolvePlatformAgentId(input);
+  const probeScope = platformAgentId ? await dependencies.resolveProbeScope?.(platformAgentId, input.userId) : undefined;
+  if (probeScope && input.buildingId !== 'brainchain-office') throw new Error('probe_operation_refused');
+  const probe = probeScope ? new ProbeRuntimeBoundary(probeScope) : undefined;
   if (!platformAgentId) {
     const marked = await dependencies.mergeConnectedMarkers({
       userId: input.userId,
@@ -520,7 +529,7 @@ export async function installBuildingSkillIntoAgent(
               if (installed.has(section)) continue;
               const text = chunks[section];
               try {
-                const embedding = await dependencies.embed(text);
+                const embedding = await (probe ? probe.embed(text, 'brainchain', `${skill.contentHash}:section:${section}`) : dependencies.embed(text));
                 await writer.createMemory(
                   {
                     id: buildingSkillMemoryId({
@@ -565,6 +574,14 @@ export async function installBuildingSkillIntoAgent(
             "runtime_unavailable",
             "Hosted agent runtime could not persist any building skill sections",
           );
+        }
+
+        if (input.requireComplete) {
+          const persisted = await store.installedSections({ platformAgentId,
+            buildingId: input.buildingId, contentHash: lockedSkill.contentHash });
+          if (!chunks.every((_, section) => persisted.has(section))) {
+            throw new BuildingSkillInstallError("runtime_unavailable", "Hosted skill section persistence is incomplete; retry missing sections");
+          }
         }
 
         if (confirmedSections.size === chunks.length) {

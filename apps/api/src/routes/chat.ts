@@ -1,3 +1,5 @@
+import { assertProbeOperationAllowed } from '../services/brainchain/probe-runtime-scope';
+import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql } from 'drizzle-orm';
@@ -56,6 +58,8 @@ chatRoutes.post('/system/:slug', async (c) => {
   // sessionMiddleware preserves cookie precedence and humans without avatars.
   const user = c.get('user');
   const sessionId = c.req.header(AGENT_SESSION_HEADER);
+  const probeSession = !user && sessionId ? await resolveAgentSession(sessionId) : null;
+  await assertProbeOperationAllowed({ userId: user?.id ?? probeSession?.userId, platformAgentId: probeSession?.agentId });
   if (!user && !sessionId) {
     throw new HTTPException(401, { message: 'Authentication required — Lucia cookie or X-Clawville-Agent-Session header' });
   }
@@ -79,6 +83,7 @@ chatRoutes.post('/system/:slug', async (c) => {
 
 chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   const user = c.get('user');
+  await assertProbeOperationAllowed({ userId: user?.id });
   const locationId = c.req.param('id');
   const body = await c.req.json();
   const result = chatSchema.safeParse(body);

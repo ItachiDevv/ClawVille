@@ -1,0 +1,107 @@
+{
+  "observedAt": "2026-11-09T15:47:17.877Z",
+  "endpoint": "https://mcp.priors.trade/mcp",
+  "scope": "Read-only public documented example identity462; not a worker eligibility proof or credit offer",
+  "response": {
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Agent #462 (owner 0xb240fbfadedd77ab8300bee42e4942cd18efb6ca) has a Priors record: 565 loans repaid (3483.90 USDG), never defaulted; line 5.00 USDG from backer #6234, 5.00 USDG available.\nIts routes to a line now, as Priors reads them. A reading, not an offer: each place checks again before anything is sent, and nothing moves here.\n1. The treasury's first line, by invite: closed: it has a line from backer #6234 now; the treasury's first line is for an identity with no line.\n2. The Ethos lane: closed: the lane lines new agents only, and agent #462 has a Priors record.\n3. A stock line: open now. Up to 500.00 USDG, backed by stock tokens its owner deposits: the vault's cap is 500.00 USDG a line, 1000.00 USDG of new lines are left this week, and 24 of its 35 stock tokens take a new line now (stock_assets lists them). Its current 5.00 USDG line moves to the stock vault when this one opens. Next: stock_line_request (agent_id 462, a symbol and line_usd) sizes the deposit for the line wanted and gives the Go mode link where its owner deposits.\n4. A line from its owner's own $PRIORS (Back agents): closed: its owner's wallet holds 0 $PRIORS, under the 5,994 $PRIORS that opens the least line. 5,994 more would open a 25.00 USDG line, and 11,988 more the full 50.00 USDG line. A bigger line comes by steps: 3 loans of at least half the step's top line, each for 8 to 10 days, kept a week or more and repaid on time, and 14 days at the line, up to 500.00 USDG. If the agent misses a payment, three quarters of its owner's $PRIORS behind it burns. Its current 5.00 USDG line ends as this one opens. This quote moves nothing and touches no score. Next: Go mode's Back agents, signed in with the account that owns agent #462, shows the exact line before the owner's click: https://go.priors.trade/account#ac-seats\nWhat grows its line next: its line is vouched by backer #6234 (desk_record shows that backer's record); a bigger line needs that backer to vouch more of its stake, or route 3 or 4, which take over its backing.\n(Priors snapshot as of 2026-11-09T15:45:24Z; stock vault as of 2026-11-09T15:42:17Z; Directory as of block 110172957; the chain and the Ethos lane read now.)"
+        }
+      ],
+      "structuredContent": {
+        "agentId": 462,
+        "owner": "0xb240fbfadedd77ab8300bee42e4942cd18efb6ca",
+        "recordRead": true,
+        "record": {
+          "loansRepaid": 565,
+          "volumeRepaid": "3483.90",
+          "defaulted": false,
+          "isRoot": false,
+          "line": "5.00",
+          "available": "5.00",
+          "backer": {
+            "agentId": 6234,
+            "kind": "backer"
+          },
+          "openLoans": 0
+        },
+        "ownerDefaulted": false,
+        "routes": [
+          {
+            "route": "treasury_invite",
+            "open": false,
+            "why": "it has a line from backer #6234 now; the treasury's first line is for an identity with no line",
+            "line": null,
+            "bond": null,
+            "room": null,
+            "firstLines": null,
+            "refillsAt": null,
+            "next": null
+          },
+          {
+            "route": "ethos_lane",
+            "open": false,
+            "why": "the lane lines new agents only, and agent #462 has a Priors record",
+            "line": null,
+            "bond": null,
+            "rootId": null,
+            "minScore": null,
+            "today": null,
+            "dailyCap": null,
+            "rootFree": null,
+            "next": null
+          },
+          {
+            "route": "stock_line",
+            "open": true,
+            "why": null,
+            "upTo": "500.00",
+            "maxLine": "500.00",
+            "weekLeft": "1000.00",
+            "tokens": {
+              "lending": 24,
+              "of": 35
+            },
+            "next": {
+              "tool": "stock_line_request",
+              "arguments": {
+                "agent_id": 462
+              }
+            }
+          },
+          {
+            "route": "own_priors",
+            "open": false,
+            "why": "its owner's wallet holds 0 $PRIORS, under the 5,994 $PRIORS that opens the least line",
+            "line": null,
+            "holding": "0",
+            "least": "5994",
+            "full": "11988",
+            "more": {
+              "least": "5994",
+              "full": "11988"
+            },
+            "quoteOnly": true,
+            "next": {
+              "url": "https://go.priors.trade/account#ac-seats"
+            }
+          }
+        ],
+        "grows": {
+          "kind": "backer",
+          "text": "What grows its line next: its line is vouched by backer #6234 (desk_record shows that backer's record); a bigger line needs that backer to vouch more of its stake, or route 3 or 4, which take over its backing.",
+          "next": null
+        },
+        "asOf": {
+          "snapshot": "2026-11-09T15:45:24Z",
+          "stocks": "2026-11-09T15:42:17Z",
+          "directoryBlock": 110172957
+        }
+      }
+    },
+    "jsonrpc": "2.0",
+    "id": 2
+  }
+}

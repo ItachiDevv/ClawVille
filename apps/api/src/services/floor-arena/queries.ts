@@ -991,6 +991,8 @@ export const ARENA_ADDON_NOT_SENT_ERRORS: readonly string[] = Object.freeze([
   'clawpump_agent_running',
   'clawpump_agent_not_stopped',
   'clawpump_x402_not_enabled',
+  'clawpump_route_not_verified',
+  'clawpump_backend_not_allowed',
 ]);
 
 export async function readArenaAddonStats(
@@ -1337,30 +1339,12 @@ export async function readArenaAddonAgents(): Promise<ArenaAgentRecord[]> {
 }
 
 /**
- * The R1 list: USER and HOUSE agents with a ClawPump agent, provision state ready or
- * failed, NO enabled add-on, and a row change at or after `since` (turning
- * add-ons off bumps updated_at); `since` null = every such agent (a new leader
- * term's full pass). Keyset pages by id after `afterId`, so no row limit.
+ * The ClawPump privacy repair's page (provisioning.ts runArenaPrivacyRepair):
+ * every USER or HOUSE agent with a ClawPump agent in provision state ready or
+ * failed, ids after `afterId` in id order (the caller keeps the cursor and
+ * wraps to '' at the end).
  */
-export async function readArenaX402RecentOff(since: Date | null, afterId: string, limit: number): Promise<string[]> {
-  const list = await rows(sql`
-    SELECT id FROM floor_arena_agents
-    WHERE kind IN ('user', 'house') AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
-      AND NOT (addons @> '[{"enabled": true}]'::jsonb)
-      AND (${since ? since.toISOString() : null}::timestamptz IS NULL OR updated_at >= ${since ? since.toISOString() : null}::timestamptz)
-      AND id > ${afterId}
-    ORDER BY id ASC
-    LIMIT ${limit}
-  `);
-  return list.map((row) => String(row.id));
-}
-
-/**
- * The x402 background sweep's page: every USER or HOUSE agent with a ClawPump agent in
- * provision state ready or failed, ids after `afterId` in id order (the
- * caller keeps the cursor and wraps to '' at the end).
- */
-export async function readArenaX402SweepAgents(afterId: string, limit: number): Promise<string[]> {
+export async function readArenaClawPumpSweepAgents(afterId: string, limit: number): Promise<string[]> {
   const list = await rows(sql`
     SELECT id FROM floor_arena_agents
     WHERE kind IN ('user', 'house') AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
@@ -1369,89 +1353,6 @@ export async function readArenaX402SweepAgents(afterId: string, limit: number): 
     LIMIT ${limit}
   `);
   return list.map((row) => String(row.id));
-}
-
-/** Codex r21: the bounds of the x402 transaction (engine.ts openPosition pattern). */
-export const ARENA_X402_TX_TIMEOUT_MS = 60_000;
-export const ARENA_X402_STATEMENT_TIMEOUT_MS = 30_000;
-let x402TxBoundMissingWarned = false;
-
-/**
- * Codex r20 (2) / r21 / audit-money L: runs `fn` while holding the per-agent
- * x402 advisory lock ('floor-arena-x402:<id>') in a transaction that stays open
- * for the whole call (ClawPump calls included).
- * - pg_TRY_advisory_xact_lock: when another process (an old leader during a
- *   failover) holds it, this returns { acquired: false } at once; the caller
- *   skips the agent this tick, so the serial loop never waits behind it.
- * - Bounded like engine.ts openPosition: ONE first statement sets
- *   statement_timeout 30 s and, on PostgreSQL 17, resets transaction_timeout to
- *   0 and arms it at 60 s (a server before 17 keeps the statement bound only and
- *   we warn once). Each ClawPump HTTP call is bounded at 15 s by default
- *   (CLAWPUMP_HTTP_TIMEOUT_MS, at most 30 s), below the 60 s transaction bound;
- *   a section whose calls together pass 60 s is ended by Postgres (rolled back,
- *   lock released) and the next tick re-checks (Codex D32: x402 hygiene).
- * - A DIFFERENT key from the add-on row lock: route writes never wait on
- *   ClawPump. The row read inside is readArenaAgentLocked, its own SHORT
- *   transaction, so the add-on lock is never held across a ClawPump call.
- */
-export async function tryWithArenaX402Lock<T>(
-  agentId: string,
-  fn: () => Promise<T>,
-): Promise<{ acquired: true; value: T } | { acquired: false }> {
-  return db.transaction(async (tx) => {
-    const bound = await rows<{ tx_bound: string | null }>(sql`
-      SELECT set_config('statement_timeout', ${`${ARENA_X402_STATEMENT_TIMEOUT_MS}ms`}, true) AS statement_bound,
-        CASE WHEN current_setting('transaction_timeout', true) IS NULL THEN NULL
-             WHEN set_config('transaction_timeout', '0', true) IS NOT NULL
-               THEN set_config('transaction_timeout', ${`${ARENA_X402_TX_TIMEOUT_MS}ms`}, true) END AS tx_bound
-    `, tx);
-    if (!bound[0]?.tx_bound && !x402TxBoundMissingWarned) {
-      x402TxBoundMissingWarned = true;
-      console.warn('[floor-arena] this Postgres has no transaction_timeout (needs 17): x402 transactions are bounded per statement only');
-    }
-    const got = (await rows<{ locked: boolean }>(sql`
-      SELECT pg_try_advisory_xact_lock(hashtextextended(${`floor-arena-x402:${agentId}`}, 0)) AS locked
-    `, tx))[0];
-    if (got?.locked !== true) return { acquired: false } as const;
-    return { acquired: true, value: await fn() } as const;
-  });
-}
-
-/** The database clock (the R1 "changed since" watermark uses DB time, never the API host's clock). */
-export async function readDbNow(): Promise<Date> {
-  const list = await rows<{ now: unknown }>(sql`SELECT now() AS now`);
-  const value = list[0]?.now;
-  return value instanceof Date ? value : new Date(String(value));
-}
-
-/**
- * Codex r20 (1): the fair removal cursor's page. USER and HOUSE agents with a ClawPump
- * agent, provision state ready or failed, and NO enabled add-on, ids after
- * `afterId` in id order (paged, so it never stops at a row limit).
- */
-export async function readArenaX402OffAgents(afterId: string, limit: number): Promise<string[]> {
-  const list = await rows(sql`
-    SELECT id FROM floor_arena_agents
-    WHERE kind IN ('user', 'house') AND provision_state IN ('ready', 'failed') AND clawpump_agent_id IS NOT NULL
-      AND NOT (addons @> '[{"enabled": true}]'::jsonb)
-      AND id > ${afterId}
-    ORDER BY id ASC
-    LIMIT ${limit}
-  `);
-  return list.map((row) => String(row.id));
-}
-
-/**
- * Codex r19: the agent row read under the per-agent advisory lock (the same
- * lock the seat, status and add-on writes take FIRST), so the read sees every
- * committed change. The leader reads this right before each x402 decision.
- */
-export async function readArenaAgentLocked(agentId: string): Promise<ArenaAgentRecord | null> {
-  return db.transaction(async (tx) => {
-    await tx.execute(addonLock(agentId));
-    const list = await rows(sql`SELECT * FROM floor_arena_agents WHERE id = ${agentId} LIMIT 1`, tx);
-    return list[0] ? mapAgentRow(list[0]) : null;
-  });
 }
 
 /**
@@ -2430,8 +2331,8 @@ export async function readArenaOpenWithdrawHold(
 }
 
 /**
- * The leader's per-agent withdraw try-lock ('floor-arena-withdraw:<id>'), a copy
- * of tryWithArenaX402Lock with a 150 s transaction bound. It only keeps two
+ * The leader's per-agent withdraw try-lock ('floor-arena-withdraw:<id>'): a
+ * pg_try_advisory_xact_lock in a transaction with a 150 s bound. It only keeps two
  * leaders from doing the same reads twice; it is NOT the money control (the
  * admission CAS is, contract §4 proof (5)). The local test server (Postgres 16)
  * has no transaction_timeout: the statement bound applies and we warn once.

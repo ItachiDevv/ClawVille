@@ -18,6 +18,9 @@ describe('getWorldPresenceRoute', () => {
       remoteActivity: AT_COVE_ACTIVITY,
       downlinkEnabled: true,
     });
+    expect(getWorldPresenceRoute('/brainchain')).toEqual({
+      policy: 'remote', remoteActivity: 'idle', downlinkEnabled: true,
+    });
     expect(getWorldPresenceRoute('/kelp')).toEqual({
       policy: 'remote',
       remoteActivity: AT_KELP_ACTIVITY,

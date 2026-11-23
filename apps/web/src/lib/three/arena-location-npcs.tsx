@@ -1,6 +1,7 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useState, type ReactElement } from 'react';
+import { CORTEX_SCALE, CORTEX_MAX_HEIGHT, npcRenderedHeightLimit } from './brainchain-cortex-size';
+import { useRef, useMemo, memo, Suspense, useCallback, useEffect, useState, type ReactElement, type RefObject } from 'react';
 import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
@@ -97,13 +98,11 @@ type NpcModelConfig = {
   /** Per-model scale override used when computeNormalizedScale returns a
    *  value outside [NPC_SCALE_CLAMP_MIN, NPC_SCALE_CLAMP_MAX] (broken bbox). */
   scaleOverride?: number;
+  /** Layer-2 ceiling override. Only Cortex opts in; other residents retain 201 wu. */
+  maxRenderedHeight?: number;
   /** Extra Y-axis rotation (radians) added on top of facingRotY.
    *  Use when a GLB is authored with a non-standard forward axis (+X instead of +Z). */
   rotYOffset?: number;
-  /** When true, apply the procedural ghost-float animation (large Y bob + Z sway
-   *  + slow Y-axis drift). For static-mesh ghost characters like Flying Dutchman
-   *  that have no skeleton/animations. Overrides the default small-bob behavior. */
-  ghostFloat?: boolean;
 };
 
 /** Full config for a location slot. companion is an optional passive NPC that
@@ -146,17 +145,21 @@ export const LOCATION_NPCS: Readonly<Record<string, LocationNpcConfig>> = {
   // Slot 1 — memory-rag — bb-building (interim Squidward's house)
   'memory-rag': { name: 'Squidward', model: '/models/characters/squidward-ktx.glb', deferUntilDecorativeRelease: true },
 
-  // Slot 2 — api-integrations — Salty Spitoon (the tough fish bar)
-  // Flying Dutchman GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — the
-  // canonical "intimidating spectral pirate" who fits the Salty Spitoon vibe
-  // better than any tough-fish patron we could find. Iconic green ghost,
-  // pirate hat, beard, hook hands. ~17.9k tris, 2.2MB.
-  // ghostFloat: static mesh with no skeleton — uses procedural ghost-float
-  // (large Y bob + Z sway) which is more thematic for a ghost than walk anims
-  // anyway. Compare to Pearl in cron-automation which ships with 5 built-in animations.
-  // deferUntilDecorativeRelease: rung-1 canary slot (2026-07-31) — the 0.97MB
-  // GLB is decorative at spawn distance and now loads after world reveal.
-  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-nonorm-ktx.glb', ghostFloat: true, deferUntilDecorativeRelease: true },
+  // Slot 4: BrainChain Office. Cortex is the custom brain-head clerk robot
+  // (skinned GLB, Idle clip). Staging checks 2026-11-11: the default bind-pose fit
+  // gave scale 50.56 -> 90 wu rendered (cbbd961ca). scaleOverride 163 was then cut
+  // by NpcMesh's Layer-2 HARD_MAX (201 wu bbox) to 105.9 -> 182 wu rendered
+  // (eb7e3711d), in line with the GLB cast (Pearl 175 wu). The prior override
+  // 106 matched that baseline. Faces the plaza (0.98).
+  // 2026-11-12: 134 = 106 * 230 / 182 (rounded). Cortex alone permits a
+  // 260 wu conservative bind-pose box; expected Idle height is 230 wu.
+  'api-integrations': {
+    name: 'Cortex',
+    model: '/models/brainchain/brainchain-clerk-v1-ktx.glb',
+    scaleOverride: CORTEX_SCALE,
+    maxRenderedHeight: CORTEX_MAX_HEIGHT,
+    deferUntilDecorativeRelease: true,
+  },
 
   // Slot 6 — cron-automation — the Trading Floor (re-themed from "Downtown
   // Building" 2026-09-19; the zone id never changes). Pearl stays as its
@@ -440,39 +443,13 @@ const NpcMesh = memo(function NpcMesh({
   const rescaleAppliedRef = useRef(false);
   // AnimationMixer ref — populated for GLBs that ship with their own animations
   // (Pearl Krabs has 5: Walk / Breathing Idle / Standard Run / Jump / Breakdance).
-  // Null for un-rigged GLBs (most of the canonical SpongeBob cast + Flying Dutchman).
+  // Null for un-rigged GLBs (most of the canonical SpongeBob cast).
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   // Real incrementing frame counter — avoids Math.floor(clock.elapsedTime * 60) which
   // drifts when the tab is backgrounded or the refresh rate varies.
   const npcFrameCountRef = useRef(0);
   const { scene: threeScene } = useThree();
 
-  // WorldLabelsOverlay label — distance-faded wordmark for primary NPCs.
-  // Same style as wandering NPC labels; teacher NPCs are stationary so users
-  // approach them — a near-range cap of 800wu fits the interaction distance.
-  // Occlusion raycasting enabled (teacher can be behind a building at certain
-  // camera angles). id encodes model path + position so companion instances
-  // don't collide with primary.
-  // Location NPCs are SpongeBob-style GLB cartoons — taller than the
-  // sea-floor crustaceans (Patrick, Sandy, Squidward all read ~300-350wu
-  // tall after scale). A 150wu offset sits at the chest; 320wu sits above
-  // the head where the label belongs.
-  const {
-    divRef: locationLabelRef,
-    setVisible: setLocationLabelVisible,
-  } = useWorldLabel({
-    id: `location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`,
-    anchorRef: groupRef,
-    offset: [0, 320, 0],
-    initialVisible: showLabel && attachmentVisible,
-    fadeNear: 15000,
-    fadeFar: 25000,
-    fadeBaseOpacity: 0.95,
-    occlude: true,
-  });
-  useEffect(() => {
-    setLocationLabelVisible(showLabel && attachmentVisible);
-  }, [attachmentVisible, setLocationLabelVisible, showLabel]);
   // extendLoaderWithMeshopt: belt-and-suspenders for location NPC GLBs that are
   // compressed with EXT_meshopt_compression (e.g. sandy.glb). The global
   // MeshoptLoaderSetup component handles most cases, but passing extendLoader
@@ -542,25 +519,10 @@ const NpcMesh = memo(function NpcMesh({
     // pivotOffsetY = localMinY × scale in both paths. For Plankton (override=55,
     // localMinY≈2.3): offset=127 → position.y = terrainY-121 → geometry floor
     // = position + localMinY*s = -121+127 = terrainY+6. Feet on ground.
-    let offset = localMinY * s;
-
-    // GhostFloat patch: computeNormalizedScale's >CLAMP_MAX fallback forces
-    // localMinY=0 to guard against SkinnedMesh bind-pose inflation. That's
-    // correct for rigged characters but WRONG for static unrigged ghosts whose
-    // pivot is at the geometry center (not feet). Without this fix the Flying
-    // Dutchman appeared half-buried — his bbox y range is [-0.71, +0.69]
-    // native, so at scale 96 his geometry extends ~68wu below his transform.
-    // Recompute the real cloned bbox min.y so the ghost's bottom can be
-    // grounded properly (then ghostBob in useFrame lifts him to hover).
-    if (modelCfg.ghostFloat) {
-      const realBox = new THREE.Box3().setFromObject(c);
-      if (!realBox.isEmpty()) {
-        offset = realBox.min.y * s;
-      }
-    }
+    const offset = localMinY * s;
 
     return { cloned: c, npcScale: s, pivotOffsetY: offset };
-  }, [scene, modelCfg.color, modelCfg.scaleOverride, modelCfg.ghostFloat]);
+  }, [scene, modelCfg.color, modelCfg.scaleOverride]);
 
   // Dispose cloned geometry + materials on unmount
   useEffect(() => {
@@ -644,25 +606,8 @@ const NpcMesh = memo(function NpcMesh({
     }
 
     // Position: terrainY + BASE_LIFT + bob - pivotOffsetY.
-    // ghostFloat NPCs (Flying Dutchman) get a much larger Y bob (4 wu vs 0.5)
-    // and a Z-axis sway on the inner anim group — matches the canonical
-    // "ghost slowly drifts in the air" motion better than the small idle bob.
-    const t = clock.elapsedTime;
-    if (modelCfg.ghostFloat) {
-      // Base lift = 35wu so bbox bottom hovers ~35wu above terrain at bob
-      // midpoint, range ~28-42wu above ground with the ±7 sin bob — clearly
-      // floating, not standing. The proper pivotOffsetY (computed from real
-      // bbox.min.y for ghosts, not the >CLAMP_MAX fallback's forced 0) does
-      // the rest of the lifting.
-      const ghostBob = Math.sin(t * 0.8 + seedBase) * 7;
-      groupRef.current.position.set(worldX, terrainY.current + 35 + ghostBob - pivotOffsetY, worldZ);
-      if (animGroupRef.current) {
-        animGroupRef.current.rotation.z = Math.sin(t * 0.5 + seedBase * 0.7) * 0.06;
-      }
-    } else {
-      const bob = Math.sin(t * 1.5 + seedBase) * 0.5;
-      groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
-    }
+    const bob = Math.sin(clock.elapsedTime * 1.5 + seedBase) * 0.5;
+    groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
 
     // Layer 2: one-shot rendered-height hard cap.
     // Runs once after 0.5s so geometry/bones settle before measurement.
@@ -672,7 +617,7 @@ const NpcMesh = memo(function NpcMesh({
       _locRenderedBbox.setFromObject(groupRef.current);
       if (!_locRenderedBbox.isEmpty()) {
         const renderedH = _locRenderedBbox.max.y - _locRenderedBbox.min.y;
-        const HARD_MAX = 201;
+        const HARD_MAX = npcRenderedHeightLimit(modelCfg.model, modelCfg.maxRenderedHeight);
         if (renderedH > HARD_MAX) {
           const scaledSubGroup = groupRef.current.children[0]; // the [npcScale,npcScale,npcScale] group
           if (scaledSubGroup) {
@@ -713,10 +658,48 @@ const NpcMesh = memo(function NpcMesh({
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Bio-luminescent NPC label — same rig as GLBNpcMesh / VRMNpcMesh.
-          Only primary NPCs get a label (showLabel=true via initialVisible). */}
+      {/* Only primary NPCs get a label; companions are passive presence. */}
       {showLabel && (
-        <WorldLabel divRef={locationLabelRef}>
+        <ResidentLabel
+          name={modelCfg.name}
+          labelId={`location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`}
+          anchorRef={groupRef}
+          visible={attachmentVisible}
+        />
+      )}
+    </group>
+  );
+});
+
+/** Resident DOM label for NpcMesh, with distance fade and occlusion raycasts.
+ *  The id includes the model path and position to distinguish residents.
+ *  The existing 320 wu offset places the label above the GLB cast. */
+function ResidentLabel({
+  name,
+  labelId,
+  anchorRef,
+  visible,
+}: {
+  name: string;
+  labelId: string;
+  anchorRef: RefObject<THREE.Group | null>;
+  visible: boolean;
+}) {
+  const { divRef, setVisible } = useWorldLabel({
+    id: labelId,
+    anchorRef,
+    offset: [0, 320, 0],
+    initialVisible: visible,
+    fadeNear: 15000,
+    fadeFar: 25000,
+    fadeBaseOpacity: 0.95,
+    occlude: true,
+  });
+  useEffect(() => {
+    setVisible(visible);
+  }, [visible, setVisible]);
+  return (
+        <WorldLabel divRef={divRef}>
           <div
             style={{
               display: 'flex',
@@ -724,7 +707,7 @@ const NpcMesh = memo(function NpcMesh({
               alignItems: 'center',
               transform: 'translateY(-50%)',
               ['--label-phase' as string]: String(
-                (modelCfg.name.charCodeAt(0) + modelCfg.name.length) % 10 / 10,
+                (name.charCodeAt(0) + name.length) % 10 / 10,
               ),
             }}
           >
@@ -748,7 +731,7 @@ const NpcMesh = memo(function NpcMesh({
                 animationDelay: 'calc(var(--label-phase, 0) * -5.4s)',
               }}
             >
-              {modelCfg.name}
+              {name}
             </div>
             <div
               style={{
@@ -775,10 +758,8 @@ const NpcMesh = memo(function NpcMesh({
             />
           </div>
         </WorldLabel>
-      )}
-    </group>
   );
-});
+}
 
 const LocationNpc = memo(function LocationNpc({
   zoneId,
@@ -845,11 +826,15 @@ const LocationNpc = memo(function LocationNpc({
   useEffect(() => {
     if (!config || warmed || !released || !mounted) return undefined;
     let cancelled = false;
-    const models = config.companion ? [config.model, config.companion.model] : [config.model];
+    const reads: (() => unknown)[] = [
+      () => readLocationNpcModel(config.model),
+    ];
+    if (config.companion) {
+      const companionModel = config.companion.model;
+      reads.push(() => readLocationNpcModel(companionModel));
+    }
     void Promise.all(
-      models.map((model) =>
-        warmSuspenseRead(() => (cancelled ? undefined : readLocationNpcModel(model))),
-      ),
+      reads.map((read) => warmSuspenseRead(() => (cancelled ? undefined : read()))),
     ).then(() => {
       // An unmount (or a stream-out) before the warm resolved cancels the flip.
       if (!cancelled) setWarmed(true);

@@ -484,7 +484,15 @@ function backdateOldest(deltaMs: number) {
 
 // ─── DB mock factory ──────────────────────────────────────────────────────
 
-function makeDbMock(queueRows: Array<Record<string, unknown>>) {
+interface TestDb {
+ insert(): unknown;
+ update(): unknown;
+ select(cols?: unknown): unknown;
+ transaction<T>(callback: (tx: TestDb) => Promise<T>): Promise<T>;
+ query: { agentBots: { findFirst: () => Promise<null> }; avatars: { findFirst: () => Promise<null> } };
+ reset(): void;
+}
+function makeDbMock(queueRows: Array<Record<string, unknown>>): TestDb {
   function thenable<T>(value: T = undefined as T) {
     return {
       then(resolve: (v: T) => unknown) {
@@ -519,6 +527,7 @@ function makeDbMock(queueRows: Array<Record<string, unknown>>) {
   }
 
   return {
+    async transaction<T>(callback: (tx: TestDb) => Promise<T>): Promise<T> { return callback(dbMock); },
     insert() {
       return thenable<unknown>(undefined);
     },
@@ -557,3 +566,220 @@ function makeDbMock(queueRows: Array<Record<string, unknown>>) {
     },
   };
 }
+
+
+describe('party leave cancels only pending queue admission', () => {
+ it('removes a queued member before the leave persistence await', async () => {
+  const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+  await enqueueHuman(pid(0),party.id);await enqueueHuman(pid(1),party.id);
+  const leaving=activityQueueService.leaveParty(party.id,pid(1));
+  expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+  expect(activityQueueService.getQueuedEntry(pid(0))).toBeDefined();
+  await leaving;expect(activityQueueService.getParty(party.id)?.members.has(pid(1))).toBe(false);
+ });
+ it('rejects a stale leader snapshot before inserting a departed member', async () => {
+  const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+  await activityQueueService.leaveParty(party.id,pid(1));
+  const original=dbMock.insert;let inserts=0;dbMock.insert=()=>{inserts++;return original();};
+  try {await expect(enqueueHuman(pid(1),party.id)).rejects.toThrow('membership changed before');expect(inserts).toBe(0);}
+  finally {dbMock.insert=original;}
+ });
+ it('refuses publication when membership leaves during the insert', async () => {
+  const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+  const original=dbMock.insert;let release!:()=>void;
+  const wait=new Promise<void>((resolve)=>{release=resolve;});
+  dbMock.insert=(()=>({values:()=>wait})) as typeof dbMock.insert;
+  try {
+   const pending=enqueueHuman(pid(1),party.id).then(()=>null,(error:unknown)=>error);
+   const leaving=activityQueueService.leaveParty(party.id,pid(1));release();await leaving;
+   expect((await pending) instanceof Error).toBe(true);expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+  } finally {release();dbMock.insert=original;}
+ });
+ it('does not erase an assigned room when a party member leaves after matching', async () => {
+  const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+  await enqueueHuman(pid(0),party.id);await enqueueHuman(pid(1),party.id);
+  for(let i=2;i<6;i++)await enqueueHuman(pid(i));
+  await activityQueueService.runMatchmakerSweep();
+  const room=activityRoomManager.getPlayerActiveRoom(pid(1));expect(room).toBeDefined();
+  await activityQueueService.leaveParty(party.id,pid(1));
+  expect(activityRoomManager.getPlayerActiveRoom(pid(1))?.id).toBe(room?.id);
+  expect(activityRoomManager.getRoom(room!.id)?.participants.has(pid(1))).toBe(true);
+ });
+});
+
+it('preserves a room selected before party leave while createRoom waits',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ await enqueueHuman(pid(0),party.id);await enqueueHuman(pid(1),party.id);for(let i=2;i<6;i++)await enqueueHuman(pid(i));
+ const original=activityRoomManager.createRoom;let release!:()=>void;const wait=new Promise<void>((resolve)=>{release=resolve;});
+ activityRoomManager.createRoom=async(...args:Parameters<typeof original>)=>{await wait;return original.apply(activityRoomManager,args);};
+ try {
+  const sweep=activityQueueService.runMatchmakerSweep();const leaving=activityQueueService.leaveParty(party.id,pid(1));release();await leaving;await sweep;
+  expect(activityRoomManager.getPlayerActiveRoom(pid(1))).toBeDefined();
+  expect(activityQueueService.getMatchedRoomId(pid(1))).toBe(activityRoomManager.getPlayerActiveRoom(pid(1))?.id ?? null);
+ }finally{release();activityRoomManager.createRoom=original;}
+});
+
+for (const failureAt of [1, 2]) {
+ it(`retries party leave after persistence failure ${failureAt} without matching the departed member`, async () => {
+  const party = await activityQueueService.createParty(pid(0));
+  await activityQueueService.joinParty(party.shortCode, pid(1));
+  await enqueueHuman(pid(1), party.id);
+  const original = dbMock.update;
+  let writes = 0;
+  dbMock.update = (() => ({ set: () => ({ where: () => ++writes === failureAt ? Promise.reject(new Error('injected persistence failure')) : Promise.resolve() }) })) as typeof dbMock.update;
+  try {
+   await expect(activityQueueService.leaveParty(party.id, pid(1))).rejects.toThrow('injected persistence failure');
+   expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+   expect(activityQueueService.partyForAvatar(pid(1))?.id).toBe(party.id);
+   await expect(enqueueHuman(pid(1), party.id)).rejects.toThrow('membership changed before');
+   await activityQueueService.runMatchmakerSweep();
+   expect(activityRoomManager.getPlayerActiveRoom(pid(1))).toBeUndefined();
+   await activityQueueService.leaveParty(party.id, pid(1));
+   expect(activityQueueService.partyForAvatar(pid(1))).toBeUndefined();
+   expect(writes).toBeGreaterThan(failureAt);
+  } finally { dbMock.update = original; }
+ });
+}
+
+it('rejects an old admission after leave and rejoin during its insert', async () => {
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const original=dbMock.insert;let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});
+ dbMock.insert=(()=>({values:()=>wait})) as typeof dbMock.insert;
+ try {
+  const pending=enqueueHuman(pid(1),party.id).then(()=>null,(error:unknown)=>error);
+  dbMock.insert=original;
+  const leaving=activityQueueService.leaveParty(party.id,pid(1));release();await leaving;await activityQueueService.joinParty(party.shortCode,pid(1));
+  expect((await pending) instanceof Error).toBe(true);expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+ }finally{release();dbMock.insert=original;}
+});
+
+it('retains stale insert cleanup failure for an explicit queue leave retry', async () => {
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const insert=dbMock.insert, update=dbMock.update;let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});
+ dbMock.insert=(()=>({values:()=>wait})) as typeof dbMock.insert;
+ try {
+  const pending=enqueueHuman(pid(1),party.id).then(()=>null,(error:unknown)=>error);
+  const leaving=activityQueueService.leaveParty(party.id,pid(1)).catch(()=>{});
+  dbMock.update=(()=>({set:()=>({where:()=>Promise.reject(new Error('cleanup unavailable'))})})) as typeof dbMock.update;
+  release();expect((await pending as Error).message).toBe('cleanup unavailable');
+  expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+  await expect(enqueueHuman(pid(1))).rejects.toThrow('cleanup unavailable');
+  await leaving;
+  dbMock.update=update;expect(await activityQueueService.leaveQueue(pid(1))).toBe(true);
+ } finally {release();dbMock.insert=insert;dbMock.update=update;}
+});
+
+function batchInputs(partyId: string) {
+ return [0,1].map(i=>({activityId:ACTIVITY_ID,avatarId:pid(i),userId:null,agentId:null,subjectType:'human' as const,partyId}));
+}
+it('reserves an avatar before an insert await and cancels a solo admission durably',async()=>{
+ const original=dbMock.insert;let release!:()=>void;const wait=new Promise<void>(r=>{release=r;});
+ dbMock.insert=(()=>({values:()=>wait})) as typeof dbMock.insert;
+ try {
+  const admission=enqueueHuman(pid(1)).catch(error=>error);
+  await expect(enqueueHuman(pid(1))).rejects.toThrow('already in progress');
+  const leave=activityQueueService.leaveQueue(pid(1));release();
+  expect((await admission) instanceof Error).toBe(true);expect(await leave).toBe(true);
+  expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+ }finally{release();dbMock.insert=original;}
+});
+it('rejects the whole party and rejoin while departure persistence waits',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const original=dbMock.update;let release!:()=>void;const wait=new Promise<void>(r=>{release=r;});
+ dbMock.update=(()=>({set:()=>({where:()=>wait})})) as typeof dbMock.update;
+ try {
+  const leave=activityQueueService.leaveParty(party.id,pid(1));
+  await expect(activityQueueService.enqueueParty(batchInputs(party.id))).rejects.toThrow('membership changed before');
+  await expect(activityQueueService.joinParty(party.shortCode,pid(1))).rejects.toThrow('departure is still saving');
+  expect(activityQueueService.getQueuedEntry(pid(0))).toBeNull();release();await leave;
+ }finally{release();dbMock.update=original;}
+});
+it('publishes no partial party while its transaction waits',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const original=dbMock.transaction;let release!:()=>void;const wait=new Promise<void>(r=>{release=r;});
+ dbMock.transaction=async callback=>{const value=await callback(dbMock);await wait;return value;};
+ try {
+  const admission=activityQueueService.enqueueParty(batchInputs(party.id));await Promise.resolve();await Promise.resolve();
+  expect(activityQueueService.getQueuedEntry(pid(0))).toBeNull();expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+  release();await admission;expect(activityQueueService.getQueuedEntry(pid(0))).not.toBeNull();expect(activityQueueService.getQueuedEntry(pid(1))).not.toBeNull();
+ }finally{release();dbMock.transaction=original;}
+});
+it('cancellation during commit removes the exact full batch before publication',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const original=dbMock.transaction;let release!:()=>void,committing!:()=>void;
+ const atCommit=new Promise<void>(r=>{committing=r;});const wait=new Promise<void>(r=>{release=r;});
+ dbMock.transaction=async callback=>{const value=await callback(dbMock);committing();await wait;return value;};
+ try {
+  const admission=activityQueueService.enqueueParty(batchInputs(party.id)).catch(error=>error);await atCommit;
+  const leave=activityQueueService.leaveQueue(pid(1));release();await leave;
+  expect((await admission) instanceof Error).toBe(true);expect(activityQueueService.queueLength(ACTIVITY_ID)).toBe(0);
+ }finally{release();dbMock.transaction=original;}
+});
+it('retains commit ambiguity until exact cleanup succeeds on the next admission',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const transaction=dbMock.transaction,update=dbMock.update;
+ let transactionCount=0;
+ dbMock.transaction=async callback=>{const value=await callback(dbMock);if(++transactionCount===1)throw new Error('commit response lost');return value;};
+ dbMock.update=(()=>({set:()=>({where:()=>Promise.reject(new Error('cleanup failed'))})})) as typeof dbMock.update;
+ try {
+  await expect(activityQueueService.enqueueParty(batchInputs(party.id))).rejects.toThrow('cleanup failed');
+  expect(activityQueueService.queueLength(ACTIVITY_ID)).toBe(0);
+  await expect(activityQueueService.enqueueParty(batchInputs(party.id))).rejects.toThrow('cleanup failed');
+  dbMock.update=update;dbMock.transaction=transaction;
+  expect((await activityQueueService.enqueueParty(batchInputs(party.id))).length).toBe(2);
+ }finally{dbMock.transaction=transaction;dbMock.update=update;}
+});
+it('an interrupted transaction exposes no partial durable party to hydration in the transaction model',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const transaction=dbMock.transaction;const durable:Array<Record<string,unknown>>=[];
+ dbMock.transaction=async callback=>{
+  const staged:Array<Record<string,unknown>>=[];
+  const tx={...dbMock,insert:()=>({values:(row:Record<string,unknown>)=>{staged.push(row);if(staged.length===2)return Promise.reject(new Error('insert interrupted'));return Promise.resolve();}})} as typeof dbMock;
+  const value=await callback(tx);durable.push(...staged);return value;
+ };
+ try {
+  await expect(activityQueueService.enqueueParty(batchInputs(party.id))).rejects.toThrow('insert interrupted');
+  expect(durable.length).toBe(0);activityQueueService.__resetForTest();queueRowsSeed.push(...durable);
+  await activityQueueService.hydrateFromDb();expect(activityQueueService.queueLength(ACTIVITY_ID)).toBe(0);
+ }finally{dbMock.transaction=transaction;}
+});
+
+it('party refusal never removes a member entry owned by another request',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const foreign=await enqueueHuman(pid(1));
+ await expect(activityQueueService.enqueueParty(batchInputs(party.id))).rejects.toThrow('already in a queue');
+ expect(activityQueueService.getQueuedEntry(pid(0))).toBeNull();
+ expect(activityQueueService.getQueuedEntry(pid(1))?.id).toBe(foreign.id);
+});
+it('hydration restores the full committed batch if its commit reply and cleanup both fail in the model',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const transaction=dbMock.transaction;const durable:Array<Record<string,unknown>>=[];
+ dbMock.transaction=async callback=>{
+  const staged:Array<Record<string,unknown>>=[];
+  const tx={...dbMock,
+   insert:()=>({values:(row:Record<string,unknown>)=>{staged.push(row);return Promise.resolve();}}),
+   update:()=>({set:()=>({where:()=>Promise.reject(new Error('cleanup unavailable'))})}),
+  } as TestDb;
+  const value=await callback(tx);durable.push(...staged);
+  if(staged.length)throw new Error('commit reply lost');return value;
+ };
+ try {
+  await expect(activityQueueService.enqueueParty(batchInputs(party.id))).rejects.toThrow('cleanup unavailable');
+  expect(activityQueueService.queueLength(ACTIVITY_ID)).toBe(0);expect(durable.length).toBe(2);
+  activityQueueService.__resetForTest();queueRowsSeed.push(...durable);
+  await activityQueueService.hydrateFromDb();expect(activityQueueService.queueLength(ACTIVITY_ID)).toBe(2);
+ }finally{dbMock.transaction=transaction;}
+});
+
+it('ROOT R2 kicked and rejoined member cannot publish old admission',async()=>{
+ const party=await activityQueueService.createParty(pid(0));await activityQueueService.joinParty(party.shortCode,pid(1));
+ const original=dbMock.insert;let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});
+ dbMock.insert=(()=>({values:()=>wait})) as typeof dbMock.insert;
+ try {
+  const pending=enqueueHuman(pid(1),party.id).then(()=>null,(error:unknown)=>error);
+  await activityQueueService.kickMember(party.id,pid(0),pid(1));
+  dbMock.insert=original;await activityQueueService.joinParty(party.shortCode,pid(1));
+  release();expect((await pending) instanceof Error).toBe(true);
+  expect(activityQueueService.getQueuedEntry(pid(1))).toBeNull();
+ }finally{release();dbMock.insert=original;}
+});

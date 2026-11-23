@@ -47,6 +47,10 @@ let priorDepositImpl: () => Promise<boolean> = async () => false;
 const realOwnAiCopy = { ...realOwnAi };
 const realDatabaseCopy = { ...realDatabase };
 const realAgentAuthCopy = { ...realAgentAuth };
+type FeeStatus = Awaited<ReturnType<typeof realDeposit.readUsepodFeeStatus>>;
+const feeOff: FeeStatus = { sponsored: false, reason: 'no_fee_wallet', avatarSponsoredToday: 0, sponsoredPerAvatarPerDay: 2, avatarMinSolLamports: 15000 };
+let feeStatusImpl: (avatarId: string) => Promise<FeeStatus> = async () => feeOff;
+const feeStatusCalls: string[] = [];
 afterAll(() => {
   mock.module('../../services/own-ai', () => realOwnAiCopy);
   mock.module('../../services/usepod-deposit', () => realDepositCopy);
@@ -57,6 +61,10 @@ afterAll(() => {
 mock.module('../../services/usepod-deposit', () => ({
   ...realDepositCopy,
   hasPriorUsepodDeposit: () => priorDepositImpl(),
+  readUsepodFeeStatus: (avatarId: string) => {
+    feeStatusCalls.push(avatarId);
+    return feeStatusImpl(avatarId);
+  },
   createUsepodDepositChallenge: async () => {
     depositChallengeCalls++;
     return { ok: true, nonce: 'n'.repeat(44), expiresAt: new Date().toISOString(), messageToSign: 'ClawVille usepod-deposit' };
@@ -843,6 +851,33 @@ describe('DELETE, models, UsePod', () => {
     } finally {
       balanceThrows = null;
       priorDepositImpl = async () => false;
+    }
+  });
+
+  it('usepod fee: human and agent of the avatar read the same live answer; rate limited like the balance', async () => {
+    try {
+      feeStatusCalls.length = 0;
+      const off = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
+      expect(off.status).toBe(200);
+      expectNoStore(off);
+      expect(await off.json()).toEqual(feeOff);
+      const on: FeeStatus = { ...feeOff, sponsored: true, reason: null, avatarSponsoredToday: 1 };
+      feeStatusImpl = async () => on;
+      const human = await call('GET', '/usepod/fee', { cookie: 'pw-a' });
+      expect(await human.json()).toEqual(on);
+      const agent = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
+      expect(await agent.json()).toEqual(on);
+      // Both sessions resolve the same avatar.
+      expect(feeStatusCalls).toEqual(['avatar-a', 'avatar-a', 'avatar-a']);
+      const anon = await call('GET', '/usepod/fee', {});
+      expect(anon.status).toBe(401);
+      // 30 per minute per avatar, shared by human and agent sessions.
+      for (let i = 3; i < 30; i++) expect((await call('GET', '/usepod/fee', { cookie: 'pw-a' })).status).toBe(200);
+      const limited = await call('GET', '/usepod/fee', { agent: 'agent-session-a' });
+      expect(limited.status).toBe(429);
+      expect(feeStatusCalls).toHaveLength(30);
+    } finally {
+      feeStatusImpl = async () => feeOff;
     }
   });
 });

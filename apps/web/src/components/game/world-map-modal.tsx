@@ -64,7 +64,7 @@ const TILE_PX = TILE_SIZE; // 32 — game-px per grid tile
 const BUILDING_ACCENT: Record<string, string> = {
   'visual-creation': '#fde68a',
   'memory-rag': '#a5b4fc',
-  'api-integrations': '#fca5a5',
+  'api-integrations': '#f581b4', // BrainChain Office
   'cron-automation': '#93c5fd',
   'app-publishing': '#d9f99d',
   'deployment-ops': '#fed7aa',

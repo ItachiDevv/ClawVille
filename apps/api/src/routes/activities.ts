@@ -319,18 +319,14 @@ activitiesV2Routes.post('/:id/queue', requireAuthOrAgentSession, requireLedgerCa
     // proper member-identity-resolution helper when WS auth lights up.
     const memberAvatarIds = Array.from(party.members);
     try {
-      for (const memberAvatarId of memberAvatarIds) {
-        await activityQueueService.enqueue({
-          activityId: id,
-          avatarId: memberAvatarId,
-          userId: memberAvatarId === identity.avatarId ? identity.userId : null,
-          agentId: memberAvatarId === identity.avatarId ? identity.agentId : null,
-          subjectType: identity.kind === 'agent' ? 'agent' : 'human',
-          partyId,
-          allowBotBackfill,
-          agentOnly,
-        });
-      }
+      await activityQueueService.enqueueParty(memberAvatarIds.map(memberAvatarId => ({
+        activityId: id,
+        avatarId: memberAvatarId,
+        userId: memberAvatarId === identity.avatarId ? identity.userId : null,
+        agentId: memberAvatarId === identity.avatarId ? identity.agentId : null,
+        subjectType: identity.kind === 'agent' ? 'agent' as const : 'human' as const,
+        partyId, allowBotBackfill, agentOnly,
+      })));
     } catch (err) {
       handleQueueError(err);
     }
@@ -433,6 +429,7 @@ activitiesV2Routes.get('/:id/queue-status', requireAuthOrAgentSession, requireLe
   return c.json({
     ...status,
     matchedRoomId,
+    matchedActivityId: matchedRoom?.activityId ?? null,
     matchedRoomShortCode: matchedRoom?.shortCode ?? null,
   });
 });

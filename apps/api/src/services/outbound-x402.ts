@@ -39,6 +39,7 @@ import bs58 from 'bs58';
 import { and, db, eq, inArray, sql, userSpendPolicies, vendorSpendLedger, wallets } from '@clawville/database';
 import type { SpendVendorId } from '@clawville/shared';
 import { decryptWalletRow } from './keypair-vault';
+import { accountSpendLiabilityQuery,accountSpendLockKey } from './account-spend-liability';
 import { toSpendPolicyView } from './spend-policy';
 import { usdcMintForNetwork } from './x402-payai';
 import { prepareWithMainnetRpcFallback, resolveAgentPayRail } from './agent-pay';
@@ -321,10 +322,10 @@ type Admission =
   | { ok: false; code: VendorCallFailure; ledgerId?: string };
 
 /** Cap check + ledger insert, in one transaction under the spend-rules lock. */
-async function admit(input: VendorCallInput, requirement: PaymentRequirements, amount: bigint, payerWallet: string): Promise<Admission> {
+export async function admitOutboundVendorPayment(input: VendorCallInput, requirement: PaymentRequirements, amount: bigint, payerWallet: string, database: Pick<typeof db, 'transaction'> = db): Promise<Admission> {
   const usdCents = Number((amount + ATOMIC_PER_CENT - 1n) / ATOMIC_PER_CENT);
-  return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`spend-policy:${input.avatarId}`}, 0))`);
+  return database.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${accountSpendLockKey(input.avatarId)}, 0))`);
     // The caller lost its job (a recovery pass took it over): no ledger row.
     if (input.fence && !(await input.fence(tx))) return { ok: false, code: 'payment_fenced' } as const;
     const [existing] = await tx
@@ -351,14 +352,8 @@ async function admit(input: VendorCallInput, requirement: PaymentRequirements, a
     if (!policy.allowedVendors.includes(input.pin.vendor)) return { ok: false, code: 'vendor_not_allowed' } as const;
     if (amount > BigInt(policy.perCallCapUsdCents) * ATOMIC_PER_CENT) return { ok: false, code: 'over_per_call_cap' } as const;
 
-    // Today = the current UTC day. Failed rows moved no money; every other
-    // status (pending, paid, ambiguous) counts.
-    const spent = await tx.execute<{ total: string | null }>(sql`
-      SELECT COALESCE(SUM(usdc_atomic), 0)::text AS total
-      FROM vendor_spend_ledger
-      WHERE avatar_id = ${input.avatarId}
-        AND status IN ('pending', 'paid', 'ambiguous')
-        AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`);
+    // One account cap covers both payment adapters. Uncertain liabilities carry across days.
+    const spent = await tx.execute<{ total: string | null }>(accountSpendLiabilityQuery(input.avatarId));
     const spentToday = BigInt(Array.from(spent)[0]?.total ?? '0');
     if (spentToday + amount > BigInt(policy.dailyCapUsdCents) * ATOMIC_PER_CENT) {
       return { ok: false, code: 'over_daily_cap' } as const;
@@ -494,7 +489,7 @@ export async function callVendorWithAvatarWallet(
   if (!payerWallet) return { ok: false, code: 'wallet_missing' };
   const quote = checkQuote(requirement, input.pin, payerWallet);
   if (!quote.ok) return { ok: false, code: quote.code };
-  const admission = await admit(input, requirement, quote.amount, payerWallet);
+  const admission = await admitOutboundVendorPayment(input, requirement, quote.amount, payerWallet);
   if (!admission.ok) return admission;
 
   // 3) Decrypt for this step only, sign the quote as given, wipe. Nothing is

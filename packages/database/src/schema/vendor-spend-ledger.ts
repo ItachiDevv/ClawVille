@@ -32,6 +32,8 @@ export const vendorSpendLedger = pgTable('vendor_spend_ledger', {
   feeLamports: bigint('fee_lamports', { mode: 'number' }),
   creditStatus: varchar('credit_status', { length: 16 }),
   depositTerms: jsonb('deposit_terms'),
+  /** UsePod deposits only (migration 0121): the ClawVille fee wallet that paid the network fee. NULL = the avatar wallet paid. */
+  feePayer: varchar('fee_payer', { length: 64 }),
   failureReason: text('failure_reason'),
   reconcileAttempts: integer('reconcile_attempts').notNull().default(0),
   reconcileNextAt: timestamp('reconcile_next_at', { withTimezone: true }),
@@ -43,6 +45,10 @@ export const vendorSpendLedger = pgTable('vendor_spend_ledger', {
   creditStatusCheck: check('vendor_spend_ledger_credit_status_check', sql`${table.creditStatus} IS NULL OR ${table.creditStatus} IN ('unknown', 'seen')`),
   avatarIdemUnique: uniqueIndex('vendor_spend_ledger_avatar_idem_unique').on(table.avatarId, table.idempotencyKey),
   avatarCreatedIdx: index('vendor_spend_ledger_avatar_created_idx').on(table.avatarId, table.createdAt),
+  /** Sponsored UsePod deposit counts (migration 0121c). */
+  usepodSponsoredCreatedIdx: index('vendor_spend_ledger_usepod_sponsored_created_idx')
+    .on(table.createdAt)
+    .where(sql`vendor = 'usepod' AND fee_payer IS NOT NULL`),
   txSignatureUnique: uniqueIndex('vendor_spend_ledger_tx_signature_unique')
     .on(table.txSignature)
     .where(sql`tx_signature IS NOT NULL`),

@@ -367,7 +367,7 @@ export default function YardEditorOverlay() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (mode === "move" && selectedPlacedPieceId)
+        if ((mode === "move" || mode === "remove") && selectedPlacedPieceId)
           setSelectedPlacedPieceId(null);
         else exitBuildMode();
         return;
@@ -396,7 +396,9 @@ export default function YardEditorOverlay() {
         ? "Tap a grid cell to move the highlighted piece. Esc cancels selection."
         : "Tap one of your pieces, then tap its new grid cell."
       : mode === "remove"
-        ? "Tap a piece to remove it. Removal has no refund."
+        ? selectedPlacedPieceId
+          ? "Tap the highlighted piece again to remove it. No refund. Esc or tap the ground to keep it."
+          : "Tap a piece, then tap it again to remove it. Removal has no refund."
         : isMobile
           ? "Choose a piece, tap a cell to place it, and use Rotate for a new angle."
           : "Choose a piece, hover a cell and click to place it, and press R to rotate.";

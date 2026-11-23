@@ -1,0 +1,35 @@
+{
+  "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+  "samples": [
+    {
+      "ms": 16.399999976158142,
+      "nodes": 0
+    },
+    {
+      "ms": 0,
+      "nodes": 0
+    },
+    {
+      "ms": 0,
+      "nodes": 0
+    },
+    {
+      "ms": 0,
+      "nodes": 0
+    },
+    {
+      "ms": 0,
+      "nodes": 0
+    },
+    {
+      "ms": 0,
+      "nodes": 0
+    }
+  ],
+  "date": "2026-11-09",
+  "method": "Fresh browser tab; bundled current planner; test copy inserts one fully blocked row before component labeling. Six disconnected searches include cold grid/component initialization. No production grid mutation.",
+  "acceptance": "Cold16.4ms and warm0ms on this Chrome desktop; not an Iris Xe result.",
+  "cachedSearchArraysBytes": 7929856,
+  "cachedComponentLabelsBytes": 1982464,
+  "temporaryFloodQueueBytes": 1982464
+}

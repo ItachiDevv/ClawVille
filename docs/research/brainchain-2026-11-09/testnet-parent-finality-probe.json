@@ -1,0 +1,36 @@
+{
+  "observedAt": "2026-11-09T17:50:14.679083+00:00",
+  "endpoint": "https://rpc.testnet.chain.robinhood.com",
+  "scope": "Readonly parent-chain finality interface; no transaction or authority change",
+  "results": [
+    {
+      "method": "eth_chainId",
+      "params": [],
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "latest",
+        false
+      ],
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "safe",
+        false
+      ],
+      "error": "HTTP Error 403: Forbidden"
+    },
+    {
+      "method": "eth_getBlockByNumber",
+      "params": [
+        "finalized",
+        false
+      ],
+      "error": "HTTP Error 403: Forbidden"
+    }
+  ]
+}

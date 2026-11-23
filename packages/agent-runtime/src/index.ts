@@ -4,6 +4,8 @@ export {
   toSupabaseSessionModeUrl,
 } from './eliza-runtime';
 export type { ElizaRuntimeConfig, ElizaMessage, ElizaRuntimeState } from './eliza-runtime';
+export { IsolatedTaskRuntime, buildIsolatedTaskPrompt, isolatedTaskPromptHash, IsolatedTaskError } from './isolated-task';
+export type { IsolatedTaskBinding, IsolatedTaskProxy, IsolatedTaskProxyRequest, IsolatedTaskProxyResponse, IsolatedTaskRuntimeConfig, IsolatedTaskResult, IsolatedTaskInventory } from './isolated-task';
 export {
   generateRoomId,
   PROTOCOL_KNOWLEDGE_KEY,
@@ -187,3 +189,7 @@ export type {
   ActivityEmojis,
   AvatarDbHooks,
 } from './simulation/types';
+
+export { ProbeRuntimeBoundary } from './probe-runtime';
+export type { TrustedProbeRuntimeScope, ProbeEmbeddingSource } from './probe-runtime';
+export { BRAINCHAIN_PROBE_CHAT_TEXT, brainchainProbeDirective } from './probe-runtime';

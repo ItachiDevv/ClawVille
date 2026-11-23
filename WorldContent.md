@@ -1,5 +1,27 @@
 # ClawVille — World Content Manifest
 
+**Last Audited: 2026-11-13 (Office interior phase 2).** Drift note: the Task Board and Receipts wall now show owner records.
+
+Prior **Last Audited: 2026-11-12 (Office interior phase 1).** Drift note: Cortex appears inside and outside. The Office adds four station types.
+
+Prior **Last Audited: 2026-11-12 (Office vortex and Boating School activities).** Drift note: the Office has a vortex entrance. Mrs. Puff hosts both activity games.
+
+Prior **Last Audited: 2026-11-11 (BrainChain Office v3 and Cortex clerk robot).** Drift note: replaced the Office asset, resident asset, footprint and collider dimensions. Prior - **Last Audited: 2026-11-10 (BrainChain Office replaces the Salty Spitoon at ring slot 4).** Drift note: founder decision 2026-11-10; resident Cortex; the separate venue is removed. Prior - **Last Audited: 2026-11-09 (BrainChain Office geometry).** Drift note: registered the Office footprint, guide, approach, and ground-cover exclusions. Updated stale town-prop coordinates. The 3D renderer, 2D marker, map marker, and explicit Office entrance now use this geometry. Actual-world visual verification remains pending.
+
+### BrainChain Office: ring slot 4 (2026-11-10)
+
+The BrainChain Office replaces the Salty Spitoon at `api-integrations` (slot 4, ESE). The location id is unchanged.
+Cortex stands outside and behind the interior desk. She uses the same model at both positions. Its resident is Cortex, a custom brain-head clerk robot GLB with Idle, Talk, Wave and Walk clips. Cortex teaches BrainChain and keeps the full API-integrations lesson (REST, GraphQL, webhooks, OAuth).
+The front pink vortex opens the `/brainchain` interior after a short transition. The slot portal also offers "Enter BrainChain Office" and Cortex chat. Return places the avatar outside the vortex. Agents use `enter_building(buildingId=api-integrations)` and the `brainchain` action.
+The interior Task Board shows owner workers, provisional tasks and open orders. The Receipts wall shows account transaction references. Empty and unavailable states contain no invented records.
+The separate venue at `(760, -3040)`, its guide and its ground-cover exclusions are gone; ground cover there follows the normal placement rule.
+Cortex renders at about 182 wu (`scaleOverride: 106`, staging check 2026-11-11), in line with the other GLB residents.
+PARITY: human and agent paths retain the same building identity, entry actions and avatar settlement.
+Mrs. Puff hosts Bumper Shells and Reef Race at the Boating School (`app-publishing`, slot 5). The Office has no activity card.
+
+Geometry, transform and asset budget: `3dStructure.md`, "BrainChain Office spatial contract".
+
+
 > **Strict rule:** every code change that adds, removes, repositions, rescales,
 > recolors, or otherwise changes a rendered thing in the open-world scene MUST
 > update this doc in the same diff. Reverse holds: changes to this doc require
@@ -78,8 +100,8 @@ Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6)
 | 1 | NNE | 245,67 | `code-development` | `chum-bucket-v2.glb` | Bucket | 1400 | 1000→1400 (+40%); max-dim norm |
 | 2 | ENE | 293,115 | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1400 | childScaleOverrides: `The_Krusty_Krab` ×1.5 (runtime node name); bodyAnchorChild: `The_Krusty_Krab` (restaurant centers at slot, sign extends forward) |
 | 3 | E | 310,180 | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 2500 | 1000→2500; dome square XZ≈25.87, MAX_FOOTPRINT=2000 cap → ~820wu height; rotYOffset +π; DoubleSide transparent-mat fix |
-| 4 | ESE | 293,245 | `api-integrations` | `salty-spitoon.glb` | Bar | 2500 | 1300→2500; km-scale GLB, after flat-base strip ~1209wu; rotYOffset -π/2 |
-| 5 | SSE | 245,293 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 1000 | rotYOffset +π/2 |
+| 4 | ESE | 293,245 | `api-integrations` | `brainchain/brainchain-office-v3-ktx.glb` | BrainChain Office (was Salty Spitoon until 2026-11-10) | 1400 | footprint 1400 x 1036; collider 679 x 735; no rotYOffset |
+| 5 | SSE | 245,293 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom; Bumper Shells and Reef Race | 1000 | rotYOffset +π/2 |
 | 6 | S | 180,310 | `cron-automation` | `trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2` | **Trading Floor** (Pearl) | 1950 | **ENTERABLE 2026-09-19.** Asset swapped off `patty-building.glb` (2200 → 1950): scene bbox 1.290 × 1.29943 × 1.129, grounded at Y=0, entrance faces **+Z** at rotY 0 so slot 6 keeps `rotY: 3.142` with no `rotYOffset`. maxDim is the Y axis (the rooftop claw), not an XZ axis, so at 1950 the roofline lands at 1495wu — within 2% of the outgoing patty roofline — with XZ 1936 × 1694 and the MAX_FOOTPRINT=2000 cap DISENGAGED (2200 only matched by tripping the cap). Collider retuned 850×498 → **823×720** in BOTH `collision/world-colliders.ts` and `packages/shared/.../world-colliders-data.ts`. Click / tap / E walks the avatar to the north face, then the stage crosses to the `/trading-floor` interior slot (`triggerTradingFloorWalkIn`, §2a). **Re-themed 2026-09-19** from "Downtown Building" by founder order: the building BECAME the Trading Floor. The zone id stays `cron-automation` FOREVER — renaming it breaks owned book ids `cron-automation-basics`/`-advanced`, the `skill-tools-dispatcher.ts` key, stored `building.visited` events, earned-skill memories keyed on buildingId, and installed `~/.hermes/skills/clawville-cron-automation/` folders. Only `MAP_LOCATIONS.name`, its description and its icon changed. Pearl stays and her subject widens to scheduled trading; she points at the house-trader monitor inside and never runs it. Agent entry: `[ACTION: enter_trading_floor()]` (PROTOCOL_VERSION 66). |
 | 7 | SSW | 115,293 | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1400 | tallest landmark |
 | 8 | WSW | 67,245 | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 1100 | 2 slots (60°) from casino — NOT adjacent. Interior / crane game: Phase 6.3. |
@@ -214,10 +236,10 @@ Phase 6.2 positions (spread from original ≤600wu cluster to 800–1000wu ring)
 | Component | What it renders | World position | Source |
 |---|---|---|---|
 | `<QuestNpc>` | Quest-giver NPC standee | (-110, -2, -60) — near center | `lib/three/quest-npc.tsx` |
-| `<TownGuide>` | Nori the town-guide NPC | (0, -2, 240) — near center | `lib/three/town-guide.tsx` |
+| `<TownGuide>` | Nori the town-guide NPC | (0, -2, 400) — near center | `lib/three/town-guide.tsx` |
 | `<TownDirectorySign>` | Wooden signboard | center (0, y, 0) — currently rendered TWICE in `World3DCanvas.tsx`; L773 diagnostic should be removed | `lib/three/town-directory-sign.tsx` |
-| `<BazaarStall>` | `models/bazaar-fish-stall.glb` (400wu tall) | **(-800, -2, 300)** — west plaza ring | `lib/three/bazaar-stall.tsx` |
-| `<MarketplaceStall>` | `models/marketplace-food-stall.glb` (450wu tall) | **(800, 4, 300)** — east plaza ring | `lib/three/marketplace-stall.tsx` |
+| `<BazaarStall>` | `models/bazaar-fish-stall.glb` (400wu tall) | **(-1273, -2, -120)** — west plaza ring | `lib/three/bazaar-stall.tsx` |
+| `<MarketplaceStall>` | `models/marketplace-food-stall.glb` (450wu tall) | **(1273, 4, -120)** — east plaza ring | `lib/three/marketplace-stall.tsx` |
 | `<AuctionPodium>` | `models/auction-dome.glb` (380wu tall) + floating `jellyfish.glb` | **(0, 200, -1000)** — north plaza anchor | `lib/three/auction-podium.tsx` |
 | `<BountyBoardObject>` | Bounty board (imported but only mounted by some flows) | varies | `lib/three/bounty-board-object.tsx` |
 
@@ -282,3 +304,33 @@ Compact log. Single line per change.
 - 2026-05-13 — Ring 68→72 tiles. Decoration retune: TARGET_COUNT 30→60, DECO_INNER_EXCLUSION_R 2700→1500.
 - 2026-05-12 — Sandy's Treedome swapped to `sandy_tree_final.glb`. Krusty Krab + Chum Bucket restored from original GLBs (renamed -v2 to bust cache).
 - 2026-05-12 — `WorldContent.md` created as new canonical doc (split from 3dStructure.md).
+
+BrainChain 3da review corrections (2026-11-09): text focus suppresses manual input but preserves navigation, gravity, and proximity frames.
+Only the service-panel route suspends the retained world frame.
+Click-path movement spends each frame distance across reached waypoints in human, possessed NPC, and 2D paths. Every turn uses a separate collision check.
+The guide-only approach uses world `(390, -2540)` with a tested 12 wu interaction margin.
+The guide reuses the static lobster plush, fits its 80 wu collider, stays at most 96 wu tall, and follows the NPC visibility flag.
+Office prefetch uses its distance-based prop priority.
+The client planner uses integer cell keys and typed search arrays; controlled unreachable searches fell from 106-157 ms to 31-44 ms after warmup on the desktop.
+These timings do not establish Iris Xe performance.
+
+Office WebGPU compatibility: the renderer converts cloned normalized position, normal, and UV attributes to Float32 before first GPU upload.
+The shared GLB cache stays unchanged; teardown disposes only the Office geometry clones.
+The asset now uses a new v2 filename with a full mip chain.
+Verified actual-world PNG and Float32 KTX controls removed the severe quantized-attribute corruption; final new-bundle visual acceptance remains pending.
+
+BrainChain B4/B5 review update (2026-11-09): the three client path followers share a polyline step helper and consume the remaining frame distance without an intermediate idle frame.
+The Office labels stay hidden and noninteractive until the warm attachment reports ready; they fade from800 to4500wu.
+Search arrays persist across calls with generation stamps. Component labels reject disconnected targets before A*.
+A fresh Chrome156 desktop benchmark measured16.4ms cold and0ms warm for six disconnected queries, including first grid/component initialization.
+This is an adversarial grid-copy benchmark, not an Iris Xe measurement.
+The Float32 Office vertex budget is398,304bytes; WebGPU indices add135,732bytes, for534,036bytes of geometry.
+Together with the BC7 mip chain, the expected Office geometry/texture budget is1,932,164bytes before renderer bookkeeping.
+NPC visibility is a local graphics flag. It does not remove authoritative colliders; the BrainChain Office is a ring building and follows the ring collider policy.
+
+BrainChain B6/D1 review update (2026-11-09): 3D player navigation carries the game-pixel origin explicitly.
+The helper operates in path coordinates; collision and position commits receive centered world coordinates.
+Completion runs after the committed-position proximity callback, so building entry reads current proximity.
+The last traversed segment sets direction and facing; blocked movement preserves facing and reports idle.
+Only the final waypoint uses the existing six-unit arrival tolerance; intermediate turns retain precise collision checks.
+The demo NPC walk does not verify the real-player path. A new production-bundle real-player capture remains necessary.

@@ -12,6 +12,35 @@
 - **CHECK:** the terminal matches the approved mockup (Dashboard, Strategy). Trades, Decisions, Reports and Other agents were NOT in the mockup: look at them first. The equity curve and P&L use real data only (paper costs included). "Decisions" shows the rule checks the bot records, not written reasoning. Strategy saves through the same rules route an agent uses.
 - **FEEDBACK:** layout, wording, and what each of the four new tabs should show more or less of. Phone and iPad sizes need a real-device look.
 
+### Trading Floor: walk into the front door (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game, walk your avatar to the Trading Floor (south of the ring) and into its front door.
+- **CHECK:** walking into the door takes you inside, with no click, tap or E key. Walking out and back toward town does not pull you back in.
+- **FEEDBACK:** say if the door feels right, or if the entry spot is too narrow or too wide.
+
+### /game on a phone: buildings arrive sooner after the loader closes (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game on your phone, best on mobile data, first visit or a private tab.
+- **CHECK:** after the loader closes, the ring buildings and Nori show before the wandering characters, props and land pieces.
+- **FEEDBACK:** say how long the world looks empty after the loader closes.
+
+### /game boot splash: the loader now shows at once (session new-ville, 2026-11-11, STAGING)
+
+- **WHERE:** https://staging.clawville.world/game on your phone (best on mobile data), then on desktop.
+- **CHECK:** the ClawVille banner, "Dropping in..." and the bar show right away, not after a blank screen.
+- **CHECK:** when the moving loader (water line, bubbles, lobster) appears, the banner does not jump and nothing flashes.
+- **FEEDBACK:** say if the start looks the same as before apart from being faster.
+
+### UsePod fee wallet: fund it (session claw2.0, job usepod-fee-payer, 2026-11-11, STAGING then PRODUCTION)
+
+- **STATUS:** code on the branch `feat/usepod-fee-payer`; no fee wallet exists yet. Until its row exists, deposits work as before (the avatar wallet pays the fee).
+- **DO (staging first):** after migrations 0121, 0121a, 0121b and 0121c run, run `bun run scripts/create-usepod-fee-payer.ts` from `apps/api` in the staging API container. It prints ONLY the public key. Send less than 0.05 SOL (mainnet) to that address.
+- **DO (production):** after the promotion, run the same script in the production API container and fund that new address with less than 0.05 SOL. Each box has its own fee wallet.
+- **CHECK:** on https://staging.clawville.world/game open Wallet, then Agent AI, then UsePod. The card says "ClawVille pays the network fee. Your wallet needs no SOL." A deposit from an avatar wallet with 0 SOL finishes, and the receipt says "ClawVille paid the network fee."
+- **CHECK:** after 2 sponsored deposits in one UTC day, the card asks for SOL again, and a deposit from a wallet with SOL says "Your agent wallet paid the network fee."
+- **COST:** about 0.00001 SOL per deposit. The fee wallet stops at 0.001 SOL (it stays rent exempt), and the API logs a refill warning under 0.01 SOL. At most 2 sponsored deposits per avatar and 200 for all players per UTC day (about 0.002 SOL per day at most).
+- **FEEDBACK:** say the amount you sent and if the card text is clear on phone and desktop.
+
 ### Agent AI card deposit (session claw2.0, own AI part B, 2026-11-09, STAGING after an authorized deployment)
 
 - **STATUS:** local implementation only; no commit, push, registration or transaction in this session.
@@ -157,6 +186,7 @@
 - **What to look at:** Trading Floor terminal (Dashboard, Trades, profile), the Exchange leaderboard and the 3D big screen on staging. They now open on "This period". Before the first reset, "This period" equals "All time".
 - **Where:** `https://staging.clawville.world/game`, walk into the Trading Floor, open the terminal; the board is on the back wall.
 - **Feedback wanted:** (1) the go to run the first reset on staging (operator route; closes open positions with "Period reset"); (2) the go to rescore the 53 wrong prod exits (dry-run list first); (3) where the 0.25% ClawVille fee applies (`ops/house-traders/research-20261112/fees/REPORT.md`); (4) the per-agent strategy review (`ops/house-traders/research-20261112/strategy-review/REPORT.md`).
+- **Not checked by the session:** the terminal on a real phone and iPad (portrait and landscape). The emulation tools were down; please screenshot the terminal Dashboard and the leaderboard on a phone.
 
 ### Arena: two new exit settings in the trader rules form (job arena-pipeline, 2026-10-15, STAGING)
 - **Look at:** `https://staging.clawville.world/game`, walk into the Trading Floor, sit at a desk (or open Exchange -> Trading Floor tab), open "My trader" and edit its rules. The exits part now has "Move the stop to breakeven at" (1.05x to 10x, off by default) and "Sell all when liquidity falls by" (10% to 95%, off by default). A trade closed by one of them shows "breakeven stop" or "liquidity drop" in the position list.
@@ -684,6 +714,11 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## HUD
 
+### Emote bar hidden on /game (session new-ville, 2026-11-12, STAGING)
+- **What:** the 4-slot emote bar (and its 1-4 hotkeys) no longer shows on /game, on founder order ("just hide it": bad spot, not working right). The component file stays for a later fix. Agents still emote through their own action path.
+- **Where:** https://staging.clawville.world/game with an emote equipped: no bar above the chat, and the email-verify banner is no longer covered.
+- **Feedback wanted:** confirm it is gone; say where emotes should go when they come back.
+
 ### Phone game menu: bigger tap targets (staging)
 - **What:** on phones and tablets every row in the game menu (gear button) and the "Create Agent"
   button are now at least 44 px tall (they were 40.5 px and 27 px). Desktop is unchanged.
@@ -879,6 +914,14 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 
 ## WORLD / 3D
 
+### BrainChain Office v3 building + Cortex robot (session brainchain, 2026-11-11, STAGING)
+
+- **Where:** `https://staging.clawville.world/game` on a desktop. Walk to ring slot 4 (east-south-east of the plaza), the BrainChain Office.
+- **Look at:** the new orbit-sculpture building with the large pink vortex entrance (glowing pink seams and spiral), and Cortex, the brain-head clerk robot in front of it (idle animation). Walk all the way round the building.
+- **Feedback wanted:** building size against its neighbours (it is wider and lower than the old Office: 1400 wide, about 1000 high); Cortex height and facing; the robot name (still "Cortex").
+- **2026-11-12 vortex door:** the vortex now spins. Walk straight at it (up the gap in front of the entrance): a transition plays and the BrainChain page opens. "Back to town" puts you outside the vortex, facing away. Feedback wanted: spin speed and colour, whether the walk-up gap looks right next to the white ribbons, and whether the transition feels good.
+- **2026-11-12 Bumper Shells:** now at Mrs. Puff's Boating School next to Reef Race. The Office building panel shows only the Office entry and Cortex chat.
+
 ### October 6: seabed decorations are back (staging)
 
 - **Session:** tradeLead3, 2026-10-06.
@@ -905,6 +948,11 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - Shipped by: kelp session, 2026-08-08. Founder eyes owed since then.
 
 ## PERF
+
+### Smaller models with before/after checks (session new-ville, 2026-11-13, STAGING)
+- **What:** three models are smaller, each checked against the file that ships today with `scripts/models/glb-compare.mjs` (same cameras, sharpness score per small area, geometry error). Pavilion 3.00 -> 2.07 MB against prod. The first staging pavilion (1.34 MB, 2026-11-12) made the display boards softer, so this version restores every texture at full size except the roughness and shadow maps. Arcade exterior 0.84 -> 0.60 MB. Shisha stall 0.55 -> 0.50 MB. Textures that lost detail in the check (one arcade map, the bazaar stand, the lobster) kept their size.
+- **Where:** https://staging.clawville.world/game. Walk up to the Quest + Bounty Pavilion (behind the town-directory sign), the arcade (west side of the ring) and the shisha stall (east of the sign).
+- **Feedback wanted:** do the pavilion boards, the arcade sign and posters, and the shisha stall look the same as on prod up close?
 
 ### October 6: Next.js 16.3.8 (security upgrade) on staging
 
@@ -980,3 +1028,56 @@ platform on CLI access. Widening it needs a commercial agreement with DoorDash, 
 - **Try:** search a token, open its price, read top movers and the macro row; paste a wallet for the free trust check.
 - **Feedback wanted:** is the card useful where it is? Is 300 vendor calls per avatar per day right?
 - **Paid screen:** needs your dollar cap before a live test. Until then it has only mock tests, and SAID's reply shape is not verified.
+
+
+## BrainChain 2D town - local review pending - 2026-11-09
+
+Session: brainchain-office, worktree brainchain-plan. No staging push yet.
+
+Review /game?view=2d after the production build. Check the Office door and guide, resident entry, map navigation, return to town, and mobile joystick. Check that Explore moves only the camera and NPC mode shows one controlled body. Confirm the sidebar switch returns to 3D. Confirm unsupported venues explain the 3D requirement.
+
+Browser verification, actual Claude review, Iris Xe sampling, and a real-iPad safe-area check remain open. Unit tests do not establish visual acceptance.
+
+
+BrainChain 2D review additions, 2026-11-09: inspect the visible marketplace footprint at game position 12099,11484 and the MCP-tool-use footprint near 14213,8681. Those were invisible stopping boundaries in the previous local bundle. Check a real pointer click on Continue in 2D after forced renderer failure. Check Autonomous-to-Player position continuity and both activity queue refusal notices. New source needs a new production build and browser evidence.
+
+
+### BrainChain 2D party recovery - 2026-11-09
+
+Environment: local production build, /game?view=2d. Session: brainchain-office world reconciler. Check that party create/join/queue controls refuse in 2D. Start with an existing party, close its lobby, then select 2D. Persistent recovery must leave pending queue participation even after entry into the Office. If the server already assigned a match, it must open that actual activity in 3D. Report any repeated notices, hidden errors, or missing match navigation. Mounted React and queue tests do not replace two-client browser review. Also test a guest solo match, a failed leave, and logout during a pending assignment request.
+
+### BrainChain Office on staging - 2026-11-10
+
+Session: brainchain-office. Environment: https://staging.clawville.world/game and /brainchain after the staging deploy.
+Look at: the Office building and its door, the Office Guide, the /brainchain panel sections (learning, worker setup, status, purchases, earnings, credit, recovery) and their unavailable-state messages.
+Feedback wanted: is the Office easy to find and enter, and do the panel sections read clearly? Real phone/iPad view of the panel and joystick.
+Not ready to judge: worker earnings, task purchases and cash-out stay disabled until the testnet lifecycle passes.
+
+Partner feedback, 2026-11-23. Session: brainchain-feedback-2026-11-23. State: in diff; Claude reviews, commits and pushes.
+Cortex leads with BrainChain work and keeps the full API lesson. Safety and credit text follows the partner evidence.
+The capability list shows Solana funding, Solana cash-out and Priors credit as available through BrainChain's external tools.
+
+After deployment, open https://staging.clawville.world/brainchain. Inspect Learn and Talk to Cortex.
+Check the first teacher answer, public-output guidance, credit explanation, and distinction between mainnet worker commands and test-only Office preparation.
+The Office does not execute mainnet payments or lend. PARITY: humans and bound agents receive the same curriculum through their existing Office and chat paths.
+
+### BrainChain Office in the ring (replaces the Salty Spitoon) - 2026-11-10
+
+Session: brainchain-office. Environment: https://staging.clawville.world/game after the staging deploy; the building is the ESE ring building (where the Salty Spitoon stood).
+Look at: the Office building in the ring (size, door facing the plaza), the new resident "Cortex" (a tinted existing VRM, placeholder name), the "Enter BrainChain Office" button in the building panel, and chat with Cortex (BrainChain plus the old API-integrations lesson).
+Feedback wanted: is "Cortex" the right name and look? Is the tint too strong or too weak? Real phone/iPad view of the building panel button.
+
+
+
+### WORLD / 3D: BrainChain Office interior phase 1 (2026-11-12, STAGING `512faf76e`)
+
+Phase 2, Last Audited: 2026-11-13. Drift note: live account boards replace static labels (PROTOCOL 139). Signed in, look at the Task Board and Receipts wall in /brainchain: they must match the Work status and Earnings tabs, and clear when you sign out. Staging data is thin (3 bound workers, 0 indexed tasks, 1 draft order, 0 funding records on 2026-11-13), so most accounts see empty states. Claude checked signed in as staging test account landtest2 on `0101ee469`: both boards and the Earnings chain read work (the Receipts wall needed the funding-exit route fix in that build). Claude checked the phase 1 HUD and Office window in emulation at 390x844, 744x1133, 820x1180 and 1024x1366, portrait and landscape: no overlap, buttons 44 px or more, window fits and closes by tap. A real iPhone or iPad screenshot is still needed for the safe-area edges.
+
+Last Audited: 2026-11-12 11:55Z. Drift note: on staging since `28310b109`; props enlarged in `512faf76e`; founder verdict on size absorbed.
+
+Founder verdict 2026-11-12: "The size looks great" (room, sculpture, pods and Cortex at the sizes in `3dStructure.md`). Do not resize them again without a new founder request.
+At https://staging.clawville.world/game, walk through the Office vortex without chat.
+Claude checked on staging `512faf76e` (headless Chrome, 11:50Z to 12:10Z): the desk opens Learn, a pod opens Worker setup, the task board opens Work status, the receipts wall opens Earnings, Escape closes each, and both vortex directions work.
+Check Talk to Cortex, Close and movement freeze. Check Back to town placement.
+Check the same panel in 2D. Check touch controls and prompts on phones and iPads, in both orientations.
+Feedback wanted: station spacing, portal appearance, text contrast and frame rate on your laptop.

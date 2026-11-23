@@ -1,0 +1,48 @@
+﻿{
+    "job":  "brainchain-office",
+    "owner":  "root",
+    "currency":  "USD",
+    "providers":  {
+                      "openai":  {
+                                     "cap":  10,
+                                     "reserved":  0,
+                                     "spent":  0
+                                 },
+                      "openrouter":  {
+                                         "cap":  10,
+                                         "reserved":  0,
+                                         "spent":  0
+                                     }
+                  },
+    "meshy":  {
+                  "authorization":  "Existing subscription credits without a job-specific numeric cap; no purchases or reseller billing",
+                  "reservedCredits":  0,
+                  "reportedCredits":  30,
+                  "tasks":  [
+                                {
+                                    "credits":  30,
+                                    "batch":  "office-v1",
+                                    "taskId":  "01a1c089-73c6-75ca-94dd-56f8f2ce7da9",
+                                    "requestHash":  "a71a4474705ecfd1222687e26b261e1a2138d01190949ce49144877d8059c56d",
+                                    "state":  "succeeded"
+                                }
+                            ]
+              },
+    "calls":  [
+                  {
+                      "artifacts":  "docs/research/brainchain-2026-11-09/3d/reference-provenance.json",
+                      "provider":  "Codex built-in image generation",
+                      "apiKeyCharged":  false,
+                      "count":  3
+                  }
+              ],
+    "rules":  [
+                  "Only the lead reserves paid API costs before dispatch.",
+                  "Caps include every agent, retry and resumed session.",
+                  "Uncertain charges remain reserved.",
+                  "Built-in image generation uses the available tool without loading the OpenAI API key.",
+                  "No mainnet wallet spending or credit authority exists."
+              ],
+    "jobId":  "2482562a-c3fd-4684-b3a8-963224c4f479",
+    "revision":  1
+}

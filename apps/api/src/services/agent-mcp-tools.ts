@@ -1,3 +1,4 @@
+import { decodeBrainchainFundingDraft,decodeBrainchainPurchaseDraft,decodeBrainchainRecoveryDraft,decodeBrainchainPolicyDraft } from './brainchain-action';
 /**
  * Hosted MCP tool table (job agent-skill-simple, 2026-10-13).
  *
@@ -25,6 +26,13 @@ import {
   isProtocolTopic,
   resolveApiBase,
 } from './skill-protocol';
+import { MCP_VIEW_TOOLS_SESSION_EXCLUSION } from './mcp-app/session-rule';
+import {
+  DASHBOARD_OPEN_TOOL,
+  DASHBOARD_REFRESH_TOOL,
+  DASHBOARD_RESOURCE_URI,
+  DASHBOARD_TOOL,
+} from './mcp-app/dashboard';
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -77,6 +85,8 @@ export interface ToolAnswer {
   body: ToolAnswerBody;
   /** Larger cap for documentation pages. */
   maxChars?: number;
+  /** MCP `structuredContent` (an MCP App view reads it; text-only hosts read the text). */
+  structuredContent?: Record<string, unknown>;
 }
 
 export interface McpToolDef {
@@ -85,8 +95,13 @@ export interface McpToolDef {
   description: string;
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
-  /** False only for clawville_connect and clawville_docs. */
+  /**
+   * False for clawville_connect, clawville_docs and clawville_dashboard_refresh
+   * (the refresh resolves its session from a view token in routes/agent-mcp.ts).
+   */
   needsSession: boolean;
+  /** MCP Apps link (tool `_meta.ui`): the view resource and who may call the tool. */
+  ui?: { resourceUri: string; visibility?: Array<'model' | 'app'> };
 }
 
 /** Default cap on the JSON text of one answer (about 32 KB). */
@@ -520,6 +535,72 @@ export const GAME_TOOL_ROUTES: Record<string, GameRoute> = {
     },
     next: 'Use a media id only to tell your human which item you mean. 404 studios_signin_missing or 409 studios_signin_broken: ask your human to sign in with Studios.',
   },
+  clawville_brainchain: {
+    sources: [
+      src('brainchain-funding-exit.ts','get','/api/brainchain','/funding-exit'),
+      src('brainchain-funding-exit.ts','post','/api/brainchain','/funding-exit'),
+      src('brainchain-funding-exit.ts','get','/api/brainchain','/funding-exit/:operationId'),
+      ...['intent','submit','recover','reconcile'].map(op=>src('brainchain-funding-exit.ts','post','/api/brainchain',`/funding-exit/:operationId/${op}`)),
+      src('brainchain.ts','get','/api/brainchain','/purchases'),
+      src('brainchain.ts','post','/api/brainchain','/purchases'),
+      src('brainchain.ts','get','/api/brainchain','/purchases/:id'),
+      ...['quote','intent','submit','recover','reconcile','cancel'].map(op=>src('brainchain.ts','post','/api/brainchain',`/purchases/:id/${op}`)),
+      src('brainchain.ts', 'get', '/api/brainchain', '/knowledge'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/status'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/install'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/earnings'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/tasks'),
+      src('brainchain.ts', 'get', '/api/brainchain', '/workers/:id/identity-credit'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/workers/challenge'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/workers/bind'),
+      src('brainchain.ts', 'post', '/api/brainchain', '/workers/:id/control'),
+      src('brainchain-exact-recovery.ts','get','/api/brainchain','/workers/:id/recovery'),
+      src('brainchain-exact-recovery.ts','post','/api/brainchain','/workers/:id/recovery'),
+      ...['narrow','revoke'].map(op=>src('brainchain-exact-recovery.ts','post','/api/brainchain',`/workers/:id/recovery/:consentId/${op}`)),
+      src('brainchain-worker-policy.ts','get','/api/brainchain','/workers/:id/policy'),
+      src('brainchain-worker-policy.ts','post','/api/brainchain','/workers/:id/policy'),
+      src('brainchain-worker-policy.ts','post','/api/brainchain','/workers/:id/policy/control'),
+      src('brainchain-worker-policy.ts','post','/api/brainchain','/workers/:id/policy/narrow'),
+    ],
+    calls: (_c, i) => {
+      switch (i.op) {
+        case 'recovery': return [{method:'GET',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery`}];
+        case 'recovery_request': return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery`,body:decodeBrainchainRecoveryDraft(String(i.op),String(i.draft))}];
+        case 'recovery_narrow': return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery/${seg(i.consentId)}/narrow`,body:decodeBrainchainRecoveryDraft(String(i.op),String(i.draft))}];
+        case 'recovery_revoke': return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/recovery/${seg(i.consentId)}/revoke`,body:{}}];
+        case 'policy': return [{method:'GET',path:`/api/brainchain/workers/${seg(i.workerId)}/policy`}];
+        case 'policy_request': case 'policy_narrow': case 'policy_start': case 'policy_pause': case 'policy_revoke':
+          return [{method:'POST',path:`/api/brainchain/workers/${seg(i.workerId)}/policy${i.op==='policy_request'?'':i.op==='policy_narrow'?'/narrow':'/control'}`,body:decodeBrainchainPolicyDraft(String(i.op),String(i.draft))}];
+        case 'funding_list': return [{method:'GET',path:'/api/brainchain/funding-exit'}];
+        case 'funding_create': return [{method:'POST',path:'/api/brainchain/funding-exit',body:decodeBrainchainFundingDraft(String(i.draft))}];
+        case 'funding_get': case 'funding_intent': case 'funding_submit': case 'funding_recover': case 'funding_reconcile': return [{method:i.op==='funding_get'?'GET':'POST',path:`/api/brainchain/funding-exit/${seg(i.operationId)}${i.op==='funding_get'?'':`/${String(i.op).slice(8)}`}`,...(i.op==='funding_get'?{}:{body:{}})}];
+        case 'purchase_list': return [{method:'GET',path:'/api/brainchain/purchases'}];
+        case 'purchase_draft': return [{method:'POST',path:'/api/brainchain/purchases',body:decodeBrainchainPurchaseDraft(String(i.draft))}];
+        case 'purchase_get': return [{method:'GET',path:`/api/brainchain/purchases/${seg(i.orderId)}`}];
+        case 'purchase_intent': return [{method:'POST',path:`/api/brainchain/purchases/${seg(i.orderId)}/intent`,body:pick(i,['payer'])}];
+        case 'purchase_quote': case 'purchase_submit': case 'purchase_recover': case 'purchase_reconcile': case 'purchase_cancel':
+          return [{method:'POST',path:`/api/brainchain/purchases/${seg(i.orderId)}/${String(i.op).slice(9)}`,body:{}}];
+        case 'knowledge': return [{ method: 'GET', path: '/api/brainchain/knowledge' }];
+        case 'status': return [{ method: 'GET', path: '/api/brainchain/status' }];
+        case 'workers': return [{ method: 'GET', path: '/api/brainchain/workers' }];
+        case 'tasks': return [{ method: 'GET', path: `/api/brainchain/workers/${seg(i.workerId)}/tasks` }];
+        case 'earnings': {
+          const query = new URLSearchParams();
+          if (typeof i.board === 'string') query.set('board', i.board);
+          if (typeof i.fromBlock === 'string') query.set('fromBlock', i.fromBlock);
+          return [{ method: 'GET', path: `/api/brainchain/workers/${seg(i.workerId)}/earnings${query.size ? `?${query}` : ''}` }];
+        }
+        case 'identity_credit': return [{ method: 'GET', path: `/api/brainchain/workers/${seg(i.workerId)}/identity-credit?agentId=${seg(i.agentId)}` }];
+        case 'install': return [{ method: 'POST', path: '/api/brainchain/install', body: {} }];
+        case 'binding_challenge': return [{ method: 'POST', path: '/api/brainchain/workers/challenge', body: pick(i, ['environment', 'address']) }];
+        case 'bind': return [{ method: 'POST', path: '/api/brainchain/workers/bind', body: pick(i, ['nonce', 'signature']) }];
+        case 'control': return [{ method: 'POST', path: `/api/brainchain/workers/${seg(i.workerId)}/control`, body: pick(i, ['requestedState']) }];
+        default: throw new Error('Unknown BrainChain operation');
+      }
+    },
+    next: 'Read the brainchain manual topic. Install does not prove knowledge consumption. Sign an ownership challenge only through your external worker signer; provide a signature, never a private key. Binding is permanent. A local pause or drain request does not stop on-chain hires. Testnet purchase drafts and quotes are available. Purchase execution stays disabled until reviewed activation. External Base EVM signatures or Solana devnet exact transaction and task-intent signatures use the direct capture endpoint; never give signed payment bytes to a model. Human spend approval is separate.',
+  },
   clawville_market: {
     sources: [src('ecosystem-reads.ts', 'get', '/api/ecosystem', '/market/:op')],
     calls: (_c, i) => {
@@ -680,6 +761,8 @@ export function validateCallPath(path: unknown, method?: string): string | null 
   if (pathname.includes('//')) return 'path must not contain //';
   if (pathname.split('/').some((part) => part === '.')) return 'path must not contain . segments';
   const canonical = canonicalCallPathname(pathname);
+  if (/^\/api\/brainchain\/funding-exit\/[^/]+\/(capture|approve|challenge)$/.test(canonical)) return 'external signatures and account approval require direct private REST, outside model tools';
+  if (/^\/api\/brainchain\/purchases\/[^/]+\/(capture|approve|approval-challenge)$/.test(canonical)) return 'external payer signatures and human approval require direct private REST, outside model tools';
   if (isMcpEndpointPath(canonical)) return 'the MCP endpoint cannot call itself';
   for (const prefix of BLOCKED_CALL_PREFIXES) {
     if (canonical === prefix || canonical.startsWith(`${prefix}/`)) return `path ${prefix} is not available over MCP`;
@@ -758,12 +841,14 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
   ...(required.length > 0 ? { required } : {}),
 });
 
+const VIEW_TOKEN_PROPERTY = { type: 'string', description: 'The viewToken from clawville_dashboard_open (starts with cvw_).' };
+
 const META_TOOLS: McpToolDef[] = [
   {
     name: 'clawville_connect',
     title: 'Connect to ClawVille',
     description:
-      'Connect your agent to ClawVille (POST /api/agent/connect, same rules as REST) and get your sessionId. Pass it as the sessionId argument on every later tool call. ' +
+      'Connect your agent to ClawVille (POST /api/agent/connect, same rules as REST) and get your sessionId. Pass it as the sessionId argument on every later session tool call, never on clawville_dashboard or clawville_dashboard_refresh (they take only viewToken). ' +
       'Send a stable agentId and, to keep the same account across restarts, an identityType plus a secret identityKey you store. ' +
       'Returns sessionId, wallet, cognition mode and a one-time sessionTicket.url for your human. Call this first.',
     inputSchema: objectSchema(
@@ -870,6 +955,38 @@ const META_TOOLS: McpToolDef[] = [
     readOnly: false,
     needsSession: true,
   },
+  {
+    name: DASHBOARD_OPEN_TOOL,
+    title: 'Read the ClawVille dashboard',
+    description:
+      'Read your ClawVille dashboard as text: connection status, wallet balances (vCLAW, USDC, SOL), the spend rules your human set, ' +
+      'your agent AI and UsePod balance, and next steps. Read-only. The answer also has a 15-minute viewToken: in a host with MCP Apps ' +
+      '(Claude web or desktop) call clawville_dashboard {"viewToken": "..."} to show it as an interactive view.',
+    inputSchema: objectSchema({}),
+    readOnly: true,
+    needsSession: true,
+  },
+  {
+    name: DASHBOARD_TOOL,
+    title: 'Show the ClawVille dashboard view',
+    description:
+      'Show the ClawVille dashboard as an interactive view (Claude web and desktop). Takes ONLY the viewToken from clawville_dashboard_open. ' +
+      'Do not pass sessionId: the host shows this tool\'s arguments to the view. Read-only.',
+    inputSchema: objectSchema({ viewToken: VIEW_TOKEN_PROPERTY }, ['viewToken']),
+    readOnly: true,
+    needsSession: false,
+    ui: { resourceUri: DASHBOARD_RESOURCE_URI },
+  },
+  {
+    name: DASHBOARD_REFRESH_TOOL,
+    title: 'Refresh the ClawVille dashboard view',
+    description:
+      'Only for the ClawVille dashboard view (its Refresh button). Takes only the viewToken. Do not pass sessionId. Read-only.',
+    inputSchema: objectSchema({ viewToken: VIEW_TOKEN_PROPERTY }, ['viewToken']),
+    readOnly: true,
+    needsSession: false,
+    ui: { resourceUri: DASHBOARD_RESOURCE_URI, visibility: ['app'] },
+  },
 ];
 
 const GAME_TOOL_DEFS: McpToolDef[] = CLAWVILLE_GAME_TOOLS.map((tool) => {
@@ -895,7 +1012,7 @@ export const SESSION_ID_ARG = 'sessionId';
 const SESSION_ID_PROPERTY = {
   type: 'string',
   description:
-    'Your sessionId from clawville_connect. Send it on every call, unless your MCP client sends it as the header Authorization: Bearer <sessionId>.',
+    'Your sessionId from clawville_connect. Send it on every session tool call (never on clawville_dashboard or clawville_dashboard_refresh), unless your MCP client sends it as the header Authorization: Bearer <sessionId>.',
 };
 
 function withSessionArg(def: McpToolDef): McpToolDef {
@@ -940,7 +1057,7 @@ export function notConnectedAnswer(detail?: string): ToolAnswer {
       ok: false,
       error: 'not_connected',
       ...(detail ? { data: { detail } } : {}),
-      next: 'Call clawville_connect {"agentId": "<your stable id>", "identityType": "<your framework>", "identityKey": "<your saved secret>"} first, then pass "sessionId": "<its sessionId>" in the arguments of every other tool call.',
+      next: 'Call clawville_connect {"agentId": "<your stable id>", "identityType": "<your framework>", "identityKey": "<your saved secret>"} first, then pass "sessionId": "<its sessionId>" in the arguments of every session tool call. ' + MCP_VIEW_TOOLS_SESSION_EXCLUSION,
     },
   };
 }
@@ -1060,7 +1177,7 @@ async function runConnect(args: unknown, rt: ToolRuntime): Promise<ToolAnswer> {
   if (summary.sessionTicket) human.push('sessionTicket.url');
   if (asRecord(summary.wallet)?.secretKey) human.push('wallet.secretKey');
   const give = human.length > 0 ? `Give ${human.join(' and ')} to your human once, privately. ` : '';
-  const auth = `Pass "sessionId": "${data.sessionId}" in the arguments of EVERY later tool call (or send it as the header Authorization: Bearer <sessionId>). `;
+  const auth = `Pass "sessionId": "${data.sessionId}" in the arguments of every later session tool call (or send it as the header Authorization: Bearer <sessionId>). ${MCP_VIEW_TOOLS_SESSION_EXCLUSION} `;
   return {
     body: {
       ok: true,
@@ -1092,10 +1209,12 @@ with your live session. The REST route decides; MCP adds no extra power.
 ## Session
 
 1. Call \`clawville_connect\` once. It returns your \`sessionId\`.
-2. Pass \`"sessionId": "<your sessionId>"\` in the arguments of EVERY other tool
-   call, or send the header \`Authorization: Bearer <sessionId>\` (or
-   \`X-Clawville-Agent-Session\`). When you send more than one, they must be the
-   same. \`Mcp-Session-Id\` is transport state only: it never authorizes a call.
+2. Pass \`"sessionId": "<your sessionId>"\` in the arguments of every session tool
+   call (every tool except \`clawville_connect\`, \`clawville_docs\`,
+   \`clawville_dashboard\` and \`clawville_dashboard_refresh\`), or send the header
+   \`Authorization: Bearer <sessionId>\` (or \`X-Clawville-Agent-Session\`). When
+   you send more than one, they must be the same. ${MCP_VIEW_TOOLS_SESSION_EXCLUSION}
+   \`Mcp-Session-Id\` is transport state only: it never authorizes a call.
 3. Every answer is JSON \`{ok, status, data, next}\`. \`next\` names the next call.
    A refused game action is a normal answer with \`ok: false\`, not an error.
 4. When a call answers \`not_connected\`, call \`clawville_connect\` again with the
@@ -1114,6 +1233,15 @@ with your live session. The REST route decides; MCP adds no extra power.
   \`clawville_cove_poker {tool, input, idempotencyKey}\`: the Cove games, real vCLAW.
 - \`clawville_move\` waits up to about 30 seconds for arrival and answers
   \`arrived: true|false\` with the nearest building.
+- \`clawville_dashboard_open {}\`: read-only dashboard as text (status, wallet
+  balances, spend rules, agent AI and UsePod balance, next steps) plus
+  \`data.viewToken\` (15 minutes, bound to your session, at most 5 live per
+  session). In a host with MCP Apps (Claude web and desktop), then call
+  \`clawville_dashboard {"viewToken": "<data.viewToken>"}\`: it takes ONLY the
+  token (never your sessionId) and renders the view \`${DASHBOARD_RESOURCE_URI}\`
+  (\`resources/read\`) with Refresh and Open ClawVille buttons. The view
+  refreshes itself with the app-only tool \`clawville_dashboard_refresh\`; do
+  not call that tool yourself. A terminal host can stop after the open call.
 
 ## Game tools and their routes
 
@@ -1187,7 +1315,7 @@ async function runGenericCall(args: unknown, rt: ToolRuntime): Promise<ToolAnswe
       status: result.status,
       data: result.data,
       next: reconnected
-        ? 'Use data.sessionId as your sessionId on every later tool call; the old one no longer works.'
+        ? 'Use data.sessionId as your sessionId on every later session tool call (never on clawville_dashboard or clawville_dashboard_refresh); the old one no longer works.'
         : result.ok
           ? 'Continue with the next step the manual names.'
           : `Read data for the refusal reason (status ${result.status}).`,

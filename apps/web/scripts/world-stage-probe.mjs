@@ -207,7 +207,7 @@ const heapReportPath = resolve(
 );
 const scenes = ["alpha", "beta", "cove-spike"];
 const WORLD_ONLY_ASSET_PATTERN =
-  /\/models\/(?:characters\/|(?:pineapple-house|chum-bucket|krusty-krab|salty-spitoon|boating-school|patty-building|building-lighthouse|arcade\/claw-arcade-exterior|cove\/cove-exterior|patricks-rock|squidward-house|coral-reef|kelp\.glb|building-shell|building-seashell|building-anchor|building-barrel|building-chest|building-lantern|crayfish|building-tower2|quest-bounty-pavilion|bazaar-merchant-stand|shisha-oasis))/i;
+  /\/models\/(?:characters\/|(?:pineapple-house|chum-bucket|krusty-krab|brainchain\/brainchain-office-exterior|boating-school|patty-building|building-lighthouse|arcade\/claw-arcade-exterior|cove\/cove-exterior|patricks-rock|squidward-house|coral-reef|kelp\.glb|building-shell|building-seashell|building-anchor|building-barrel|building-chest|building-lantern|crayfish|building-tower2|quest-bounty-pavilion|bazaar-merchant-stand|shisha-oasis))/i;
 const STAGE_PROBE_API_ORIGINS = new Set([
   // request() currently resolves its empty API_URL default against the page.
   // HONO-backed calls use the explicit localhost API origin. Keep both exact

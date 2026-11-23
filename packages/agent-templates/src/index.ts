@@ -50,6 +50,12 @@ export { townGuide } from './locations/town-guide';
 // here — the seeder loop handles the rest.
 export const SYSTEM_AGENT_TEMPLATES: Record<string, LocationTemplate> = {
   'town-guide': townGuide,
+  // 2026-11-10: the BrainChain Office is the `api-integrations` building and its
+  // resident Cortex replaced the separate Office Guide. This slug stays so the
+  // human /brainchain "Ask" panel and the agent manual's
+  // POST /api/chat/system/brainchain-office keep working from anywhere; it now
+  // answers as Cortex with the same knowledge as the building teacher.
+  'brainchain-office': apiIntegrations,
 };
 
 // Legacy export name (kept for backwards compatibility)

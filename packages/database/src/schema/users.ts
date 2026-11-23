@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, boolean, integer, text, check, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, boolean, integer, bigint, text, check, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -169,6 +169,8 @@ export const users = pgTable(
     linkedWalletPubkey: varchar('linked_wallet_pubkey', { length: 44 }),
     /** When the current `linked_wallet_pubkey` was last proven + set. */
     linkedWalletAt: timestamp('linked_wallet_at', { withTimezone: true }),
+    /** Monotonic DB authority identity; wallet/proof-time changes invalidate prior purchase approval. */
+    linkedWalletAuthorityVersion: bigint('linked_wallet_authority_version', { mode: 'number' }).notNull().default(0),
 
     /** P2 land-hold declaration; unique per account in SQL. A declaration is a
      *  CLAIM, never a proof — the four columns below carry the proof. */
@@ -240,6 +242,7 @@ export const users = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => ({
+    linkedWalletAuthorityVersionBound: check('users_linked_wallet_authority_version_bound',sql`${t.linkedWalletAuthorityVersion} >= 0 AND ${t.linkedWalletAuthorityVersion} <= 9007199254740991`),
     // Guard: a user must have AT LEAST ONE of (email+password) or
     // identity_fingerprint. Matches §5.2 of the Phase 5 plan. Runs at
     // every INSERT / UPDATE so a partially-initialized row (e.g. an

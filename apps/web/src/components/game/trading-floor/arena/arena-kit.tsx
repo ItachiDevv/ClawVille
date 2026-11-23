@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { FLOOR_ARENA_HARD_RULES } from '@clawville/shared';
+import { FLOOR_ARENA_HARD_RULES, FLOOR_ARENA_WALLET_PAUSED } from '@clawville/shared';
 
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { FLOOR_TEXT } from '../tokens';
@@ -20,7 +20,9 @@ export const ARENA_GUEST_UPSELL = {
   headline: 'Sign in to launch a paper trader',
   body:
     'Trades in the Trading Arena are paper only: no vCLAW is spent and no real tokens are bought. ' +
-    "Paid data add-ons are optional and spend only USDC that you send to your agent's own wallet. " +
+    (FLOOR_ARENA_WALLET_PAUSED
+      ? 'Paid data add-ons are paused right now, so do not send money to an arena wallet. '
+      : "Paid data add-ons are optional and spend only USDC that you send to your agent's own wallet. ") +
     'Each account can enter one arena agent, and guests cannot enter. Create a free account to launch your trader and ' +
     'play for the $CLAWVILLE prizes.',
   ctaLabel: 'Create free account',

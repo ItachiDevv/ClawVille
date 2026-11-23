@@ -1,0 +1,16 @@
+﻿{
+  "host": "hoodie-prometh",
+  "observedAt": "2026-11-09",
+  "method": "Read-only SSH Win32_VideoController query",
+  "adapters": [
+    {"name":"Intel(R) Iris(R) Xe Graphics","driverVersion":"32.0.101.7092"},
+    {"name":"LuminonCore IDDCX Adapter","driverVersion":"1.0.2018.1204"},
+    {"name":"NVIDIA GeForce RTX 3060 Laptop GPU","driverVersion":"32.0.15.9579"}
+  ],
+  "chromeInstalled": true,
+  "edgeInstalled": true,
+  "ports3000_4000_9333_9334Listening": false,
+  "browserLaunchedByThisProbe": false,
+  "performanceVerified": false,
+  "constraint":"A browser run must identify its actual adapter before it counts as Iris Xe evidence. Existing browser sessions must remain untouched."
+}

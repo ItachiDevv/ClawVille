@@ -1,3 +1,4 @@
+import { resolveProbeRuntimeScope } from './brainchain/probe-runtime-scope';
 import { eq, and } from 'drizzle-orm';
 import { db, agents, agentLogs, avatars, agentBots } from '@clawville/database';
 import {
@@ -389,6 +390,7 @@ class AgentOrchestrator {
     await this.updateAgentStatus(agentId, 'starting');
 
     try {
+      const probeScope = await resolveProbeRuntimeScope(agentId, userId, true);
       const customization = (agent.customization as Record<string, unknown>) ?? {};
       // `system-agent` (e.g. Town Guide) runs the same ElizaOS runtime shape
       // as a location-agent — one character, knowledge[] in customization,
@@ -437,7 +439,7 @@ class AgentOrchestrator {
       let ownAiState: OwnAiLiveState | undefined;
       let ownAi: OwnAiProviderConfig | undefined;
       let ownAiGenAtStart = 0;
-      if (inferenceRoute === 'hosted-user' && !openclawGateway) {
+      if (!probeScope && inferenceRoute === 'hosted-user' && !openclawGateway) {
         try {
           avatarId = (await this.resolveUserOwnedAvatarId(agentId, userId)) ?? undefined;
         } catch (err) {
@@ -478,6 +480,7 @@ class AgentOrchestrator {
       const runtime: ElizaRuntime = createElizaRuntime({
         agentId,
         agentType,
+        probeScope,
         customization: {
           name: agent.name,
           personality: customization.personality as string | undefined,
@@ -498,7 +501,7 @@ class AgentOrchestrator {
         inferenceRoute,
         ownAi,
         databaseUrl: process.env.DATABASE_URL,
-        apiKeys: {
+        apiKeys: probeScope ? undefined : {
           // OpenAI backs BOTH text generation (openai-text-provider) and
           // embeddings (openai-embedding-provider, text-embedding-3-small, 1536-dim).
           openai: process.env.OPENAI_API_KEY,

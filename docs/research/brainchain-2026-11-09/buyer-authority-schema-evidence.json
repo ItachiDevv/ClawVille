@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-09",
+  "scope": "isolated local full-schema fixture only",
+  "database": "brainchain_full_schema",
+  "migrations": [
+    "0108_brainchain_buyer_orders.sql",
+    "0110_brainchain_buyer_authority.sql"
+  ],
+  "applicationsPerMigration": 2,
+  "buyerConstraintCount": 32,
+  "result": "passed",
+  "productionMigration": false,
+  "paidCalls": 0
+}

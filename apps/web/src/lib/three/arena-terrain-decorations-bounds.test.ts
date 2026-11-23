@@ -242,7 +242,7 @@ describe('placed decorations in world space', () => {
     expect(buckets.size).toBeLessThanOrEqual(56);
     expect(tris).toBeLessThanOrEqual(150_000);
     // Pinned exact values for the seed-12345 layout (update with the docs).
-    expect({ meshes: buckets.size, tris }).toEqual({ meshes: 52, tris: 148_444 });
+    expect({ meshes: buckets.size, tris }).toEqual({ meshes: 50, tris: 130_920 });
   });
 
   it('caps chests and excludes tower2', () => {

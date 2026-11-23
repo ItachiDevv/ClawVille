@@ -56,7 +56,7 @@ export const BUILDING_OPENCLAW_THEMES: Record<string, { label: string; focus: st
   // `skillBuildingMatches`. Pearl's subject WIDENS to scheduled trading; it is
   // not replaced, so the skill category stays 'Automation & Workflows'.
   'cron-automation': { label: 'Trading Floor', focus: 'scheduled trading automation, cron jobs, task queues, workflow orchestration, CI/CD pipelines, and the timers behind DCA and limit orders', category: 'Automation & Workflows' },
-  'api-integrations': { label: 'Salty Spitoon', focus: 'REST APIs, GraphQL, webhooks, OAuth, rate limiting, and system integrations', category: 'APIs & Integrations' },
+  'api-integrations': { label: 'BrainChain Office', focus: 'REST APIs, GraphQL, webhooks, OAuth, rate limiting, system integrations, and BrainChain external task work', category: 'APIs & Integrations' },
   'memory-rag': { label: "Squidward's House", focus: 'RAG pipelines, vector databases, text embeddings, semantic search, and context management', category: 'Memory & Knowledge' },
   'code-development': { label: 'Chum Bucket', focus: 'code generation, debugging, testing, git workflows, and containerized development', category: 'Code & Development' },
   'messaging-channels': { label: "Sandy's Treedome", focus: 'email automation, Slack, Discord, Telegram bots, and multi-channel messaging', category: 'Communication' },

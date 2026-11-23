@@ -9,6 +9,8 @@ describe('protocol knowledge injection after a stop', () => {
       state: 'running',
       config: { agentId: '10000000-0000-4000-8000-000000000001' },
       ensureWorld: async () => 'world', ensureRoom: async () => {}, ensureEntity: async () => {},
+      // The real private embedding helper; with no probe scope it reaches the mocked embedText.
+      embedScoped: (ElizaRuntime.prototype as unknown as { embedScoped: unknown }).embedScoped,
     };
     fake.runtime = {
       createMemory: async (memory: { metadata: { section: number } }) => {

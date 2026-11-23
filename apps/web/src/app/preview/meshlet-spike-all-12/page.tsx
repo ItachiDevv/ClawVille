@@ -100,8 +100,8 @@ const BUILDINGS: BuildingSpec[] = [
   // Until then, spike runs with 11 buildings to measure meshlet path without
   // this single outlier dragging the average.
   // { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1]  },
-  // Slot 4 — ESE — api-integrations (salty-spitoon)
-  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1-ktx.glb?v=3',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
+  // Slot 4 — ESE — api-integrations (BrainChain Office, 2026-11-10)
+  { id: 'api-integrations',   model: '/models/brainchain/brainchain-office-v3-ktx.glb', posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
   // Slot 5 — SSE — app-publishing (boating-school)
   { id: 'app-publishing',     model: '/models/boating-school-opt1-ktx.glb?v=3',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1]  },
   // Slot 6 — S — cron-automation (Trading Floor exterior)
@@ -109,7 +109,7 @@ const BUILDINGS: BuildingSpec[] = [
   // Slot 7 — SSW — deployment-ops (lighthouse)
   { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1-ktx.glb?v=3',                posX: ringPos(7)[0],  posZ: ringPos(7)[1]  },
   // Slot 8 — WSW — claw-arcade
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
+  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
   // Slot 9 — W — cove
   { id: 'cove',               model: '/models/cove/cove-exterior-opt1-ktx.glb?v=4',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1]  },
   // Slot 10 — WNW — agent-security (patricks-rock)

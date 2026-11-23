@@ -1,6 +1,8 @@
 # ClawPump integration
 
-**Last Audited: 2026-10-02 01:25Z (Trading Arena P5 wallet withdraw: the transfer and history endpoints).** Drift note: ClawVille now SENDS money through ClawPump: `POST /wallets/{id}/transfer` from a player's own arena agent wallet, and it reads live balances from `GET /wallets/{id}/history`. New subsection "Wallet transfer and history (P5 withdraw, 2026-10-02)" records the Run 2 probe facts (2026-10-01): ClawPump does NOT enforce the per-agent whitelist on the REST transfer; 0.005 SOL is a pre-check, not a floor; the fee is 5,000 lamports, paid by the agent wallet; `/wallets/summary` is cached and history is live; the USDC and SOL reply shapes; the outcome code table. The 2026-09-18 research line "Whitelist = allowed transfer destinations" is corrected for the REST transfer.
+**Last Audited: 2026-11-19 (Trading Arena writer on ClawPump v1, job clawpump-v1-writer; not pushed).** Drift note: this file still named the dead Railway REST root with `PATCH /agents/:id`, the sticky-skill deny list (D24) and the x402 reconcile. The arena writer now uses v1 (`POST /agents` flat body, `POST /agents/{id}` with `is_public` / `accepting_bids`, camelCase replies), the backend host through the key exchange for wallet reads, keeps arena agents private and closed to bids, keeps ClawPump's skills (founder 2026-11-19), and fails closed `route_not_verified` on the transfer and the x402 routes. Detail: `docs/trading-floor-arena.md` section 6i.
+
+**Prior Last Audited: 2026-10-02 01:25Z (Trading Arena P5 wallet withdraw: the transfer and history endpoints).** Drift note: ClawVille now SENDS money through ClawPump: `POST /wallets/{id}/transfer` from a player's own arena agent wallet, and it reads live balances from `GET /wallets/{id}/history`. New subsection "Wallet transfer and history (P5 withdraw, 2026-10-02)" records the Run 2 probe facts (2026-10-01): ClawPump does NOT enforce the per-agent whitelist on the REST transfer; 0.005 SOL is a pre-check, not a floor; the fee is 5,000 lamports, paid by the agent wallet; `/wallets/summary` is cached and history is live; the USDC and SOL reply shapes; the outcome code table. The 2026-09-18 research line "Whitelist = allowed transfer destinations" is corrected for the REST transfer.
 
 **Last Audited: 2026-10-01 (Trading Arena single ClawPump writer, Codex r19 money; in the consolidated build).** Drift note: only the arena engine leader writes to ClawPump now; launch, add-on changes and the admin reprovision write only the database row, and the leader applies them on its 30 s provisioning tick (design v8b: x402 removals first, R1 fresh OFFs with no cap on a database-time watermark, R2 a fair 6-per-tick cursor, R3 retries with backoff, then 4 re-checks; a per-agent try-lock in a bounded transaction). D32: x402 removal is hygiene, not a money control; the payment gates are the reservation, `confirmDispatch` and the writer's last read. Only the add-on tick adds x402, right before a payment, at most 8 a tick; provisioning never adds it. The arena writer now allows 60 ClawPump calls a minute per process, burst 10, the last 5 reserved for removals (new section "Call budget and quota"). The immediate x402 removal on the last add-on off and the 60 s removal sweep are gone.
 
@@ -38,7 +40,8 @@ The alternative that needs no ClawPump credits: ClawVille decides with its own m
 ## Verified ClawPump facts (2026-09-17/18, by live call)
 
 - **Connector:** remote MCP `https://mcp.clawpump.tech/mcp`, OAuth sign-in (Google or X), one connected client at a time. The old `clawpump.tech/api/mcp` and the keyless `agent_signup` of `@clawpump/mcp` 1.0.1 are dead (404).
-- **REST base:** `https://ai-agents-production-6ca0.up.railway.app` (root, no `/api` prefix); header `Authorization: Bearer <cpk_ key>`. `GET /agents`, `GET /agents/:id`, `PATCH /agents/:id`, `GET /models/catalog`, `GET|POST /agent-runs`, `GET /agent-runs/:id/steps`, `POST /automations`, `GET|DELETE /automations/:id`, `GET /chat/:agentId/messages`.
+- **REST base (HISTORICAL; this root is dead since about 2026-10-22, see the 2026-11-19 note below):** `https://ai-agents-production-6ca0.up.railway.app` (root, no `/api` prefix); header `Authorization: Bearer <cpk_ key>`. `GET /agents`, `GET /agents/:id`, `PATCH /agents/:id`, `GET /models/catalog`, `GET|POST /agent-runs`, `GET /agent-runs/:id/steps`, `POST /automations`, `GET|DELETE /automations/:id`, `GET /chat/:agentId/messages`.
+- **REST base since 2026-10-23 (re-checked 2026-11-19):** `https://clawpump.tech/api/v1`, camelCase replies, no owner id in agent replies. Agent update is `POST /agents/{id}` (no PATCH, 405) with snake_case fields; `{"is_public": false}` and `{"accepting_bids": false}` each answer 200 (lead, 2026-11-19). No `/wallets/*` or `/x402/*` on v1. Those live on ClawPump's backend host `https://clawpump-ai-agents.clawpump-fee-collect-cloudflare.workers.dev`, reached with the short-lived token from `POST https://clawpump.tech/api/mcp/token` (the key never goes there). Read-only GETs verified there on 2026-11-19: `/agents/{id}` (snake_case, with `is_public` and `accepting_bids`), `/wallets/summary`, `/wallets/{id}/history`, `/whitelist/{id}`. The backend's POST routes (transfer, x402) are NOT VERIFIED.
 - **Drift from the published client (`@clawpump/agents` 0.1.27):** `POST /automations` now requires nested `trigger: {type, config}` and `action: {type, config}`; the flat `trigger_type` / `trigger_config` body returns 400.
 - **Agents:** `create_agent` is free and returns a ClawPump-custodied wallet. `swap_quote` / `swap_execute(agent_id, input_mint, output_mint, amount, slippage_bps)` route through Jupiter; `swap_execute` is opaque (no minimum-out binding), so ClawVille keeps float small and verifies after the fact.
 - **No sign-message tool:** a ClawPump wallet cannot answer ClawVille's ed25519 pairing challenge. Ownership proof for a ClawPump wallet must use the authenticated `GET /agents` read (it lists each agent's wallet for the key's account) or a nonce micro-transfer.
@@ -482,120 +485,77 @@ It is the first ClawVille feature that WRITES to ClawPump.
 - **ClawVille creates ClawPump agents.** Launching a player arena agent
   creates ONE ClawPump agent under ClawVille's ClawPump account (the "Hoodie
   Management" account above) that serves only that player's agent (D8). Client:
-  `apps/api/src/services/clawpump-writer.ts` (`POST /agents`, `PATCH
-  /agents/{id}`, `GET /agents/{id}`, `GET /wallets/summary`, the two x402
-  routes, and since P5 `GET /wallets/{id}/history` and `POST
-  /wallets/{id}/transfer`), same host allowlist and `CLAWPUMP_API_KEY` as the read client,
-  no logging, no retry of a create or a pay. Job:
-  `apps/api/src/services/floor-arena/provisioning.ts`.
+  `apps/api/src/services/clawpump-writer.ts`. Since 2026-11-19 (ClawPump v1;
+  full table in `docs/trading-floor-arena.md` section 6i): on v1, `POST /agents`
+  with the flat body `{name, persona, system_prompt, model?}`, `GET
+  /agents/{id}` (camelCase `walletAddress`, `skills`, `isPublic`) and `POST
+  /agents/{id}` with exactly `{is_public: false}` or `{accepting_bids: false}`;
+  on the backend host with the exchanged token, `GET /agents/{id}` (the privacy
+  proof), `GET /wallets/summary` and `GET /wallets/{id}/history`. The transfer
+  and the two x402 routes are NOT VERIFIED on the backend and throw
+  `route_not_verified` before any request. No logging, no retry of a create,
+  a pay or a transfer. Job: `apps/api/src/services/floor-arena/provisioning.ts`.
 - **Single writer (Codex r19, lead design, 2026-10-01).** Only the arena
-  engine LEADER writes to ClawPump: creates, config PATCHes, `x402` on/off
-  and add-on payments. Request handlers write only the DB row: `POST
-  /me/launch` leaves the row `pending` and the leader creates the execution
-  wallet on its next provisioning tick; `PATCH /me/addons` changes the row
-  only; the admin `POST /api/admin/floor-arena/agents/:id/reprovision` resets
-  a failed row to `pending` and the leader provisions it. The provisioning
-  loop runs every 30 s (±10%), also while the operator pause is on (then it
-  only removes `x402`). **D32 (lead): `x402` removal is HYGIENE, not a
-  money control.** The money invariant: no USDC moves unless the
-  reservation and `confirmDispatch` pass (add-on enabled, agent active and
-  seated, engine not paused, caps) and the writer's last read before the pay
-  shows a stopped agent that holds `x402`. `x402` ON only for a READY agent
-  with an enabled add-on, not while paused, never on a `running` agent; OFF
-  otherwise, also while paused and on a `running` agent (a removal only
-  takes capability away). Provisioning never adds `x402` (its config sync
-  removes it if present). Each tick runs the `x402` REMOVALS first (design
-  v8b, Codex r20/r21 + audit-money): R1 every add-on-free agent whose row
-  changed since the previous pass start minus 2 minutes, keyset-paged with
-  no row limit, on a DATABASE-time watermark (the first pass of each leader
-  term covers every add-on-free agent); R2 a fair cursor over all add-on-free
-  agents, 6 per tick, paged, advancing every tick; R3 earlier failures and
-  deferrals, oldest first, one attempt per agent per tick (a failing agent
-  backs off 30 s, 1, 2, 4 ... minutes, at most 30). Then, only when no
-  removal was deferred (busy lock or call budget), 4 re-checks per tick over
-  all agents; a re-check that finds unwanted `x402`, or a running agent with
-  `x402`, removes it at once. `x402` is ADDED only by the add-on tick (60 s,
-  leader) right before it pays: at most 8 adds per tick, none while a
-  removal is deferred, and a failed or impossible add backs off 1, 2, 4 ...
-  minutes (at most 30) for that agent; if the player turns add-ons off during
-  an add, `x402` comes off in the same call. The add-on tick reserves only
-  when `x402` is on a stopped agent that wants it; `confirmDispatch`
-  re-checks the add-on under the add-on lock, and the writer's own last read
-  before a write requires status `stopped` for a payment and for any PATCH
-  that is not removal-only (only `enabled_skills`, no `x402`, a subset of the
-  agent's skills); any other status refuses before the request
-  (`agent_running` for `running`, `agent_not_stopped` for a null, missing or
-  other status; Codex r22), and a payment also needs `x402` on the agent. One `x402` section runs at a time per process; it is a
-  transaction bounded by `statement_timeout` 30 s and, on PostgreSQL 17,
-  `transaction_timeout` 60 s, that takes
-  `pg_try_advisory_xact_lock('floor-arena-x402:<id>')` (separate from the
-  add-on lock), held across the row read, a fresh ClawPump GET, a PATCH only
-  when needed and a verifying GET; a busy agent is skipped and retried next
-  tick, and a section whose ClawPump calls pass 60 s is rolled back and
-  re-checked next tick. No in-memory cache ever skips a ClawPump read.
+  engine LEADER writes to ClawPump: creates, the privacy updates and add-on
+  payments. Request handlers write only the DB row: `POST /me/launch` leaves
+  the row `pending`; `PATCH /me/addons` changes the row only; the admin `POST
+  /api/admin/floor-arena/agents/:id/reprovision` resets a failed USER row to
+  `pending` (the saved ClawPump id stays) and the leader provisions it. The
+  provisioning loop runs every 30 s (±10%); its privacy repair also runs while
+  the operator pause is on. The x402 reconcile of 2026-10-01 (R1, R2, R3, the
+  re-check cursor, the x402 adds and the x402 advisory lock) is REMOVED
+  (founder 2026-11-19: ClawVille does not change an agent's skills). The money
+  invariant stays: no USDC moves unless the reservation and `confirmDispatch`
+  pass and the writer's last read before the pay shows a stopped agent that
+  holds `x402`.
 - **Call budget and quota.** The arena writer allows 60 ClawPump calls a
-  minute per process with a burst of 10, checked before each request
-  (create, PATCH, x402 pay and check, agent GETs including the guard GET,
-  wallet summary). The last 5 tokens are reserved for `x402` removal calls.
-  An empty budget refuses with `budget_exhausted` (our own code, not
-  ClawPump's 429 `rate_limited`) before sending, so nothing can have been
-  charged; a refused payment books 0 (`clawpump_budget_exhausted`). When the
-  budget is low, the add-on tick defers its tick and re-checks are skipped,
-  with one log line per tick. The house traders' own calls and the
-  paper-fill quotes use other clients and are outside this budget. ClawPump
-  quota for this key: Enterprise, 10,000,000 calls a month, "recorded but
-  not enforced", no per-second limit and no documented burst ceiling (see
-  the API key row above; research 2026-09-30 in
-  ops/house-traders/research-20260930-clawpump, R2-api.md and R1-docs.md,
-  outside git). 60 a minute leaves most of it to the house traders.
+  minute per process with a burst of 10, checked before each request (every
+  arena call through the writer, the backend key exchange included). The last
+  5 tokens are reserved for removal-priority calls (the privacy repair). An
+  empty budget refuses with `budget_exhausted` (our own code, not ClawPump's
+  429 `rate_limited`) before sending; a refused payment books 0
+  (`clawpump_budget_exhausted`). ClawPump quota for this key: Enterprise,
+  10,000,000 calls a month, "recorded but not enforced" (research 2026-09-30
+  in ops/house-traders/research-20260930-clawpump, outside git).
 - **What the created agent looks like.** Name `CV Arena · <name> #<first 12 of
   the arena id>` in production and `CV Arena (staging) · <name> #<id12>`
   everywhere else (`CLAWVILLE_ENV` not `production`), at most 48 characters.
-  Private (`is_public: false`), `accepting_bids: false`, and no trading or
-  spending skill. **ClawPump's six platform default skills are STICKY**
-  (verifier A on staging, 2026-09-30: agent `136de7ec` "CV Arena (staging) ·
-  LandTest1 #4821bfae4287" kept `action-plans`, `web-browsing`,
-  `private-transfers`, `bitget-intel`, `self-learning`, `skill-management`; a
-  PATCH of `enabled_skills` only adds or removes non-default skills such as
-  `x402`). So those six are allowed (D24, `CLAWPUMP_STICKY_DEFAULT_SKILLS`),
-  `x402` is added only while a paid add-on is enabled, and every other trading
-  or spending skill is denied (`CLAWPUMP_ARENA_DENIED_SKILLS`: defi and perps
-  trading, token launch and sniping, marketplace, pay.sh, Laso, AgenC,
-  wallet ops). Provisioning reads the skills back after the PATCH, removes a
-  denied non-default skill, reads back again, and fails with
-  `clawpump_denied_skill_present` if one survives. The agent stays stopped and
-  only ClawVille's API drives it. Persona and system prompt say it is an execution wallet that
-  does not trade on its own. Paper trading never uses it and never waits for
-  it: it exists for paid add-ons and wallet withdrawals (P5) now, and for a
-  later live mode (punch list P2, founder go only).
+  A v1 create comes back PUBLIC with ClawPump's default skill bundle
+  (14 skills on 2026-11-16, including trading, perps and x402). Provisioning
+  then sends `{is_public: false}` and `{accepting_bids: false}` and proves both
+  with a backend listing read before the row becomes `ready`
+  (`agent_still_public` / `agent_still_accepting_bids` otherwise). The privacy
+  repair re-checks 4 ready or failed arena agents per tick. Skills are kept as
+  ClawPump gives them (founder 2026-11-19; D24 is superseded). The agent stays
+  stopped and only ClawVille's API drives it; live mode answers
+  `live_not_available`. Persona and system prompt say it is an execution
+  wallet that does not trade on its own.
 - **Idempotency.** Only one API container may talk to ClawPump for an arena
   agent at a time: an atomic claim moves the row to `creating` with a
-  10-minute lease, and a claimer that dies leaves the row due again when the
-  lease ends. Provisioning never adopts an existing ClawPump agent, not even
-  one with the exact arena name, because a name proves nothing (Codex r18 #4).
-  It always creates; the ClawPump id is saved before the config update (a
-  failed update retries the same agent); a unique index keeps one ClawPump id
-  on one row (a clash fails with `clawpump_agent_owned`). A create whose
-  response was lost leaves a private agent with no skill of ours that is never
-  funded (the payment address appears only after `markReady`). Every config
-  PATCH reads the agent fresh right before it and refuses a `running` agent;
-  the one exception is the removal-only PATCH (`x402` off), which the leader
-  also sends to a `running` agent and while the engine is paused (single
-  writer above). The writer's own final GET requires status `stopped`; any
-  other status refuses (`agent_running` / `agent_not_stopped`), except a
-  removal-only PATCH. A failure retries every 10 minutes, up to 5 attempts. Unknown:
-  ClawPump's per-account agent limit; a failure never blocks paper trading.
+  10-minute lease. Provisioning never adopts an existing ClawPump agent (Codex
+  r18 #4). It always creates; the ClawPump id is saved before the privacy
+  update (a failed update retries the same agent); a unique index keeps one
+  ClawPump id on one row (`clawpump_agent_owned`). The privacy update goes
+  through at any ClawPump status; a payment or a transfer needs status
+  `stopped` at the writer's own last read (`agent_running` /
+  `agent_not_stopped`). A failure retries every 10 minutes, up to 5 attempts.
 - **The house agents are never modified by the arena.** The writer proves
   ownership on every update and pay (Codex r17 #4, money audit N1): a house
   ClawPump id is refused outright, the ClawPump id must be the
   `clawpump_agent_id` of the USER arena row the call acts for (DB proof), and
   ClawPump's current name must carry this environment's arena prefix plus that
   row's 12-character id suffix; any failure answers `not_arena_agent`.
-  Provisioning and add-ons also skip every `house` row. The arena's house rows carry the live Genesis
-  (`0f600d73-05a0-4c2e-8215-ab2a770ba192`) and Runner
-  (`1a0a153e-cc2c-4b2a-8a38-04e4417ce3c1`) ClawPump ids for reference only;
-  their prompts, skills and wallets are untouched by any arena code path.
-- **x402 pay route.** `POST /agents/{id}/x402/x402_service_pay` with `{ url,
+  Add-ons skip every `house` row. Since 2026-10-16 the house rows have their
+  OWN new private arena agents (migration 0086 cleared the live trader ids);
+  the writer refuses every call for the three live trader ids
+  (`FLOOR_ARENA_LIVE_TRADER_CLAWPUMP_IDS`), even when a row names one, so their
+  prompts, skills and wallets are untouched by any arena code path.
+- **x402 pay route (NOT VERIFIED since the 2026-10-22 API move; the add-on
+  tick stops before any reservation and `GET /api/floor/arena/addons` answers
+  `paymentsEnabled: false`; the writer would also throw `route_not_verified`
+  before any request; the text
+  below is the 2026-09-30 contract on the old root, kept for when the backend
+  route is verified).** `POST /agents/{id}/x402/x402_service_pay` with `{ url,
   method, body | query, maxAmountAtomic }` (USDC 6 decimals, set to the
   catalog price, never more than $5 per call); the free quote is `POST
   /agents/{id}/x402/x402_service_details`. Before paying, the add-on tick writes a
@@ -651,6 +611,16 @@ It is the first ClawVille feature that WRITES to ClawPump.
   once a minute each for all agents together.
 
 ### Wallet transfer and history (P5 withdraw, 2026-10-02)
+
+**Status 2026-11-19:** the transfer route on ClawPump's backend host is NOT
+VERIFIED, so arena withdraw is paused (`FLOOR_ARENA_WALLET_PAUSED`): the
+withdraw routes refuse a new request or address step with 409 `withdraw_paused`
+and store nothing, the `withdrawals` loop holds, and an earlier queued
+withdrawal waits and sends nothing. As a second guard, `transferFromArenaWallet`
+still throws `route_not_verified` before any request (a row reaching it would end
+`failed_no_send`). The history read works on the
+backend host (read-only GET, 2026-11-19). The facts below are from the old
+root (2026-10-01).
 
 The arena wallet withdraw (P5) sends USDC or SOL from a player's OWN arena
 ClawPump agent wallet to an address the owner proved. Design and decisions:
@@ -828,7 +798,7 @@ disagree.
 
 ## Fixture inventory
 
-The agent lookup uses `apps/api/src/services/__tests__/__fixtures__/clawpump/get-agent-genesis.json` and its `.source.json` sidecar. The fixture contains trimmed MCP-recorded `get_agent` output, not a recorded REST body. Client tests cover bare and wrapped agent responses plus array and `{agents}` list responses.
+The agent lookup tests use an inline v1 `GET /api/v1/agents/{id}` reply (camelCase keys as read live 2026-11-18) in `apps/api/src/services/__tests__/clawpump-client.test.ts`; the old MCP-recorded snake_case fixture was deleted on 2026-11-19. Client tests cover bare and wrapped agent responses plus array and `{agents}` list responses.
 
 `TODO-FIXTURE:clawpump` remains for the separate board or intelligence client only.
 

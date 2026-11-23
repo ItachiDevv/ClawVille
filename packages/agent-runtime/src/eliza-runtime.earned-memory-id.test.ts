@@ -10,6 +10,8 @@ describe('earned lesson memory identity', () => {
         state: 'running', config: { agentId },
         runtime: { createMemory: async (memory: { id: string }) => { ids.push(memory.id); } },
         ensureWorld: async () => 'world', ensureRoom: async () => {}, ensureEntity: async () => {},
+        // The real private embedding helper; with no probe scope it reaches the mocked embedText.
+        embedScoped: (ElizaRuntime.prototype as unknown as { embedScoped: unknown }).embedScoped,
       };
       return ElizaRuntime.prototype.recordEarnedSkillMemory.call(fake as never, {
         avatarId: 'shared-avatar', buildingId: 'town-guide', lesson: 'The Bounty Board is at the pavilion.', teacherName: 'Nori',

@@ -1,0 +1,25 @@
+{
+    "observations":  [
+                         {
+                             "url":  "https://brain.usebrainchain.com/exits",
+                             "status":  404
+                         },
+                         {
+                             "body":  {
+                                          "desk":  "0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1",
+                                          "token":  "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
+                                          "payoutChainId":  46630,
+                                          "payoutToken":  "0x1eC185467cA2D5d1c24f0EdCB91301Bca4d0a787",
+                                          "feeBps":  50,
+                                          "minFeeUnits":  "10000",
+                                          "minUnits":  "1000000",
+                                          "maxUnits":  "100000000",
+                                          "dailyUnits":  "200000000",
+                                          "how":  "Send USDG to `desk` on BrainChain from a wallet (not a contract). The same address is paid on Robinhood Chain, less the fee, within a few minutes. Read the state at /exits/\u003cBrainChain tx hash\u003e."
+                                      },
+                             "status":  200,
+                             "url":  "https://brain.testnet.usebrainchain.com/exits"
+                         }
+                     ],
+    "checkedAtUtc":  "2026-11-09T12:50:08.6649807Z"
+}

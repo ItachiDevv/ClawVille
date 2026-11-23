@@ -300,6 +300,7 @@ beforeAll(async () => {
   mock.module('./decorative-release', () => ({
     ...realRelease,
     isDecorativeReleased: () => true,
+    isWorldRevealed: () => true,
     onDecorativeReleaseStaggered: (callback: () => void) => {
       callback();
       return () => undefined;

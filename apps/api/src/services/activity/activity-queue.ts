@@ -83,6 +83,20 @@ const PARTY_SHORT_CODE_RETRY = 16;
 
 // ─── Module state ──────────────────────────────────────────────────────────
 
+type EnqueueInput = {
+    activityId: string;
+    avatarId: string;
+    userId: string | null;
+    agentId: string | null;
+    subjectType: 'human' | 'agent';
+    partyId: string | null;
+    wsConnectionId?: string | null;
+    allowBotBackfill?: boolean;
+    agentOnly?: boolean;
+};
+type PendingQueueLeave = { id: string; entry: QueueEntry | null; batch?: PendingQueueLeave[] };
+type AdmissionToken = { cancelled: boolean; entryId?: string; settled: Promise<void>; finish: () => void };
+
 class ActivityQueueService {
   /**
    * SINGLE-POD: per-activity queue, FIFO by `queuedAt`.
@@ -97,6 +111,10 @@ class ActivityQueueService {
 
   /** SINGLE-POD: avatarId → entryId for O(1) leave-queue lookups. */
   private avatarToEntry = new Map<string, string>();
+  private pendingQueueLeaves = new Map<string, PendingQueueLeave>();
+  private pendingPartyLeaves = new Set<string>();
+  private partyDepartureVersions = new Map<string, number>();
+  private inFlightEnqueues = new Map<string, AdmissionToken>();
 
   /** SINGLE-POD: parties keyed by id. Mirror table is the source of truth. */
   private parties = new Map<string, Party>();
@@ -116,17 +134,105 @@ class ActivityQueueService {
    * Enqueue an avatar for an activity. Atomic — caller verifies caps + auth
    * before reaching here. Throws on cap-hit or duplicate-queue.
    */
-  async enqueue(input: {
-    activityId: string;
-    avatarId: string;
-    userId: string | null;
-    agentId: string | null;
-    subjectType: 'human' | 'agent';
-    partyId: string | null;
-    wsConnectionId?: string | null;
-    allowBotBackfill?: boolean;
-    agentOnly?: boolean;
-  }): Promise<QueueEntry> {
+  async enqueue(input: EnqueueInput): Promise<QueueEntry> {
+    return (await this.enqueueBatch([input]))[0]!;
+  }
+
+  async enqueueParty(inputs: EnqueueInput[]): Promise<QueueEntry[]> {
+    const partyId = inputs[0]?.partyId;
+    const party = partyId ? this.parties.get(partyId) : null;
+    if (!party || inputs.length !== party.members.size || inputs.some(input => input.partyId !== partyId || !party.members.has(input.avatarId))) {
+      throw new Error('Party membership changed before queue admission');
+    }
+    return this.enqueueBatch(inputs, party);
+  }
+
+  private async enqueueBatch(inputs: EnqueueInput[], expectedParty?: Party): Promise<QueueEntry[]> {
+    const reservations: Array<{ input: EnqueueInput; token: AdmissionToken; valid: () => boolean }> = [];
+    const inserted: QueueEntry[] = [];
+    try {
+      // Reserve every avatar before the first await. No partial party is matchable.
+      for (const input of inputs) {
+        if (this.inFlightEnqueues.has(input.avatarId)) throw new Error('Queue admission already in progress');
+        const party = input.partyId ? this.parties.get(input.partyId) : null;
+        const key = `${input.partyId}:${input.avatarId}`;
+        const version = this.partyDepartureVersions.get(key) ?? 0;
+        const valid = () => !input.partyId || (
+          !!party && this.parties.get(input.partyId) === party && party.disbandedAt === null &&
+          party.members.has(input.avatarId) && !this.pendingPartyLeaves.has(key) &&
+          (this.partyDepartureVersions.get(key) ?? 0) === version
+        );
+        if (!valid()) throw new Error('Party membership changed before queue admission');
+        let finish!: () => void;
+        const settled = new Promise<void>(resolve => { finish = resolve; });
+        const token: AdmissionToken = { cancelled: false, settled, finish };
+        this.inFlightEnqueues.set(input.avatarId, token);
+        reservations.push({ input, token, valid });
+      }
+      for (const { input, token, valid } of reservations) {
+        const pending = this.pendingQueueLeaves.get(input.avatarId);
+        if (pending) await this.persistQueueLeave(input.avatarId, pending, 'voluntary');
+        if (token.cancelled) throw new Error('Queue admission cancelled');
+        if (!valid()) throw new Error('Party membership changed before queue admission');
+        this.assertQueueAdmission(input);
+      }
+      const assertBatchValid = () => {
+        if (expectedParty && expectedParty.members.size !== inputs.length) throw new Error('Party membership changed during queue admission');
+        for (const { token, valid } of reservations) {
+          if (token.cancelled) throw new Error('Queue admission cancelled');
+          if (!valid()) throw new Error('Party membership changed during queue admission');
+        }
+      };
+      const insertBatch = async (writer: Pick<typeof db, 'insert'>) => {
+        for (const { input, token } of reservations) {
+          assertBatchValid();
+          const entry: QueueEntry = {
+            id: uuidv4(), activityId: input.activityId, avatarId: input.avatarId,
+            userId: input.userId, agentId: input.agentId, subjectType: input.subjectType,
+            partyId: input.partyId, queuedAt: Date.now(), wsConnectionId: input.wsConnectionId ?? null,
+            matched: false, allowBotBackfill: input.allowBotBackfill ?? true, agentOnly: input.agentOnly ?? false,
+          };
+          // Exact IDs survive an ambiguous insert or transaction commit response.
+          token.entryId = entry.id;
+          inserted.push(entry);
+          await writer.insert(activityQueueEntries).values({
+            id: entry.id, activityId: entry.activityId, avatarId: entry.avatarId,
+            agentId: entry.agentId, subjectType: entry.subjectType, partyId: entry.partyId,
+            queuedAt: new Date(entry.queuedAt),
+          });
+        }
+        assertBatchValid();
+      };
+      if (inputs[0]?.partyId) await db.transaction(async tx => insertBatch(tx));
+      else await insertBatch(db);
+      // Cancellation can arrive while COMMIT waits. Never publish it afterward.
+      assertBatchValid();
+      // Synchronous publication: the matcher never sees only part of this batch.
+      for (const entry of inserted) this.addToMemory(entry);
+      for (const entry of inserted) void logEvent({
+        eventType: 'activity.queue.joined', userId: entry.userId, agentId: entry.agentId,
+        avatarId: entry.avatarId,
+        payload: { activityId: entry.activityId, partyId: entry.partyId, subjectType: entry.subjectType, agentOnly: entry.agentOnly },
+      });
+      return inserted;
+    } catch (error) {
+      const departures: PendingQueueLeave[] = inserted.map(entry => ({ id: entry.id, entry }));
+      for (const departure of departures) {
+        if (inputs[0]?.partyId) departure.batch = departures;
+        this.pendingQueueLeaves.set(departure.entry!.avatarId, departure);
+      }
+      if (departures.length) await this.persistQueueLeave(departures[0]!.entry!.avatarId, departures[0]!, 'voluntary');
+      throw error;
+    } finally {
+      for (const { input, token } of reservations) {
+        if (this.inFlightEnqueues.get(input.avatarId) === token) this.inFlightEnqueues.delete(input.avatarId);
+        token.finish();
+        this.pruneDepartureVersion(input.partyId, input.avatarId);
+      }
+    }
+  }
+
+  private assertQueueAdmission(input: EnqueueInput): void {
     if (this.avatarToEntry.has(input.avatarId)) {
       throw new Error('Avatar is already in a queue');
     }
@@ -162,49 +268,6 @@ class ActivityQueueService {
       throw err;
     }
 
-    const entryId = uuidv4();
-    const now = Date.now();
-    const entry: QueueEntry = {
-      id: entryId,
-      activityId: input.activityId,
-      avatarId: input.avatarId,
-      userId: input.userId,
-      agentId: input.agentId,
-      subjectType: input.subjectType,
-      partyId: input.partyId,
-      queuedAt: now,
-      wsConnectionId: input.wsConnectionId ?? null,
-      matched: false,
-      allowBotBackfill: input.allowBotBackfill ?? true,
-      agentOnly: input.agentOnly ?? false,
-    };
-
-    await db.insert(activityQueueEntries).values({
-      id: entryId,
-      activityId: input.activityId,
-      avatarId: input.avatarId,
-      agentId: input.agentId,
-      subjectType: input.subjectType,
-      partyId: input.partyId,
-      queuedAt: new Date(now),
-    });
-
-    this.addToMemory(entry);
-
-    void logEvent({
-      eventType: 'activity.queue.joined',
-      userId: input.userId,
-      agentId: input.agentId,
-      avatarId: input.avatarId,
-      payload: {
-        activityId: input.activityId,
-        partyId: input.partyId,
-        subjectType: input.subjectType,
-        agentOnly: entry.agentOnly,
-      },
-    });
-
-    return entry;
   }
 
   /**
@@ -216,17 +279,49 @@ class ActivityQueueService {
     avatarId: string,
     reason: 'voluntary' | 'matched' | 'timeout' | 'pod_restart' = 'voluntary',
   ): Promise<boolean> {
-    const entryId = this.avatarToEntry.get(avatarId);
-    if (!entryId) return false;
+    const admission = this.inFlightEnqueues.get(avatarId);
+    if (admission) {
+      const previousPendingId = this.pendingQueueLeaves.get(avatarId)?.id;
+      admission.cancelled = true;
+      await admission.settled;
+      const pending = this.pendingQueueLeaves.get(avatarId);
+      if (pending && (pending.id === admission.entryId || pending.id === previousPendingId)) {
+        await this.persistQueueLeave(avatarId, pending, reason);
+      }
+      // Never inspect a newer admission after this token's await.
+      return true;
+    }
+    const pending = this.pendingQueueLeaves.get(avatarId);
+    const entryId = pending?.id ?? this.avatarToEntry.get(avatarId);
+    if (!entryId) return !!admission;
+    const entry = pending?.entry ?? this.findEntryInMemory(entryId) ?? null;
+    const departure = pending ?? { id: entryId, entry };
+    this.pendingQueueLeaves.set(avatarId, departure);
+    return this.persistQueueLeave(avatarId, departure, reason);
+  }
 
-    const entry = this.findEntryInMemory(entryId);
-    this.removeFromMemory(avatarId, entryId);
-
-    await db
-      .update(activityQueueEntries)
-      .set({ leftAt: new Date() })
-      .where(and(eq(activityQueueEntries.id, entryId), isNull(activityQueueEntries.leftAt)));
-
+  private async persistQueueLeave(
+    avatarId: string,
+    departure: PendingQueueLeave,
+    reason: 'voluntary' | 'matched' | 'timeout' | 'pod_restart',
+  ): Promise<boolean> {
+    const { id: entryId, entry } = departure;
+    if (departure.batch) {
+      const batch = departure.batch;
+      // All IDs were staged by one failed admission and were never published.
+      await db.transaction(async tx => {
+        for (const member of batch) await tx.update(activityQueueEntries).set({ leftAt: new Date() })
+          .where(and(eq(activityQueueEntries.id, member.id), eq(activityQueueEntries.avatarId, member.entry!.avatarId), isNull(activityQueueEntries.leftAt)));
+      });
+      for (const member of batch) {
+        if (this.pendingQueueLeaves.get(member.entry!.avatarId) === member) this.pendingQueueLeaves.delete(member.entry!.avatarId);
+      }
+    } else {
+      this.removeFromMemory(avatarId, entryId);
+      await db.update(activityQueueEntries).set({ leftAt: new Date() })
+        .where(and(eq(activityQueueEntries.id, entryId), eq(activityQueueEntries.avatarId, avatarId), isNull(activityQueueEntries.leftAt)));
+      if (this.pendingQueueLeaves.get(avatarId) === departure) this.pendingQueueLeaves.delete(avatarId);
+    }
     if (entry) {
       void logEvent({
         eventType: 'activity.queue.left',
@@ -405,6 +500,7 @@ class ActivityQueueService {
     if (party.members.size >= MAX_PARTY_SIZE) {
       throw new Error(`Party is full (cap ${MAX_PARTY_SIZE})`);
     }
+    if (this.pendingPartyLeaves.has(`${party.id}:${avatarId}`)) throw new Error('Party departure is still saving; retry leave');
     if (party.members.has(avatarId)) return party;
     if (this.partyForAvatar(avatarId)) {
       throw new Error('Avatar is already in another party');
@@ -441,7 +537,12 @@ class ActivityQueueService {
       throw new Error('Member is not in this party');
     }
 
+    // Rejoin must not revive an admission captured before this kick.
+    const departureKey = `${partyId}:${targetAvatarId}`;
+    this.partyDepartureVersions.set(departureKey, (this.partyDepartureVersions.get(departureKey) ?? 0) + 1);
     party.members.delete(targetAvatarId);
+    // Keep the version until any old admission finishes; kick never waits on it.
+    this.pruneDepartureVersion(partyId, targetAvatarId);
     await db
       .update(activityPartyMembers)
       .set({ leftAt: new Date() })
@@ -464,7 +565,15 @@ class ActivityQueueService {
     if (!party) return; // idempotent
     if (!party.members.has(avatarId)) return;
 
-    party.members.delete(avatarId);
+    const departureKey = `${partyId}:${avatarId}`;
+    if (!this.pendingPartyLeaves.has(departureKey)) {
+      this.partyDepartureVersions.set(departureKey, (this.partyDepartureVersions.get(departureKey) ?? 0) + 1);
+    }
+    this.pendingPartyLeaves.add(departureKey);
+    // Keep membership visible for retries until both persistence writes succeed.
+    // leaveQueue removes the entry synchronously before its persistence await.
+    // Matched rooms remain owned by the room manager and are never erased here.
+    await this.leaveQueue(avatarId, 'voluntary');
     await db
       .update(activityPartyMembers)
       .set({ leftAt: new Date() })
@@ -476,6 +585,9 @@ class ActivityQueueService {
         ),
       );
 
+    party.members.delete(avatarId);
+    this.pendingPartyLeaves.delete(departureKey);
+    this.pruneDepartureVersion(partyId, avatarId);
     if (party.leaderAvatarId === avatarId) {
       // Promote the next member to leader (insertion order — oldest member).
       const next = party.members.values().next().value;
@@ -588,6 +700,10 @@ class ActivityQueueService {
   __resetForTest(): void {
     this.queues.clear();
     this.avatarToEntry.clear();
+    this.pendingQueueLeaves.clear();
+    this.pendingPartyLeaves.clear();
+    this.partyDepartureVersions.clear();
+    this.inFlightEnqueues.clear();
     this.parties.clear();
     this.partyShortCodeIndex.clear();
     this.matchedRooms.clear();
@@ -847,6 +963,11 @@ class ActivityQueueService {
       if (found) return found;
     }
     return undefined;
+  }
+
+  private pruneDepartureVersion(partyId: string | null, avatarId: string): void {
+    if (!partyId || this.inFlightEnqueues.has(avatarId) || this.pendingPartyLeaves.has(`${partyId}:${avatarId}`)) return;
+    this.partyDepartureVersions.delete(`${partyId}:${avatarId}`);
   }
 
   private async disbandParty(party: Party): Promise<void> {

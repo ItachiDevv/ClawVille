@@ -200,6 +200,7 @@ beforeAll(async () => {
   mock.module('./decorative-release', () => ({
     ...realRelease,
     isDecorativeReleased: () => true,
+    isWorldRevealed: () => true,
     onDecorativeReleaseStaggered: (callback: () => void) => {
       callback();
       return () => undefined;
@@ -231,7 +232,7 @@ beforeAll(async () => {
   LOCATION_NPCS = mod.LOCATION_NPCS;
   const { buildingZones } = await import('@/lib/pixi/tilemap-data');
   zoneIds = buildingZones.map((z) => z.id).filter((id) => LOCATION_NPCS[id] !== undefined);
-});
+}, 30_000); // cold module imports (three and residents) can exceed the 5 s hook default
 
 afterAll(async () => {
   console.error = originalConsoleError;
@@ -403,11 +404,11 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     await r3f.act(async () => {
       root.render(null);
     });
-    const readsAtUnmount = reads.length;
+    const seqAtUnmount = seq;
     openGate();
     loadGate = null;
     await settle(60);
-    expect(reads.slice(readsAtUnmount).filter((r) => r.inRender)).toEqual([]);
+    expect(reads.filter((r) => r.seq > seqAtUnmount && r.inRender)).toEqual([]);
     for (const { model } of models) expect(committed(model)).toBeUndefined();
     expect(consoleErrors).toEqual([]);
     expect(reported).toEqual([]);
@@ -494,4 +495,5 @@ describe('building residents commit without a Suspense retry (web-load T10-B)', 
     expect(reads.filter((r) => r.inRender && r.suspended)).toEqual([]);
     await r3f.act(async () => root.unmount());
   }, 20_000);
+
 });

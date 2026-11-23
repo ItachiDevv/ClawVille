@@ -130,6 +130,7 @@ apps/web/*.md
 # Revert a single file: git checkout 13480db -- apps/web/public/models/guide.glb
 apps/web/public/.assets-backup/
 .worktrees/
+.brainchain-work/
 
 # Playwright MCP session artifacts
 .playwright-mcp/

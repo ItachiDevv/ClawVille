@@ -222,7 +222,7 @@ function drawWebhookGateway(c: Container, w: number, h: number) {
   windowRect(g, w - 22, h * 0.35, 12, 10);
   door(g, w / 2, h, 16, 24, 0xbf360c);
   c.addChild(g);
-  sign(c, 'Salty Spitoon', w / 2, h + 14, 0xe65100);
+  sign(c, 'BrainChain Office', w / 2, h + 14, 0x29262b);
 }
 
 function drawMemoryVault(c: Container, w: number, h: number) {

@@ -1,0 +1,11 @@
+{
+  "observedAt": "2026-11-09T17:07:48.938Z",
+  "host": "itachi222",
+  "purpose": "Non-billed model-access GET; no inference, no budget reservation, no key logging",
+  "model": "gpt-5.6-terra",
+  "status": "observed",
+  "httpStatus": 200,
+  "modelAccessible": true,
+  "returnedModel": "gpt-5.6-terra",
+  "errorCode": null
+}

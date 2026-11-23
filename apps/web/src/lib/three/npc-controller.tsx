@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { recordOfficeLocomotion } from './brainchain-office-door';
 import { useThree, type RootState } from '@react-three/fiber';
 import {
   useSceneActive,
@@ -41,7 +42,9 @@ import {
   triggerKelpForestWalkIn,
 } from '@/lib/three/kelp-forest-transition';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
+import { stepTradingFloorAutoEnter } from '@/lib/world-frame-interaction';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
+import { isWorldInputBlocked, isWorldFrameBlocked } from './world-input-guard';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/world-colliders';
 
@@ -90,7 +93,7 @@ function attachNpcKeyListeners(): () => void {
     // Fixes pre-existing bug: typing W/A/S/D in chat moved the NPC.
     // NOTE: onUp intentionally has NO target guard — it must always clear state
     // so keys don't get stranded 'true' when the user taps into an input mid-move.
-    if (isEditable(e.target)) return;
+    if (isWorldInputBlocked() || isEditable(e.target)) { resetNpcKeys(); return; }
     // e.key/e.code can be undefined on synthetic events (Chrome autofill).
     const rawKey = (e.key ?? '').toLowerCase();
     const rawCode = (e.code ?? '').toLowerCase();
@@ -151,6 +154,8 @@ export default function NpcController() {
   }, [sceneActive]);
 
   useSceneFrame((_, delta) => {
+    if (isWorldInputBlocked()) resetNpcKeys();
+    if (isWorldFrameBlocked()) return;
     const store = useGameStore.getState();
     const { controlMode, possessedNpcId } = store;
 
@@ -249,6 +254,10 @@ export default function NpcController() {
       const ndz = wz - NORI_WORLD_Z;
       const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
       if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
+
+      // Walking the possessed body into the Trading Floor door enters it, the
+      // same helper the player avatar path runs (world-frame-interaction.ts).
+      stepTradingFloorAutoEnter(wx, wz);
     }
 
     // ---- Unified input: joystick + WASD → camera-relative ----
@@ -256,7 +265,7 @@ export default function NpcController() {
     let inputRight = 0;
 
     const { joystickVelocity } = store as GameState;
-    if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
+    if (!isWorldInputBlocked() && (joystickVelocity.x !== 0 || joystickVelocity.y !== 0)) {
       // Joystick: x = screen-right, y < 0 = screen-up
       inputRight = joystickVelocity.x;
       inputFwd = -joystickVelocity.y; // screen-up → camera forward
@@ -358,6 +367,7 @@ export default function NpcController() {
     // speedMult>1 means shift/joystick-sprint is engaged → tell the animator to
     // play the run clip (gated by isMoving in updateMixerOnly, so a held shift
     // while standing still still reads as idle).
+    recordOfficeLocomotion(npc.x - MAP_WIDTH / 2, npc.y - MAP_HEIGHT / 2, newX - MAP_WIDTH / 2, newY - MAP_HEIGHT / 2);
     npcStore.moveNpc(possessedNpcId, newX, newY, dir, facingAngle, speedMult > 1);
     store.setAvatarPosition(newX, newY);
   }, -100);

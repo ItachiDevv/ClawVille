@@ -1,3 +1,4 @@
+import { assertProbeHttpOperation } from '../services/brainchain/probe-runtime-scope';
 /**
  * Q2 Activity Portals — dual-identity middleware.
  *
@@ -388,6 +389,7 @@ export const requireAuthOrAgentSession = createMiddleware<ActivityAuthContext>(
         avatarId: avatar.id,
         agentId: null,
       });
+      await assertProbeHttpOperation({userId:user.id,avatarId:avatar.id},c.req.raw,()=>c.req.json());
       return next();
     }
 
@@ -425,6 +427,7 @@ export const requireAuthOrAgentSession = createMiddleware<ActivityAuthContext>(
     // bearer (`slideLiveSessionTtl`). Fire-and-forget + throttled; never throws.
     if (resolved.ledgerCapable === true) slideAgentSessionTtl(resolved.agentId, sessionId);
 
+    await assertProbeHttpOperation({userId:resolved.userId,avatarId:resolved.avatarId,platformAgentId:resolved.agentId},c.req.raw,()=>c.req.json());
     c.set('identity', {
       kind: 'agent',
       userId: resolved.userId,

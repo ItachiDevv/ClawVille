@@ -1,0 +1,39 @@
+{
+  "observedAt": "2026-11-09T14:57:37.676Z",
+  "fixtureOnly": true,
+  "paidProvider": false,
+  "image": "oven/bun@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4",
+  "exitCode": 0,
+  "actualEliza": true,
+  "exactTextPreserved": true,
+  "distinctRuntimeIdentity": true,
+  "oneGenerateFrame": true,
+  "configuration": {
+    "user": "10002:10002",
+    "network": "none",
+    "readOnlyRoot": true,
+    "capDrop": [
+      "ALL"
+    ],
+    "securityOpt": [
+      "no-new-privileges"
+    ],
+    "pidsLimit": 64,
+    "memory": 268435456,
+    "nanoCpus": 1000000000,
+    "mounts": [
+      {
+        "destination": "/worker.js",
+        "readWrite": false,
+        "type": "bind"
+      }
+    ],
+    "environmentNames": [
+      "NODE_ENV",
+      "PATH",
+      "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
+      "BUN_INSTALL_BIN"
+    ]
+  },
+  "stderr": "WARNING: Your kernel does not support swap limit capabilities or the cgroup is not mounted. Memory limited without swap.\n"
+}

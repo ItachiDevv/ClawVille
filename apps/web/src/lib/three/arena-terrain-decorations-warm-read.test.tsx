@@ -103,6 +103,7 @@ function recordingUseGLTF(path: string, draco?: unknown, meshopt?: unknown, exte
 
 mock.module('./decorative-release', () => ({
   isDecorativeReleased: () => true,
+  isWorldRevealed: () => true,
   onDecorativeReleaseStaggered: (callback: () => void) => {
     callback();
     return () => undefined;

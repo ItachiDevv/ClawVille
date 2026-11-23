@@ -1,0 +1,24 @@
+{
+    "rawSha256":  "7cbc9950491f5a63ac66f1b1772b1f6d16750ad14af1dbdd1069282d892962d8",
+    "reportedCredits":  30,
+    "rawBytes":  2971272,
+    "batch":  "office-v1",
+    "rawBounds":  {
+                      "y":  1.9,
+                      "z":  1.33,
+                      "x":  1.61
+                  },
+    "taskId":  "01a1c089-73c6-75ca-94dd-56f8f2ce7da9",
+    "status":  "SUCCEEDED",
+    "note":  "Raw model requires optimization and visual review before runtime use. Signed download URL retained only in ignored task evidence.",
+    "provider":  "Meshy direct subscription API",
+    "settings":  {
+                     "topology":  "triangle",
+                     "target_polycount":  12000,
+                     "texture_model":  "meshy-n1",
+                     "ai_model":  "meshy-7.1",
+                     "enable_pbr":  false,
+                     "geometry_resolution":  "standard"
+                 },
+    "sourceReferences":  "refs/front.png, refs/back.png, refs/3q.png"
+}

@@ -4,6 +4,7 @@ import {
   type FloorArenaAddon,
 } from '@clawville/shared';
 import {
+  CLAWPUMP_VERIFIED_BACKEND_POSTS,
   CLAWPUMP_WRITER_REMOVAL_RESERVE,
   CLAWPUMP_X402_MAX_CALL_USD,
   ClawPumpWriterError,
@@ -15,7 +16,7 @@ import {
   type X402PayInput,
 } from '../clawpump-writer';
 import { entriesPaused } from './engine';
-import { ARENA_X402_ADDS_PER_TICK, arenaX402RemovalsDeferred, ensureArenaX402ForPay, type ArenaX402Outcome } from './provisioning';
+import { readArenaX402Ready, type ArenaX402Outcome } from './provisioning';
 import {
   arenaAddonChargeRefSeen,
   confirmArenaAddonDispatch,
@@ -74,8 +75,9 @@ export const ARENA_ADDON_MIN_INTERVAL_S = 600;
 /**
  * D1 (X402_PAID_TEST_2026-10-01): normal-priority ClawPump calls one paid call can make:
  * the wallet summary (when the 60 s cache is stale), the x402 GET in `x402Ready`, the
- * writer's guard GET and the pay POST. An x402 ADD costs more; that path backs off on
- * its own and never reserves.
+ * writer's guard GET and the pay POST. ClawVille never adds x402 (founder 2026-11-19).
+ * The pay POST itself fails closed today: the writer's x402 routes on ClawPump's
+ * backend are NOT VERIFIED (`clawpump_route_not_verified`, nothing sent, booked at 0).
  */
 export const ARENA_ADDON_PAY_CALLS = 4;
 /** The calls left after the reservation: the writer's guard GET and the pay POST. */
@@ -92,6 +94,15 @@ const EPSILON = 1e-9;
 
 export function addonPaymentsEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return (env.FLOOR_ARENA_ADDON_PAYMENTS_ENABLED ?? '').trim().toLowerCase() !== 'false';
+}
+
+/**
+ * True when the add-on tick may pay: the kill switch is not 'false' AND ClawPump's x402 pay route is verified.
+ * 2026-11-19: the route is NOT VERIFIED on ClawPump's backend, so this is false and the tick stops before any
+ * reservation, ledger row, event or ClawPump call; `GET /api/floor/arena/addons` shows `paymentsEnabled: false`.
+ */
+export function arenaAddonPaymentsOpen(env: Record<string, string | undefined> = process.env): boolean {
+  return addonPaymentsEnabled(env) && CLAWPUMP_VERIFIED_BACKEND_POSTS.has('x402');
 }
 
 export function utcDayStart(now: Date): Date {
@@ -411,18 +422,17 @@ export interface ArenaAddonDeps {
   insertEvent: (agentId: string, event: { type: ArenaEventType; summary: string; data?: unknown }) => Promise<void>;
   walletUsdc: (clawpumpAgentId: string) => Promise<number | null>;
   /**
-   * Codex r19 (single writer, audit-money S5): the leader's x402 reconcile for
-   * this arena agent (x402 lock, current row, fresh GET, add if wanted), then
-   * true only when x402 is on a stopped agent that wants it. No cache.
+   * Codex r19 (single writer, audit-money S5): the leader's x402 check for this
+   * arena agent (current row, one fresh GET, no write): 'on' only when x402 is
+   * on an agent that is not running and the row wants it. No cache. ClawVille
+   * never adds or removes x402 (founder 2026-11-19).
    */
-  x402Ready: (agentId: string, allowAdd: boolean) => Promise<ArenaX402Outcome>;
+  x402Ready: (agentId: string) => Promise<ArenaX402Outcome>;
   /**
    * Codex r20 (3) / D1: true when the shared ClawPump call budget holds `calls` more normal-priority calls above
    * the removal reserve (removals keep their claim).
    */
   budgetOk: (calls: number) => boolean;
-  /** audit-money F: true while the leader still owes an x402 removal it could not attempt; adds wait. */
-  removalsDeferred: () => boolean;
   /** Codex r17 #1/#2: the last check before the pay (same lock as seat/status/add-on writes); releases the reservation on failure. */
   confirmDispatch: typeof confirmArenaAddonDispatch;
   /** Codex r17 #5: was this provider charge (settlement tx) already booked for the agent? */
@@ -433,7 +443,7 @@ export interface ArenaAddonDeps {
 
 export const defaultArenaAddonDeps: ArenaAddonDeps = {
   catalog: () => FLOOR_ARENA_ADDONS,
-  paymentsEnabled: () => addonPaymentsEnabled(),
+  paymentsEnabled: () => arenaAddonPaymentsOpen(),
   listAgents: readArenaAddonAgents,
   readStats: readArenaAddonStats,
   reserveCall: reserveArenaAddonCall,
@@ -441,10 +451,9 @@ export const defaultArenaAddonDeps: ArenaAddonDeps = {
   insertPrivateMints: insertArenaPrivateMints,
   insertEvent: insertArenaEvent,
   walletUsdc,
-  x402Ready: (agentId, allowAdd) => ensureArenaX402ForPay(agentId, undefined, allowAdd),
+  x402Ready: (agentId) => readArenaX402Ready(agentId),
   // The writer refuses a normal call when tokens - 1 < reserve, so N calls in a row need tokens - N >= reserve.
   budgetOk: (calls) => clawPumpWriterBudget().tokens - calls >= CLAWPUMP_WRITER_REMOVAL_RESERVE,
-  removalsDeferred: () => arenaX402RemovalsDeferred(),
   pay: (clawpumpAgentId, input, arenaAgentId) => clawPumpArenaWriter.x402Pay(clawpumpAgentId, input, arenaAgentId),
   confirmDispatch: confirmArenaAddonDispatch,
   chargeRefSeen: arenaAddonChargeRefSeen,
@@ -454,8 +463,6 @@ export const defaultArenaAddonDeps: ArenaAddonDeps = {
 
 const notices = new Map<string, number>();
 let tickRunning = false;
-/** Adds left in the current add-on tick (audit-money F). */
-let addsLeft = ARENA_X402_ADDS_PER_TICK;
 
 /** Test seam. */
 export function _resetArenaAddonsForTest(): void {
@@ -464,7 +471,6 @@ export function _resetArenaAddonsForTest(): void {
   walletFailureAt = 0;
   walletInflight = null;
   tickRunning = false;
-  addsLeft = ARENA_X402_ADDS_PER_TICK;
 }
 
 /** A short code for a failed ClawPump x402 payload: `vendor_<code>`, never the vendor's text. */
@@ -600,15 +606,12 @@ export async function runArenaAddonAgent(
     }
 
     // Codex r19 (single writer, audit-money S5): this tick runs on the leader,
-    // so it reconciles x402 itself right before paying (adds it when wanted).
-    // Without x402 on a stopped agent nothing is reserved and nothing is paid;
-    // confirmDispatch and the writer's last read check again before the POST.
+    // so it checks x402 itself right before paying (read only, never an add).
+    // Without x402 on an agent that is not running nothing is reserved and nothing
+    // is paid; confirmDispatch and the writer's last read check again before the POST.
     if (x402 === null) {
       try {
-        // At most ARENA_X402_ADDS_PER_TICK adds a tick, and none while a removal is deferred.
-        const outcome = await deps.x402Ready(agent.id, addsLeft > 0 && !deps.removalsDeferred());
-        if (outcome === 'added') addsLeft -= 1;
-        x402 = outcome === 'added' || outcome === 'on';
+        x402 = (await deps.x402Ready(agent.id)) === 'on';
       } catch (error) {
         x402 = false;
         console.error('[floor-arena] add-on x402 check failed:', errorText(error));
@@ -616,7 +619,7 @@ export async function runArenaAddonAgent(
     }
     if (!x402) {
       await notice(deps, `${key}:skill`, nowMs, NOTICE_INTERVAL_MS, agent.id,
-        `${item.name}: waiting for x402 on the execution wallet. The engine retries on its next pass.`,
+        `${item.name}: waiting for x402 on the execution wallet (ClawVille does not change its skills). The engine checks again on its next pass.`,
         { addonId: addon.id, reason: 'x402_not_ready' });
       continue;
     }
@@ -791,11 +794,10 @@ export async function runArenaAddonsTick(
     if (deps.paused()) return;
     const catalog = new Map(deps.catalog().map((addon) => [addon.id, addon]));
     if (catalog.size === 0) return;
-    addsLeft = ARENA_X402_ADDS_PER_TICK;
     for (const agent of await deps.listAgents()) {
       if (deps.paused()) return;
       // Codex r20 (3) / D1: the shared ClawPump budget cannot hold a whole pay
-      // sequence -> defer the rest of this tick (x402 removals keep their reserve).
+      // sequence -> defer the rest of this tick (the privacy repair keeps its reserve).
       // One line per tick.
       if (!deps.budgetOk(ARENA_ADDON_PAY_CALLS)) {
         console.warn(BUDGET_DEFERRED_LOG);

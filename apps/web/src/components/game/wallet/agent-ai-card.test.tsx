@@ -41,6 +41,8 @@ let depositApproval = false;
 let depositEnabled = false;
 let depositTimeout = false;
 let depositRefusal: string | null = null;
+let feeSponsored = false;
+let feeReason = 'no_fee_wallet';
 let depositChainStatus = 'paid';
 let depositCreditStatus = 'unknown';
 let solAtomic = "15000";
@@ -92,7 +94,7 @@ async function router(input: string, init?: RequestInit): Promise<Response> {
   if (path === '/api/agent-ai/usepod/deposit') {
     if (depositRefusal) return json({ error: depositRefusal, code: depositRefusal }, 400);
     if (depositTimeout) { depositTimeout = false; throw new Error('timeout'); }
-    return json({ ok: true, ledgerId: 'ledger-1', status: depositChainStatus, txSignature: 'tx-1', usdCents: body.amountCents, creditStatus: depositCreditStatus, balance: { usdcMicro: 1500000, isActive: true } });
+    return json({ ok: true, ledgerId: 'ledger-1', status: depositChainStatus, txSignature: 'tx-1', usdCents: body.amountCents, creditStatus: depositCreditStatus, balance: { usdcMicro: 1500000, isActive: true }, feePayer: feeSponsored ? 'clawville' : 'avatar', feeCharged: depositChainStatus === 'ambiguous' ? null : true });
   }
   if (path === '/api/agent-ai/models') return json({ models: ['gpt-4.1', 'gpt-4o-mini', 'o4-mini'], recommended: [] });
   if (path === '/api/agent-ai/usepod/register/challenge' || path === '/api/agent-ai/usepod/link/challenge') {
@@ -113,6 +115,7 @@ async function router(input: string, init?: RequestInit): Promise<Response> {
   }
   if (path === '/api/agent-ai/usepod/link') return json({ dashboardUrl: DASHBOARD });
   if (path === '/api/agent-ai/usepod/balance') return json({ usdcMicro: 1_500_000, isActive: true });
+  if (path === '/api/agent-ai/usepod/fee') return json({ sponsored: feeSponsored, reason: feeSponsored ? null : feeReason, avatarSponsoredToday: 0, sponsoredPerAvatarPerDay: 2, avatarMinSolLamports: 15000 });
   return json({ error: 'not found' }, 404);
 }
 
@@ -169,6 +172,8 @@ afterEach(async () => {
   depositEnabled = false;
   depositTimeout = false;
   depositRefusal = null;
+  feeSponsored = false;
+  feeReason = 'no_fee_wallet';
   depositChainStatus = 'paid';
   depositCreditStatus = 'unknown';
   solAtomic = "15000";
@@ -474,6 +479,8 @@ describe('UsePod wallet deposit', () => {
     expect(host.textContent).toContain('Chain status: paid. UsePod credit: unknown.');
     expect(host.textContent).toContain('Do not repeat this deposit');
     expect(host.textContent).toContain('Wallet USDC: $5.00');
+    expect(host.textContent).toContain('Your agent wallet paid the network fee.');
+    expect(host.textContent).not.toContain('ClawVille paid the network fee.');
   });
 
   test('retries the same idempotency key after a transport error without a signature when approval is off', async () => {
@@ -498,6 +505,53 @@ describe('UsePod wallet deposit', () => {
     expect(button(host, 'Add to AI balance').disabled).toBe(true);
     expect(host.textContent).toContain('0.000015 SOL');
     expect(log.some((r) => r.path.endsWith('/deposit'))).toBe(false);
+  });
+
+  test('ClawVille fee wallet: no SOL needed, the button stays on, the fallback refusal is plain text', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    depositEnabled = true;
+    feeSponsored = true;
+    solAtomic = '0';
+    const host = await openForm();
+    expect(host.querySelector('[data-testid="usepod-fee-note"]')!.textContent).toContain('ClawVille pays the network fee');
+    expect(host.textContent).not.toContain('needs at least');
+    expect(button(host, 'Add to AI balance').disabled).toBe(false);
+    depositRefusal = 'fee_wallet_empty';
+    await press(button(host, 'Add to AI balance'));
+    expect(host.textContent).toContain('The ClawVille fee wallet is empty now');
+  });
+
+  test('ClawVille fee wallet sponsored: the receipt says ClawVille paid the fee', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    depositEnabled = true;
+    feeSponsored = true;
+    solAtomic = '0';
+    const host = await openForm();
+    await press(button(host, 'Add to AI balance'));
+    expect(host.textContent).toContain('ClawVille paid the network fee.');
+    expect(host.textContent).not.toContain('Your agent wallet paid the network fee.');
+  });
+
+  test('fee line text: paid only when charged, "if it lands" when unknown, none when it never landed', () => {
+    expect(card.feeLineText('clawville', true)).toBe('ClawVille paid the network fee.');
+    expect(card.feeLineText('avatar', true)).toBe('Your agent wallet paid the network fee.');
+    expect(card.feeLineText('clawville', null)).toBe('ClawVille will pay the network fee if this deposit lands.');
+    expect(card.feeLineText('avatar', null)).toBe('Your agent wallet will pay the network fee if this deposit lands.');
+    expect(card.feeLineText('clawville', false)).toBeNull();
+    expect(card.feeLineText('avatar', false)).toBeNull();
+  });
+
+  test('fee wallet exists but cannot pay now (cap or empty): the card asks for SOL, never says ClawVille pays', async () => {
+    status = baseStatus({ source: 'usepod', provider: 'usepod', usepodRegistered: true });
+    depositEnabled = true;
+    feeSponsored = false;
+    feeReason = 'avatar_daily_limit';
+    solAtomic = '0';
+    const host = await openForm();
+    const note = host.querySelector('[data-testid="usepod-fee-note"]')!.textContent!;
+    expect(note).not.toContain('ClawVille pays');
+    expect(note).toContain('0.000015 SOL');
+    expect(button(host, 'Add to AI balance').disabled).toBe(true);
   });
 
   test('blocks deposits until the human allows UsePod and caps', async () => {
@@ -557,6 +611,11 @@ test('an ambiguous deposit can only check its existing idempotency key', async (
   const host = await openForm();
   await press(button(host, 'Add to AI balance'));
   expect(host.textContent).not.toContain('Start another deposit');
+  // Not confirmed: the fee line never says "paid".
+  expect(host.querySelector('[data-testid="usepod-fee-line"]')!.textContent).toBe(
+    'Your agent wallet will pay the network fee if this deposit lands.',
+  );
+  expect(host.textContent).not.toContain('paid the network fee');
   expect((host.querySelector('[data-testid="usepod-deposit"] input') as HTMLInputElement).disabled).toBe(true);
   await press(button(host, 'Check the same deposit'));
   const posts = log.filter((entry) => entry.path.endsWith('/deposit'));

@@ -1,0 +1,85 @@
+{
+  "noSigning": true,
+  "observations": [
+    {
+      "observedAt": "2026-11-09T13:37:53.709Z",
+      "chainId": 274663,
+      "block": "0x824",
+      "rpc": "https://rpc.usebrainchain.com",
+      "manifestSource": "https://raw.githubusercontent.com/usebrainchain/brainchain/main/deployments/mainnet.json",
+      "release": "3.5.0",
+      "calls": [
+        {
+          "contract": "WorkerStaking",
+          "address": "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F",
+          "function": "minStake",
+          "value": "250000000000000000000000"
+        },
+        {
+          "contract": "ProposalBonds",
+          "address": "0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4",
+          "function": "bond",
+          "value": "62500000000000000000000"
+        },
+        {
+          "contract": "DecisionExecutor",
+          "address": "0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29",
+          "function": "timelock",
+          "value": "172800"
+        },
+        {
+          "contract": "BRAIN",
+          "address": "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
+          "function": "decimals",
+          "value": "18"
+        },
+        {
+          "contract": "USDG",
+          "address": "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
+          "function": "decimals",
+          "value": "6"
+        }
+      ]
+    },
+    {
+      "observedAt": "2026-11-09T13:37:55.723Z",
+      "chainId": 274630,
+      "block": "0x13ea",
+      "rpc": "https://rpc.testnet.usebrainchain.com",
+      "manifestSource": "https://raw.githubusercontent.com/usebrainchain/brainchain/main/deployments/testnet.json",
+      "release": "3.5.0",
+      "calls": [
+        {
+          "contract": "WorkerStaking",
+          "address": "0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b",
+          "function": "minStake",
+          "value": "500000000000000000000"
+        },
+        {
+          "contract": "ProposalBonds",
+          "address": "0x2f15B42131544e6763dbECC7C954C7823AAa0D47",
+          "function": "bond",
+          "value": "100000000000000000000"
+        },
+        {
+          "contract": "DecisionExecutor",
+          "address": "0xA3a40A2D46D54dc6e88c08a9d98Ec47785CB2366",
+          "function": "timelock",
+          "value": "7200"
+        },
+        {
+          "contract": "TestBRAIN",
+          "address": "0xc717546497343911750768335b649b86d0a6eCcf",
+          "function": "decimals",
+          "value": "18"
+        },
+        {
+          "contract": "TestUSDG",
+          "address": "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
+          "function": "decimals",
+          "value": "6"
+        }
+      ]
+    }
+  ]
+}

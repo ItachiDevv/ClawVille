@@ -355,7 +355,7 @@ describe('route-scaled autonomy walk budget', () => {
 
   it('T12: collider-edge arrival at large buildings never re-routes', async () => {
     const entry = registerHouse();
-    for (const buildingId of ['memory-rag', 'api-integrations', 'messaging-channels']) {
+    for (const buildingId of ['memory-rag', 'cron-automation', 'messaging-channels']) {
       const edge = firstFreeBuildingEdge(buildingId);
       const center = NPC_BUILDING_CENTERS[buildingId];
       const npc = body();

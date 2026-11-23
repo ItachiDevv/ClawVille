@@ -8,6 +8,7 @@ import type { Root } from 'react-dom/client';
 import {
   FLOOR_ARENA_CONTEST,
   FLOOR_ARENA_FIRST_SIGHT_SOURCE_LABELS,
+  FLOOR_ARENA_WALLET_PAUSED,
   FLOOR_ARENA_HARD_RULES,
   FLOOR_ARENA_TEMPLATES,
 } from '@clawville/shared';
@@ -376,21 +377,20 @@ function publicProfile(kind: 'house' | 'user', latestReport: unknown) {
 }
 
 describe('Guest sign-up prompt for the arena', () => {
-  test('the arena wording says paper trades, names the USDC add-on exception, and prizes need an account', () => {
+  test('the arena wording says paper trades, says add-ons are paused (no deposit pitch), and prizes need an account', () => {
     const text = `${ARENA_GUEST_UPSELL.headline} ${ARENA_GUEST_UPSELL.body} ${ARENA_GUEST_UPSELL.ctaLabel}`;
     const lower = text.toLowerCase();
     expect(lower).toContain('paper only');
-    // Paid add-ons spend real USDC, so the prompt names that exception and
-    // never claims that no real money moves.
-    expect(lower).toContain('add-ons are optional');
-    expect(text).toContain('USDC');
-    expect(lower).toContain("your agent's own wallet");
+    // Codex writer r4: while the arena wallet is paused the prompt pitches no funded add-ons.
+    expect(FLOOR_ARENA_WALLET_PAUSED).toBe(true);
+    expect(lower).toContain('paid data add-ons are paused right now, so do not send money to an arena wallet');
+    expect(lower).not.toContain('usdc that you send');
     expect(lower).not.toContain('no real money');
     // The same phrases the contest rules use, so the prompt and the rules agree.
     for (const phrase of [
       'no vclaw is spent',
       'no real tokens are bought',
-      "add-ons are optional and spend only usdc that you send to your agent's own wallet",
+      'paid data add-ons are paused right now, so do not send money to an arena wallet',
       'guests cannot enter',
     ]) {
       expect({ phrase, inPrompt: lower.includes(phrase) }).toEqual({ phrase, inPrompt: true });
@@ -504,13 +504,17 @@ describe('Paper arena and live traders are named apart (prod verify b8d52ab6, fi
 
 describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-money M3 no-withdraw note)', () => {
   const WALLET = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+  // While ClawPump's new transfer and x402 routes are unverified (section 6i),
+  // the note tells the player not to fund the wallet (Codex round 2).
   const FUNDING =
-    'Send only USDC or SOL on Solana to this wallet. Keep at least 0.01 SOL in it, because each withdrawal pays its ' +
-    'network fee in SOL. You can withdraw to an address that you prove is yours. Add-ons spend at most $5 a day from it.';
+    'Paid add-ons and withdrawals are paused right now, because ClawPump changed its API and ClawVille is still ' +
+    'checking the new routes. Do not send USDC or SOL to this wallet yet: until the pause ends, money sent here can be ' +
+    'neither spent on add-ons nor withdrawn through ClawVille.';
 
-  test('the text is the agreed wording and the $5 comes from the shared cap', () => {
+  test('the text is the pause wording and invites no deposit', () => {
     expect(ARENA_WALLET_FUNDING_NOTE).toBe(FUNDING);
-    expect(ARENA_WALLET_FUNDING_NOTE.toLowerCase()).not.toContain('cannot withdraw');
+    expect(ARENA_WALLET_FUNDING_NOTE.toLowerCase()).toContain('do not send usdc or sol');
+    expect(ARENA_WALLET_FUNDING_NOTE.toLowerCase()).not.toContain('you can withdraw');
   });
 
   test('the desk panel shows it under the wallet address, and the old test id is gone', async () => {
@@ -523,7 +527,8 @@ describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-mone
     // Both warnings sit in the same block as the address the player copies.
     const block = note?.closest('section') as HTMLElement;
     expect((block.querySelector('input') as HTMLInputElement | null)?.value).toBe(WALLET);
-    expect(block.textContent).toContain(ADDON_WALLET_WARNING);
+    // Paused: the "pays for add-ons, in USDC" line is hidden (it reads as a funding request).
+    expect(block.textContent).not.toContain(ADDON_WALLET_WARNING);
     // The same Wallet block holds the SOL line and the withdraw panel.
     expect(block.textContent).toContain('SOL in the wallet: ');
     expect(block.querySelector('[data-testid="arena-withdraw"]')).not.toBeNull();
@@ -537,7 +542,7 @@ describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-mone
     expect(success).not.toBeNull();
     expect(success.querySelector('[data-testid="arena-wallet-funding-note"]')?.textContent).toBe(FUNDING);
     expect(success.querySelector('[data-testid="arena-wallet-no-withdraw"]')).toBeNull();
-    expect(success.textContent).toContain(ADDON_WALLET_WARNING);
+    expect(success.textContent).not.toContain(ADDON_WALLET_WARNING);
   });
 
   test('the add-on picker (launch step 3) shows both warnings when add-ons are offered', async () => {
@@ -551,23 +556,77 @@ describe('Agent wallet: funding note (P5 withdraw D34-k; replaces the audit-mone
     const picker = host.querySelector('[data-testid="arena-addon-picker"]') as HTMLElement;
     expect(picker).not.toBeNull();
     expect(picker.textContent).toContain(FUNDING);
-    expect(picker.textContent).toContain(ADDON_WALLET_WARNING);
-    // Solana USDC or SOL only, the SOL fee rule, a proved address to withdraw
-    // to, only this agent's add-ons, and no refund of spend.
+    expect(picker.textContent).not.toContain(ADDON_WALLET_WARNING);
+    expect(picker.querySelector('[data-testid="arena-addon-paused"]')).not.toBeNull();
+    // The pause (no deposit now), only this agent's add-ons, and no refund of spend.
     const lower = picker.textContent!.toLowerCase();
     for (const phrase of [
-      'usdc or sol on solana',
-      'keep at least 0.01 sol',
-      'withdraw to an address that you prove is yours',
-      'only for its own paid data add-ons',
-      'does not refund',
+      'do not send usdc or sol to this wallet yet',
+      'paid add-ons and withdrawals are paused',
+      'nothing is bought until the pause ends',
     ]) {
       expect({ phrase, present: lower.includes(phrase) }).toEqual({ phrase, present: true });
     }
-    expect(lower).not.toContain('cannot withdraw');
+    expect(lower).not.toContain('you can withdraw');
   });
 
 
+
+  test('an underfunded add-on asks for no USDC while add-on payments are paused (Codex round 3)', async () => {
+    const WALLET_UNDER = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const addon = { id: 'feed-1', name: 'Paid feed', vendor: 'Vendor', priceUsd: 0.1, enabled: true, dailyCapUsd: 1, spentTodayUsd: 0, lastCallAt: null, lastOk: null, lastError: null };
+    meBody = {
+      ...myAgentBody({ paymentAddress: WALLET_UNDER, provisionState: 'ready' }),
+      paymentAddress: WALLET_UNDER,
+      provision: { state: 'ready', error: null },
+      wallet: { usdc: 0, sol: 0 },
+      addons: [addon],
+    };
+    addonsBody = { addons: [], paymentsEnabled: false };
+    useFloorArenaUi.setState({ panel: 'desk' });
+    const host = await render();
+    // Codex writer r4: no "Underfunded" pill while paused either (it reads as a request to send USDC).
+    expect(host.querySelector('[data-testid="arena-addon-underfunded"]')).toBeNull();
+    expect(host.textContent!.toLowerCase()).not.toContain('until you send');
+  });
+
+  test('Codex writer r4: while paused, the desk, the launch success screen and the guest prompt invite no deposit', async () => {
+    const INVITES = [
+      /(?<!not )send (at least )?[\d.]* ?(usdc|sol)\b(?! to this wallet yet)/,
+      /\bfund (it|the wallet|your)/,
+      /\btop[ -]?up\b/,
+      /\bdeposit\b/,
+      /you can withdraw/,
+      /keep at least/,
+      /pays for add-ons/,
+      /usdc that you send/,
+    ];
+    const check = (label: string, text: string) => {
+      const lower = text.toLowerCase();
+      for (const pattern of INVITES) expect({ label, pattern: String(pattern), hit: pattern.test(lower) }).toEqual({ label, pattern: String(pattern), hit: false });
+    };
+    meBody = {
+      ...myAgentBody({ paymentAddress: WALLET, provisionState: 'ready' }),
+      paymentAddress: WALLET,
+      provision: { state: 'ready', error: null },
+      wallet: { usdc: 0, sol: 0 },
+      addons: [{ id: 'feed-1', name: 'Paid feed', vendor: 'Vendor', priceUsd: 0.1, enabled: true, dailyCapUsd: 1, spentTodayUsd: 0, lastCallAt: null, lastOk: null, lastError: null }],
+    };
+    addonsBody = { addons: [{ id: 'feed-1', vendor: 'Vendor', name: 'Paid feed', priceUsd: 0.1, minIntervalS: 600, note: '' }], paymentsEnabled: false };
+    useFloorArenaUi.setState({ panel: 'desk' });
+    const desk = await render();
+    expect(desk.querySelector('[data-testid="arena-withdraw-paused"]')).not.toBeNull();
+    expect(desk.querySelector('[data-testid="arena-withdraw-form"]')).toBeNull();
+    check('desk', desk.textContent!);
+    await act(async () => root?.unmount());
+    container?.remove();
+    root = null;
+    useFloorArenaUi.setState({ panel: 'desk', launched: { agentName: 'My Genesis', paymentAddress: WALLET } });
+    const success = await render();
+    check('launch success', (success.querySelector('[data-testid="arena-launch-success"]') as HTMLElement).textContent!);
+    check('guest prompt', `${ARENA_GUEST_UPSELL.headline} ${ARENA_GUEST_UPSELL.body}`);
+    check('contest rules', FLOOR_ARENA_CONTEST.rules.join(' '));
+  });
 
   test('no address yet means no wallet text and no withdraw panel', async () => {
     meBody = myAgentBody();

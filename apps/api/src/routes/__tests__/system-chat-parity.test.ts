@@ -31,7 +31,8 @@ const fakeDb = { query: {
 }, transaction: async (fn: (tx: typeof fakeTx) => Promise<unknown>) => fn(fakeTx) };
 mock.module('@clawville/database', () => ({ db: fakeDb, avatars: { id: 'id', userId: 'userId', isActive: 'isActive' }, avatarInventory: { avatarId: 'avatarId' }, locationAgents: {} }));
 mock.module('drizzle-orm', () => ({ eq: (a: unknown, b: unknown) => [a, b], and: (...args: unknown[]) => args, sql: (strings: TemplateStringsArray) => strings.join('?') }));
-mock.module('@clawville/agent-runtime', () => ({ characterRoomId: (slug: string, owner: string) => `${slug}:${owner}` }));
+// probe-runtime-scope imports the two probe constants; the probe path is inactive outside staging.
+mock.module('@clawville/agent-runtime', () => ({ characterRoomId: (slug: string, owner: string) => `${slug}:${owner}`, BRAINCHAIN_PROBE_CHAT_TEXT: 'probe-chat', brainchainProbeDirective: () => 'probe-directive' }));
 mock.module('../../middleware/require-auth-or-agent', () => ({ AGENT_SESSION_HEADER: 'X-Clawville-Agent-Session', resolveAgentSession: async (id: string) => { resolutions.push(id); return resolved; } }));
 mock.module('../../middleware/require-non-guest', () => ({ isGuestUser: async () => guest }));
 mock.module('../../middleware/auth', () => ({
@@ -39,7 +40,7 @@ mock.module('../../middleware/auth', () => ({
   requireAuth: async (_c: any, next: () => Promise<void>) => next(),
 }));
 mock.module('../../services/agent-orchestrator', () => ({ agentOrchestrator: { ensureAgentRuntime: async () => ({ processMessage: async (content: string, context: unknown) => { turns.push({ content, context }); afterReply?.(); return { content: 'Visit the Bounty Board.', timestamp: new Date('2026-09-22T00:00:00Z') }; } }) } }));
-mock.module('../../services/system-npc-seeder', () => ({ getSystemAgent: async () => ({ platformAgent: { id: 'nori-runtime' }, systemUserId: 'nori-owner' }), getSystemNpcAgent: async () => null }));
+mock.module('../../services/system-npc-seeder', () => ({ getSystemAgent: async () => ({ platformAgent: { id: 'nori-runtime', name: 'Nori' }, systemUserId: 'nori-owner' }), getSystemNpcAgent: async () => null }));
 mock.module('../../services/runtime-services-adapter', () => ({ buildRuntimeServices: (_db: unknown, opts: unknown) => opts }));
 mock.module('../../services/claw-token-ledger', () => ({ creditClawTokens: async (input: unknown) => { credits.push(input); if (creditFails) throw Error('credit unavailable'); } }));
 mock.module('../../services/xp-service', () => ({ awardXp: async (...args: unknown[]) => { xp.push(args); } }));

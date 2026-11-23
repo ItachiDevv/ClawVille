@@ -622,7 +622,7 @@ function drawDepthPanel(ctx: DecorContext, rect: AtlasRect, variant: number): vo
 export const DECOR_TERMINAL_ROWS = Object.freeze([
   Object.freeze(['CHUM BUCKET', 'KRUSTY KRAB', 'BOATING'] as const),
   Object.freeze(['ARCADE CITY', 'PINEAPPLE', 'LIGHTHOUSE'] as const),
-  Object.freeze(['SALTY SPITOON', 'TREEDOME', 'PATRICKS ROCK'] as const),
+  Object.freeze(['BRAINCHAIN', 'TREEDOME', 'PATRICKS ROCK'] as const),
 ]);
 export const DECOR_TERMINAL_LABEL = 'CLAW TERMINAL';
 /** Five-row bitmap letters; diagonal letters are wider. Every stroke is >=4 px. */

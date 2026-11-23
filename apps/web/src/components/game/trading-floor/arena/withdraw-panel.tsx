@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
+import { FLOOR_ARENA_WALLET_PAUSED } from '@clawville/shared';
 
 import { floorArenaErrorCode } from '@/hooks/use-floor-arena';
 import {
   ARENA_WITHDRAW_ASSETS,
+  ARENA_WITHDRAW_PAUSED_COPY,
   arenaOpenWithdrawal,
   arenaWithdrawCodeCopy,
   arenaWithdrawDelayText,
@@ -419,17 +421,27 @@ function History({ view }: { view: ArenaWithdrawStateView }) {
 /**
  * The Wallet block's withdraw panel: the receiving address, the withdraw form
  * and the last 10 withdrawals. The form shows only for an active address.
+ * While the arena wallet is paused (FLOOR_ARENA_WALLET_PAUSED, or the server's
+ * `paused`), the panel shows only the pause note and the history (a request
+ * from before the pause can still be cancelled): no address step, no form.
+ * `walletPaused` exists for tests of the open panel.
  */
-export function ArenaWithdrawPanel({ compact }: { compact: boolean }) {
+export function ArenaWithdrawPanel({ compact, walletPaused = FLOOR_ARENA_WALLET_PAUSED }: { compact: boolean; walletPaused?: boolean }) {
   const query = useFloorArenaWithdrawals(true);
   const view = query.data ?? null;
+  const paused = walletPaused || view?.paused === true;
   return (
     <div style={{ ...arenaInnerCardStyle, marginTop: 4 }} data-testid="arena-withdraw">
       <div style={{ color: FLOOR_TEXT.value, fontSize: 13, fontWeight: 700 }}>Withdraw</div>
+      {paused ? (
+        <div role="status" style={{ color: FLOOR_TEXT.warning, fontSize: 12 }} data-testid="arena-withdraw-paused">
+          {ARENA_WITHDRAW_PAUSED_COPY}
+        </div>
+      ) : null}
       {view ? (
         <>
-          <AddressSection view={view} compact={compact} />
-          {view.address?.state === 'active' ? <WithdrawForm view={view} compact={compact} /> : null}
+          {paused ? null : <AddressSection view={view} compact={compact} />}
+          {!paused && view.address?.state === 'active' ? <WithdrawForm view={view} compact={compact} /> : null}
           <History view={view} />
         </>
       ) : query.isError ? (
@@ -442,13 +454,16 @@ export function ArenaWithdrawPanel({ compact }: { compact: boolean }) {
 }
 
 /** "SOL in the wallet" for the Wallet block. Same query as the panel, so one poll feeds both. */
-export function ArenaWalletSolLine() {
+export function ArenaWalletSolLine({ walletPaused = FLOOR_ARENA_WALLET_PAUSED }: { walletPaused?: boolean } = {}) {
   const query = useFloorArenaWithdrawals(true);
   const sol = query.data?.wallet?.sol ?? null;
   const keep = query.data?.limits?.recommendedSolText ?? null;
+  const amount = sol === null ? 'not known right now' : solText(sol);
+  // While paused, no "keep SOL" advice: it reads as a request to send SOL.
+  if (walletPaused || query.data?.paused === true) return <ArenaMuted size={11}>SOL in the wallet: {amount}</ArenaMuted>;
   return (
     <ArenaMuted size={11}>
-      SOL in the wallet: {sol === null ? 'not known right now' : solText(sol)} (
+      SOL in the wallet: {amount} (
       {keep ? `keep at least ${keep} SOL for network fees` : 'keep some SOL for network fees'})
     </ArenaMuted>
   );

@@ -1,0 +1,27 @@
+{
+  "checkedAt": "2026-11-09T16:49:24.520851+00:00",
+  "scope": "Changed and untracked textual job sources; no contents emitted",
+  "count": 271,
+  "failures": [
+    {
+      "path": "docs/research/brainchain-2026-11-09/priors-public-sponsor-record.json",
+      "offset": 124
+    }
+  ],
+  "repairs": [
+    {
+      "path": "docs/brainchain-3d-source-rereview.md",
+      "invalidPunctuationSequencesRepaired": 2
+    },
+    {
+      "path": "docs/brainchain-backend-design.md",
+      "invalidPunctuationSequencesRepaired": 2
+    },
+    {
+      "path": "docs/research/brainchain-2026-11-09/capability-refresh.md",
+      "invalidPunctuationSequencesRepaired": 1
+    }
+  ],
+  "rawEvidenceNote": "The remaining external sponsor response has malformed source bytes. Preserve its original bytes. Do not treat its text as a validated JSON interface.",
+  "updatedAt": "2026-11-09T16:49:51.817335+00:00"
+}

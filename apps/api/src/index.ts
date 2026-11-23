@@ -1,3 +1,4 @@
+import { initializeProbeRuntimeDeployment } from './services/brainchain/probe-bootstrap';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
@@ -73,6 +74,7 @@ import { leaderboardRoutes } from './routes/leaderboard';
 import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { ecosystemRoutes } from './routes/ecosystem';
+import { brainchainRoutes } from './routes/brainchain';
 import { ecosystemReadRoutes } from './routes/ecosystem-reads';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
@@ -197,6 +199,9 @@ import {
 import { startTradingDrawdownPoller, stopTradingDrawdownPoller } from './services/trading-guardrails';
 import type { AppContext } from './types';
 
+// Hydrate trusted probe scope before boot warmup, restore or listeners.
+await initializeProbeRuntimeDeployment();
+
 if (
   process.env.CLAWPUMP_FIXTURE_DIR &&
   (process.env.CLAWVILLE_ENV === 'staging' || process.env.CLAWVILLE_ENV === 'production')
@@ -275,6 +280,8 @@ app.route('/api/agent', agentMcpRoutes);
 // and before the parent /api/vendors/studios prefix so its session middleware
 // does not run twice on these paths.
 app.route('/api/vendors/studios/oauth', vendorStudiosOAuthRoutes);
+// BrainChain owns a 4 KiB stream limit before any JSON parser or auth work.
+app.route('/api/brainchain', brainchainRoutes);
 
 // Reject malformed, non-empty JSON before route handlers call `c.req.json()`.
 // Raw-body signed/HMAC endpoints are exempt inside the guard so their exact

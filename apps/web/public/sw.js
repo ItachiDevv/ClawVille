@@ -2,6 +2,8 @@
 // Cache-first for static 3D assets (GLB + VRM + basis WASM); SWR for Next.js
 // JS chunks. Bump CACHE_VERSION whenever the asset matcher or layout changes.
 //
+// 2026-11-13 (v13, no version bump: list-only change): the arcade precache
+//   entry now names claw-arcade-exterior-opt2-mo-ktx.glb (835,240 -> 604,816 bytes).
 // 2026-09-29 (v13, no version bump: handler-only change):
 //   - Both fetch strategies now fall back to a plain network fetch when they
 //     reject (for example caches.open throws on a broken Cache Storage
@@ -88,6 +90,12 @@
 //   - Added the 13 ambient/wanderer VRMs to the existing page-signaled roster.
 //   - The v11 handshake, v12 byte ledger, and 10 MB per-file cap are unchanged.
 
+// 2026-11-11 (v13, no version bump: roster entry only):
+//   - Replaced the Office entry in the page-signaled precache roster with the
+//     new filename brainchain-office-v3-ktx.glb. The roster skips cached
+//     entries, so only the new file downloads; a version bump would evict and
+//     re-download every cached asset for every returning player.
+//
 const CACHE_VERSION = 'v13';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
@@ -121,11 +129,11 @@ const PRECACHE_GLBS = [
   '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
   '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
   '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
-  '/models/salty-spitoon-opt1-ktx.glb?v=3',
+  '/models/brainchain/brainchain-office-v3-ktx.glb',
   '/models/boating-school-opt1-ktx.glb?v=3',
   '/models/patty-building-opt1-mo-ktx.glb?v=3',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
-  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
+  '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
   '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',

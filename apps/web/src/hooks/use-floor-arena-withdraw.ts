@@ -1,6 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { FLOOR_ARENA_WALLET_PAUSED } from '@clawville/shared';
 
 import { FloorArenaApiError, floorArenaErrorCode, floorArenaErrorCopy, floorArenaKeys } from '@/hooks/use-floor-arena';
 import { ApiError } from '@/lib/api';
@@ -109,7 +110,17 @@ export interface ArenaWithdrawStateView {
   withdrawals: ArenaWithdrawalView[];
   limits: ArenaWithdrawLimits | null;
   wallet: ArenaWithdrawWalletView | null;
+  /** The arena wallet pause (server `paused`, FLOOR_ARENA_WALLET_PAUSED): no address, no withdraw form. */
+  paused: boolean;
 }
+
+/**
+ * The human pause text for the withdraw panel and the withdraw_paused refusal. Same facts as
+ * FLOOR_ARENA_WALLET_PAUSE_NOTE (the agent text); never asks for a deposit.
+ */
+export const ARENA_WITHDRAW_PAUSED_COPY =
+  'Withdrawals are paused right now, because ClawPump changed its API and ClawVille is still checking the new ' +
+  'routes. Do not send USDC or SOL to your trader wallet until the pause ends.';
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -227,6 +238,7 @@ export function readWithdrawState(body: Record<string, unknown>): ArenaWithdrawS
     withdrawals: list(body.withdrawals, readWithdrawal),
     limits: readLimits(body.limits),
     wallet: readWallet(body.wallet),
+    paused: body.paused === true,
   };
 }
 
@@ -291,7 +303,11 @@ export function arenaWithdrawCodeCopy(
   extras: { activeAt?: string | null } = {},
 ): string | null {
   switch (code) {
+    case 'withdraw_paused':
+      return ARENA_WITHDRAW_PAUSED_COPY;
     case 'needs_sol':
+      // While the arena wallet is paused, never ask for a deposit (money sent now cannot come back out).
+      if (FLOOR_ARENA_WALLET_PAUSED) return 'The wallet did not hold enough SOL for the network fee.';
       return limits
         ? `The wallet needs more SOL for the network fee. Send at least ${limits.recommendedSolText} SOL to it, then try again.`
         : 'The wallet needs more SOL for the network fee. Send SOL to it, then try again.';

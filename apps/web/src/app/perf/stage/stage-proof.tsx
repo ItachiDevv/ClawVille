@@ -212,7 +212,7 @@ interface StageProbeSnapshot {
   listenerUnderflowCount: number;
   recoveryCount: number;
   lastRecoveryReason: string | null;
-  backend: ReturnType<typeof readStageBackend>;
+  backend: ReturnType<typeof readStageBackend> | '2d';
   renderer: ReturnType<typeof readStageRendererCounters>;
   frames: Record<string, number>;
   cameras: Record<string, number[]>;

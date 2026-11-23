@@ -65,7 +65,13 @@ const BUILDING_EXTENTS: Readonly<Record<string, { halfX: number; halfZ: number }
   'code-development':   { halfX: 591, halfZ: 595 },
   'mcp-tool-use':       { halfX: 589, halfZ: 595 },
   'messaging-channels': { halfX: 850, halfZ: 850 },
-  'api-integrations':   { halfX: 850, halfZ: 850 },
+  // GLB: brainchain/brainchain-office-v3-ktx.glb, targetMaxDim=1400.
+  // Scene bbox 1.8990 x 1.3639 x 1.4047, maxDim = X.
+  // Scale = 1400 / 1.8990 = 737.2; authored footprint 1400 x 1035.6 (no cap).
+  // rotY -2.093 (|cos| 0.5, |sin| 0.866) gives world AABB:
+  // X = 0.5*1400 + 0.866*1035.6 = 1596.8;
+  // Z = 0.866*1400 + 0.5*1035.6 = 1730.2; times 0.85 / 2.
+  'api-integrations':   { halfX: 679, halfZ: 735 },
   'app-publishing':     { halfX: 425, halfZ: 423 },
   // Trading Floor exterior (2026-09-19 swap; was patty-building at 850×498).
   'cron-automation':    { halfX: 823, halfZ: 720 },
@@ -87,13 +93,37 @@ const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * 0.92;  // ≈ 206 wu fallback
 // BUILDING_COLLISION_BUFFER in world-colliders.ts (client) — §2h same-diff rule.
 const BUILDING_COLLISION_BUFFER = 28; // wu
 
+/** Office approach: subtract only a 320 wu wide corridor along yaw -2.093.
+ * A conservative stair-step of AABBs preserves the existing 679x735 +28
+ * outer box. The corridor stops at outward depth 350, 157 wu before the
+ * vortex plane; its solid end prevents entry into the building mesh.
+ * Client and server use this same constructor. Called only during cache build.
+ */
+export function buildOfficeApproachColliders(centerX: number, centerZ: number): ServerCollider2D[] {
+  const result: ServerCollider2D[] = [];
+  const halfX = 707, halfZ = 763, nx = Math.sin(-2.093), nz = Math.cos(-2.093);
+  const add = (left: number, right: number, bottom: number, top: number) => {
+    if (right <= left) return;
+    result.push({ id: result.length === 0 ? 'api-integrations' : `api-integrations-wall-${result.length}`,
+      centerX: centerX + (left + right) / 2, centerZ: centerZ + (bottom + top) / 2,
+      halfX: (right - left) / 2, halfZ: (top - bottom) / 2 });
+  };
+  // Full rear half and conservative 64 wu rows on the approach side.
+  add(-halfX, halfX, 0, halfZ);
+  for (let bottom = -halfZ; bottom < 0; bottom += 64) {
+    const top = Math.min(0, bottom + 64);
+    const left = Math.max(-halfX, nx / nz * top - 160 / Math.abs(nz));
+    const right = Math.min(halfX, nx / nz * bottom + 160 / Math.abs(nz),
+      (350 - nz * bottom) / nx, (350 - nz * top) / nx);
+    if (left >= right) add(-halfX, halfX, bottom, top);
+    else { add(-halfX, left, bottom, top); add(right, halfX, bottom, top); }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Collider type
 // ---------------------------------------------------------------------------
-
-export type PathfindingRasterPolicy =
-  | { readonly mode: 'legacy-safety-tiles' }
-  | { readonly mode: 'cell-center-expanded-aabb'; readonly paddingWu: number };
 
 export interface ServerCollider2D {
   id: string;
@@ -116,12 +146,6 @@ export interface ServerCollider2D {
    * Not currently consumed server-side (NPC Y is set by terrain raycast on the client).
    */
   topY?: number;
-  /**
-   * Optional A* raster policy. Undefined preserves the legacy 4-tile safety
-   * expansion byte-for-byte. Narrow structures may opt into exact tile-center
-   * intersection against the AABB expanded by the moving entity half-width.
-   */
-  pathfindingRaster?: PathfindingRasterPolicy;
 }
 
 export const KELP_FOREST_PORTAL_ID = 'kelp-forest-portal';
@@ -257,6 +281,10 @@ function buildServerCollidersWithoutKelpPortal(): ServerCollider2D[] {
     const centerTileY = zone.y + zone.h / 2;
     const gamePxX = centerTileX * TILE_SIZE;
     const gamePxY = centerTileY * TILE_SIZE;
+    if (id === 'api-integrations') {
+      list.push(...buildOfficeApproachColliders(gamePxX - MAP_HALF, gamePxY - MAP_HALF));
+      continue;
+    }
     const extents = BUILDING_EXTENTS[id];
     list.push({
       id,
@@ -365,8 +393,7 @@ export function getServerColliders(): readonly ServerCollider2D[] {
 // The agent building-interaction gates (visit-building, building/:id/chat,
 // talk_to_npc, the autonomy driver's hasArrived) must measure proximity to a
 // building's actual FOOTPRINT, not its center. The buildings are large
-// (memory-rag 722×723 wu half-extents, messaging-channels / api-integrations
-// 850×850), and their collider (+buffer +the moving entity's half-width +A*
+// (memory-rag 722×723 wu half-extents, messaging-channels 850×850), and their collider (+buffer +the moving entity's half-width +A*
 // padding) pushes the nearest WALKABLE approach well beyond 1000 wu from the
 // center — so a `distToCenter <= BUILDING_INTERACTION_RADIUS(=1000)` gate is
 // geometrically UNSATISFIABLE for the bigger buildings (a latent bug for the
@@ -374,9 +401,22 @@ export function getServerColliders(): readonly ServerCollider2D[] {
 // AABB edge makes "near the building" reachable regardless of footprint.
 const BUILDING_COLLIDER_BY_ID: Readonly<Record<string, ServerCollider2D>> = Object.freeze(
   Object.fromEntries(
-    SERVER_COLLIDERS.filter((c) => Object.hasOwn(BUILDING_TILE_ZONES, c.id)).map((c) => [c.id, c]),
+    // Interaction gates retain the full footprint even when collision uses
+    // several walls. A doorway must not shrink the human/agent chat radius.
+    Object.entries(BUILDING_TILE_ZONES).map(([id, zone]) => [id, {
+      id,
+      centerX: (zone.x + zone.w / 2) * TILE_SIZE - MAP_HALF,
+      centerZ: (zone.y + zone.h / 2) * TILE_SIZE - MAP_HALF,
+      halfX: (BUILDING_EXTENTS[id]?.halfX ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
+      halfZ: (BUILDING_EXTENTS[id]?.halfZ ?? BUILDING_HALF) + BUILDING_COLLISION_BUFFER,
+    }]),
   ),
 );
+
+/** Full building bounds for interaction gates and 2D art, independent of door notches. */
+export function getBuildingFootprint(buildingId: string): Readonly<ServerCollider2D> | null {
+  return Object.hasOwn(BUILDING_COLLIDER_BY_ID, buildingId) ? BUILDING_COLLIDER_BY_ID[buildingId]! : null;
+}
 
 /**
  * Distance in GAME-PIXEL units from a game-pixel point to the EDGE of a

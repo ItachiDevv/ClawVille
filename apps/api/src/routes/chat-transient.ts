@@ -1,3 +1,6 @@
+import { assertProbeOperationAllowed } from '../services/brainchain/probe-runtime-scope';
+import { sessionMiddleware } from '../middleware/auth';
+import { AGENT_SESSION_HEADER, resolveAgentSession } from '../middleware/require-auth-or-agent';
 /**
  * Transient character chat — POST /api/chat/transient
  *
@@ -63,7 +66,11 @@ const OPENAI_MODEL = process.env.OPENAI_SMALL_MODEL ?? 'gpt-4o-mini';
 const TEMPERATURE = 0.85;
 const MAX_OUTPUT_TOKENS = 220;
 
-transientChatRoutes.post('/', async (c) => {
+transientChatRoutes.post('/', sessionMiddleware, async (c) => {
+  const probeUser = c.get('user');
+  const probeSessionId = c.req.header(AGENT_SESSION_HEADER);
+  const probeSession = !probeUser && probeSessionId ? await resolveAgentSession(probeSessionId) : null;
+  await assertProbeOperationAllowed({ userId: probeUser?.id ?? probeSession?.userId, platformAgentId: probeSession?.agentId });
   const ip = getClientIp(c.req.raw.headers);
   if (!transientRateLimit.check(`chat-transient:${ip}`)) {
     return c.json({ error: 'rate_limited' }, 429);

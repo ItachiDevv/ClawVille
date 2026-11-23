@@ -20,6 +20,10 @@ import {
   WorldStageCanvas,
   type WorldStageScene,
 } from './WorldStageCanvas';
+import { getWorldRendererMode, useWorldRendererMode, selectWorldRendererMode, reloadWorldRenderer, isStageSceneAvailable } from '@/lib/world-renderer-mode';
+import { needsBrainchainPanelFallback, retireBrainchainFallbackRequest } from './brainchain-stage-fallback';
+import { useBrainchainInteriorStore } from '@/components/brainchain/brainchain-interior-store';
+import { BRAINCHAIN_CAMERA_FAR, BRAINCHAIN_PLAYER_SPAWN, BRAINCHAIN_BACKGROUND, BRAINCHAIN_FOG } from '@/lib/three/brainchain/brainchain-room';
 import { StageTransition } from './StageTransition';
 import {
   requestStageScene,
@@ -54,6 +58,7 @@ import {
 } from './resource-ledger';
 import { StageCanvasErrorBoundary } from './StageCanvasErrorBoundary';
 import { StageSlotErrorBoundary } from './StageSlotErrorBoundary';
+import { releaseBootSplash } from './boot-splash';
 import { stampColdLoadPhaseOnce } from '@/lib/three/cold-load-stamp';
 import {
   getStageRendererFailure,
@@ -74,6 +79,7 @@ import {
   TRADING_FLOOR_ROOM,
 } from '@/lib/three/trading-floor/trading-floor-room';
 import {
+  BRAINCHAIN_SCENE_ID,
   ACTIVITY_SCENE_ID,
   COVE_SCENE_ID,
   KELP_SCENE_ID,
@@ -97,6 +103,8 @@ import {
   retireStaleIssues,
   settleIssue,
 } from './stage-navigation-lineage-store';
+
+const LazyWorldStage2DHost = lazy(() => import('@/components/pixi/WorldStage2DHost'));
 
 const OUTGOING_OVERLAY_COMMIT_TIMEOUT_MS = 10_000;
 interface StageCommitOptions {
@@ -129,6 +137,7 @@ const LazyStageHostedKelpScene = lazy(() =>
 const LazyStageHostedTradingFloorScene = lazy(
   () => import('./StageHostedTradingFloorScene'),
 );
+const LazyStageHostedBrainchainScene = lazy(() => import('./StageHostedBrainchainScene'));
 const LazyStageHostedActivityScene = lazy(
   () => import('./StageHostedActivityScene'),
 );
@@ -138,6 +147,10 @@ const LazyStageActivityRouteHost = lazy(
 
 export function WorldStageRoot({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const rendererMode = useWorldRendererMode();
+  const [rendererHandoff, setRendererHandoff] = useState(false);
+  const [pixiFailed, setPixiFailed] = useState(false);
+  const unsupported2D = rendererMode === '2d' && pathname !== '/brainchain' && sceneIdForPathname(pathname) !== WORLD_SCENE_ID;
   const router = useRouter();
   const searchParams = useSearchParams();
   const [stageReady, setStageReady] = useState(false);
@@ -183,6 +196,21 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     getStageRendererFailure,
     getStageRendererFailureServerSnapshot,
   );
+  // The /game page never mounts on these paths, so it never releases the
+  // server-rendered BootSplash. Release it here so the error UI is visible.
+  const stageTransitionFailed = useStageStore((state) => state.transition?.phase === 'error');
+  const brainchainFailed = useBrainchainInteriorStore((state) => state.failed);
+  const brainchainFallback = needsBrainchainPanelFallback(pathname, rendererMode, !!rendererFailure, brainchainFailed, stageTransitionFailed);
+  useEffect(() => {
+    if (!brainchainFallback) return;
+    // The DOM fallback has no scene to acknowledge. Retire any failed warm
+    // request before hiding the transition; returning to town requests it anew.
+    if (stageTransitionFailed) useBrainchainInteriorStore.getState().fail();
+    retireBrainchainFallbackRequest();
+  }, [brainchainFallback, stageTransitionFailed]);
+  useEffect(() => {
+    if (pixiFailed || unsupported2D || rendererFailure || stageTransitionFailed) releaseBootSplash();
+  }, [pixiFailed, unsupported2D, rendererFailure, stageTransitionFailed]);
   const kelpResetKey = `${kelpGeneration}:${recoveryCount}`;
   const activityResetKey = `${activityGeneration}:${recoveryCount}`;
   const coldInitIssuedRef = useRef(false);
@@ -224,6 +252,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   useEffect(() => {
+    getWorldRendererMode();
     resetStageStore();
     resetStageFrameDiagnostics();
     setStageReady(true);
@@ -297,8 +326,13 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       settleIssue(landing.issue.id);
     }
 
+    if (pixiFailed || brainchainFallback) {
+      displayedPathRef.current = pathname;
+      setDisplayedChildren(children); setDisplayedPathname(pathname);
+      return;
+    }
     const sceneId = sceneIdForPathname(pathname);
-    if (!sceneId) return;
+    if (!sceneId || !isStageSceneAvailable(sceneId)) return;
     const destinationKey = stageDestinationKey(pathname);
     if (!destinationKey) return;
     const state = useStageStore.getState();
@@ -356,6 +390,8 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     repairUrlToCurrentIntent,
     searchParams,
     stageReady,
+    pixiFailed,
+    brainchainFallback,
   ]);
 
   useEffect(() => {
@@ -407,6 +443,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       const sceneId = sceneIdForPathname(targetPathname);
       const targetDestinationKey = stageDestinationKey(targetPathname);
       if (!sceneId || !targetDestinationKey) return false;
+      if ((targetPathname === '/brainchain' && (getWorldRendererMode() === '2d' || getStageRendererFailure())) || brainchainFallback) { commitStageNavigation(navigation); return true; }
+      if (!isStageSceneAvailable(sceneId)) return false;
+      if (pixiFailed) { commitStageNavigation(navigation); return true; }
       const state = useStageStore.getState();
       if (sceneId === ACTIVITY_SCENE_ID) {
         const roomKey = roomKeyFromPathname(targetPathname);
@@ -448,7 +487,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       };
       return true;
     });
-  }, [commitStageNavigation, stageReady]);
+  }, [commitStageNavigation, stageReady, pixiFailed, brainchainFallback]);
 
   useEffect(() => {
     const parked = navigationRef.current;
@@ -554,7 +593,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           listenerUnderflowCount: state.listenerUnderflowCount,
           recoveryCount: state.recovery.count,
           lastRecoveryReason: state.recovery.lastReason,
-          backend: readStageBackend(),
+          backend: getWorldRendererMode() === '2d' ? '2d' : readStageBackend(),
           renderer: readStageRendererCounters(),
           coldInit:
             (
@@ -631,7 +670,12 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
             near: CURRENT_WORLD_DEVICE_PROFILE.fogNear,
             far: CURRENT_WORLD_DEVICE_PROFILE.fogFar,
           },
-          shadows: CURRENT_WORLD_DEVICE_PROFILE.shadows,
+          // Shadows OFF (2026-11-12): no world light casts a shadow, and R3F's
+          // <Canvas> (no `shadows` prop) resets shadowMap.enabled to false on its
+          // next configure (~4.7 s on desktop). Turning it on here only flipped
+          // the TSL environment key, so the boot warm-up built ~30 shaders that
+          // were rebuilt right after the flip. No visual change.
+          shadows: false,
         },
         content: (
           <Suspense fallback={null}>
@@ -749,6 +793,24 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         ),
       },
       {
+        sceneId: BRAINCHAIN_SCENE_ID,
+        camera: {
+          fov: 60, near: 1, far: BRAINCHAIN_CAMERA_FAR,
+          position: [BRAINCHAIN_PLAYER_SPAWN.x, 300, BRAINCHAIN_PLAYER_SPAWN.z + 520],
+          lookAt: [0, 180, 0],
+        },
+        appearance: { background: BRAINCHAIN_BACKGROUND, fog: BRAINCHAIN_FOG, shadows: false },
+        capabilities: {
+          jump: false, verticalSwim: false, sprint: true, emotes: false,
+          interact: true, clickPath: false, cameraOrbitKeys: true, cameraOrbitDrag: true,
+        },
+        content: <Suspense fallback={null}>
+          <StageSlotErrorBoundary resetKey="brainchain" onRuntimeError={useBrainchainInteriorStore.getState().fail}>
+            <LazyStageHostedBrainchainScene />
+          </StageSlotErrorBoundary>
+        </Suspense>,
+      },
+      {
         sceneId: ACTIVITY_SCENE_ID,
         overlayOpaque: true,
         camera: {
@@ -794,8 +856,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
 
   return (
     <div className="world-stage-root relative h-screen w-full overflow-hidden">
-      {stageReady && (
+      {stageReady && !rendererHandoff && (
         <div className="absolute inset-0 z-0">
+          {rendererMode === '2d' ? <Suspense fallback={null}><LazyWorldStage2DHost onFailure={() => setPixiFailed(true)} /></Suspense> : (
           <StageCanvasErrorBoundary>
             <WorldStageCanvas
               scenes={scenes}
@@ -805,10 +868,11 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
               onTransitionOpaque={handleTransitionOpaque}
             />
           </StageCanvasErrorBoundary>
+          )}
         </div>
       )}
       <div className="world-stage-page-layer pointer-events-none absolute inset-0 z-10">
-        {stageReady &&
+        {unsupported2D || (pixiFailed && pathname === '/game') ? null : stageReady &&
         sceneIdForPathname(displayedPathname) === ACTIVITY_SCENE_ID ? (
           <Suspense fallback={null}>
             <LazyStageActivityRouteHost pathname={displayedPathname} />
@@ -824,7 +888,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
-      {rendererFailure && (
+      {rendererFailure && rendererMode === '3d' && pathname !== '/brainchain' && (
         <div
           role="alert"
           className="absolute inset-0 z-50 flex items-center justify-center bg-[#07131d] p-6"
@@ -841,9 +905,19 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
             >
               Reload
             </button>
+            <button type="button" className="ml-3 min-h-12 rounded-lg border px-5 py-3" onClick={() => {
+              // Commit the unmount first. Two frames let Canvas cleanup dispose resources.
+              setRendererHandoff(true);
+              requestAnimationFrame(() => requestAnimationFrame(() => { selectWorldRendererMode('2d'); requestStageScene(WORLD_SCENE_ID); setRendererHandoff(false); }));
+            }}>Continue in 2D</button>
           </div>
         </div>
       )}
+      {unsupported2D && <div role="alert" className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-slate-950 p-6 text-white">
+        <p>This venue needs the 3D view.</p>
+        <a href="/game?view=2d" className="min-h-12 rounded border p-3">Back to town</a>
+        <button className="min-h-12 rounded border p-3" onClick={() => reloadWorldRenderer('3d')}>Switch to 3D</button>
+      </div>}
       {kelpRuntimeCrashKey === kelpResetKey && (
         <div
           role="alert"
@@ -883,10 +957,10 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
-      <StageTransition
+      {!brainchainFallback && !unsupported2D && !pixiFailed && !(rendererFailure && rendererMode === '3d') && <StageTransition
         timeoutMs={45_000}
         onOpaque={handleTransitionOpaque}
-      />
+      />}
     </div>
   );
 }

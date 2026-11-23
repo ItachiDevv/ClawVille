@@ -26,3 +26,7 @@ export const clawvillePlugin: ClawvillePlugin = {
   actions: allActions as Action[],
   providers: allProviders as Provider[],
 };
+
+export function createScopedClawvillePlugin(knowledge: Provider): ClawvillePlugin {
+  return { ...clawvillePlugin, providers: allProviders.map(provider => provider.name === 'knowledge' ? knowledge : provider) as Provider[] };
+}

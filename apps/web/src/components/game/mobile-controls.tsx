@@ -1,4 +1,5 @@
 'use client';
+import { useWorldRendererMode } from '@/lib/world-renderer-mode';
 
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import type { JoystickManager } from 'nipplejs';
@@ -18,6 +19,7 @@ import {
 } from '@/lib/hud-anchors';
 
 export default function MobileControls() {
+  const is2D = useWorldRendererMode() === '2d';
   const isMobile = useIsMobile();
   const leftContainerRef = useRef<HTMLDivElement>(null);
   const rightContainerRef = useRef<HTMLDivElement>(null);
@@ -38,7 +40,7 @@ export default function MobileControls() {
 
   // Explore mode = pure spectator with no character — no movement joystick, no building entry
   const isExplore = controlMode === 'explore';
-  const canJump = controlMode === 'player' || controlMode === 'npc';
+  const canJump = !is2D && (controlMode === 'player' || controlMode === 'npc');
   // Joysticks hidden entirely while a chat panel is open.
   const hideControls = chatActive;
 
@@ -127,7 +129,7 @@ export default function MobileControls() {
 
   // Right joystick — camera orbit (arrow key equivalent)
   useEffect(() => {
-    if (!isMobile || !rightContainerRef.current) {
+    if (is2D || !isMobile || !rightContainerRef.current) {
       if (rightJoystickRef.current) {
         rightJoystickRef.current.destroy();
         rightJoystickRef.current = null;
@@ -175,7 +177,7 @@ export default function MobileControls() {
         useGameStore.getState().setCameraJoystickVelocity(0, 0);
       }
     };
-  }, [isMobile, hideControls]);
+  }, [isMobile, hideControls, is2D]);
 
   // Registers the wrapper so the minimap can measure where the movement pad
   // really starts (safe area included). Stable, so React calls it only on
@@ -234,7 +236,7 @@ export default function MobileControls() {
       )}
 
       {/* Right joystick zone — camera orbit */}
-      <div
+      {!is2D && <div
         ref={rightContainerRef}
         className="absolute pointer-events-auto"
         style={{
@@ -244,7 +246,7 @@ export default function MobileControls() {
           height: '220px',
           touchAction: 'none',
         }}
-      />
+      />}
 
       {/* Building enter is now owned by the bottom-center floating prompt
           in `location-hud.tsx` (single source of truth, bigger tap target). */}

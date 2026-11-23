@@ -1,54 +1,23 @@
 import { useRef, useCallback } from 'react';
-import { useGameStore } from '@/stores/game';
-
-const LERP_FACTOR = 0.1;
-
-interface CameraState {
-  x: number;
-  y: number;
-}
-
-/**
- * Camera hook that smoothly follows the avatar position.
- * Returns a function to call each frame that returns the camera offset.
- * Scale-aware: adjusts viewport bounds based on world scale.
- *
- * Uses a ref for viewport dimensions so the ticker closure always reads
- * the latest values even though it captures the initial callback reference.
- */
+import { useGameStore, avatarPositionRef } from '@/stores/game';
+import { useNpcStore } from '@/stores/npc';
+import { exploreCameraTarget } from './use-game-loop';
+import { pixiWorldScale } from './pixi-world-scale';
 export function useCamera(mapWidth: number, mapHeight: number, viewWidth: number, viewHeight: number) {
-  const cameraRef = useRef<CameraState>({ x: 0, y: 0 });
-  const viewRef = useRef({ viewWidth, viewHeight });
-
-  // Keep ref in sync with latest viewport dimensions
-  viewRef.current = { viewWidth, viewHeight };
-
-  const update = useCallback(() => {
-    const { avatarPosition } = useGameStore.getState();
-    const cam = cameraRef.current;
-    const { viewWidth: vw, viewHeight: vh } = viewRef.current;
-
-    // Account for viewport scaling
-    const scale = Math.max(vw / mapWidth, vh / mapHeight);
-    const effectiveViewWidth = vw / scale;
-    const effectiveViewHeight = vh / scale;
-
-    // Target: center the avatar in viewport
-    const targetX = avatarPosition.x - effectiveViewWidth / 2;
-    const targetY = avatarPosition.y - effectiveViewHeight / 2;
-
-    // Smooth lerp
-    cam.x += (targetX - cam.x) * LERP_FACTOR;
-    cam.y += (targetY - cam.y) * LERP_FACTOR;
-
-    // Clamp to map bounds (using effective viewport size)
-    const maxX = Math.max(0, mapWidth - effectiveViewWidth);
-    const maxY = Math.max(0, mapHeight - effectiveViewHeight);
-    cam.x = Math.max(0, Math.min(maxX, cam.x));
-    cam.y = Math.max(0, Math.min(maxY, cam.y));
-
+  const camera = useRef({ x: 0, y: 0, initialized: false });
+  const viewport = useRef({ viewWidth, viewHeight }); viewport.current = { viewWidth, viewHeight };
+  return useCallback(() => {
+    const state = useGameStore.getState(), cam = camera.current;
+    const focus = state.consumeCameraFocus();
+    const npc = state.controlMode === 'autonomous' ? useNpcStore.getState().npcs.find((n) => n.id === state.autonomousBodyId)
+      : state.controlMode === 'npc' ? useNpcStore.getState().npcs.find((n) => n.id === state.possessedNpcId) : undefined;
+    if (focus && state.controlMode === 'explore') { exploreCameraTarget.x = focus.x; exploreCameraTarget.y = focus.y; }
+    const target = focus ?? (state.controlMode === 'explore' ? exploreCameraTarget : npc ?? avatarPositionRef);
+    const { viewWidth: w, viewHeight: h } = viewport.current, scale = pixiWorldScale(w, h);
+    const tx = Math.max(0, Math.min(mapWidth - w / scale, target.x - w / scale / 2));
+    const ty = Math.max(0, Math.min(mapHeight - h / scale, target.y - h / scale / 2));
+    const blend = focus || !cam.initialized ? 1 : 0.16;
+    cam.x += (tx - cam.x) * blend; cam.y += (ty - cam.y) * blend; cam.initialized = true;
     return { x: -cam.x, y: -cam.y };
   }, [mapWidth, mapHeight]);
-
-  return update;
 }

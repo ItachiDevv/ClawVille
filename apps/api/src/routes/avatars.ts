@@ -1,3 +1,4 @@
+import { allowProbeStageText } from '../services/brainchain/probe-runtime-scope';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or } from 'drizzle-orm';
@@ -991,7 +992,8 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
   // reaches cognition (saves tokens); fail-open never breaks chat. No output
   // moderation here: the reply is this human's OWN agent answering the same
   // human who prompted it (author == recipient), not a public persona.
-  const inMod = await moderateText(result.data.content, { surface: 'avatar-chat', direction: 'input' });
+  const scopedProbeChat = await allowProbeStageText({userId:user.id}, 'chat', result.data.content);
+  const inMod = scopedProbeChat ? {allowed:true} : await moderateText(result.data.content, { surface: 'avatar-chat', direction: 'input' });
   if (!inMod.allowed) {
     return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);
   }
@@ -1196,7 +1198,8 @@ avatarRoutes.post('/me/directive', requireAuth, async (c) => {
   // PERSISTED (platform_agents.config.currentDirective), rendered client-side, and
   // injected into the running runtime, so moderate it before it lands. Skip the
   // clear path (no text). Fail-open never blocks a legit directive.
-  if (parsed.data.directive) {
+  const scopedProbeDirective = await allowProbeStageText({userId:user.id}, 'directive', parsed.data.directive);
+  if (parsed.data.directive && !scopedProbeDirective) {
     const inMod = await moderateText(parsed.data.directive, { surface: 'avatar-directive', direction: 'input' });
     if (!inMod.allowed) {
       return c.json({ error: CONTENT_BLOCKED_MESSAGE, code: CONTENT_BLOCKED_CODE }, 400);

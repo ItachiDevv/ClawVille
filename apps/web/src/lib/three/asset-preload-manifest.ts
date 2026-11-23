@@ -26,17 +26,19 @@
  *
  * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
  *   pineapple-house-opt1-mo-ktx.glb, chum-bucket-v2-opt1-mo-ktx.glb,
- *   krusty-krab-v2-opt1-mo-ktx.glb, salty-spitoon-opt1-ktx.glb?v=3,
+ *   krusty-krab-v2-opt1-mo-ktx.glb,
+ *   brainchain/brainchain-office-v3-ktx.glb (api-integrations, 2026-11-11),
  *   boating-school-opt1-ktx.glb?v=3,
  *   trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2,
  *   building-lighthouse-opt1-ktx.glb?v=3,
- *   arcade/claw-arcade-exterior-opt1-ktx.glb?v=4, cove/cove-exterior-opt1-ktx.glb?v=4,
+ *   arcade/claw-arcade-exterior-opt2-mo-ktx.glb, cove/cove-exterior-opt1-ktx.glb?v=4,
  *   patricks-rock-v2-opt1-ktx.glb?v=5, squidward-house-opt1-ktx.glb?v=5
  *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
  *   old GLB contributed ~1.13M live tris after material merge.
  *
- * LOCATION NPC CHARACTERS (10 SpongeBob + 2 companions, arena-location-npcs.tsx):
- *   spongebob-ktx.glb, gary-ktx.glb, squidward-ktx.glb, flying-dutchman-ktx.glb,
+ * LOCATION NPC CHARACTERS (9 SpongeBob + 2 companions, arena-location-npcs.tsx;
+ * Cortex at api-integrations is a VRM since 2026-11-10, not listed here):
+ *   spongebob-ktx.glb, gary-ktx.glb, squidward-ktx.glb,
  *   pearl-ktx.glb, mrs-puff-ktx.glb, lobster_plush-ktx.glb?v=2, mr-krabs-ktx.glb,
  *   plankton-ktx.glb, karen-ktx.glb, sandy-ktx.glb, patrick-ktx.glb
  *
@@ -93,13 +95,15 @@ export const BUILDING_GLBS: readonly string[] = [
   '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
   '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
   '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
-  '/models/salty-spitoon-opt1-ktx.glb?v=3',
+  // api-integrations: BrainChain Office v3 (2026-11-11).
+  // The new filename invalidates the previous asset cache entry.
+  '/models/brainchain/brainchain-office-v3-ktx.glb',
   '/models/boating-school-opt1-ktx.glb?v=3',
   // cron-automation — the Trading Floor exterior (2026-09-19 swap off
   // patty-building). ?v=2: the bytes were replaced once already.
   '/models/trading-floor/trading-floor-exterior-opt1-mo-ktx.glb?v=2',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
-  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
+  '/models/arcade/claw-arcade-exterior-opt2-mo-ktx.glb',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
   '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',
@@ -175,7 +179,6 @@ export const LOCATION_NPC_GLBS: readonly string[] = [
   '/models/characters/spongebob-nonorm-ktx.glb',
   '/models/characters/gary-ktx.glb',       // companion at visual-creation
   '/models/characters/squidward-ktx.glb',
-  '/models/characters/flying-dutchman-nonorm-ktx.glb',
   '/models/characters/pearl-nonorm-ktx.glb',
   '/models/characters/mrs-puff-ktx.glb',
   '/models/characters/mr-krabs-ktx.glb',
@@ -213,11 +216,18 @@ export const DECORATION_GLBS: readonly string[] = [
  * The pavilion gets a `?v=2` cache-bust because its texture-resize pass
  * (1024→512) mutated the file in place; without the query bump Cloudflare's
  * 7-day edge cache would keep serving the old 8.7 MB version.
+ * 2026-11-12: the pavilion moved to a NEW file name (-nonorm-256-ktx, 256 px
+ * textures, 2.99 MB → 1.34 MB) instead of a ?v= bump.
+ * 2026-11-13: -v3-ktx (2,068,664 bytes) replaces it: every map except
+ * metallic-roughness and occlusion is back at full size, because the 256 px
+ * boards were visibly softer. The shisha stall moved to -v2-mo-ktx (one 1024
+ * map → 512, 547,828 → 498,756 bytes). Both passed
+ * scripts/models/glb-compare.mjs.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
-  '/models/quest-bounty-pavilion-nonorm-ktx.glb',
+  '/models/quest-bounty-pavilion-v3-ktx.glb',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
-  '/models/shisha-oasis-mo-ktx.glb',
+  '/models/shisha-oasis-v2-mo-ktx.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
   // Auction podium removed 2026-07-15 — superseded by quest-bounty-pavilion.
 ] as const;

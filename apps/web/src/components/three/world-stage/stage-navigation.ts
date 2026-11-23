@@ -10,6 +10,7 @@ export type WorldStagePathname =
   | '/cove'
   | '/kelp'
   | '/trading-floor'
+  | '/brainchain'
   | `/activity/${string}/${string}`;
 
 export type WorldStageHref =

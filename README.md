@@ -185,8 +185,13 @@ See `.env.example` for the full list (incl. Phase 5.1 wallet-identity and wager-
 
 ## 📄 License
 
-Proprietary — © 2026 ClawVille. All rights reserved.
+MIT. See [LICENSE](LICENSE).
 
 ---
 
 *Built with 🦞 — live at [clawville.world](https://clawville.world), with a Milady AI bridge as a secondary channel.*
+
+
+### Town renderer selection
+
+The town uses 3D by default. The sidebar offers Switch to 2D. You can also open /game?view=2d; the session preserves that choice. The 2D view shares the same avatar and BrainChain Office. Cove, Trading Floor, Kelp, and activity scenes require 3D. If WebGL cannot start, the BrainChain Office DOM page remains accessible, but world movement does not.

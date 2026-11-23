@@ -1,3 +1,4 @@
+import { assertProbeHttpOperation } from '../services/brainchain/probe-runtime-scope';
 import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { lucia } from '../lib/auth';
@@ -26,6 +27,7 @@ export const sessionMiddleware = createMiddleware<AppContext>(async (c, next) =>
 
   c.set('user', user);
   c.set('session', session);
+  if(user)await assertProbeHttpOperation({userId:user.id},c.req.raw,()=>c.req.json());
   return next();
 });
 
@@ -49,5 +51,6 @@ export const requireAuth = createMiddleware<AuthenticatedContext>(async (c, next
 
   c.set('user', user);
   c.set('session', session);
+  if(user)await assertProbeHttpOperation({userId:user.id},c.req.raw,()=>c.req.json());
   return next();
 });

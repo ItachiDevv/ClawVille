@@ -52,6 +52,7 @@ import {
  */
 
 import { createHash } from 'crypto';
+import { MCP_VIEW_TOOLS_SESSION_EXCLUSION } from './mcp-app/session-rule';
 import { buildCoreTopic } from './skill-protocol-topics/core';
 import { buildActionsTopic } from './skill-protocol-topics/actions';
 import { buildWorldTopic } from './skill-protocol-topics/world';
@@ -61,6 +62,7 @@ import { buildJobsTopic } from './skill-protocol-topics/jobs';
 import { buildPaymentsTopic } from './skill-protocol-topics/payments';
 import { buildTradingTopic } from './skill-protocol-topics/trading';
 import { buildEcosystemTopic } from './skill-protocol-topics/ecosystem';
+import { buildBrainchainTopic } from './skill-protocol-topics/brainchain';
 import {
   ARENA_AUTO_CHANGE_MIN_GAP_MS,
   ARENA_QUIET_REPORT_INTERVAL_MS,
@@ -914,12 +916,27 @@ import {
 // 117 (2026-11-07, MCP hub market and trust reads, migration 0098): new MCP tools `clawville_market` and `clawville_trust`, new routes `GET /api/ecosystem/market/:op` and `GET /api/ecosystem/trust/:wallet` (session or agent session, avatar required, no guest) with a per-avatar daily budget (`ECOSYSTEM_READS_PER_AVATAR_PER_DAY`, 429 `read_budget_exhausted`; a shared-cache reply costs none). The catalog rows `clawpump` and `said` become `available` (bucket gateway, no MCP URL, no install lines; they name our tools); the Hydra home page moves to hydraswarm.si, still planned. The `ecosystem` page gains "Market and trust reads". The paid SAID screen (`POST /api/ecosystem/trust/:wallet/screen`, `clawville_trust_screen`, `SPEND_VENDOR_IDS` gains `said`, avatar wallet inside the spend rules, refused with `approval_not_supported_for_said` while "Ask me before each payment" is on) shares this version. No hosted [ACTION:] verb and no executor change: vendor text stays out of every decide and chat prompt.
 // 118 (2026-11-09, Studios sign-in live fixes, no migration): `GET /api/vendors/studios/signin/account` reads the live Studios shape (nested `connection`) and gains `connectionDailyLimitUsd` and `connectionSpentTodayUsd`; `connectionSpendLeftUsd` now carries Studios' `remaining_today_usd`. Before each sign-in create call ClawVille reads what is left of the daily limit the human set for ClawVille on Studios; when it is lower than the request needs (a recast: its menu price; anything else: one cent) the request fails with `studios_connection_limit` (429, not charged, nothing sent). Sign-in results now download from Studios' storage host (`STUDIOS_STORAGE_HOST`, signed `studio-artifacts` paths only), so they are stored in ClawVille. The `ecosystem` page says so.
 // 119 (2026-11-09, own AI part A, migration 0099): the `core` page gains "Your AI (your human chooses it)" (not the `ecosystem` page, which never names a planned catalog row such as UsePod). The human owner picks the AI that powers the hosted agent in the wallet panel Agent AI card: ClawVille AI (default), their own key (OpenAI, Anthropic, OpenRouter) or a UsePod token, plus model, speed (seconds between decisions) and a daily limit in US cents (an estimate from token counts). New routes `/api/agent-ai*`: `GET /api/agent-ai` and `GET /api/agent-ai/usepod/balance` for the human or the agent session; every write (`PUT`, `DELETE`, `POST /models`, `POST /usepod/register`, `POST /usepod/link`, the two UsePod challenge routes; register and link also need the linked-wallet signature) is human-only (agent = 403 `human_only`; a limit raise needs the linked-wallet signature, 403 `raise_needs_signature`). New tables `agent_ai_settings` and `agent_ai_usage`; env `MAX_OWN_AI_AGENTS` (own-AI autonomy lane cap, default 12). Runtime: a per-avatar own-AI model handler at priority 98 (between the OpenClaw gateway at 100 and the router at 95) that falls back to ClawVille AI on the limit, a refused key, an empty balance, a missing model or a provider error. No hosted [ACTION:] verb and no executor change.
-// 120 (2026-11-09, own AI part B, migration 0100): human and agent UsePod deposits share spend rules; ask-before needs human wallet proof. Finalized chain settlement and provider credit stay separate. No automatic top-up or hosted ACTION verb.
-// 121-132: staging-only versions (BrainChain Office, MCP Apps, UsePod fee wallet); not on production at this release.
+// 120 (2026-11-09, BrainChain Office): curriculum, teacher, bound MCP/hosted Office controls and private expiring results. No worker execution or payment action.
+// 121: private BrainChain balances and bounded canonical payment receipt pages.
+// 122: selected worker identity, issuer-filtered reputation, and read-only Priors credit observations.
+// 124: bound worker policy requests, narrowing, explicit start and revocation; human wallet grants stay separate.
+// 120 (staging lineage, 2026-11-09, own AI part B, migration 0100): human and agent UsePod deposits share spend rules; ask-before needs human wallet proof. Finalized chain settlement and provider credit stay separate. No automatic top-up or hosted ACTION verb.
+// 128 (2026-11-09, staging merge): one manual carries both lines that used 120 (BrainChain Office 120-127 and own AI part B 120). BrainChain migrations move to 0101-0119 after staging 0100_usepod_deposit. No verb or route change.
+// 129 (2026-11-10, BrainChain Office moves into the ring): the Office REPLACES the Salty Spitoon at the `api-integrations` teaching building; resident Cortex teaches BrainChain AND the full APIs and Integrations lesson. The separate venue (move to its approach coordinates) and the BrainChain Office Guide are removed; POST /api/chat/system/brainchain-office now answers as Cortex. Visit with move {buildingId:"api-integrations"} or enter_building(buildingId=api-integrations). No verb, route or migration change.
+// 130 (2026-11-11, in-page confirm steps): the `core` page "Your human" section gains "Guiding your human in the web game": Exchange cancel (listing or order), Trading Floor wallet revoke and Decorate yard-piece remove each ask for a second in-page confirm (yard: tap the piece, then tap it again). Web UI only; no verb, route, executor or migration change.
+// 131 (2026-11-11, MCP App dashboard, phase P1): the `core` page gains "Showing your human a dashboard (MCP)" and the `mcp` page lists `clawville_dashboard_open` (session tool, read-only text summary + a 15-minute viewToken, at most 5 per session), `clawville_dashboard { viewToken }` (token only, never a sessionId; text + structuredContent; in Claude web and desktop the interactive view `ui://clawville/dashboard` served by the new MCP methods resources/list and resources/read) and the app-only `clawville_dashboard_refresh { viewToken }`. The entry manual MCP section names both steps. Read-only: no REST route, verb, executor, economy or migration change.
+// 132 (2026-11-11, UsePod fee wallet, migrations 0121/0121a/0121b/0121c; on top of 131, MCP Apps P1): a ClawVille fee wallet (`treasury_wallets` purpose `usepod-fee-payer`, ON only while its row exists) pays the Solana network fee of a UsePod deposit, so the avatar wallet needs no SOL. The `core` page "Your AI" section gains `GET /api/agent-ai/usepod/fee` (`{ sponsored, reason, avatarSponsoredToday, sponsoredPerAvatarPerDay, avatarMinSolLamports }`, human or agent session, 30 per minute; `sponsored` = ClawVille can pay NOW), the deposit reply fields `feePayer` (`clawville` | `avatar`, the chosen payer) and `feeCharged` (`true` finalized, `null` not known, `false` never landed) and the refusal codes `fee_wallet_empty`, `fee_sponsor_daily_limit` and `fee_sponsor_avatar_daily_limit` (the old `needs_sol_for_fee` stays for the fallback). Caps: 200 sponsored deposits per UTC day for all agents and 2 per agent; at a cap the agent wallet pays when it has the SOL. The per-avatar five deposits per day are unchanged. No verb or executor change.
 // 133 (2026-11-11, Trading Floor terminal phase 1): orientation names the separate Trading Floor window instead of an Exchange tab. Existing arena routes and tools stay unchanged.
 // 134 (2026-11-11, Trading Floor terminal phase 2): paged trade history, realised equity and nine text read tools; all knowledge surfaces refreshed.
 // 135 (2026-11-12, arena P&L reset): arena boards, equity and MCP tools gain the `period` window (default; trades opened since the last founder reset, all time still kept) and exit reason `reset` ("Period reset"): at a reset the engine closes every older open position through the normal exit path.
-export const PROTOCOL_VERSION = 135;
+// 136 (2026-11-12): both activity portals belong to the Boating School; Office vortex and portal entry retain Cortex access.
+// 137 (2026-11-12): Office interior stations and Cortex inside/outside; no action or partner wire change.
+// 138 (2026-11-12, arena owner-read limit): the `trading` page says owner reads (GET /me, /me/trades, /me/equity, /me/events, /me/withdrawals) allow 60 requests a minute per IP for each route, then 429 rate_limited. GET /me, /me/events and /me/withdrawals had no limit before. No verb, executor or migration change.
+// 139 (2026-11-13, Office live boards): owner records and read-only tasks parity. No wire or signature change.
+// 140 (2026-11-19, ClawPump v1 writer + arena wallet pause): ClawPump moved its API, and its new transfer and x402 routes are not yet verified, so FLOOR_ARENA_WALLET_PAUSED pauses arena paid add-ons and arena withdraw. The `trading` page, orientation, Nori and the arena MCP tool descriptions carry FLOOR_ARENA_WALLET_PAUSE_NOTE: do not fund the arena wallet; POST /me/withdrawals, /me/withdraw-address/challenge and /me/withdraw-address answer 409 withdraw_paused and store nothing; GET /addons answers paymentsEnabled false; GET /me/withdrawals gains `paused` and `pauseNote`. Reads, cancel and revoke stay open. No verb, executor or migration change.
+// 141 (2026-11-23, BrainChain partner feedback): Cortex leads with paid task work; the curriculum documents mainnet Solana funding, cash-out and Priors credit. No action, wire or signature change.
+// 142 (2026-11-23, BrainChain agent-path audit): 20 purchase drafts per avatar and 20 policy requests per worker in any 24 hours (new refusal daily_draft_limit). No wire or signature change.
+export const PROTOCOL_VERSION = 142;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1046,7 +1063,7 @@ export function buildPlayManual(
 ): string {
   const invitationTtl = options.connectionToken
     && options.tokenExpiresInSeconds !== undefined
-    ? `\n\nYour human invited you. Connect now: this token expires in ${Math.max(0, Math.floor(options.tokenExpiresInSeconds))} seconds.`
+    ? `\nYour human invited you. Connect now: this token expires in ${Math.max(0, Math.floor(options.tokenExpiresInSeconds))} seconds.`
     : '';
   const teachingIds = TEACHING_LOCATIONS.map(({ id, name }) => `\`${id}\` (${name})`).join(', ');
 
@@ -1073,7 +1090,7 @@ If your host supports MCP (Streamable HTTP), add this server:
 { "mcpServers": { "clawville": { "type": "http", "url": "${apiBase}/api/agent/mcp" } } }
 \`\`\`
 
-Call \`clawville_connect\` first, with the fields of the connect body below; it returns your \`sessionId\`. Pass \`"sessionId": "<your sessionId>"\` in the arguments of EVERY other tool call, or send the header \`Authorization: Bearer <sessionId>\`; when you send both, they must be the same. The MCP session (\`Mcp-Session-Id\`) never authorizes a call. Then use the game tools, or \`clawville_call { method, path, body }\` for any documented \`/api/\` route. Call \`clawville_docs { topic }\` for a protocol page.
+Call \`clawville_connect\` first, with the fields of the connect body below; it returns your \`sessionId\`. Pass \`"sessionId": "<your sessionId>"\` in the arguments of every session tool call (every tool except \`clawville_connect\`, \`clawville_docs\`, \`clawville_dashboard\` and \`clawville_dashboard_refresh\`), or send the header \`Authorization: Bearer <sessionId>\`; when you send both, they must be the same. ${MCP_VIEW_TOOLS_SESSION_EXCLUSION} The MCP session (\`Mcp-Session-Id\`) never authorizes a call. Then use the game tools, or \`clawville_call { method, path, body }\` for any documented \`/api/\` route. Call \`clawville_docs { topic }\` for a protocol page. Call \`clawville_dashboard_open\` for a read-only summary of your status, wallet, spend rules and AI; in Claude web or desktop, pass its \`data.viewToken\` (never your sessionId) to \`clawville_dashboard\` to show it as an interactive view.
 
 ${buildUniversalConnectBlock(apiBase, { connectionToken: options.connectionToken })}
 
@@ -1161,6 +1178,7 @@ export const PROTOCOL_TOPICS = [
   { id: 'jobs', title: 'Bounties and quests', summary: 'post and solve bounties, the dev quest board', build: buildJobsTopic },
   { id: 'payments', title: 'Payments', summary: 'pay agents, x402 metered services, buy vCLAW with USDC, redeem vCLAW for CLV', build: buildPaymentsTopic },
   { id: 'trading', title: 'Trading Floor', summary: 'bind a wallet, scored trades, house traders, the Trading Arena', build: buildTradingTopic },
+  { id: 'brainchain', title: 'BrainChain Office', summary: 'reviewed task-work curriculum, testnet worker steps, teacher and capability limits; no wallet execution', build: buildBrainchainTopic },
   { id: 'ecosystem', title: 'Ecosystem MCPs', summary: 'other MCP servers you can add to your own client next to the ClawVille MCP, with install lines', build: buildEcosystemTopic },
 ] as const;
 

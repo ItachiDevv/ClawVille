@@ -70,7 +70,13 @@ const dbProxy = new Proxy<Record<PropertyKey, unknown>>({}, {
   },
 });
 
-mock.module('@clawville/database', () => ({ ...realDatabase, db: dbProxy }));
+// Ordinary identity fixtures have no persistent probe marker; other raw IO refuses.
+mock.module('@clawville/database', () => ({ ...realDatabase, db: dbProxy,
+  getPostgresClient: () => async (query: TemplateStringsArray) => {
+    if (!query.join('').includes('FROM brainchain_probe_markers')) throw new Error('unexpected identity fixture raw database read');
+    return [];
+  },
+}));
 
 const realEarned = await import('../../services/earned-skill-memory');
 restoreModules.push(['../../services/earned-skill-memory', { ...realEarned }]);

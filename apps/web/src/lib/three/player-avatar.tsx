@@ -1,5 +1,7 @@
 'use client';
 
+import { consumeOfficeReturnFacing, recordOfficeLocomotion } from './brainchain-office-door';
+import { dispatchWorldInteraction, updateWorldProximity } from '@/lib/world-frame-interaction';
 import { useRef, useMemo, useEffect, Suspense } from 'react';
 import { useThree } from '@react-three/fiber';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
@@ -17,13 +19,7 @@ import {
 } from '@/lib/pixi/tilemap-data';
 import {
   didCrossKelpForestPortal,
-  findNearestCharacter,
-  isCoveProximate,
-  isKelpForestPortalProximate,
-  isTradingFloorProximate,
 } from '@/lib/three/character-positions';
-import { TRADING_FLOOR_NEAR_ID } from '@/lib/three/trading-floor/trading-floor-location';
-import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
 import { ModelLoadBoundary } from '@/lib/three/model-load-boundary';
@@ -42,13 +38,12 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState } from '@/lib/three/jump-state';
-import { triggerCoveWalkIn, triggerTradingFloorWalkIn } from './arena-buildings';
 import {
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
 } from './kelp-forest-transition';
 import { useVRMInstance, disposeVRMInstance, retainVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
-import { isDecorativeReleased } from '@/lib/three/decorative-release';
+import { isWorldRevealed } from '@/lib/three/decorative-release';
 import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 import {
   VRMCharacterAnimator,
@@ -256,6 +251,7 @@ function useWorldPlayerController({
       refs.walkableY.current = clamped.groundY;
     },
     commitPosition(result: { x: number; z: number }) {
+      recordOfficeLocomotion(avatarPositionRef.x - HALF_W, avatarPositionRef.y - HALF_H, result.x, result.z);
       useGameStore.getState().setAvatarPosition(
         result.x + HALF_W,
         result.z + HALF_H,
@@ -265,6 +261,7 @@ function useWorldPlayerController({
 
   usePlayerCapabilityController({
     sceneId: 'world',
+    consumeFacingOverride: consumeOfficeReturnFacing,
     capabilities: DEFAULT_PLAYER_CAPABILITIES,
     motion,
     input,
@@ -293,22 +290,7 @@ function useWorldPlayerController({
       else if (store.guideChatOpen) store.closeGuideChat();
     },
     onInteractEdge: () => {
-      const store = useGameStore.getState();
-      if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
-        store.openGuideChat();
-        return { consumeFrame: true };
-      }
-      if (store.nearLocation) {
-        if (store.nearLocation === 'cove') triggerCoveWalkIn();
-        else if (store.nearLocation === TRADING_FLOOR_NEAR_ID) {
-          triggerTradingFloorWalkIn();
-        } else if (store.nearLocation === 'kelp-forest-portal') {
-          triggerKelpForestWalkIn();
-        } else {
-          store.enterBuilding(store.nearLocation);
-        }
-        return { consumeFrame: true };
-      }
+      if (dispatchWorldInteraction()) return { consumeFrame: true };
     },
     onNavigationOverride: (intent: PlayerFrameIntent) => {
       const store = useGameStore.getState();
@@ -319,38 +301,19 @@ function useWorldPlayerController({
       if (!intent.move.moving && store.clickPath && store.clickPath.length > 0) {
         const waypoint = store.clickPath[store.clickPathIndex];
         if (!waypoint) return;
-        const dx = waypoint.x - avatarPositionRef.x;
-        const dz = waypoint.y - avatarPositionRef.y;
+        const dx = waypoint.x - avatarPositionRef.x, dz = waypoint.y - avatarPositionRef.y;
         const distance = Math.hypot(dx, dz);
-        if (distance < 6) {
-          if (store.clickPathIndex >= store.clickPath.length - 1) {
-            const target = store.clickPathTarget;
-            store.clearClickPath();
-            if (target === 'cove') {
-              triggerCoveWalkIn();
-              return { consumeFrame: true };
-            }
-            if (target === TRADING_FLOOR_NEAR_ID) {
-              triggerTradingFloorWalkIn();
-              return { consumeFrame: true };
-            }
-            if (target === 'kelp-forest-portal') {
-              triggerKelpForestWalkIn();
-              return { consumeFrame: true };
-            }
-            if (target && store.nearLocation === target) {
-              store.enterBuilding(target);
-              return { consumeFrame: true };
-            }
-          } else {
-            store.advanceClickPath();
-          }
-          return;
-        }
+        const target = store.clickPathTarget;
         return {
-          moveOverride: {
-            worldVx: dx / distance,
-            worldVz: dz / distance,
+          moveOverride: { worldVx: distance ? dx / distance : 1, worldVz: distance ? dz / distance : 0 },
+          navigationPath: {
+            points: store.clickPath, index: store.clickPathIndex, originX: HALF_W, originZ: HALF_H, arrivalTolerance: 6,
+            onProgress: (index) => useGameStore.setState({ clickPathIndex: index }),
+            onComplete: () => {
+              store.clearClickPath();
+              updateWorldProximity(avatarPositionRef.x - HALF_W, avatarPositionRef.y - HALF_H);
+              dispatchWorldInteraction(target);
+            },
           },
         };
       }
@@ -384,30 +347,7 @@ function useWorldPlayerController({
         }
       }
 
-      // Residents only (null = no wanderers). Wanderer chat is the NPC-mode
-      // TalkToCharacterBar (NpcController's pass); this body mounts only in
-      // 'player' mode, which has no wanderer chat UI, so a passing wanderer
-      // must not hide a building or venue prompt here.
-      const nearest = findNearestCharacter(frame.x, frame.z, null);
-      // Resident chat wins the overlap sliver in front of a venue door, so
-      // walking up reads "Talk to <resident>" then "Enter <venue>".
-      const nearId: string | null = nearest
-        ? nearest.buildingId
-        : isCoveProximate(frame.x, frame.z)
-          ? 'cove'
-          : isTradingFloorProximate(frame.x, frame.z)
-            ? TRADING_FLOOR_NEAR_ID
-            : isKelpForestPortalProximate(frame.x, frame.z)
-              ? 'kelp-forest-portal'
-              : null;
-      const nearName = nearest ? nearest.characterName : null;
-      if (nearId !== store.nearLocation) store.setNearLocation(nearId);
-      if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
-      const guideX = frame.x - NORI_WORLD_X;
-      const guideZ = frame.z - NORI_WORLD_Z;
-      const noriNear =
-        guideX * guideX + guideZ * guideZ < NORI_TALK_RADIUS_SQ;
-      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
+      updateWorldProximity(frame.x, frame.z);
 
       onAfterMove(frame, rawDelta, elapsed);
     },
@@ -467,11 +407,11 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   // Rung-4 slice C (Codex round-1 finding 2, late-mount leg), extended by
   // slice D [R3-F1][R4-F2]: captured ONCE at the first render AFTER the
   // Suspense demand resolves. Deferred-warm attach when the world already
-  // revealed (decorative release) OR when this exact actor resource did not
+  // revealed (isWorldRevealed, not the held decorative release) OR when this exact actor resource did not
   // participate in the closed boot gate (none/timeout closure, post-closure
   // kind/resource replacement). An on-time covered actor mounts RAW.
   const lateResolved = useMemo(
-    () => isDecorativeReleased() || requiresDeferredAttach('player-vrm', reg.path),
+    () => isWorldRevealed() || requiresDeferredAttach('player-vrm', reg.path),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
@@ -685,7 +625,7 @@ function PlayerAvatarGLBInner({ forcedModelKey }: { forcedModelKey?: string } = 
   // the VRM inner — an uncovered/post-closure GLB body warms hidden instead
   // of attaching raw.
   const lateResolved = useMemo(
-    () => isDecorativeReleased() || requiresDeferredAttach('player-glb', reg.path),
+    () => isWorldRevealed() || requiresDeferredAttach('player-glb', reg.path),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );

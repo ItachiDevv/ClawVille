@@ -20,3 +20,5 @@ export const allProviders = [
   questProvider,       // position 40
   knowledgeProvider,   // position 50
 ];
+
+export { createKnowledgeProvider } from './knowledge';

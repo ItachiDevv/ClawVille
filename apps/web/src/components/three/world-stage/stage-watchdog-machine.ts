@@ -32,7 +32,7 @@ export interface WatchdogSample {
   stageEpoch: number;
   requestId: number | null;
   retryOfRequestId?: number;
-  sceneKind: 'world' | 'cove' | 'kelp' | 'trading-floor' | 'activity';
+  sceneKind: 'world' | 'cove' | 'kelp' | 'trading-floor' | 'brainchain' | 'activity';
   transitionPhase: StageTransitionPhase;
   terminal: boolean;
   readiness: {

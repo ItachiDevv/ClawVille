@@ -147,8 +147,71 @@ export function notifyWorldFramePresented(): void {
   }
   qualifyingFramesSeen += 1;
   if (qualifyingFramesSeen >= 2) {
+    // The world IS on screen now; only download admission may be held.
+    worldRevealed = true;
+    // Buildings-first hold: called every frame, so the release fires on the
+    // first frame after the hold ends (buildings presented or cap reached).
+    if (buildingsFirstHoldActive()) return;
     fire(`first-paint:${firstPaintArmedReason}`);
   }
+}
+
+// --- Buildings-first hold (game-load C1, 2026-11-11) ------------------------
+// On a slow link the 10s milestone fallback dismisses the overlay before the
+// 11 buildings + Nori are presented (founder-accepted pop-in, BGR spec). The
+// first-paint decorative release and the post-reveal stream lane then start
+// ~40 more downloads at once, and they share the link with the building
+// bytes still in flight (phone profile: last building 104s, not ~47s). This
+// hold keeps both lanes closed until the buildings are presented, capped so
+// a building that never presents cannot strand the rest of the world. It is
+// inert when the composite dismissed the overlay (buildings already
+// presented) and in 'absent'/'pending' buildings mode. The 45s absolute
+// deadline and the boot-core fail-open path are NOT held.
+export const BUILDINGS_FIRST_HOLD_CAP_MS = 30_000;
+let buildingsFirstHoldStartAt: number | null = null;
+let buildingsFirstHoldEnded = false;
+let worldRevealed = false;
+
+/** Presentation signal, separate from download admission: true once the
+ * first-paint release QUALIFIED (two revealed frames), even while the
+ * buildings-first hold keeps the decorative release closed. Use it for
+ * "is the world visible" questions (late player attach, pre-reveal parse
+ * telemetry); keep isDecorativeReleased() for gating deferred content. */
+export function isWorldRevealed(): boolean {
+  return worldRevealed || released;
+}
+
+/** Only call when the lane is otherwise ready to open: the first call starts
+ * the cap clock. Returns true while the lane must stay closed. */
+function buildingsFirstHoldActive(): boolean {
+  if (buildingsFirstHoldEnded) return false;
+  // A composite dismissal proved the buildings were presented; a renderer
+  // replacement during the overlay fade can clear the presented latch, but it
+  // must not start a hold the composite path never needed.
+  if (
+    bgrBuildingsMode !== 'glb' ||
+    bgrBuildingsPresented ||
+    loadingDismissReason === 'composite'
+  ) {
+    if (buildingsFirstHoldStartAt !== null) {
+      buildingsFirstHoldEnded = true;
+      stampPhase('buildingsFirstHoldEndAt', Math.round(nowMs()));
+      stampPhase('buildingsFirstHoldEndReason', bgrBuildingsPresented ? 'presented' : 'mode');
+    }
+    return false;
+  }
+  const t = nowMs();
+  if (buildingsFirstHoldStartAt === null) {
+    buildingsFirstHoldStartAt = t;
+    stampPhase('buildingsFirstHoldStartAt', Math.round(t));
+  }
+  if (t - buildingsFirstHoldStartAt >= BUILDINGS_FIRST_HOLD_CAP_MS) {
+    buildingsFirstHoldEnded = true;
+    stampPhase('buildingsFirstHoldEndAt', Math.round(t));
+    stampPhase('buildingsFirstHoldEndReason', 'cap');
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -541,7 +604,11 @@ function evaluateBootStreamEligibility(): void {
 
   if (typeof document !== 'undefined' && document.hidden) return;
 
-  if (bootCorePresented && overlayAndCurtainGone()) {
+  if (
+    bootCorePresented &&
+    overlayAndCurtainGone() &&
+    !buildingsFirstHoldActive()
+  ) {
     markStreamEligible('milestone');
     return;
   }
@@ -1249,4 +1316,7 @@ export function __resetDecorativeReleaseForTests(): void {
   bgrBuildingsQualifyingFrames = 0;
   loadingDismissReason = null;
   loadingDismissedAtMs = null;
+  buildingsFirstHoldStartAt = null;
+  buildingsFirstHoldEnded = false;
+  worldRevealed = false;
 }

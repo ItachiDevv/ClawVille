@@ -1,0 +1,11 @@
+import {expect,test} from 'bun:test';
+import {randomUUID} from 'node:crypto';
+import {parseBrainchainActionParams,selectBrainchainActionResult,decodeBrainchainFundingDraft} from '../brainchain-action';
+import {GAME_TOOL_ROUTES,validateCallPath} from '../agent-mcp-tools';
+test('hosted funding grammar binds operation IDs and refuses caller destinations or capture bytes',()=>{const operationId=randomUUID();expect(parseBrainchainActionParams(`op=funding_get,operationId=${operationId}`)).toEqual({op:'funding_get',operationId});expect(parseBrainchainActionParams(`op=funding_get,operationId=${operationId},destination=0x123`)).toBeNull();expect(parseBrainchainActionParams(`op=funding_capture,operationId=${operationId}`)).toBeNull();
+ const draft={environment:'testnet' as const,workerId:randomUUID(),idempotencyKey:randomUUID(),kind:'parent_eth' as const,amountAtomic:'1',maxGasCostWei:'1',maxFeeAtomic:'0',minimumDestinationAtomic:'1'},encoded=Buffer.from(JSON.stringify(draft)).toString('base64url');expect(decodeBrainchainFundingDraft(encoded)).toEqual(draft);expect(parseBrainchainActionParams(`op=funding_create,draft=${encoded}`)?.op).toBe('funding_create');expect(parseBrainchainActionParams(`op=funding_create,draft=${Buffer.from(JSON.stringify({...draft,destination:'arbitrary'})).toString('base64url')}`)).toBeNull();
+});
+test('hosted funding intent result excludes all unsigned and signed payload bytes',()=>{const selected=selectBrainchainActionResult('funding_intent',200,{artifact:{},messageToSign:'external only',captured:{enc:'CAPTURE_CANARY'},signedTransaction:'CAPTURE_CANARY'});expect(JSON.stringify(selected)).not.toContain('CAPTURE_CANARY');expect(selected.data.notice).toBeDefined();});
+test('MCP funding routes preserve owner operation and refuse raw signatures',()=>{const id=randomUUID();for(const op of ['get','intent','submit','recover','reconcile']){
+ const calls=GAME_TOOL_ROUTES.clawville_brainchain!.calls({} as never,{op:`funding_${op}`,operationId:id});expect(calls[0]?.path).toBe(`/api/brainchain/funding-exit/${id}${op==='get'?'':`/${op}`}`);
+ }for(const op of ['capture','approve','challenge'])expect(validateCallPath(`/api/brainchain/funding-exit/${id}/${op}`,'POST')).not.toBeNull();});

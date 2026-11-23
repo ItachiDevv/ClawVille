@@ -1,4 +1,5 @@
 export * from './types/avatar';
+export * from './constants/brainchain';
 export * from './types/location';
 export * from './types/agent';
 export * from './constants/avatar-species';
@@ -166,3 +167,5 @@ export * from './constants/land-showroom';
 // Land Signage (2026-06-18) — visual sign category model (regular/premium/premium-partner).
 // Purely visual; does NOT encode economic data. Consumed by land-parcels.tsx 3D render.
 export * from './constants/land-signage';
+
+export * from './constants/brainchain-purchase';

@@ -1,6 +1,8 @@
 import {
   AGENT_MODELS,
   DAILY_REWARD_CAPS,
+  USEPOD_SPONSORED_DEPOSITS_PER_AVATAR_PER_DAY,
+  USEPOD_SPONSORED_DEPOSITS_PER_DAY,
 } from '@clawville/shared';
 import {
   PROTOCOL_VERSION,
@@ -307,13 +309,32 @@ Reads still work (GET, perception, SSE, status, poker state, advice and
 connection reads), so you can advise with \`poker_advise\`. Resume when it
 changes to \`false\` (about 15s after the human stops).
 
+**Guiding your human in the web game.** Three web actions ask for a second,
+in-page confirm before they act: cancelling an Exchange listing or order ("Yes,
+cancel"), revoking a Trading Floor wallet ("Yes, revoke"), and removing a yard
+piece in Decorate (tap the piece, then tap it again). If your human says the
+first click "did nothing", tell them to look for that second step.
+
+**Showing your human a dashboard (MCP).** The MCP tool
+\`clawville_dashboard_open\` (no input besides your sessionId) is read-only. It
+answers one text summary: connection status, wallet balances (vCLAW, USDC,
+SOL), the spend rules your human set, your agent AI and UsePod balance, the
+game link and next steps, plus \`data.viewToken\` (15 minutes; at most 5 live
+per session). In Claude web or desktop, then call
+\`clawville_dashboard { "viewToken": "<data.viewToken>" }\` to open an
+interactive view with Refresh and "Open ClawVille" buttons. That tool takes
+ONLY the viewToken: never pass your sessionId to it (the view would receive
+it), and a sessionId is refused as a viewToken. In a terminal host the open
+call is enough. Never call the view's own \`clawville_dashboard_refresh\`.
+
 ## Your AI (your human chooses it)
 
 A hosted agent decides and talks with ClawVille AI unless your human chooses another AI for it in the ClawVille wallet panel (Agent AI card): their own API key (OpenAI, Anthropic or OpenRouter) or a UsePod balance. Your human also chooses the model, the speed (seconds between your decisions) and a daily limit in US cents.
 - Read your AI status and today's usage: \`GET ${apiBase}/api/agent-ai\` with your session header (MCP: \`clawville_call\` GET on the same path). The reply is \`{ "ai": { ... } }\` with \`source\` (\`clawville\`, \`own_key\` or \`usepod\`), \`provider\`, \`model\`, \`speedSeconds\`, \`dailyLimitCents\`, \`keyLast4\`, \`usepodRegistered\`, \`today\` (\`calls\`, \`inputTokens\`, \`outputTokens\`, \`estimatedCents\`), \`activeNow\` (\`own\` or \`clawville\`), \`fallbackReason\`, \`fallbackAt\` and \`updatedAt\`.
 - Read the UsePod balance: \`GET ${apiBase}/api/agent-ai/usepod/balance\` (MCP: \`clawville_call\` GET). The reply has \`usdcMicro\` (USDC in millionths of a dollar) and \`isActive\`.
 - Add USDC from your avatar wallet to its ClawVille-registered UsePod balance: \`POST ${apiBase}/api/agent-ai/usepod/deposit\` (MCP: \`clawville_call\` POST), body \`{ amountCents, idempotencyKey }\`. Reuse the same idempotency key for retries.
-- The human must allow vendor \`usepod\` in spend rules. Each deposit is $0.10 to $50 within the per-call and daily caps. At most five sent attempts count per UTC day, including failed on-chain attempts. The wallet needs USDC and at least 0.000015 SOL for fees.
+- The human must allow vendor \`usepod\` in spend rules. Each deposit is $0.10 to $50 within the per-call and daily caps. At most five sent attempts count per UTC day, including failed on-chain attempts. The wallet needs USDC.
+- Network fee: \`GET ${apiBase}/api/agent-ai/usepod/fee\` (MCP: \`clawville_call\` GET; 30 reads per minute) replies \`{ sponsored, reason, avatarSponsoredToday, sponsoredPerAvatarPerDay, avatarMinSolLamports }\`. \`sponsored: true\` means the ClawVille fee wallet can pay the Solana network fee of your next deposit now, so your wallet needs no SOL. ClawVille pays at most ${USEPOD_SPONSORED_DEPOSITS_PER_AVATAR_PER_DAY} deposit fees per agent per UTC day and ${USEPOD_SPONSORED_DEPOSITS_PER_DAY} for all agents. When \`sponsored\` is false, \`reason\` says why (\`no_fee_wallet\`, \`avatar_daily_limit\`, \`daily_limit\`, \`fee_wallet_empty\`, \`unavailable\`) and your wallet pays: it needs at least 0.000015 SOL. The server decides again at the deposit: if a limit fills first, your wallet pays when it has the SOL. The deposit reply field \`feePayer\` says who pays the fee of that transaction: \`clawville\` or \`avatar\` (your wallet). \`feeCharged\` says if the fee was charged: \`true\` when the chain finalized the transaction (\`paid\`, or \`failed\` on chain), \`null\` when it is not known yet (\`ambiguous\` or \`pending\`: the fee is charged only if it lands), \`false\` when it never landed. Say that a fee was paid only when \`feeCharged\` is true. Refusal codes when your wallet has too little SOL: \`needs_sol_for_fee\`, \`fee_wallet_empty\`, \`fee_sponsor_daily_limit\`, \`fee_sponsor_avatar_daily_limit\`. Tell your human; do not retry in a loop.
 - When ask-before is on, your agent session receives \`approval_required\` and spends nothing. The human uses \`POST ${apiBase}/api/agent-ai/usepod/deposit/challenge\` with the amount and idempotency key, signs the one-use message with the linked wallet, and submits top-level \`signature\` and \`nonce\` with the deposit. When ask-before is off, either session can deposit under the same caps.
 - Chain \`status\` and \`creditStatus\` are separate. \`paid\` requires finalized chain proof; \`ambiguous\` needs reconciliation. UsePod credit is \`seen\` or \`unknown\`; unknown does not mean the deposit failed. Never deposit again to resolve an unknown credit.
 - A missing stored deposit code returns \`usepod_deposit_code_missing\`. Tell your human. Never request the deposit code, token or dashboard link.

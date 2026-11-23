@@ -33,7 +33,7 @@ const CENTER_TILE_PX_Y = (MAP_HEIGHT / 2);
 const BUILDING_ACCENT: Record<string, string> = {
   'visual-creation': '#fde68a',      // pineapple yellow
   'memory-rag': '#a5b4fc',       // squidward indigo
-  'api-integrations': '#fca5a5',    // salty spitoon red
+  'api-integrations': '#f581b4',    // BrainChain Office pink
   'cron-automation': '#93c5fd',           // Trading Floor blue
   'app-publishing': '#d9f99d',        // boating school green
   'deployment-ops': '#fed7aa',     // lighthouse orange

@@ -56,6 +56,15 @@ import { avatars } from './avatars';
  *   deliberately isolated from every customer-payment wallet, and door 2 is
  *   simply UNAVAILABLE (503 `transfer_door_unavailable`) until it is
  *   provisioned, so there is no enable/disable flag.
+ * - `usepod-fee-payer` (2026-11-11, migrations 0121a/0121b): dedicated SOL
+ *   hot wallet that pays ONLY the network fee of a UsePod deposit
+ *   (`apps/api/src/services/usepod-deposit.ts`), so the avatar wallet needs no
+ *   SOL. It signs a transaction with exactly the deposit_usdc instruction and a
+ *   memo with no accounts, and it never appears in an instruction account list.
+ *   ONE ACTIVE row (unique partial index, `retired_at IS NULL`). Sponsorship is
+ *   ON only while that row exists; there is no enable flag. Provisioned by
+ *   `apps/api/scripts/create-usepod-fee-payer.ts`; the founder funds it with
+ *   less than 0.05 SOL.
  *
  * Postgres enum add: extending this list requires
  * `ALTER TYPE treasury_purpose ADD VALUE IF NOT EXISTS '<value>'` — shipped in
@@ -71,6 +80,7 @@ export const treasuryPurposeEnum = pgEnum('treasury_purpose', [
   'earned-backing',
   'sap-gas-sponsor',
   'land-hold-verify',
+  'usepod-fee-payer',
 ]);
 
 /**
@@ -128,6 +138,10 @@ export const treasuryWallets = pgTable(
     landHoldVerifySingleton: uniqueIndex('treasury_wallets_land_hold_verify_singleton')
       .on(t.purpose)
       .where(sql`purpose = 'land-hold-verify' AND retired_at IS NULL`),
+    /** Exactly one ACTIVE UsePod fee wallet (migration 0121b). */
+    usepodFeePayerSingleton: uniqueIndex('treasury_wallets_usepod_fee_payer_singleton')
+      .on(t.purpose)
+      .where(sql`purpose = 'usepod-fee-payer' AND retired_at IS NULL`),
   }),
 );
 

@@ -1,0 +1,27 @@
+{
+  "observedAt": "2026-11-09T18:03:33.814Z",
+  "scope": "Read-only parent rollup identity and finalized-interface linkage, no cryptographic batch inclusion proof or release authorization",
+  "records": [
+    {
+      "parentChainId": "0xb626",
+      "childChainId": "0x430c6",
+      "parentFinalized": {
+        "number": "0x8ff6ed9",
+        "hash": "0x31533a7928fb620228334d886de69430163ab359d7182546f82e64d37181e7cf",
+        "parentHash": "0x1ce66229593cc127a75ba5f97b93103c5ce269d87041936f03e0ea08ecd50631",
+        "timestamp": "0x6af204ec",
+        "l1BlockNumber": "0xb89de8"
+      },
+      "childFinalized": {
+        "number": "0x13eb",
+        "hash": "0x1d9b96a9a25af95e0ae642d4ad682be7423d0e102506316dca0fc48e4b11dd91",
+        "parentHash": "0x34137c8460e34cf2c2cf68c09ba386f59088af9f9c0600478506d0c2cf96b1cb",
+        "timestamp": "0x6af1f5d3",
+        "l1BlockNumber": "0xb89ca9"
+      }
+    },
+    {
+      "error": "{\"code\":-32000,\"message\":\"historical state 95d201a21f217263ff8b2790d447d81e035a41acde3018be5452c344bc912f05 is not available\"}"
+    }
+  ]
+}

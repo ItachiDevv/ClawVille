@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
   __resetDecorativeReleaseForTests,
+  BUILDINGS_FIRST_HOLD_CAP_MS,
+  armBootCorePresented,
   armDecorativeDeadline,
+  bootStreamEligibleReason,
+  declareBootBuildingsMode,
+  isBootStreamEligible,
+  isWorldRevealed,
+  notifyBootCoreScenePresented,
+  onBootStreamEligible,
+  stampLoadingDismiss,
   armDecorativeReleaseOnFirstPaint,
   decorativeReleasedAt,
   decorativeReleaseReason,
@@ -356,6 +365,116 @@ describe('decorative-release first-paint anchor', () => {
     armDecorativeReleaseOnFirstPaint('resume');
     notifyWorldFramePresented();
     expect(isDecorativeReleased()).toBe(false);
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(true);
+  });
+});
+
+describe('buildings-first hold (game-load C1)', () => {
+  const owner = Symbol('canvas');
+  const originalNow = performance.now.bind(performance);
+  let fakeNow = 1_000;
+  beforeEach(() => {
+    fakeNow = 1_000;
+    (performance as any).now = () => fakeNow;
+  });
+  afterEach(() => {
+    (performance as any).now = originalNow;
+  });
+
+  test("holds the first-paint release while 'glb' buildings are not presented", () => {
+    setReady(true);
+    declareBootBuildingsMode('glb', owner);
+    armDecorativeReleaseOnFirstPaint('warmup-complete');
+    for (let i = 0; i < 10; i += 1) notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(false);
+  });
+
+  test('releases once the cap passes, even with buildings never presented', () => {
+    setReady(true);
+    declareBootBuildingsMode('glb', owner);
+    armDecorativeReleaseOnFirstPaint('warmup-complete');
+    notifyWorldFramePresented();
+    notifyWorldFramePresented(); // starts the cap clock
+    fakeNow += BUILDINGS_FIRST_HOLD_CAP_MS - 1;
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(false);
+    fakeNow += 1;
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(true);
+    expect(decorativeReleaseReason()).toBe('first-paint:warmup-complete');
+  });
+
+  test("is inert in 'absent' buildings mode", () => {
+    setReady(true);
+    declareBootBuildingsMode('absent', owner);
+    armDecorativeReleaseOnFirstPaint('warmup-complete');
+    notifyWorldFramePresented();
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(true);
+  });
+
+  test('the world counts as revealed while the release is held', () => {
+    setReady(true);
+    declareBootBuildingsMode('glb', owner);
+    armDecorativeReleaseOnFirstPaint('warmup-complete');
+    notifyWorldFramePresented();
+    expect(isWorldRevealed()).toBe(false);
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(false);
+    expect(isWorldRevealed()).toBe(true);
+  });
+
+  test('a composite dismissal never starts the hold', () => {
+    setReady(true);
+    declareBootBuildingsMode('glb', owner);
+    stampLoadingDismiss('composite');
+    armDecorativeReleaseOnFirstPaint('warmup-complete');
+    notifyWorldFramePresented();
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(true);
+  });
+
+  test('holds the post-reveal stream milestone until the cap', () => {
+    setReady(true);
+    declareBootBuildingsMode('glb', owner);
+    // The absolute deadline is not held: it releases the decorative lane.
+    releaseDecorative('absolute-deadline');
+    expect(isDecorativeReleased()).toBe(true);
+    armBootCorePresented('warmup-complete');
+    notifyBootCoreScenePresented();
+    notifyBootCoreScenePresented(); // starts the hold on the stream lane
+    expect(isBootStreamEligible()).toBe(false);
+    fakeNow += BUILDINGS_FIRST_HOLD_CAP_MS - 1;
+    onBootStreamEligible(() => {}); // re-evaluates eligibility
+    expect(isBootStreamEligible()).toBe(false);
+    fakeNow += 1;
+    onBootStreamEligible(() => {});
+    expect(isBootStreamEligible()).toBe(true);
+    expect(bootStreamEligibleReason()).toBe('milestone');
+  });
+
+  test('leaves the boot-core fail-open path unchanged', () => {
+    setReady(true);
+    declareBootBuildingsMode('glb', owner);
+    releaseDecorative('absolute-deadline');
+    // No boot-core presentation: 10s of visible time opens the lane.
+    for (let i = 0; i < 25; i += 1) {
+      fakeNow += 500;
+      onBootStreamEligible(() => {});
+    }
+    expect(isBootStreamEligible()).toBe(true);
+    expect(bootStreamEligibleReason()).toBe('fail-open-visible');
+  });
+
+  test("ends when the mode leaves 'glb' during the hold", () => {
+    setReady(true);
+    declareBootBuildingsMode('glb', owner);
+    armDecorativeReleaseOnFirstPaint('warmup-complete');
+    notifyWorldFramePresented();
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(false);
+    declareBootBuildingsMode('absent', owner);
     notifyWorldFramePresented();
     expect(isDecorativeReleased()).toBe(true);
   });

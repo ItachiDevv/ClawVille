@@ -1,4 +1,5 @@
 'use client';
+import { allowWorldActivityQueue, isStageSceneAvailable } from '@/lib/world-renderer-mode';
 
 /**
  * ActivityLobbyModal — chunk #8 of Q2 Activity Portals.
@@ -46,6 +47,7 @@ import {
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useAuthMe } from '@/hooks/use-auth-me';
+import { activityRequest } from './activity/activity-request';
 import ActivityThumbnail from '@/components/game/activity/ActivityThumbnail';
 import QueueStatusBar from '@/components/game/activity/QueueStatusBar';
 import PartySlot, {
@@ -920,6 +922,15 @@ export default function ActivityLobbyModal({
     (authResolved &&
       (!partyEligible || (partyLoaded && partyError === null)));
 
+  const handleCreateParty = useCallback(async () => {
+    if (!allowWorldActivityQueue(() => addToast('3D', 'This activity needs the 3D view. Use the view selector to switch.'))) return null;
+    return createParty();
+  }, [addToast, createParty]);
+  const handleJoinParty = useCallback(async (shortCode: string) => {
+    if (!allowWorldActivityQueue(() => addToast('3D', 'This activity needs the 3D view. Use the view selector to switch.'))) return null;
+    return joinByCode(shortCode);
+  }, [addToast, joinByCode]);
+
   // Reset phase whenever the lobby is opened on a new activity.
   useEffect(() => {
     if (activityLobbyId) {
@@ -937,6 +948,7 @@ export default function ActivityLobbyModal({
   // visible through each member's own status poll; matchedRoomId is included
   // because a fast match can remove the intermediate queue position first.
   useEffect(() => {
+    if (!isStageSceneAvailable('activity')) return;
     if (phase !== 'idle' || !party) return;
     if (status.position != null || status.matchedRoomId != null) {
       setPhase('queuing');
@@ -945,6 +957,7 @@ export default function ActivityLobbyModal({
 
   // Match-found navigation — fires only while queuing.
   useEffect(() => {
+    if (!isStageSceneAvailable('activity')) return;
     if (phase !== 'queuing') return;
     if (!activityLobbyId) return;
     if (status.matchedRoomId && status.matchedRoomShortCode) {
@@ -966,6 +979,7 @@ export default function ActivityLobbyModal({
   ]);
 
   const handleQueue = useCallback(async (partyId?: string) => {
+    if (!allowWorldActivityQueue(() => addToast('3D', 'This activity needs the 3D view. Use the view selector to switch.'))) return;
     if (!activityLobbyId || queueing || !staleClient.checked) return;
     // The click that triggers `handleQueue` is the AudioContext unlock
     // gesture — prime the audio bus here so SFX work in the match.
@@ -1028,24 +1042,19 @@ export default function ActivityLobbyModal({
   ]);
 
   const handleLeaveQueue = useCallback(async () => {
-    if (!activityLobbyId) return;
+    if (!activityLobbyId) return true;
     try {
-      await fetch(
-        `${API_BASE}/api/activities/${encodeURIComponent(activityLobbyId)}/leave-queue`,
-        { method: 'POST', credentials: 'include' },
-      );
-    } catch {
-      /* best-effort */
+      await activityRequest(`/api/activities/${encodeURIComponent(activityLobbyId)}/leave-queue`, { method: 'POST' });
+      setPhase('idle');
+      return true;
+    } catch (error) {
+      addToast('Activity', error instanceof Error ? error.message : 'Could not leave queue. Retry.', 5000);
+      return false;
     }
-    setPhase('idle');
-  }, [activityLobbyId]);
+  }, [activityLobbyId, addToast]);
 
-  const handleClose = useCallback(() => {
-    // If the user closes the lobby while queued, fire-and-forget a
-    // leave-queue so they don't ghost-occupy a slot.
-    if (phase === 'queuing') {
-      void handleLeaveQueue();
-    }
+  const handleClose = useCallback(async () => {
+    if (phase === 'queuing' && !(await handleLeaveQueue())) return;
     closeActivityLobby();
   }, [phase, handleLeaveQueue, closeActivityLobby]);
 
@@ -1133,8 +1142,8 @@ export default function ActivityLobbyModal({
           partyStateReady={partyStateReady}
           partyError={partyError}
           partyBusy={partyBusy}
-          onCreateParty={createParty}
-          onJoinParty={joinByCode}
+          onCreateParty={handleCreateParty}
+          onJoinParty={handleJoinParty}
           onKickMember={kick}
           onLeaveParty={leave}
           onQueueSolo={() => void handleQueue()}

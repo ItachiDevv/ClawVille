@@ -1,0 +1,52 @@
+{
+    "observedAt":  "2026-11-09T14:55:13.306Z",
+    "sourceCommit":  "348cc3726227a9a321d7593fd0e685904901d31e",
+    "openzeppelinCommit":  "dbb6104ce834628e473d2173bbc9d47f81a9eec3",
+    "compiler":  "0.8.24+commit.e11b9ed9.Emscripten.clang",
+    "chainId":  274630,
+    "block":  "0x13ea",
+    "noSigning":  true,
+    "results":  [
+                    {
+                        "evmVersion":  "shanghai",
+                        "contract":  "DecisionLog",
+                        "address":  "0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09",
+                        "runtimeBytes":  5460,
+                        "compiledBytes":  5460,
+                        "codeHash":  "0x917216bf47f6d0240fbf0646de38b45f32a4205015cbf61ef26c51b0faa20d58",
+                        "logicMatchIgnoringMetadataAndImmutables":  true,
+                        "metadataExact":  false,
+                        "immutables":  [
+
+                                       ]
+                    },
+                    {
+                        "evmVersion":  "shanghai",
+                        "contract":  "ModelRegistry",
+                        "address":  "0x3e5e23a5fF6548958ab3dDf42c51A59713cE550C",
+                        "runtimeBytes":  1350,
+                        "compiledBytes":  1350,
+                        "codeHash":  "0xdd1e96eb781459c608ff34b82469c957ce90e408bccaaa39c5c86e60ea6d326b",
+                        "logicMatchIgnoringMetadataAndImmutables":  true,
+                        "metadataExact":  false,
+                        "immutables":  [
+
+                                       ]
+                    },
+                    {
+                        "evmVersion":  "shanghai",
+                        "contract":  "TestUSDG",
+                        "address":  "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
+                        "runtimeBytes":  2087,
+                        "compiledBytes":  2087,
+                        "codeHash":  "0x085a09654a7ff2ea410a62fff9309557c953bf29a0ccaa12b5ef4b830e33c226",
+                        "logicMatchIgnoringMetadataAndImmutables":  true,
+                        "metadataExact":  false,
+                        "immutables":  [
+
+                                       ]
+                    }
+                ],
+    "authorizesSigning":  false,
+    "verificationLevel":  "Executable runtime matches pinned release3.5 source after metadata exclusion. These three contracts have no compiler immutable references. Mutable owner, brain, registry, and attestation state are outside this bytecode comparison."
+}
