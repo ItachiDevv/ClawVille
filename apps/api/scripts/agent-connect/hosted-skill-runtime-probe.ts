@@ -16,6 +16,7 @@ import { z } from 'zod';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import { characterRoomId } from '../../../../packages/agent-runtime/src/room-scoping';
+import { townGuide } from '../../../../packages/agent-templates/src/locations/town-guide';
 import {
   DATABASE_ENV_MARKER_SQL,
   DatabaseEnvMarkerError,
@@ -33,6 +34,8 @@ const MAX_CAPTURED_REQUESTS = 24;
 const MAX_GATEWAY_BODY_BYTES = 2_000_000;
 const MOCK_HERMES_MARKER = 'HERMES_MOCK_REPLY_V1';
 const DECLARED_GATEWAY_MARKER = 'CV_PROBE_DECLARED_GATEWAY_REPLY';
+/** system-agent-chat.ts writes `${platformAgent.name} told me: `; the platform agent name comes from the template. */
+const NORI_LESSON_PREFIX = `${townGuide.name} told me: `;
 
 const cliSchema = z.object({
   api: z.string().url(),
@@ -1549,9 +1552,9 @@ async function main(): Promise<void> {
       const noriDirective = `${noriMarker}: Ask Nori about the Bounty Board.`;
       await postProbeDirective(apiBase, fixture, noriDirective);
       const noriLesson = await waitForNoriLesson(client, fixture, declaredMock.noriCounts, noriDirective, apiBase, noriMarker);
-      ok(noriLesson.startsWith('Nori told me: ') && !/\[ACTION:/i.test(noriLesson),
+      ok(noriLesson.startsWith(NORI_LESSON_PREFIX) && !/\[ACTION:/i.test(noriLesson),
         'actual Nori action persists a sanitized lesson under the fixture avatar');
-      const replySnippet = noriLesson.slice('Nori told me: '.length).replace(/\s+/g, ' ').slice(0, 100);
+      const replySnippet = noriLesson.slice(NORI_LESSON_PREFIX.length).replace(/\s+/g, ' ').slice(0, 100);
       ok(replySnippet.length > 0, 'Nori supplies nonempty orientation content');
       await postProbeDirective(apiBase, fixture, 'Use the latest Nori answer to choose your next world activity.');
       const noriPrompt = await waitForCapturedPrompt(declaredMock.captured, noriStart,

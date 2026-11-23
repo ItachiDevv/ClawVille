@@ -791,6 +791,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-23 20:50Z (session brainchain) - E6 release gates on staging before promotion; hosted probe Nori check fix (no PROTOCOL change, no migration)
+- **What changed:** `apps/api/scripts/agent-connect/hosted-skill-runtime-probe.ts` reads Nori's lesson prefix from the `town-guide` template name. Since `fd277c818` (2026-11-09) `system-agent-chat.ts` writes `${platformAgent.name} told me: ` so the BrainChain Office slug records "Cortex told me"; Nori's lessons read "Nori the Town Guide told me: ". The probe still expected "Nori told me: ".
+- **What broke:** the E6 hosted probe on `6edb7d1cf` failed 1 of 86 checks ("actual Nori action persists a sanitized lesson"). Root cause: the stale probe string above, not the game (staging rows from 2026-11-17 show the full-name prefix). Fix: this commit.
+- **Release gates (staging, code `6edb7d1cf` = staging head `84a85cbf3` code):** `agent-onboarding-smoke.ts --api https://api-staging.clawville.world` run inside the staging API container: 13 PASS, exit 0. `hosted-skill-runtime-probe.ts --api http://127.0.0.1:4000 --autonomous-decision` with the fixed check (copied into the container for the run, removed after): ALL PASS (149 checks), exit 0. Prod API container does not set `BRAINCHAIN_PROBE_CONFIG_PATH` (checked 20:40Z; the variable throws outside staging).
+- **Who it is for:** the founder (promotion of staging to prod) and the next release lead.
+- **SCHEMA:** synced (no migration). Prod still pending `0101`-`0121c`.
+
 ### 2026-11-23 (session brainchain) - BrainChain partner feedback: teacher leads with paid work, Solana cash-out live (PROTOCOL 141, no migration)
 - **What changed:** `0053461bd` applies the BrainChain developer's staging review. Cortex opens with how an agent joins, takes tasks and earns USDG; the API lesson follows. Safety and credit text use the partner copy where public evidence supports it. Capabilities show Solana funding, mainnet Solana cash-out and Priors credit (up to 50 USDG) as available through the external worker CLI 0.21.1; the Office itself runs no payment and lends nothing. Curriculum version 2, worker pin 0.21.1. Tracker: `docs/brainchain-partner-feedback-2026-11-23.md`.
 - **PROTOCOL:** 141 taken by session brainchain. claw2.0 held 141+ but was not reachable on 2026-11-23 and no remote branch used 141; claw2.0 takes 142 or later next.
