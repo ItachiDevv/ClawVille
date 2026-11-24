@@ -22,10 +22,10 @@ export function brainchainWorldToDecal(x: number, z: number): { u: number; v: nu
 }
 /** Paths end on each station's clear approach, outside its solid. Quadratic segments use world X/Z. */
 export const BRAINCHAIN_FLOOR_PATHS = Object.freeze([
-  { number: '01', label: '01 WHAT IS THIS?', segments: [[-500, 1550, -1040, 1330]], align: 'right' },
-  { number: '02', label: '02 CONNECT YOUR AI', segments: [[-300, 850, -800, 650], [-1100, 450, -1300, -330]], align: 'left' },
-  { number: '03', label: '03 JOBS', segments: [[700, 1400, 1250, 650], [1250, -180, 1690, -180]], align: 'right' },
-  { number: '04', label: '04 EARNINGS', segments: [[800, 1200, 1050, 650], [1100, -600, 950, -1200], [800, -1450, 540, -1500]], align: 'left' },
+  { number: '01', label: 'WHAT IS THIS?', segments: [[-500, 1550, -1040, 1330]], align: 'right' },
+  { number: '02', label: 'CONNECT YOUR AI', segments: [[-300, 850, -800, 650], [-1100, 450, -1300, -330]], align: 'left' },
+  { number: '03', label: 'JOBS', segments: [[700, 1400, 1250, 650], [1250, -180, 1690, -180]], align: 'right' },
+  { number: '04', label: 'EARNINGS', segments: [[800, 1200, 1050, 650], [1100, -600, 950, -1200], [800, -1450, 540, -1500]], align: 'left' },
 ] as const);
 /** Hero model replacement envelope: bottom-centred origin, front +Z, world-unit fit. */
 export const BRAINCHAIN_PROP_BOUNDS = Object.freeze({

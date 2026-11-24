@@ -74,7 +74,7 @@ Canvas textures initialize lazily and tolerate a missing 2D context. Module impo
 The floor uses a #141414 base, roughness 0.6 and the existing repeated orbit pattern in rgba(248,247,244,0.07). Walls, sea band and trims retain their materials.
 One transparent floor decal sits at y=1.5 on a flat radius-2190 circle. Its MeshBasicMaterial disables depth writes and tone mapping and uses polygon offset.
 Its non-repeating 2048 x 2048 texture contains two soft rose rings around the sculpture and four dashed quadratic paths from spawn. The paths avoid the sculpture solid.
-Rose numbered circles mark the desk, pod 1, job board and earnings wall. Ivory labels read 01 WHAT IS THIS?, 02 CONNECT YOUR AI, 03 JOBS and 04 EARNINGS.
+Rose numbered circles mark the desk, pod 1, job board and earnings wall. The circles hold the step numbers 01 to 04; ivory labels beside them read WHAT IS THIS?, CONNECT YOUR AI, JOBS and EARNINGS. Paths are thin dashed rose lines (4 px dash in the 2048 px decal, about 9 world units) with a faint wider glow.
 The texture covers x,z from -2200 to 2200. Canvas coordinates use u=(x+2200)/4400 and v=(z+2200)/4400. Circle UVs and CanvasTexture vertical flip preserve station alignment.
 The decal draws once when resources initialize and once after the shared font wait. Fragment Mono supplies numbers; Geist supplies labels, with fallback fonts. Labels span about 60 to 80 world units in height.
 

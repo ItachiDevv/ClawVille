@@ -63,8 +63,8 @@ function floorDecal(): Part | null {
     for (const path of BRAINCHAIN_FLOOR_PATHS) {
       ctx.beginPath(); ctx.moveTo(...point(BRAINCHAIN_PLAYER_SPAWN.x, BRAINCHAIN_PLAYER_SPAWN.z));
       for (const [cx, cz, x, z] of path.segments) ctx.quadraticCurveTo(...point(cx, cz), ...point(x, z));
-      ctx.setLineDash([]); ctx.lineWidth = 22; ctx.strokeStyle = 'rgba(243,134,161,0.10)'; ctx.stroke();
-      ctx.setLineDash([22, 16]); ctx.lineWidth = 9; ctx.strokeStyle = 'rgba(243,134,161,0.55)'; ctx.stroke();
+      ctx.setLineDash([]); ctx.lineWidth = 14; ctx.strokeStyle = 'rgba(243,134,161,0.10)'; ctx.stroke();
+      ctx.setLineDash([12, 14]); ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(243,134,161,0.6)'; ctx.stroke();
       ctx.setLineDash([]);
       const end = path.segments[path.segments.length - 1]!;
       const [x, y] = point(end[2], end[3]);
