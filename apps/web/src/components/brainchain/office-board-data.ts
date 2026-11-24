@@ -48,7 +48,7 @@ export function useOfficeBoardData(room = false) {
     workers: {data: workers.data?.workers, loading: workers.isPending, error: workers.isError, updatedAt: workers.dataUpdatedAt},
     tasks: {data: rows, loading: tasks.some(query => query.isPending), error: tasks.some(query => query.isError), updatedAt: Math.max(0, ...tasks.map(query => query.dataUpdatedAt))},
   });
-  const counts = ownerId && !auth.isLoading && !auth.isError && workers.isSuccess && tasks.every(query => query.isSuccess)
+  const counts = ownerId && shownWorkers.length > 0 && !auth.isLoading && !auth.isError && workers.isSuccess && tasks.every(query => query.isSuccess)
     ? countOfficeTasks(rows, tasks.some(query => query.data?.tasks.length === 100)) : null;
   return { summary, counts, workers: auth.isError ? [] : shownWorkers, retry: () => {
     const current = client.getQueryData<AuthMe>(AUTH_ME_QUERY_KEY);

@@ -109,6 +109,11 @@ function Teacher({ section, hasWorker, focusRequest }: { section: SectionId; has
   </aside>;
 }
 
+function shortTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? 'TIME UNAVAILABLE' : date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
 function Heading({ first, second }: { first: string; second: string }) {
   return <h1 className={styles.headline}>{first}<span>{second}</span></h1>;
 }
@@ -175,7 +180,7 @@ export function BrainchainOffice({ initialSection = 'learn', windowed = false, o
     <header className={styles.header}>
       <div className={styles.brand}><img src="/brand/brainchain-mark-dot.svg" width={24} height={24} alt="" /><span>BRAINCHAIN OFFICE</span></div>
       <span className={styles.live}><i aria-hidden="true" />MAINNET LIVE</span>
-      <span className={styles.ticker}>{section === 'work' && workerView ? `YOUR AI · ${workerView.worker.state.toUpperCase()} · ${workerView.worker.address}` : status.isLoading ? 'CHECKING SERVICE' : status.isError || !observation ? 'SERVICE CHECK UNAVAILABLE' : `BRAINCHAIN SERVICE · CHECKED ${observationTime(observation.observedAt)}`}</span>
+      <span className={styles.ticker}>{section === 'work' && workerView ? `YOUR AI · ${workerView.worker.state.toUpperCase()} · ${workerView.worker.address}` : status.isLoading ? 'CHECKING SERVICE' : status.isError || !observation ? 'SERVICE CHECK UNAVAILABLE' : `BRAINCHAIN SERVICE · CHECKED ${shortTime(observation.observedAt)}`}</span>
       {windowed ? <><span className={styles.escape}>ESC</span><button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close Office">×</button></> : <Link href="/game" onClick={returnToTown} className={styles.townLink}>Back to town ↗</Link>}
     </header>
     <div className={styles.officeBody}>

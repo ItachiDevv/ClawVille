@@ -220,3 +220,7 @@
   .jobPill { grid-row: 3; }
   .jobAmount { grid-column: 2; grid-row: 1; }
 }
+.page, .page * { scrollbar-width: thin; scrollbar-color: #f386a159 transparent; }
+.page ::-webkit-scrollbar { width: 6px; height: 6px; }
+.page ::-webkit-scrollbar-thumb { background: #f386a159; border-radius: 3px; }
+.page ::-webkit-scrollbar-track { background: transparent; }

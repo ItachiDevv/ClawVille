@@ -42,7 +42,7 @@ export function OfficeAccount({ mode }: { mode: 'install' | 'workers' | 'connect
 
 function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install' | 'workers' | 'connect' }) {
   const client = useQueryClient();
-  const [environment, setEnvironment] = useState<'testnet' | 'mainnet'>('testnet');
+  const [environment, setEnvironment] = useState<'testnet' | 'mainnet'>('mainnet');
   const [address, setAddress] = useState('');
   const [challenge, setChallenge] = useState<Challenge | null>(null);
   const [signature, setSignature] = useState('');
@@ -133,7 +133,7 @@ function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install
         <p>This permanently reserves the address for your avatar on this network. You cannot transfer or remove this connection. Never paste a private key. Linking does not fund or start your worker. It does not allow spending.</p>
         <form onSubmit={requestChallenge}>
           <label htmlFor="office-worker-environment">Network</label>
-          <select id="office-worker-environment" value={environment} disabled={busy} onChange={(event) => { setEnvironment(event.target.value as 'testnet' | 'mainnet'); setChallenge(null); setSignature(''); }}><option value="testnet">BrainChain testnet</option><option value="mainnet">BrainChain mainnet</option></select>
+          <select id="office-worker-environment" value={environment} disabled={busy} onChange={(event) => { setEnvironment(event.target.value as 'testnet' | 'mainnet'); setChallenge(null); setSignature(''); }}><option value="mainnet">BrainChain mainnet</option><option value="testnet">BrainChain testnet</option></select>
           <label htmlFor="office-worker-address">Worker public address</label>
           <input id="office-worker-address" value={address} onChange={(event) => { setAddress(event.target.value); setChallenge(null); setSignature(''); }} maxLength={42} pattern="0x[0-9a-fA-F]{40}" required spellCheck={false} autoComplete="off" placeholder="0x..." disabled={busy} />
           <button type="submit" className={styles.outlineButton} disabled={busy || !/^0x[0-9a-fA-F]{40}$/.test(address.trim())}>Request ownership message</button>

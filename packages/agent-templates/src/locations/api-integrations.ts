@@ -1,5 +1,6 @@
 import {
   BRAINCHAIN_CURRICULUM_VERSION,
+  BRAINCHAIN_WORKER_TERMS,
   BRAINCHAIN_OFFICE_KNOWLEDGE,
   BRAINCHAIN_RESEARCH_DATE,
 } from '@clawville/shared';
@@ -30,6 +31,22 @@ export const apiIntegrations: LocationTemplate = {
   knowledge: [
     `BrainChain Office curriculum version ${BRAINCHAIN_CURRICULUM_VERSION}; research snapshot ${BRAINCHAIN_RESEARCH_DATE}.`,
     ...BRAINCHAIN_OFFICE_KNOWLEDGE,
+    // 2026-11-24 beginner answers for the Office window's tap-to-ask questions.
+    'Beginner answer, what is an AI worker: a program that runs on a computer, takes paid jobs from BrainChain, does them with an AI model and sends back the result. A checker grades the result. Good work gets paid in USDG, a dollar coin.',
+    "Beginner answer, can my ClawVille agent do this: not by itself today. ClawVille cannot run a BrainChain worker for you yet. Your agent can learn the lessons in this Office. To earn, a person runs BrainChain's worker program on their own computer and links its address in the Office (step 2, Connect your AI). A one-click option for hosted agents is only an idea; it is not built and needs BrainChain to agree.",
+    `Beginner answer, what does it cost to start: the reviewed terms need a ${BRAINCHAIN_WORKER_TERMS.minimumStake} stake (held while you work, not spent) and a ${BRAINCHAIN_WORKER_TERMS.applicationBond} application bond, plus gas and the cost of the AI model. BrainChain keeps ${BRAINCHAIN_WORKER_TERMS.protocolFeePercent}% of each paid job. BRAIN amounts are not fixed dollar prices. ClawVille charges nothing for the Office.`,
+    `Beginner answer, can I lose money: yes. A refused application can burn its bond. A worker that opens a dispute and loses can lose ${BRAINCHAIN_WORKER_TERMS.disputeLossPercent}% of its stake. A job that fails the check pays nothing, and model, gas, fee and conversion costs reduce what you keep. Start only with money you can afford to lose.`,
+    'Beginner answer, how long does setup take: plan for at least two days. You install the worker program, make a separate wallet, get BRAIN, stake, and apply. The reviewed worker README gives a 48-hour mainnet application wait. Ask me for the steps one at a time.',
+    "Beginner answer, what is BRAIN and where do I get it: BRAIN is BrainChain's own token. Workers stake it to take jobs. Get it only through the links on the official BrainChain site, usebrainchain.com. Never buy it from a link someone sends you. ClawVille does not sell BRAIN.",
+    'Beginner answer, how much can a worker earn: no one can promise an amount. Pay depends on which jobs BrainChain hires you for and their bounties. New workers start with house tasks; wider access needs three accepted tasks and more acceptances than refunds.',
+    'Beginner answer, what does being checked mean: your AI sent its result and a checker is grading it. After the grade there is a dispute window. Then the job pays, or the money goes back to the customer.',
+    'Beginner answer, how do I pause my AI: open Jobs, then Manage your AI, and press Request pause. That saves a request in ClawVille only; it does not stop on-chain hires. To really stop, pause or stop the worker program on your own computer.',
+    'Beginner answer, why was a job not paid: the usual reasons are a result that failed the check, a missed deadline, or a dispute that went against it. Then the money goes back to the customer and the board shows NOT PAID. Check the job in your worker record on the Earnings step.',
+    'Beginner answer, when is a job paid: after the result is graded, the dispute window ends and the work is accepted. The board then shows PAID. Count income only after that.',
+    `Beginner answer, what fees do I pay: BrainChain keeps ${BRAINCHAIN_WORKER_TERMS.protocolFeePercent}% of each accepted bounty. You also pay gas, your AI model costs and any conversion costs.`,
+    "Beginner answer, how do I take my money out: follow BrainChain's official cash-out guide and check the limits in the payment lesson first. ClawVille never moves your BrainChain money.",
+    "Beginner answer, my job was not paid, what now: write down the job number, network, time and any transaction reference. Check the job in your worker record before you try anything again, so you do not pay twice. Then read BrainChain's worker recovery guide, linked under Fix a problem.",
+    'Beginner answer, is my money safe: your worker wallet and stake live on BrainChain, not in ClawVille. ClawVille never holds your keys or your BrainChain money. Keep the worker wallet separate from your main wallet, never paste a private key anywhere, and use only official BrainChain links.',
     'Webhooks deliver real-time event notifications via HTTP POST — faster and more efficient than polling APIs.',
     'Always verify webhook signatures using HMAC-SHA256 to ensure payloads come from trusted sources.',
     'Implement retry logic with exponential backoff for webhook delivery — most providers retry 3-5 times on failure.',
@@ -170,6 +187,7 @@ export const apiIntegrations: LocationTemplate = {
       'Distinguish source code, documented behavior, observed quotes, and verified settlement.',
     ],
     chat: [
+      'Most visitors are beginners to AI. Answer in plain everyday words first, in two to four short sentences, then give one next step. Use the matching beginner answer when one fits. Explain any technical word you must use.',
       'Give a clear next learning step. Use short explanations and name the relevant curriculum section or integration pattern.',
       'Be direct about danger: unverified payloads, missing queues, skipped idempotency, keys in prompts.',
     ],

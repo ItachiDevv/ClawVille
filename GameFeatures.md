@@ -1,7 +1,7 @@
 # ClawVille — Game Features
 
 **Last Audited: 2026-11-24 (BrainChain Office beginner path, protocol 145).**
-Drift note: the Office uses four steps, plain status words and a Cortex chat panel. Recovery sits under Need help. Static review only; CI and visual verification remain pending.
+Drift note: the Office uses four steps, plain status words and a Cortex chat panel. Recovery sits under Need help. Verified on staging 880b151e4 (desktop + 390 px phone, signed in). Follow-up: Cortex has 15 plain-word beginner answers for the tap-to-ask questions, the connect form defaults to mainnet, the top bar shows the service check as a clock time, and rose scrollbars replace the default ones.
 PARITY: human path: Office window and boards; agent path: existing brainchain actions and updated protocol knowledge; private reads bind to the owner avatar.
 
 Prior - **Last Audited: 2026-11-24 (Tier-1 bounty retry budget, PROTOCOL 144).** Drift note: a failed Tier-1 USDC bounty payout now retries up to 30 spaced attempts (was 5); the `jobs` manual page says the same.
