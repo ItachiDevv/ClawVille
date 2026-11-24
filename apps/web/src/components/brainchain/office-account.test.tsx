@@ -68,7 +68,7 @@ afterAll(() => {
   }
 });
 
-async function render(mode: 'install' | 'workers') {
+async function render(mode: 'install' | 'workers' | 'connect') {
   await act(async () => { root.render(createElement(QueryClientProvider, { client }, createElement(OfficeAccount, { mode }))); await new Promise((resolve) => setTimeout(resolve, 25)); });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 25)); });
 }
@@ -110,4 +110,15 @@ test('an account change aborts its old install and discards its late private res
   await act(async () => { pendingInstall!(Response.json(installation)); await new Promise((resolve) => setTimeout(resolve, 10)); });
   expect(container.textContent).not.toContain('Association saved');
   expect(saveButton().disabled).toBe(false);
+});
+
+test('the connect view exposes only the link form and keeps custody warnings', async () => {
+  await render('connect');
+  expect(container.textContent).toContain('Link your worker');
+  expect(container.textContent).toContain('Never paste a private key');
+  expect(container.textContent).toContain('permanently reserves');
+  expect(container.querySelector('details')?.open).toBe(true);
+  expect(container.querySelector('#office-worker-address')).not.toBeNull();
+  expect(container.textContent).not.toContain('Your worker connections');
+  expect(posted).toHaveLength(0);
 });

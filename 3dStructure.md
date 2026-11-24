@@ -1,6 +1,10 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-11-23 (BrainChain Office board presentation).**
+**Last Audited: 2026-11-24 (BrainChain Office beginner boards).**
+Drift note: JOB BOARD and EARNINGS use plain status words and numbered setup steps. Static glow and scanlines remain inside the existing textures. Static review only; visual verification remains pending.
+PARITY: human path: Office window and boards; agent path: existing brainchain actions and updated protocol knowledge; private reads bind to the owner avatar.
+
+Prior - **Last Audited: 2026-11-23 (BrainChain Office board presentation).**
 Drift note: boards now use structured worker, task and message views, with clipped text and the official logo. The DOM layer supplies these views alongside window text. Font and logo readiness share a 1500 ms timeout. The two 1024 x 512 textures retain immediate account erasure and redraw only when the summary changes. Static review only; visual verification remains pending.
 PARITY: human path: Office boards and window; agent path: existing Office actions; avatar binding and settlement remain unchanged.
 
@@ -29,17 +33,17 @@ The exit trigger has centre (0, 2140) and radius 185 wu. Spawn clearance is 540 
 A local movement crossing activates the exit once. Initial placement, modal freeze and nonlocal movement cannot activate it.
 The exit and Back to town use the existing outside placement and scene transition.
 
-| Station | Position x, z (wu) | Office tab |
+| Station | Position x, z (wu) | Office section |
 |---|---|---|
-| Cortex desk | -1140, 1000 | Learn, with Cortex chat |
-| Worker pod 1 | -1670, -330 | Worker setup |
-| Worker pod 2 | -1460, -900 | Worker setup |
-| Worker pod 3 | -1070, -1410 | Worker setup |
-| Worker pod 4 | -510, -1740 | Worker setup |
-| Task board | 1780, -180 | Work status; one worker card and up to three provisional task rows, with status words and exact bounties |
-| Receipts wall | 540, -1780 | Earnings |
+| Cortex desk | -1140, 1000 | What is this?, with Cortex chat |
+| Worker pod 1 | -1670, -330 | Connect your AI |
+| Worker pod 2 | -1460, -900 | Connect your AI |
+| Worker pod 3 | -1070, -1410 | Connect your AI |
+| Worker pod 4 | -510, -1740 | Connect your AI |
+| Job board | 1780, -180 | Jobs; JOB BOARD shows one worker card and up to three provisional task rows, with status words and exact bounties |
+| Earnings wall | 540, -1780 | Earnings; EARNINGS shows the prompt for paid records |
 
-The nearest station within 460 wu supplies the DOM prompt. Recovery stays inside the Office window.
+The nearest station within 460 wu supplies the DOM prompt. Recovery sits under Need help in the Office window.
 The centre sculpture has a 660 x 440 wu collider half-size. The desk half-size is 410 x 195 wu.
 Each pod has a 280 x 280 wu collider half-size. The board and receipts wall have shallow wall colliders.
 Collision checks include the player radius and split movement into steps of at most 32 wu.
@@ -50,9 +54,10 @@ The sculpture envelope is 1300 x 1000 x 860 wu (enlarged on 2026-11-12 after the
 Each pod envelope is 470 x 500 x 420 wu. Model origins sit at bottom centre, with the front along +Z.
 The replacement path constant preserves these footprints and anchors. The sculpture uses a shallow depth to fit its envelope.
 The receipts plane sits at z=-1900, inside the wall.
-The Task Board shows owner workers and provisional indexed tasks. The Receipts wall directs owners to Earnings for paid bounties.
+The JOB BOARD shows owner workers and provisional indexed tasks. The EARNINGS wall directs owners to Earnings for paid bounties.
 The DOM layer shares the Office query cache and sends plain text through the interior store. No query runs inside the Canvas.
-The two 1024 x 512 canvases and textures persist. A changed summary key triggers a redraw and texture upload.
+The two 1024 x 512 canvases and textures persist.
+Each redraw bakes a soft rose radial glow, 1 px scanlines every 4 px at 2.5% white, and a glowing rose outline into the texture. These static effects add no timers or per-frame work. A changed summary key triggers a redraw and texture upload.
 Account changes clear prior text. Font loading has a timeout before the first data draw. Text has line limits and ellipsis clipping.
 No mesh, draw call, prop size or per-frame allocation is added. Chain earnings remain an explicit Office button read.
 Canvas textures initialize lazily and tolerate a missing 2D context. Module import does not access the DOM.

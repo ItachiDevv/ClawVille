@@ -22,7 +22,7 @@ describe('Office window intent', () => {
     store.setBoardSummary(EMPTY_OFFICE_BOARDS);
     expect(useBrainchainInteriorStore.getState().boardSummary.ownerId).toBeNull();
     expect(useBrainchainInteriorStore.getState().boardSummary.task.lines).toEqual(EMPTY_OFFICE_BOARDS.task.lines);
-    expect(useBrainchainInteriorStore.getState().boardSummary.task.view).toMatchObject({kind:'message', heading:'Sign in to see your work'});
+    expect(useBrainchainInteriorStore.getState().boardSummary.task.view).toMatchObject({kind:'message', heading:'Your AI can earn money here'});
     expect(JSON.stringify(useBrainchainInteriorStore.getState().boardSummary)).not.toContain('private task');
   });
   test('ordinary station opens do not retain a previous Cortex focus request', () => {

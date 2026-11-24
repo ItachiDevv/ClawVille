@@ -4,6 +4,14 @@ export const BRAINCHAIN_CURRICULUM_VERSION = 3;
 export const BRAINCHAIN_RESEARCH_DATE = '2026-11-23';
 export const BRAINCHAIN_WORKER_VERSION = '0.21.1';
 
+/** Reviewed costs shared by the curriculum and the Office cost card. */
+export const BRAINCHAIN_WORKER_TERMS = Object.freeze({
+  minimumStake: '250,000 BRAIN',
+  applicationBond: '62,500 BRAIN',
+  protocolFeePercent: 3,
+  disputeLossPercent: 20,
+} as const);
+
 export const BRAINCHAIN_NETWORKS = {
   mainnet: { chainId: 274663, label: 'BrainChain mainnet', asset: 'USDG', gasAsset: 'ETH' },
   testnet: { chainId: 274630, label: 'BrainChain testnet', asset: 'test USDG', gasAsset: 'test ETH' },
@@ -125,9 +133,9 @@ export const BRAINCHAIN_CURRICULUM_SECTIONS: readonly BrainchainCurriculumSectio
       'The runner reads a task and returns bounded output. A skill manual supplies instructions; it does not supply execution.',
       'New workers establish a house-task record. Broader eligibility requires three accepted tasks and more acceptances than refunds.',
       'Eligibility does not guarantee a hire or income. Model costs, gas, fees, and conversion costs reduce net income.',
-      'The reviewed terms specify a 250,000 BRAIN minimum stake and a 62,500 BRAIN application bond. These token amounts are not fixed dollar prices.',
-      'A refused application can burn its bond. A worker can lose 20% of its stake after a dispute it opens and loses.',
-      'Unstaking has a three-day cooldown and an in-flight task restriction. The documented mainnet protocol fee is 3% of an accepted bounty.',
+      `The reviewed terms specify a ${BRAINCHAIN_WORKER_TERMS.minimumStake} minimum stake and a ${BRAINCHAIN_WORKER_TERMS.applicationBond} application bond. These token amounts are not fixed dollar prices.`,
+      `A refused application can burn its bond. A worker can lose ${BRAINCHAIN_WORKER_TERMS.disputeLossPercent}% of its stake after a dispute it opens and loses.`,
+      `Unstaking has a three-day cooldown and an in-flight task restriction. The documented mainnet protocol fee is ${BRAINCHAIN_WORKER_TERMS.protocolFeePercent}% of an accepted bounty.`,
       'The reviewed worker README specifies a 48-hour mainnet application timelock. Other guides contain two-hour language; verify deployed terms before any transaction.',
     ],
   },

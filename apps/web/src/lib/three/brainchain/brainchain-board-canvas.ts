@@ -58,13 +58,13 @@ function label(ctx: CanvasRenderingContext2D, value: string, x: number, y: numbe
   ctx.font = '600 17px Geist'; ctx.fillStyle = MUTED; spacing(ctx, '3px');
   text(ctx, value, x, y, width); spacing(ctx, '0px');
 }
-function pill(ctx: CanvasRenderingContext2D, value: string, x: number, y: number, solid: boolean, width: number): number {
+function pill(ctx: CanvasRenderingContext2D, value: string, x: number, y: number, solid: boolean, width: number, muted = false): number {
   ctx.font = '600 16px Geist'; spacing(ctx, '2px');
   const clipped = clipBoardText(ctx, value, width - 28);
   const w = ctx.measureText(clipped).width + 28;
   rounded(ctx, x, y, w, 30, 15);
   if (solid) { ctx.fillStyle = ROSE; ctx.fill(); ctx.fillStyle = INK; }
-  else { ctx.lineWidth = 2; ctx.strokeStyle = ROSE; ctx.stroke(); ctx.fillStyle = ROSE; }
+  else { ctx.lineWidth = 2; ctx.strokeStyle = muted ? FAINT : ROSE; ctx.stroke(); ctx.fillStyle = muted ? MUTED : ROSE; }
   ctx.fillText(clipped, x + 14, y + 21); spacing(ctx, '0px');
   return w;
 }
@@ -74,7 +74,14 @@ function background(ctx: CanvasRenderingContext2D): void {
   const gradient = ctx.createLinearGradient(0, 0, 0, 512);
   gradient.addColorStop(0, INK); gradient.addColorStop(1, '#141414');
   rounded(ctx, 6, 6, 1012, 500, 28); ctx.fillStyle = gradient; ctx.fill();
-  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(243,134,161,0.55)'; ctx.stroke();
+  const glow = ctx.createRadialGradient(512, 256, 120, 512, 256, 620);
+  glow.addColorStop(0, 'rgba(243,134,161,0.06)'); glow.addColorStop(1, 'rgba(0,0,0,0.35)');
+  ctx.save(); ctx.clip(); ctx.fillStyle = glow; ctx.fillRect(6, 6, 1012, 500);
+  ctx.fillStyle = 'rgba(255,255,255,0.025)';
+  for (let y = 8; y < 506; y += 4) ctx.fillRect(6, y, 1012, 1);
+  ctx.restore();
+  ctx.shadowColor = 'rgba(243,134,161,0.8)'; ctx.shadowBlur = 18;
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(243,134,161,0.7)'; ctx.stroke(); ctx.shadowBlur = 0;
 }
 function frame(ctx: CanvasRenderingContext2D, board: BoardCanvasText): void {
   background(ctx);
@@ -83,10 +90,11 @@ function frame(ctx: CanvasRenderingContext2D, board: BoardCanvasText): void {
   let titleRight = 976;
   if (board.updated !== null) {
     ctx.font = '500 21px Geist'; ctx.fillStyle = MUTED; ctx.textAlign = 'right';
-    const chip = clipBoardText(ctx, `LIVE  ${board.updated}`, 260);
+    const chip = clipBoardText(ctx, `UPDATED ${board.updated}`, 300);
     ctx.fillText(chip, 976, 69);
     const chipLeft = 976 - ctx.measureText(chip).width;
-    dot(ctx, chipLeft - 16, 62, 7); titleRight = chipLeft - 45;
+    ctx.shadowColor = ROSE; ctx.shadowBlur = 12;
+    dot(ctx, chipLeft - 16, 62, 7); ctx.shadowBlur = 0; titleRight = chipLeft - 45;
     ctx.textAlign = 'left';
   }
   ctx.fillStyle = IVORY; ctx.font = '44px "Fragment Mono"';
@@ -116,20 +124,30 @@ function content(ctx: CanvasRenderingContext2D, board: BoardCanvasText): void {
     ctx.fillStyle = MUTED; ctx.font = '400 24px Geist';
     view.body.slice(0, 3).forEach((line, i) => text(ctx, line, 512, 298 + i * 36, 936));
     ctx.textAlign = 'left';
+  } else if (view.kind === 'steps') {
+    ctx.fillStyle = IVORY; ctx.font = '600 32px Geist'; text(ctx, view.heading, 44, 170, 936);
+    view.steps.slice(0, 3).forEach(([heading, body], index) => {
+      const y = 206 + index * 84;
+      ctx.shadowColor = ROSE; ctx.shadowBlur = 10; dot(ctx, 64, y + 20, 20); ctx.shadowBlur = 0;
+      ctx.fillStyle = INK; ctx.font = '700 22px Geist'; ctx.textAlign = 'center';
+      ctx.fillText(String(index + 1), 64, y + 28); ctx.textAlign = 'left';
+      ctx.fillStyle = IVORY; ctx.font = '600 25px Geist'; text(ctx, heading, 102, y + 20, 878);
+      ctx.fillStyle = MUTED; ctx.font = '400 19px Geist'; text(ctx, body, 102, y + 48, 878);
+    });
   } else {
-    label(ctx, 'YOUR WORKER', 44, 158, 330);
+    label(ctx, 'YOUR AI', 44, 158, 330);
     rounded(ctx, 44, 176, 330, 236, 20); ctx.fillStyle = '#262626'; ctx.fill();
-    pill(ctx, view.worker.network, 66, 198, false, 286);
-    ctx.fillStyle = IVORY; ctx.font = '30px "Fragment Mono"'; text(ctx, view.worker.address, 66, 272, 286);
-    // Rose means the worker is running; paused or draining reads as inactive grey.
-    dot(ctx, 74, 322, 8, view.worker.state === 'Running' ? ROSE : MUTED);
-    ctx.fillStyle = IVORY; ctx.font = '600 26px Geist'; text(ctx, view.worker.state, 92, 331, 260);
-    ctx.fillStyle = MUTED; ctx.font = '400 21px Geist'; text(ctx, view.worker.eligibility, 66, 374, 286);
+    ctx.shadowColor = ROSE; ctx.shadowBlur = view.worker.state === 'Running' ? 12 : 0;
+    dot(ctx, 74, 218, 8, view.worker.state === 'Running' ? ROSE : MUTED); ctx.shadowBlur = 0;
+    ctx.fillStyle = IVORY; ctx.font = '600 28px Geist'; text(ctx, view.worker.state, 92, 227, 260);
+    ctx.fillStyle = MUTED; ctx.font = '400 20px Geist';
+    wrapped(ctx, view.worker.eligibility, 286, 2).forEach((line, i) => text(ctx, line, 66, 278 + i * 26, 286));
+    ctx.font = '18px "Fragment Mono"'; text(ctx, view.worker.address, 66, 350, 286);
+    ctx.font = '400 16px Geist'; text(ctx, view.worker.network, 66, 380, 180);
     if (view.worker.more > 0) {
-      ctx.font = '400 18px Geist';
-      text(ctx, `+${view.worker.more} more worker${view.worker.more === 1 ? '' : 's'}`, 66, 438, 286);
+      ctx.font = '400 18px Geist'; text(ctx, `+${view.worker.more} more`, 66, 438, 286);
     }
-    label(ctx, 'TASKS', 414, 158, 566);
+    label(ctx, 'JOBS', 414, 158, 566);
     if (view.emptyHeading) {
       ctx.fillStyle = IVORY; ctx.font = '600 28px Geist'; text(ctx, view.emptyHeading, 436, 250, 522);
       ctx.fillStyle = MUTED; ctx.font = '400 20px Geist';
@@ -137,12 +155,11 @@ function content(ctx: CanvasRenderingContext2D, board: BoardCanvasText): void {
     } else view.rows.slice(0, 3).forEach((row, i) => {
       const y = 176 + i * 80;
       rounded(ctx, 414, y, 566, 68, 16); ctx.fillStyle = i === 0 ? '#2b2326' : '#232323'; ctx.fill();
-      ctx.fillStyle = IVORY; ctx.font = '26px "Fragment Mono"'; text(ctx, row.id, 436, y + 32, 188);
-      ctx.fillStyle = MUTED; ctx.font = '400 17px Geist'; text(ctx, row.detail, 436, y + 56, 188);
-      const pillWidth = pill(ctx, row.status, 640, y + 19, row.highlight, 160);
-      ctx.textAlign = 'right'; ctx.fillStyle = IVORY; ctx.font = '700 32px Geist';
-      text(ctx, row.amount, 900, y + 45, 900 - (640 + pillWidth + 12));
-      ctx.fillStyle = MUTED; ctx.font = '500 18px Geist'; text(ctx, row.unit, 960, y + 45, 56);
+      ctx.fillStyle = IVORY; ctx.font = '20px "Fragment Mono"'; text(ctx, row.id, 436, y + 28, 190);
+      ctx.fillStyle = MUTED; ctx.font = '400 15px Geist'; text(ctx, row.detail, 436, y + 55, 310);
+      pill(ctx, row.status, 626, y + 8, row.highlight, 190, row.muted);
+      ctx.textAlign = 'right'; ctx.fillStyle = IVORY; ctx.font = '700 24px Geist';
+      text(ctx, row.displayAmount, 960, y + 46, 150);
       ctx.textAlign = 'left';
     });
   }

@@ -8,12 +8,12 @@ export const BRAINCHAIN_EXIT = Object.freeze({ x: 0, z: 2140, radius: 185 });
 export type BrainchainTab = 'learn' | 'setup' | 'work' | 'earnings';
 export const BRAINCHAIN_STATIONS = Object.freeze([
   { id: 'desk', label: 'Cortex desk', x: -1140, z: 1000, tab: 'learn' },
-  { id: 'pod-1', label: 'Worker setup', x: -1670, z: -330, tab: 'setup' },
-  { id: 'pod-2', label: 'Worker setup', x: -1460, z: -900, tab: 'setup' },
-  { id: 'pod-3', label: 'Worker setup', x: -1070, z: -1410, tab: 'setup' },
-  { id: 'pod-4', label: 'Worker setup', x: -510, z: -1740, tab: 'setup' },
-  { id: 'board', label: 'Task board', x: 1780, z: -180, tab: 'work' },
-  { id: 'receipts', label: 'Receipts', x: 540, z: -1780, tab: 'earnings' },
+  { id: 'pod-1', label: 'Connect your AI', x: -1670, z: -330, tab: 'setup' },
+  { id: 'pod-2', label: 'Connect your AI', x: -1460, z: -900, tab: 'setup' },
+  { id: 'pod-3', label: 'Connect your AI', x: -1070, z: -1410, tab: 'setup' },
+  { id: 'pod-4', label: 'Connect your AI', x: -510, z: -1740, tab: 'setup' },
+  { id: 'board', label: 'Job board', x: 1780, z: -180, tab: 'work' },
+  { id: 'receipts', label: 'Earnings wall', x: 540, z: -1780, tab: 'earnings' },
 ] as const);
 /** Hero model replacement envelope: bottom-centred origin, front +Z, world-unit fit. */
 export const BRAINCHAIN_PROP_BOUNDS = Object.freeze({

@@ -78,12 +78,12 @@ export function BrainchainInteriorPage() {
     {!section && !isMobile && <div style={{ position: 'absolute', bottom: 24, left: '50%', transform: 'translateX(-50%)', padding: '10px 18px', background: '#1d1d1de6', borderRadius: 8, whiteSpace: 'nowrap' }}>BrainChain Office | WASD to walk | E at a station</div>}
     {section && <div role="dialog" aria-modal="true" aria-label="BrainChain Office" onKeyDown={(event) => {
       if (event.key !== 'Tab') return;
-      const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]')).filter((item) => item.getClientRects().length > 0);
+      const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], summary, input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]')).filter((item) => item.getClientRects().length > 0);
       const first = items[0]; const last = items[items.length - 1];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }} style={{ position: 'absolute', inset: isMobile ? 'max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom))' : '5% 7%', zIndex: 70, border: '1px solid #f386a1', borderRadius: 14, overflow: 'hidden', pointerEvents: 'auto', boxShadow: '0 24px 100px #000b' }}>
-      <BrainchainOffice initialSection={section} windowed onClose={close} />
+      <BrainchainOffice initialSection={section} windowed onClose={close} teacherFocus={teacherFocus} />
     </div>}
   </div>;
 }

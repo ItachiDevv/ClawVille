@@ -9,6 +9,8 @@ function canvas() {
     beginPath: () => {}, moveTo: () => {}, arcTo: () => {}, closePath: () => {},
     arc: () => {}, fill: () => {}, stroke: () => {}, drawImage: () => {},
     createLinearGradient: () => ({ addColorStop: () => {} }),
+    createRadialGradient: () => ({ addColorStop: () => {} }),
+    shadowBlur: 0, shadowColor: '', save: () => {}, restore: () => {}, clip: () => {},
     textAlign: 'left', letterSpacing: '0px',
     fillText: (value: string) => { text.push(value); },
     measureText: (value: string) => ({ width: value.length * 14 }),
@@ -16,7 +18,7 @@ function canvas() {
   return { ctx, text, clears: () => clears };
 }
 const summary: BoardCanvasText = {
-  title: 'TASK BOARD', lines: ['No tasks indexed yet'], footer: 'Income counts only after settlement.', updated: null,
+  title: 'JOB BOARD', lines: ['No tasks indexed yet'], footer: 'Income counts only after settlement.', updated: null,
   view: { kind: 'message', heading: 'No tasks indexed yet', body: [], tone: 'neutral' },
 };
 function message(heading: string): BoardCanvasText {
@@ -35,7 +37,7 @@ describe('BrainChain retained board canvases', () => {
     expect(writer.update('owner-b', summary)).toBe(true);
     expect(uploads).toBe(previous + 1);
     expect(writer.update('owner-b', { ...summary, updated: '3:41 PM' })).toBe(true);
-    expect(c.text).toContain('LIVE  3:41 PM');
+    expect(c.text).toContain('UPDATED 3:41 PM');
     expect(writer.update('owner-b', message('New view'))).toBe(true);
     expect(c.text).toContain('New view');
   });
@@ -79,14 +81,14 @@ describe('BrainChain retained board canvases', () => {
     writer.update('owner', { ...summary, lines: ['never draw the window text'], view: {
       kind: 'tasks', worker: { network: 'TESTNET', address: '0x1234\u2026abcd', state: 'Paused',
         eligibility: 'Eligibility not checked yet', more: 1 },
-      rows: Array.from({ length: 5 }, (_, i) => ({ id: `#${i}`, status: 'HIRED', highlight: true,
-        amount: '4.50', unit: 'tUSDG' as const, detail: 'Due 11/24 3:00 PM' })),
+      rows: Array.from({ length: 5 }, (_, i) => ({ id: `#${i}`, status: 'WORKING ON IT', highlight: true,
+        amount: '4.50', displayAmount: '4.50 tUSDG', progress: 2, muted: false, unit: 'tUSDG' as const, detail: 'Due 11/24 3:00 PM' })),
     } });
     await Promise.resolve();
     expect(c.text).toContain('#2'); expect(c.text).not.toContain('#3');
-    expect(c.text).toContain('+1 more worker');
+    expect(c.text).toContain('+1 more');
     expect(c.text).not.toContain('never draw the window text');
-    expect(c.text.some(value => value.startsWith('LIVE'))).toBe(false);
+    expect(c.text.some(value => value.startsWith('UPDATED'))).toBe(false);
     expect(c.ctx.letterSpacing).toBe('0px');
   });
   test('wraps task empty text to at most three lines without letterSpacing support', async () => {
@@ -104,6 +106,15 @@ describe('BrainChain retained board canvases', () => {
     expect(lines[2]!.endsWith('\u2026')).toBe(true);
     expect(lines.every(value => c.ctx.measureText(value).width <= 522)).toBe(true);
     expect('letterSpacing' in c.ctx).toBe(false);
+  });
+  test('draws three numbered setup steps and the BRAIN stake footer', async () => {
+    const c = canvas();
+    const writer = createBoardCanvasWriter(c.ctx, () => {}, Promise.resolve());
+    writer.update('owner', {...summary, footer:'Joining needs a BRAIN stake. Cortex explains the costs first.', view:{kind:'steps', heading:'Your AI is not doing jobs yet', steps:[['Talk to Cortex','She explains how AI jobs and pay work.'],['Set up your AI at a pod','A pod connects your AI to BrainChain.'],['Watch this board','Jobs and pay show up here.']]}});
+    await Promise.resolve();
+    for (const value of ['1','2','3','Talk to Cortex','Watch this board']) expect(c.text).toContain(value);
+    expect(c.text.join(' ')).toContain('Joining needs a BRAIN stake.');
+    expect(c.ctx.shadowBlur).toBe(0);
   });
   test('tolerates a null 2D context', async () => {
     let uploads = 0;

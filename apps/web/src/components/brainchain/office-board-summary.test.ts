@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { EMPTY_OFFICE_BOARDS, BOARD_ERROR, clipBoardText, formatOfficeBoards, officeBoardPublication, officeBoardRefreshInterval, type BoardInput, type OfficeWorker } from './office-board-summary';
+import { EMPTY_OFFICE_BOARDS, BOARD_ERROR, countOfficeTasks, clipBoardText, formatOfficeBoards, officeBoardPublication, officeBoardRefreshInterval, type BoardInput, type OfficeWorker } from './office-board-summary';
 
 const worker: OfficeWorker = {id:'worker', environment:'testnet', chainId:46630, address:'0x12345678901234567890123456789012345678abcd', requestedState:'paused', observedEligibility:'unknown'};
 const empty = (): BoardInput => ({ownerId:'alice', workers:{data:[],loading:false,error:false}, tasks:{data:[],loading:false,error:false}});
@@ -9,8 +9,8 @@ describe('Office board owner summaries', () => {
   test('signed out and guest use no private rows', () => {
     const input = populated(); input.ownerId = null;
     expect(formatOfficeBoards(input)).toEqual(EMPTY_OFFICE_BOARDS);
-    expect(EMPTY_OFFICE_BOARDS.task.view).toEqual({kind:'message', heading:'Sign in to see your work', body:['Your workers, hired tasks and pay show here.'], tone:'neutral'});
-    expect(EMPTY_OFFICE_BOARDS.receipts.view).toEqual({kind:'message', heading:'Sign in to see your receipts', body:['Your paid bounties show in Earnings.'], tone:'neutral'});
+    expect(EMPTY_OFFICE_BOARDS.task.view).toEqual({kind:'message', heading:'Your AI can earn money here', body:['It does small paid jobs for BrainChain customers.', 'Sign in to see its jobs and pay.'], tone:'neutral'});
+    expect(EMPTY_OFFICE_BOARDS.receipts.view).toEqual({kind:'message', heading:'Your AI can earn money here', body:['It does small paid jobs for BrainChain customers.', 'Sign in to see its jobs and pay.'], tone:'neutral'});
     expect(EMPTY_OFFICE_BOARDS.task.updated).toBeNull();
   });
   test('auth loading hides cached rows and precedes signed out', () => {
@@ -34,14 +34,14 @@ describe('Office board owner summaries', () => {
   test('workers loading precedes cached workers and tasks', () => {
     const input = populated(); input.workers.loading = true;
     const summary = formatOfficeBoards(input);
-    for (const board of [summary.task, summary.receipts]) expect(board.view).toEqual({kind:'message', heading:'Loading your workers', body:[], tone:'neutral'});
+    for (const board of [summary.task, summary.receipts]) expect(board.view).toEqual({kind:'message', heading:'Loading your AI', body:[], tone:'neutral'});
   });
   test('no worker gives setup instructions and Earnings directions', () => {
     const summary = formatOfficeBoards(empty());
-    expect(summary.task.view).toEqual({kind:'message', heading:'No worker connected yet', body:['Walk to a worker pod and press E to set one up.', 'Your hired tasks and pay show here.'], tone:'neutral'});
-    expect(summary.task.footer).toBe('Learn how earning works at the Cortex desk.');
-    expect(summary.receipts.view).toEqual({kind:'message', heading:'Your paid bounties are in Earnings', body:['Walk up to this wall and press E to open Earnings.'], tone:'neutral'});
-    expect(summary.receipts.footer).toBe('Income counts only after settlement.');
+    expect(summary.task.view).toEqual({kind:'steps', heading:'Your AI is not doing jobs yet', steps:[['Talk to Cortex','She explains how AI jobs and pay work.'],['Set up your AI at a pod','A pod connects your AI to BrainChain.'],['Watch this board','Jobs and pay show up here.']]});
+    expect(summary.task.footer).toBe('Joining needs a BRAIN stake. Cortex explains the costs first.');
+    expect(summary.receipts.view).toEqual({kind:'message', heading:'Your paid jobs are in Earnings', body:['Walk up to this wall and press E to see them.'], tone:'neutral'});
+    expect(summary.receipts.footer).toBe('Pay counts only after the review ends.');
   });
   test('tasks loading retains worker but hides cached tasks', () => {
     const input = populated(); input.tasks.loading = true;
@@ -49,22 +49,22 @@ describe('Office board owner summaries', () => {
     expect(view.kind).toBe('tasks');
     if (view.kind !== 'tasks') throw new Error('Expected tasks view');
     expect(view.rows).toEqual([]);
-    expect(view.emptyHeading).toBe('Loading tasks');
+    expect(view.emptyHeading).toBe('Loading jobs');
     expect(view.emptyBody).toBeUndefined();
   });
   test('worker without tasks has honest empty text', () => {
     const input = populated(); input.tasks.data = [];
     const view = formatOfficeBoards(input).task.view;
     if (view.kind !== 'tasks') throw new Error('Expected tasks view');
-    expect(view.emptyHeading).toBe('No tasks yet');
-    expect(view.emptyBody).toBe('BrainChain hires running, eligible workers. New tasks show here.');
-    expect(view.worker).toEqual({network:'TESTNET', address:'0x1234\u2026abcd', state:'Paused', eligibility:'Eligibility not checked yet', more:0});
+    expect(view.emptyHeading).toBe('No jobs yet');
+    expect(view.emptyBody).toBe('BrainChain hires running workers that can take paid jobs. New jobs show here.');
+    expect(view.worker).toEqual({network:'TESTNET', address:'0x1234\u2026abcd', state:'Paused', eligibility:'Not checked yet', more:0});
   });
   test('worker states and eligibility map to card words', () => {
     for (const [requestedState, observedEligibility, state, eligibility] of [
-      ['running', 'eligible', 'Running', 'Eligible for customer tasks'],
-      ['draining', 'ineligible', 'Draining', 'Not eligible yet'],
-      ['paused', null, 'Paused', 'Eligibility not checked yet'],
+      ['running', 'eligible', 'Running', 'Can take paid jobs'],
+      ['draining', 'ineligible', 'Finishing jobs', 'Not ready for paid jobs yet'],
+      ['paused', null, 'Paused', 'Not checked yet'],
     ] as const) {
       const input = populated(); input.workers.data = [{...worker, environment:'mainnet', requestedState, observedEligibility}, worker];
       const view = formatOfficeBoards(input).task.view;
@@ -73,7 +73,7 @@ describe('Office board owner summaries', () => {
     }
   });
   test('all contract statuses have words and only HIRED highlights', () => {
-    const statuses = ['UNKNOWN', 'OPEN', 'HIRED', 'SUBMITTED', 'GRADED', 'DISPUTED', 'PAID', 'REFUNDED', 'RULED', 'APPEALED', 'UNKNOWN'];
+    const statuses = ['UNKNOWN', 'OPEN', 'WORKING ON IT', 'BEING CHECKED', 'CHECKED', 'IN DISPUTE', 'PAID', 'NOT PAID', 'DECIDED', 'APPEALED', 'UNKNOWN'];
     for (const [status, word] of statuses.entries()) {
       const input = populated(); input.tasks.data = [record(status)];
       const summary = formatOfficeBoards(input);
@@ -82,8 +82,8 @@ describe('Office board owner summaries', () => {
       expect(summary.task.lines.join(' ')).toContain(`#47 ${word}`);
       expect(summary.task.lines.join(' ')).not.toContain('Status ' + status);
       const detail = summary.task.view.rows[0]!.detail;
-      if (status >= 1 && status <= 3) expect(detail).toStartWith('Due ');
-      else expect(detail).toBe(({4:'In dispute window', 5:'In dispute', 6:'Paid', 7:'Refunded', 8:'Ruled', 9:'In dispute'} as Record<number,string>)[status] ?? 'Status unavailable');
+      if (status === 2) expect(detail).toStartWith('Due ');
+      else expect(detail).toBe(({1:'Open for workers', 3:'Result sent, waiting for the checker', 4:'Waiting out the dispute window', 5:'Someone disputed the grade', 6:'Good work, money sent', 7:'The money went back to the customer', 8:'The dispute was decided', 9:'The decision was appealed'} as Record<number,string>)[status] ?? 'Status unavailable');
     }
   });
   test('amount precision and per-task network remain exact', () => {
@@ -92,10 +92,17 @@ describe('Office board owner summaries', () => {
     const view = formatOfficeBoards(input).task.view;
     if (view.kind !== 'tasks') throw new Error('Expected tasks view');
     expect(view.rows.map(row => [row.amount, row.unit])).toEqual([['0.000001','tUSDG'], ['1.23','USDG'], ['1.00','tUSDG']]);
+    expect(view.rows.map(row => row.displayAmount)).toEqual(['0.000001 tUSDG', '$1.23', '1.00 tUSDG']);
+  });
+  test('counts use all fetched rows and disclose full pages without inventing paid jobs', () => {
+    const rows = Array.from({length:100}, (_, i) => record(i < 70 ? 2 : i < 90 ? 3 : 6));
+    expect(countOfficeTasks(rows)).toMatchObject({total:100, inProgress:90, needsWork:70, paid:10, totalLabel:'100', paidLabel:'10'});
+    expect(countOfficeTasks(rows, true)).toMatchObject({limited:true, totalLabel:'100+', inProgressLabel:'90+', paidLabel:'10+'});
+    expect(countOfficeTasks(Array.from({length:100}, () => record(2)), true).paidLabel).toBe('0+');
   });
   test('invalid deadlines cannot become Invalid Date', () => {
-    for (const value of ['invalid', '8640000000001', '9999999999999999']) {
-      const input = populated(); input.tasks.data = [record(1, '1', value)];
+    for (const value of ['invalid', '8640000000001', '9999999999999999']) for (const status of [1, 2, 3]) {
+      const input = populated(); input.tasks.data = [record(status, '1', value)];
       const view = formatOfficeBoards(input).task.view;
       if (view.kind !== 'tasks') throw new Error('Expected tasks view');
       expect(view.rows[0]!.detail).toBe('Due date unavailable');
@@ -107,10 +114,10 @@ describe('Office board owner summaries', () => {
     const input = populated(); input.tasks.data = Array.from({length:8}, () => record());
     const summary = formatOfficeBoards(input);
     if (summary.task.view.kind !== 'tasks') throw new Error('Expected tasks view');
-    expect(summary.task.view.rows).toHaveLength(3);
+    expect(summary.task.view.rows).toHaveLength(5);
     expect(summary.task.lines.filter(line => line.startsWith('#'))).toHaveLength(5);
     expect(summary.task.lines.every(line => line.length <= 88)).toBe(true);
-    expect(summary.task.footer).toBe('Provisional index. Income counts only after settlement.');
+    expect(summary.task.footer).toBe('Pay is final after the review ends. $ = USDG, a dollar coin.');
   });
   test('receipts never expose task amounts and header uses fixed read time', () => {
     const input = populated(); input.workers.updatedAt = 1800000000000; input.tasks.updatedAt = 1800000060000;

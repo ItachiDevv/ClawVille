@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { AUTH_ME_QUERY_KEY, useAuthMe, type AuthMe } from '@/hooks/use-auth-me';
 import { useStageStore } from '@/components/three/world-stage/stage-store';
 import { officeAccountRequest } from './office-api';
-import { EMPTY_OFFICE_BOARDS, formatOfficeBoards, officeBoardPublication, officeBoardRefreshInterval, type OfficeWorker } from './office-board-summary';
+import { EMPTY_OFFICE_BOARDS, countOfficeTasks, formatOfficeBoards, officeBoardPublication, officeBoardRefreshInterval, type OfficeWorker } from './office-board-summary';
 import { useBrainchainInteriorStore } from './brainchain-interior-store';
 
 export function workerQueryOptions(userId: string | null) {
@@ -43,12 +43,14 @@ export function useOfficeBoardData(room = false) {
   const shownWorkers = workers.data?.workers.slice(0, 2) ?? [];
   const tasks = useQueries({queries: shownWorkers.map(worker => ({...taskQueryOptions(ownerId, worker.id), ...policy}))});
   const rows = tasks.flatMap((query, index) => (query.data?.tasks ?? []).map(task => ({worker: shownWorkers[index]!, task})))
-    .sort((a, b) => Date.parse(b.task.updatedAt) - Date.parse(a.task.updatedAt)).slice(0, 5);
+    .sort((a, b) => Date.parse(b.task.updatedAt) - Date.parse(a.task.updatedAt));
   const summary = formatOfficeBoards({ ownerId, authLoading: auth.isLoading, authError: auth.isError,
     workers: {data: workers.data?.workers, loading: workers.isPending, error: workers.isError, updatedAt: workers.dataUpdatedAt},
     tasks: {data: rows, loading: tasks.some(query => query.isPending), error: tasks.some(query => query.isError), updatedAt: Math.max(0, ...tasks.map(query => query.dataUpdatedAt))},
   });
-  return { summary, workers: auth.isError ? [] : shownWorkers, retry: () => {
+  const counts = ownerId && !auth.isLoading && !auth.isError && workers.isSuccess && tasks.every(query => query.isSuccess)
+    ? countOfficeTasks(rows, tasks.some(query => query.data?.tasks.length === 100)) : null;
+  return { summary, counts, workers: auth.isError ? [] : shownWorkers, retry: () => {
     const current = client.getQueryData<AuthMe>(AUTH_ME_QUERY_KEY);
     if (!ownerId || current?.user?.isGuest || current?.user?.id !== ownerId || client.getQueryState(AUTH_ME_QUERY_KEY)?.status !== 'success') { void auth.refetch(); return; }
     void workers.refetch(); for (const query of tasks) void query.refetch();
@@ -72,7 +74,7 @@ export function useOfficeBoardBridge() {
       const auth = client.getQueryData<AuthMe>(AUTH_ME_QUERY_KEY);
       const ownerId = auth?.user && !auth.user.isGuest ? auth.user.id : null;
       const store = useBrainchainInteriorStore.getState();
-      // Same view model as the live boards: "Loading your workers" for a new owner, sign-in text when signed out.
+      // Same view model as the live boards: "Loading your AI" for a new owner, sign-in text when signed out.
       if (store.boardSummary.ownerId !== ownerId) store.setBoardSummary(formatOfficeBoards({ ownerId,
         workers: { loading: !!ownerId, error: false }, tasks: { loading: false, error: false } }));
     });

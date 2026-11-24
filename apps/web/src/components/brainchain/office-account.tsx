@@ -31,7 +31,7 @@ interface Installation {
 }
 
 /** Changing the account unmounts every private field and aborts its old request. */
-export function OfficeAccount({ mode }: { mode: 'install' | 'workers' }) {
+export function OfficeAccount({ mode }: { mode: 'install' | 'workers' | 'connect' }) {
   const auth = useAuthMe();
   const userId = auth.data?.user && !auth.data.user.isGuest ? auth.data.user.id : null;
   if (auth.isLoading) return <p role="status">Check your account...</p>;
@@ -40,7 +40,7 @@ export function OfficeAccount({ mode }: { mode: 'install' | 'workers' }) {
   return <PrivateOfficeAccount key={`${userId}:${mode}`} userId={userId} mode={mode} />;
 }
 
-function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install' | 'workers' }) {
+function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install' | 'workers' | 'connect' }) {
   const client = useQueryClient();
   const [environment, setEnvironment] = useState<'testnet' | 'mainnet'>('testnet');
   const [address, setAddress] = useState('');
@@ -113,8 +113,8 @@ function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install
   }
 
   return <div className={styles.accountPanel}>
-    {mode === 'install' ? <><h3>Keep the curriculum with your agent.</h3><p>Save the current lessons to your connected agent. A saved copy does not prove that the agent used it.</p><button type="button" className={styles.primaryButton} disabled={busy} onClick={() => void install()}>{busy ? 'Save in progress...' : 'Save to my agent'}</button></> : <>
-      <h3>Your worker connections</h3>
+    {mode === 'install' ? <><h3>Save the lessons to your AI</h3><p>Save the current lessons to your connected agent. A saved copy does not prove that the agent used it.</p><button type="button" className={styles.primaryButton} disabled={busy} onClick={() => void install()}>{busy ? 'Save in progress...' : 'Save to my agent'}</button></> : <>
+      {mode === 'workers' && <><h3>Your worker connections</h3>
       <p>A connection reserves an address for your avatar. It does not fund, start, or authorize spending by a worker.</p>
       {workers.isLoading ? <p role="status">Load your worker connections...</p> : workers.isError ? <p role="alert">{workers.error.message} <button type="button" className={styles.textButton} onClick={() => void workers.refetch()}>Refresh connections</button></p> : workers.data?.workers.length ? workers.data.workers.map((worker) => <article className={styles.worker} key={worker.id}>
         <span className={styles.state}>{worker.environment === 'testnet' ? 'Testnet' : 'Mainnet'} · Chain {worker.chainId}</span>
@@ -126,10 +126,11 @@ function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install
         <p>{workerRequestDescription(worker.requestedState)} On-chain eligibility: {worker.observedEligibility ?? 'not observed'}.</p>
         <div className={styles.actionRow}><button type="button" className={styles.outlineButton} disabled={busy || worker.requestedState === 'paused'} onClick={() => void control(worker.id, 'paused')}>Request pause</button><button type="button" className={styles.outlineButton} disabled={busy || worker.requestedState === 'draining'} onClick={() => void control(worker.id, 'draining')}>Request drain</button></div>
         <p className={styles.small}>These requests do not stop on-chain hires. Your operator must confirm the actual worker state.</p>
-      </article>) : <p>No worker address is connected to your avatar.</p>}
-      <details className={styles.binding}>
-        <summary>Connect a worker address</summary>
-        <p>This permanently reserves the address for your avatar on the selected network. This pilot cannot transfer or remove the connection.</p>
+      </article>) : <p>No worker address is connected to your avatar.</p>}</>}
+      <details id="office-worker-connect" className={styles.binding} open={mode === 'connect' ? true : undefined}>
+        <summary>Link your worker</summary>
+        <p>Your worker program shows its public address (starts with 0x). Paste it, sign the message with the worker&apos;s wallet, and paste the signature.</p>
+        <p>This permanently reserves the address for your avatar on this network. You cannot transfer or remove this connection. Never paste a private key. Linking does not fund or start your worker. It does not allow spending.</p>
         <form onSubmit={requestChallenge}>
           <label htmlFor="office-worker-environment">Network</label>
           <select id="office-worker-environment" value={environment} disabled={busy} onChange={(event) => { setEnvironment(event.target.value as 'testnet' | 'mainnet'); setChallenge(null); setSignature(''); }}><option value="testnet">BrainChain testnet</option><option value="mainnet">BrainChain mainnet</option></select>
