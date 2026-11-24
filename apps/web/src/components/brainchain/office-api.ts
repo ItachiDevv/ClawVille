@@ -68,7 +68,7 @@ export function officialEvidenceUrl(value: string): string | null {
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
-    if (url.href === 'https://www.npmjs.com/package/brainchain-worker/v/0.21.1' || url.href === 'https://usebrainchain.com/credit') return url.href;
+    if (url.href === 'https://www.npmjs.com/package/brainchain-worker/v/0.22.0' || url.href === 'https://usebrainchain.com/credit' || url.href === 'https://usebrainchain.com/worlds/clawville') return url.href;
     if (url.hostname === 'docs.usebrainchain.com') return url.href;
     if (url.hostname === 'github.com' && url.pathname.startsWith('/usebrainchain/')) return url.href;
   } catch { /* Invalid evidence URLs are not navigation targets. */ }

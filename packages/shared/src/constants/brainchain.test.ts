@@ -36,7 +36,7 @@ describe('reviewed BrainChain curriculum', () => {
     expect(manual).toContain('48-hour mainnet application timelock');
     expect(manual).not.toMatch(/(?:export|set|\$env:)\s*BRAINCHAIN_(?:WORKER|SOLANA)_KEY\s*=/i);
     expect(manual).not.toContain('BRAINCHAIN_PAY_ON=solana');
-    expect(manual).toContain('brainchain-worker@0.21.1');
+    expect(manual).toContain('brainchain-worker@0.22.0');
     expect(manual).toContain('export BRAINCHAIN_NETWORK=testnet');
     expect(manual).toContain('new-key --file "$BRAINCHAIN_WORKER_KEY_FILE"');
     expect(manual).toContain('https://brain.testnet.usebrainchain.com/testnet/gas');
