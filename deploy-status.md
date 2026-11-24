@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-24 00:16Z (session brainchain). **PROD API + WEB = `29f1f9207` (promotion #31, PR #343: BrainChain expired testnet lanes removed, PROTOCOL 143, no migration), VERIFIED 00:16Z (DEPLOY LOG). STAGING = same tree. Both boxes use the founder's org `OPENAI_API_KEY`.**
+Last Audited: 2026-11-24 18:57Z (session clawville-ef). **STAGING API + WEB = `10ef0c370` Tier-1 retry budget 30 spaced attempts + PayAI credit monitor (PROTOCOL 144, migration 0122a applied on staging) on top of `5f218b7f5`. VERIFIED 18:57Z (DEPLOY LOG). PROD unchanged = `29f1f9207`; prod-migration-pending `0122a`.**
+
+Prior - Last Audited: 2026-11-24 00:16Z (session brainchain). **PROD API + WEB = `29f1f9207` (promotion #31, PR #343: BrainChain expired testnet lanes removed, PROTOCOL 143, no migration), VERIFIED 00:16Z (DEPLOY LOG). STAGING = same tree. Both boxes use the founder's org `OPENAI_API_KEY`.**
 
 Prior - Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = BrainChain expired testnet lanes removed (PROTOCOL 143, no migration) on top of prod `827034950`. VERIFIED 23:55Z: CI run 45289573246 all jobs success; API + web `da16e0677`; catalog protocolVersion 143; knowledge version 3; `/api/brainchain/purchases` and `/funding-exit` 404, `/workers` 401; onboarding smoke 14 PASS; hosted probe ALL PASS (149) after the staging OpenAI key fix below; headless `/brainchain` renders the room with no Hire help or funding text, 0 console errors. Staging `OPENAI_API_KEY` had no credits (embeddings 429 insufficient_quota, probe step 5 failed 503); set to the founder's org key (same as prod) via the Coolify model setter, API redeployed 23:53Z.**
 
@@ -804,6 +806,7 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 - **Expected on prod after promotion:** both stuck bounties rearm to attempt 6 and pay the hunters ($0.13 total from the poster's held USDC; founder approved 2026-11-24); the exhausted pages stop.
 - **Review:** Claude wrote; Codex independent review VERDICT APPROVE with 2 monitor NITs, both fixed in `59266e49c` with regression tests. No local test run (founder rule 2026-11-12); CI verifies.
 - **Who it is for:** the founder (no more daily exhausted pages; early PayAI credit warning) and the two unpaid hunters.
+- **Verify (staging):** CI run 45462392763 all jobs success (money lane 4508 pass / 0 fail incl. the 15 new tests; migrate success); API container SOURCE_COMMIT `10ef0c370`, `/health` commit `10ef0c370` (flip 18:54:37Z); staging DB constraint = `CHECK (settlement_attempt >= 1 AND settlement_attempt <= 30)`; `/api/ecosystem/catalog` protocolVersion 144 (cache-busted; the plain URL served a 5-min cached 143); API log `[payai-credit-monitor] level=ok {"balanceCredits":8538,"balanceUsd":"8.54","dailyBurnCredits":41,"runwayDays":210}` (staging logs only, never pages).
 - **SCHEMA:** prod-migration-pending: `0122a_tier1_settlement_attempt_budget.sql` (staging CI applies it on this push).
 
 ### 2026-11-24 (session brainchain) - BrainChain Office Task Board and Receipts wall redesign (web only, no PROTOCOL change, no migration)
