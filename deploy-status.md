@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-24 18:57Z (session clawville-ef). **STAGING API + WEB = `10ef0c370` Tier-1 retry budget 30 spaced attempts + PayAI credit monitor (PROTOCOL 144, migration 0122a applied on staging) on top of `5f218b7f5`. VERIFIED 18:57Z (DEPLOY LOG). PROD unchanged = `29f1f9207`; prod-migration-pending `0122a`.**
+Last Audited: 2026-11-24 19:25Z (session clawville-ef). **PROD API + WEB = `a5eb0481f` (promotion #32, PR #345: Tier-1 retry budget 30 spaced attempts + PayAI credit monitor, PROTOCOL 144, migration `0122a` applied; + BrainChain board redesign), VERIFIED 19:20Z (DEPLOY LOG). STAGING = prod + session brainchain's `880b151e4` (beginner Office window, PROTOCOL 145; its verification is that session's).**
+
+Prior - Last Audited: 2026-11-24 18:57Z (session clawville-ef). **STAGING API + WEB = `10ef0c370` Tier-1 retry budget 30 spaced attempts + PayAI credit monitor (PROTOCOL 144, migration 0122a applied on staging) on top of `5f218b7f5`. VERIFIED 18:57Z (DEPLOY LOG). PROD unchanged = `29f1f9207`; prod-migration-pending `0122a`.**
 
 Prior - Last Audited: 2026-11-24 00:16Z (session brainchain). **PROD API + WEB = `29f1f9207` (promotion #31, PR #343: BrainChain expired testnet lanes removed, PROTOCOL 143, no migration), VERIFIED 00:16Z (DEPLOY LOG). STAGING = same tree. Both boxes use the founder's org `OPENAI_API_KEY`.**
 
