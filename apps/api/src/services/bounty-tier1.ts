@@ -33,7 +33,20 @@ const DEFAULT_TIER1_MAX_USD_CENTS = 5_000;
 const MIN_TIER1_MAX_USD_CENTS = 100;
 const HARD_TIER1_MAX_USD_CENTS = 5_000;
 export const TIER1_OPEN_BOUNTY_CAP = 2;
-export const TIER1_SETTLEMENT_MAX_ATTEMPTS = 5;
+/**
+ * 30 attempts, spaced by tier1SettlementRearmBackoffMs, cover about 22 days of a
+ * provider outage. Five unspaced attempts were used up by the PayAI credit outage
+ * (2026-10-10 to 10-25) and left two approved bounties unpaid.
+ */
+export const TIER1_SETTLEMENT_MAX_ATTEMPTS = 30;
+const TIER1_REARM_BASE_BACKOFF_MS = 5 * 60 * 1_000;
+const TIER1_REARM_MAX_BACKOFF_MS = 24 * 60 * 60 * 1_000;
+
+/** Minimum age of a failed attempt before the next one: 5 min, doubling, at most 24 h. */
+export function tier1SettlementRearmBackoffMs(failedAttempt: number): number {
+  const doublings = Math.min(Math.max(0, failedAttempt - 1), 20);
+  return Math.min(TIER1_REARM_BASE_BACKOFF_MS * 2 ** doublings, TIER1_REARM_MAX_BACKOFF_MS);
+}
 
 export function resolveTier1BountyMaxUsdCents(raw = process.env.TIER1_BOUNTY_MAX_USD_CENTS): number {
   if (!raw || !/^\d+$/.test(raw.trim())) return DEFAULT_TIER1_MAX_USD_CENTS;
@@ -376,19 +389,25 @@ export interface Tier1SettlementPaymentState {
   reconcileTxSignature: string | null;
   settlePayer: string | null;
   failureReason: string | null;
+  updatedAt: Date;
 }
 
 export type Tier1SettlementAttemptPlan =
   | { kind: 'drive'; attempt: number; idempotencyKey: string }
   | { kind: 'rearm'; attempt: number; idempotencyKey: string; paymentId: string }
+  | { kind: 'backoff'; attempt: number; paymentId: string; retryAtMs: number }
   | { kind: 'frozen'; reason: 'ambiguous' | 'failure_not_proven_safe' | 'invariant_mismatch'; paymentId?: string }
   | { kind: 'exhausted'; attempt: number; paymentId: string };
 
-/** Pure classification seam: only a failed row with definitive no-money proof rearms. */
+/**
+ * Pure classification seam: only a failed row with definitive no-money proof
+ * rearms, and only after its backoff has elapsed.
+ */
 export function planTier1SettlementAttempt(input: {
   bountyId: string;
   settlementAttempt: number;
   payment: Tier1SettlementPaymentState | null;
+  nowMs?: number;
 }): Tier1SettlementAttemptPlan {
   const expectedKey = tier1SettlementIdempotencyKey(input.bountyId, input.settlementAttempt);
   if (!input.payment) {
@@ -414,6 +433,10 @@ export function planTier1SettlementAttempt(input: {
   }
   if (input.settlementAttempt >= TIER1_SETTLEMENT_MAX_ATTEMPTS) {
     return { kind: 'exhausted', attempt: input.settlementAttempt, paymentId: payment.id };
+  }
+  const retryAtMs = payment.updatedAt.getTime() + tier1SettlementRearmBackoffMs(input.settlementAttempt);
+  if (!Number.isFinite(retryAtMs) || (input.nowMs ?? Date.now()) < retryAtMs) {
+    return { kind: 'backoff', attempt: input.settlementAttempt, paymentId: payment.id, retryAtMs };
   }
   const nextAttempt = input.settlementAttempt + 1;
   return {
@@ -459,6 +482,7 @@ export async function readTier1SettlementAttemptStates(
       paymentReconcileTxSignature: agentPayments.reconcileTxSignature,
       paymentSettlePayer: agentPayments.settlePayer,
       paymentFailureReason: agentPayments.failureReason,
+      paymentUpdatedAt: agentPayments.updatedAt,
     })
     .from(bountyUsdcHolds)
     .innerJoin(bounties, eq(bounties.id, bountyUsdcHolds.bountyId))
@@ -480,6 +504,7 @@ type Tier1SettlementAttemptStates = Awaited<ReturnType<typeof readTier1Settlemen
 export function classifyTier1SettlementAttemptStates(
   input: Tier1SettlementAttemptInput,
   states: Tier1SettlementAttemptStates,
+  nowMs: number = Date.now(),
 ): Tier1SettlementAttemptPlan {
   const state = states[0];
   const expectedAmount = BigInt(input.rewardUsdCents) * 10_000n;
@@ -505,12 +530,14 @@ export function classifyTier1SettlementAttemptStates(
         reconcileTxSignature: state.paymentReconcileTxSignature,
         settlePayer: state.paymentSettlePayer,
         failureReason: state.paymentFailureReason,
+        updatedAt: state.paymentUpdatedAt!,
       }
     : null;
   return planTier1SettlementAttempt({
     bountyId: input.bountyId,
     settlementAttempt: state.settlementAttempt,
     payment,
+    nowMs,
   });
 }
 
@@ -671,7 +698,7 @@ export async function readTier1FrozenSettlements(injected: {
   for (const candidate of candidates) {
     const states = await (injected.readStates ?? readTier1SettlementAttemptStates)(candidate);
     const plan = classifyTier1SettlementAttemptStates(candidate, states);
-    if (plan.kind === 'drive' || plan.kind === 'rearm') continue;
+    if (plan.kind === 'drive' || plan.kind === 'rearm' || plan.kind === 'backoff') continue;
     frozen.push({
       bountyId: candidate.bountyId,
       plan: { kind: plan.kind, reason: plan.kind === 'frozen' ? plan.reason : null },
@@ -710,6 +737,8 @@ export async function resumeTier1BountySettlements(
   for (const row of rows) {
     try {
       const prepared = await prepare(row);
+      // A spaced retry is waiting for its backoff: nothing is wedged, so no page.
+      if (prepared.kind === 'backoff') continue;
       if (prepared.kind !== 'drive') {
         const now = readNow();
         const last = row.lastWedgeAlertAt?.getTime() ?? null;

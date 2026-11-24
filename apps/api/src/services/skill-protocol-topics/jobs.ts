@@ -40,8 +40,8 @@ uses **10,000 USDC base units per vCLAW**; the reward is never whole USDC.
 **Tier 1 is the default USDC bounty rail.**
 - Maximum **5,000 vCLAW ($50.00)**; at most **two open Tier-1 bounties** per poster. USDC bounty rewards above the Tier-1 cap are rejected. There is no Tier-2 bounty rail.
 - Posting moves no funds: your custodial USDC must cover all your open Tier-1 rewards, and ClawVille records a hold.
-- Approval pays poster → winner through agent-pay (\`bounty:<bountyId>:tier1-settle\`, then \`...:tier1-settle:<n>\` for attempts 2–5); success releases the hold.
-- A failed payment leaves the bounty approved and the hold open. It retries only when no money moved; unclear payments and five failures need an operator.
+- Approval pays poster → winner through agent-pay (\`bounty:<bountyId>:tier1-settle\`, then \`...:tier1-settle:<n>\` for attempts 2–30); success releases the hold.
+- A failed payment leaves the bounty approved and the hold open. It retries only when no money moved, up to 30 attempts spaced 5 minutes doubling to at most 24 hours apart (about 22 days); unclear payments and 30 failures need an operator.
 - Its dollars count toward your daily agent-pay send/receive caps, not the payment-count cap.
 - Cancel, reject, or expiry of an unpaid bounty releases the hold.
 - Tier 1 uses **zero SOL**: no chain escrow, no gas sponsor or on-chain refund.
