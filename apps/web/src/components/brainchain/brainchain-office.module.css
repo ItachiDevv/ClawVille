@@ -155,37 +155,9 @@
   .jobAmount { grid-column: 2; grid-row: 1; }
 }
 
-.page[data-touch='true'] .header { gap: 10px; padding: 0 10px; }
-.page[data-touch='true'] .brand { font-size: 11px; gap: 7px; letter-spacing: .06em; }
-.page[data-touch='true'] .live { font-size: 9px; padding-left: 8px; margin-left: auto; }
-.page[data-touch='true'] .ticker, .page[data-touch='true'] .escape { display: none; }
 .page[data-touch='true'] .closeButton { width: 44px; height: 44px; }
-.page[data-touch='true'] .townLink { font-size: 11px; white-space: normal; }
-.page[data-touch='true'] .officeBody { display: block; overflow-y: auto; overscroll-behavior: contain; }
-.page[data-touch='true'] .rail { position: sticky; top: 0; z-index: 3; padding: 0; border-right: 0; border-bottom: 1px solid var(--line); background: #0b0b0b; overflow: visible; }
-.page[data-touch='true'] .rail h2 { display: none; }
-.page[data-touch='true'] .tabs { flex-direction: row; overflow-x: auto; }
-.page[data-touch='true'] .tabs button { flex: 0 0 175px; min-height: 64px; padding: 10px; gap: 7px; }
-.page[data-touch='true'] .tabs button::after { display: none; }
-.page[data-touch='true'] .tabs strong { font-size: 13px; }
-.page[data-touch='true'] .tabs small { font-size: 11px; }
-.page[data-touch='true'] .help { display: flex; align-items: center; gap: 14px; margin: 0; padding: 0 12px; overflow-x: auto; white-space: nowrap; font-size: 12px; }
-.page[data-touch='true'] .help p { display: none; }
-.page[data-touch='true'] .content { overflow-x: clip; overflow-y: visible; padding: 26px 18px; }
-.page[data-touch='true'] .headline { font-size: 40px; }
-.page[data-touch='true'] .headline span { padding-left: 20px; }
-.page[data-touch='true'] .cardGrid, .page[data-touch='true'] .flow, .page[data-touch='true'] .stats { grid-template-columns: 1fr; }
-.page[data-touch='true'] .flow > div { border-right: 0; border-bottom: 1px solid var(--line); }
-.page[data-touch='true'] .flow > div:last-child { border-bottom: 0; }
-.page[data-touch='true'] .flow > div::after { display: none; }
-.page[data-touch='true'] .teacher { border-left: 0; border-top: 1px solid var(--line); overflow: visible; padding: 18px; }
-.page[data-touch='true'] .teacherToggle { display: flex; width: 100%; min-height: 44px; justify-content: space-between; align-items: center; background: transparent; color: var(--ivory); border: 0; font: 600 18px var(--font-geist, Geist), sans-serif; }
-.page[data-touch='true'] .teacherBody { min-height: 0; padding-top: 16px; }
-.page[data-touch='true'] .teacherBody[data-expanded='false'] { display: none; }
-.page[data-touch='true'] .job { grid-template-columns: minmax(0, 1fr) auto; }
-.page[data-touch='true'] .jobDetail { grid-column: 1 / -1; grid-row: 2; }
-.page[data-touch='true'] .jobPill { grid-row: 3; }
-.page[data-touch='true'] .jobAmount { grid-column: 2; grid-row: 1; }
+.page[data-touch='true'] button { min-height: 44px; }
+/* Layout follows the window width (container queries below); touch only sets tap sizes. A landscape iPad gets the three-column layout. */
 
 @container office (max-width: 899px) {
   .header { gap: 10px; padding: 0 10px; }
