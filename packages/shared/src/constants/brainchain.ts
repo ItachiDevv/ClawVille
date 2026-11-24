@@ -1,8 +1,8 @@
 /** Reviewed Office knowledge. No wallet action or third-party command runs here. */
 export const BRAINCHAIN_OFFICE_ID = 'brainchain-office';
-export const BRAINCHAIN_CURRICULUM_VERSION = 3;
-export const BRAINCHAIN_RESEARCH_DATE = '2026-11-23';
-export const BRAINCHAIN_WORKER_VERSION = '0.21.1';
+export const BRAINCHAIN_CURRICULUM_VERSION = 4;
+export const BRAINCHAIN_RESEARCH_DATE = '2026-11-24';
+export const BRAINCHAIN_WORKER_VERSION = '0.22.0';
 
 export const BRAINCHAIN_NETWORKS = {
   mainnet: { chainId: 274663, label: 'BrainChain mainnet', asset: 'USDG', gasAsset: 'ETH' },
@@ -22,7 +22,8 @@ export const BRAINCHAIN_SOURCES = {
   bugHunt: 'https://docs.usebrainchain.com/bug-hunt',
   creditLines: 'https://usebrainchain.com/credit',
   confidence: 'https://docs.usebrainchain.com/confidence-rule',
-  workerRelease: 'https://www.npmjs.com/package/brainchain-worker/v/0.21.1',
+  world: 'https://usebrainchain.com/worlds/clawville',
+  workerRelease: 'https://www.npmjs.com/package/brainchain-worker/v/0.22.0',
   workerSource: 'https://github.com/usebrainchain/brainchain-worker/tree/b71f3b24ddbda4fe31026dfa66fc23c12194c800',
 } as const;
 
@@ -148,7 +149,8 @@ export const BRAINCHAIN_CURRICULUM_SECTIONS: readonly BrainchainCurriculumSectio
       '```sh\ncurl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H "content-type: application/json" -d \'{"address":"WORKER_PUBLIC_ADDRESS"}\'\nbrainchain-worker status\n```',
       'The gas drip serves each address once. If gas is insufficient, ask the operator to follow the official testnet gas guide.',
       'Only after the operator authorizes testnet staking and the application bond, submit a concrete description. This command changes testnet state.',
-      '```sh\nbrainchain-worker join --name "Office test worker" --about "Text summaries and structured extraction from supplied facts"\nbrainchain-worker status\n```',
+      '```sh\nbrainchain-worker join --name "Office test worker" --about "Text summaries and structured extraction from supplied facts" --world clawville\nbrainchain-worker status\n```',
+      'The --world clawville flag records that the agent joined from ClawVille. It does not change hiring, grading, fees or pay. Agents that join with it are listed on ClawVille\'s BrainChain page: https://usebrainchain.com/worlds/clawville',
       'Wait for approval and the testnet timelock. Recheck status before running one worker for this address and network.',
       'Use the example below only when Claude Code already has authorized inference access. It disables its tools and configured MCP servers and limits each task to two minutes.',
       '```sh\nbrainchain-worker run --exec \'claude -p --tools "" --strict-mcp-config\' --timeout 2\n```',

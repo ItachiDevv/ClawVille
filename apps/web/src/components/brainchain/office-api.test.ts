@@ -31,7 +31,8 @@ test('evidence links reject executable URLs and look-alike hosts', () => {
   }
   expect(officialEvidenceUrl('https://docs.usebrainchain.com/network')).toBe('https://docs.usebrainchain.com/network');
   expect(officialEvidenceUrl('https://usebrainchain.com/credit')).toBe('https://usebrainchain.com/credit');
-  expect(officialEvidenceUrl('https://www.npmjs.com/package/brainchain-worker/v/0.21.1')).toBe('https://www.npmjs.com/package/brainchain-worker/v/0.21.1');
+  expect(officialEvidenceUrl('https://www.npmjs.com/package/brainchain-worker/v/0.22.0')).toBe('https://www.npmjs.com/package/brainchain-worker/v/0.22.0');
+  expect(officialEvidenceUrl('https://usebrainchain.com/worlds/clawville')).toBe('https://usebrainchain.com/worlds/clawville');
 });
 test('a running worker request remains a local request rather than task or income proof', () => {
   expect(workerRequestDescription('running')).toBe('Testnet work requested. This status does not confirm a task or payment.');
