@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-24 19:25Z (session clawville-ef). **PROD API + WEB = `a5eb0481f` (promotion #32, PR #345: Tier-1 retry budget 30 spaced attempts + PayAI credit monitor, PROTOCOL 144, migration `0122a` applied; + BrainChain board redesign), VERIFIED 19:20Z (DEPLOY LOG). STAGING = prod + session brainchain's `880b151e4` (beginner Office window, PROTOCOL 145; its verification is that session's).**
+Last Audited: 2026-11-24 20:20Z (session brainchain). **STAGING API + WEB = prod `a5eb0481f` + beginner BrainChain Office: `880b151e4` (four-step window, JOB BOARD / EARNINGS boards, PROTOCOL 145) + `8a2e34b1b` (staging-check fixes + Cortex beginner answers) + `69c663e0b` (landscape iPad layout). VERIFIED 20:15Z (DEPLOY LOG). No migration. PROD unchanged = `a5eb0481f`.**
+
+Prior - Last Audited: 2026-11-24 19:25Z (session clawville-ef). **PROD API + WEB = `a5eb0481f` (promotion #32, PR #345: Tier-1 retry budget 30 spaced attempts + PayAI credit monitor, PROTOCOL 144, migration `0122a` applied; + BrainChain board redesign), VERIFIED 19:20Z (DEPLOY LOG). STAGING = prod + session brainchain's `880b151e4` (beginner Office window, PROTOCOL 145; its verification is that session's).**
 
 Prior - Last Audited: 2026-11-24 18:57Z (session clawville-ef). **STAGING API + WEB = `10ef0c370` Tier-1 retry budget 30 spaced attempts + PayAI credit monitor (PROTOCOL 144, migration 0122a applied on staging) on top of `5f218b7f5`. VERIFIED 18:57Z (DEPLOY LOG). PROD unchanged = `29f1f9207`; prod-migration-pending `0122a`.**
 
@@ -802,6 +804,13 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-24 20:20Z (session brainchain) - STAGING: beginner BrainChain Office window + JOB BOARD (PROTOCOL 145, no migration)
+- **What:** founder called the Office window confusing for beginners and approved the mockup ("way cooler"). `880b151e4`: four-step path (What is this?, Connect your AI, Jobs, Earnings), thin top bar, BrainChain site look, real worker costs from `BRAINCHAIN_WORKER_TERMS`, Cortex with tap-to-ask questions; boards titled JOB BOARD / EARNINGS with plain statuses, $ amounts, a steps view and a static glow + scanline effect (same 1024x512 texture). Office sentence changed in all three knowledge surfaces; PROTOCOL 144 -> 145.
+- **Verify:** CI runs 45468438464, 45472151063, 45475971349 all jobs success; both staging containers SOURCE_COMMIT `69c663e0b` (flip 20:15:14Z). Headless Chrome on staging, landtest1 signed in: every step at 1440x900 (2D page) and inside the 3D room (Earnings wall -> window), both board canvases exported live, 390x844 phone, 744x1133, 1133x744, 1024x1366, 1366x1024 touch: no horizontal overflow, no button under 44 px on touch. Cortex chip "Can I lose money?" answered through the live system chat.
+- **Broke / fixed:** the first build showed "0 jobs" with no linked AI, a full date in the top bar, teal scrollbars and a testnet-first connect form; Cortex answered with webhook jargon. Fixed in `8a2e34b1b` (15 plain beginner answers in the Cortex template). Touch forced the phone layout on landscape iPads; `69c663e0b` makes layout follow window width only. Cortex answers are better but still general; they do not always quote the exact bond and stake numbers.
+- **Not verified:** a worker with real jobs (no staging account has one; rows checked with sample data only); real iPad safe-area edges (devtools has no safe-area insets).
+- **Who:** beginners to AI and hosted-agent users entering the BrainChain Office. SCHEMA: synced.
 
 ### 2026-11-24 19:20Z (session clawville-ef) - PROMOTION #32 to prod: Tier-1 retry budget + PayAI credit monitor + BrainChain board redesign (PR #345, merge `a5eb0481f`, PROTOCOL 144, migration 0122a)
 - **Verify:** PR checks all pass; prod run 45465821578 all jobs success (migrate success); both prod containers SOURCE_COMMIT `a5eb0481f`, `/health` commit `a5eb0481f` (flip 19:12:44Z); prod DB constraint = `CHECK (settlement_attempt >= 1 AND settlement_attempt <= 30)`; prod log `[payai-credit-monitor] level=ok {"balanceCredits":8537,"balanceUsd":"8.54","dailyBurnCredits":41,"runwayDays":209}`.
