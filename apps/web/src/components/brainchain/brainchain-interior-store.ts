@@ -13,7 +13,7 @@ export const useBrainchainInteriorStore = create<{
   exitRequest: number;
   failed: boolean;
   open: (section: SectionId) => void;
-  talk: () => void;
+  talk: (section?: SectionId) => void;
   close: () => void;
   requestExit: () => void;
   fail: () => void;
@@ -23,8 +23,8 @@ export const useBrainchainInteriorStore = create<{
   section: null, nearbyStation: null, teacherFocus: 0, exitRequest: 0, failed: false,
   // Freeze is local to this stage slot. Never clear another modal's global freeze.
   open: (section) => set({ section, teacherFocus: 0 }),
-  talk: () => {
-    set((state) => ({ section: 'learn', teacherFocus: state.teacherFocus + 1 }));
+  talk: (section = 'learn') => {
+    set((state) => ({ section, teacherFocus: state.teacherFocus + 1 }));
   },
   close: () => set({ section: null, teacherFocus: 0 }),
   requestExit: () => set((state) => ({ exitRequest: state.exitRequest + 1 })),

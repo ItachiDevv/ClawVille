@@ -12,7 +12,7 @@ import { requestWorldStageNavigation } from '@/components/three/world-stage/stag
 import { observationTime, officialEvidenceUrl, paymentNetworkLabel, readOffice, type OfficeKnowledge, type OfficeStatus } from './office-api';
 import styles from './brainchain-office.module.css';
 import { placeAtBrainchainOfficeExit } from '@/lib/three/brainchain-office-transition';
-import { OfficeBoardRecords } from './office-board-records';
+import { OfficeBoardRecords, OfficeExampleJobs } from './office-board-records';
 import { OfficeAccount } from './office-account';
 import { useOfficeBoardData } from './office-board-data';
 
@@ -27,6 +27,15 @@ const STATE_LABELS = {
   available: 'Available', 'source-present': 'Code exists', 'not-verified': 'Not verified',
   unavailable: 'Unavailable', planned: 'Not connected',
 } as const;
+const seenViewers = new Set<string>();
+function hasSeenIntro(viewer: string) {
+  if (seenViewers.has(viewer)) return true;
+  try { return typeof window !== 'undefined' && window.localStorage.getItem(`brainchain-office:intro:${viewer}`) === '1'; } catch { return false; }
+}
+const EMPTY_WORK_GUIDE = {
+  intro: "This board shows your AI's jobs. Each row is one job: what your AI is doing and what it pays. Connect your AI to fill it.",
+  questions: ['What is this board?', 'What do the statuses mean?', 'How does my AI get its first job?'],
+};
 const GUIDE = {
   learn: { intro: 'Hi. I run this Office. Ask me anything, there are no silly questions here. Most people start with one of these:', questions: ['What is an AI worker?', 'What does it cost to start?', 'Can I lose money?', 'Can my ClawVille agent do this?'] },
   setup: { intro: 'This step needs some setup on a computer. I can walk you through it one step at a time. Want to check first if it is worth it for you?', questions: ['How long does setup take?', 'What is BRAIN and where do I get it?', 'How much can a worker earn?'] },
@@ -89,12 +98,12 @@ function Teacher({ section, hasWorker, focusRequest }: { section: SectionId; has
       if (!controller.signal.aborted) setPending(false);
     }
   }
-  const guide = GUIDE[section];
+  const guide = section === 'work' && !hasWorker ? EMPTY_WORK_GUIDE : GUIDE[section];
   return <aside id="office-teacher" tabIndex={-1} className={styles.teacher} aria-labelledby="office-guide-heading" onFocus={event => { if (event.target === event.currentTarget) setExpanded(true); }}>
     <button type="button" className={styles.teacherToggle} aria-expanded={expanded} aria-controls="office-teacher-body" onClick={() => setExpanded(!expanded)}>Ask Cortex <span aria-hidden="true">{expanded ? '−' : '+'}</span></button>
     <div id="office-teacher-body" className={styles.teacherBody} data-expanded={expanded}>
       <div className={styles.who}><span className={styles.orb} aria-hidden="true" /><div><h2 id="office-guide-heading">Cortex</h2><span>YOUR GUIDE · ONLINE</span></div></div>
-      <p className={styles.bubble}>{section === 'work' && !hasWorker ? 'Connect your AI to see its jobs here. Ask me how to start.' : guide.intro}</p>
+      <p className={styles.bubble}>{guide.intro}</p>
       <div className={styles.chips}>{guide.questions.map(chip => <button type="button" key={chip} disabled={!userId || pending} onClick={() => void askTeacher(chip)}>{chip}</button>)}</div>
       {sent && <div className={styles.userBubble}><strong>You</strong><p>{sent}</p></div>}
       {answer && <div className={styles.bubble} role="status"><strong>Cortex</strong><p>{answer}</p></div>}
@@ -126,23 +135,27 @@ export function BrainchainOffice({ initialSection = 'learn', windowed = false, o
   const { summary, counts, workers } = useOfficeBoardData();
   const workerView = userId && summary.ownerId === userId && summary.task.view.kind === 'tasks' ? summary.task.view : null;
   const hasWorker = !!userId && !auth.isLoading && summary.ownerId === userId && workers.length > 0;
-  const [section, setSection] = useState<SectionId>(initialSection);
-  const [seenIntro, setSeenIntro] = useState<string | null>(null);
-  const seenViewers = useRef(new Set<string>());
   const viewer = userId ?? 'visitor';
+  const [selection, setSelection] = useState(() => ({ viewer, initialSection, section: hasSeenIntro(viewer) ? initialSection : 'learn' as SectionId }));
+  // Reset before rendering children, so a new viewer never inherits another viewer's section.
+  if (selection.viewer !== viewer || selection.initialSection !== initialSection) {
+    setSelection({ viewer, initialSection, section: hasSeenIntro(viewer) ? initialSection : 'learn' });
+  }
+  const section = selection.section;
+  const setSection = (next: SectionId) => setSelection({ viewer, initialSection, section: next });
+  const [seenIntro, setSeenIntro] = useState<string | null>(null);
   const tabs = useRef<HTMLDivElement>(null);
   const setupSteps = useRef<HTMLDetailsElement>(null);
-  useEffect(() => { setSection(initialSection); }, [initialSection]);
   useEffect(() => {
-    let seen = seenViewers.current.has(viewer);
-    try { seen = seen || localStorage.getItem(`brainchain-office:intro:${viewer}`) === '1'; } catch { /* Storage is optional. */ }
+    if (selection.viewer !== viewer || selection.initialSection !== initialSection) return;
+    let seen = hasSeenIntro(viewer);
     if (section === 'learn') {
       seen = true;
       try { localStorage.setItem(`brainchain-office:intro:${viewer}`, '1'); } catch { /* Storage is optional. */ }
     }
-    if (seen) seenViewers.current.add(viewer);
+    if (seen) seenViewers.add(viewer);
     setSeenIntro(seen ? viewer : null);
-  }, [viewer, section]);
+  }, [viewer, section, selection.viewer, selection.initialSection, initialSection]);
   const knowledge = useQuery({ queryKey: ['brainchain-office', 'knowledge'], queryFn: ({ signal }) => readOffice<OfficeKnowledge>('knowledge', signal), staleTime: 300_000, retry: false });
   const status = useQuery({ queryKey: ['brainchain-office', 'status'], queryFn: ({ signal }) => readOffice<OfficeStatus>('status', signal), staleTime: 60_000, retry: false });
   const curriculum = knowledge.data?.sections ?? [];
@@ -222,13 +235,19 @@ export function BrainchainOffice({ initialSection = 'learn', windowed = false, o
             <div id="office-link-worker" tabIndex={-1}><OfficeAccount mode="connect" /></div>
           </>}
           {section === 'work' && <>
-            {!userId && !auth.isLoading && !auth.isError ? <div className={styles.card}><h1>Sign in to see your AI&apos;s jobs</h1><Link className={styles.primaryButton} href="/login">Sign in</Link></div>
+            {!auth.isLoading && !auth.isError && (!userId || summary.ownerId === userId && summary.task.view.kind === 'steps') ? <>
+              <Heading first="This is your" second="job board." />
+              <p className={styles.lead}>When your AI is connected, its latest BrainChain jobs show up here, with what it is doing and what it pays.</p>
+              <OfficeExampleJobs />
+              <p className={styles.small}>WORKING ON IT: your AI is doing the job. BEING CHECKED: a checker grades the result. PAID: the money is sent. NOT PAID: the money went back to the customer.</p>
+              <div className={styles.actionRow}>{!userId && <Link className={styles.outlineButton} href="/login">Sign in</Link>}<button type="button" className={styles.primaryButton} onClick={() => setSection('setup')}>Connect your AI →</button><button type="button" className={styles.outlineButton} onClick={focusTeacher}>Ask Cortex about this board</button></div>
+            </>
               : workerView ? <><Heading first="Your AI is" second="on the job." /><div className={styles.stats}>
                 <div><span>STATUS</span><b>{workerView.worker.state}</b><small>{workerView.worker.eligibility}</small></div>
                 <div><span>IN PROGRESS</span><b>{counts?.inProgressLabel ?? '…'}</b><small>{counts && counts.needsWork > 0 ? `${counts.needsWork} ${counts.needsWork === 1 ? 'needs' : 'need'} work now` : 'Jobs being worked on or checked'}</small></div>
                 <div><span>PAID JOBS</span><b>{counts?.paidLabel ?? '…'}</b><small>Details in Earnings</small></div>
               </div><p className={styles.small}>Status shows your saved request. Your operator must confirm the actual worker state. Counts cover fetched jobs for up to two workers.{counts?.limited && ' More jobs may exist.'}</p><OfficeBoardRecords kind="task" /></>
-                : summary.task.view.kind === 'steps' ? <><Heading first="No AI connected" second="yet." /><button type="button" className={styles.primaryButton} onClick={() => setSection('setup')}>Connect your AI →</button></> : <OfficeBoardRecords kind="task" />}
+                : <OfficeBoardRecords kind="task" />}
             {userId && <details className={styles.disclosure}><summary>Manage your AI</summary><OfficeAccount mode="workers" /><Capability capability={capability('hosted_worker')} /><Capability capability={capability('testnet_practice')} /></details>}
           </>}
           {section === 'earnings' && <><Heading first="What your AI" second="got paid." /><div className={styles.notice}><h3>Your account records</h3><p>Use the worker record button to read paid bounties.</p><p>An unavailable balance is not a zero balance.</p></div><OfficeBoardRecords kind="receipts" /><details className={styles.disclosure}><summary>How payment works</summary><p>Track accepted income separately from pending income. Deduct model costs, gas, protocol fees, and conversion costs.</p><Curriculum sections={curriculum.filter(item => item.id === 'payments')} /><Capability capability={capability('solana_cash_out')} /><Capability capability={capability('credit')} /></details></>}

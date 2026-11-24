@@ -4,7 +4,9 @@ import { clipBoardText, createBoardCanvasWriter, type BoardCanvasText } from './
 function canvas() {
   const text: string[] = [];
   let clears = 0;
+  const transforms: number[][] = [];
   const ctx = {
+    setTransform: (...values: number[]) => { transforms.push(values); },
     fillRect: (_x: number, _y: number, width: number) => { if (width === 1024) { clears++; text.length = 0; } },
     beginPath: () => {}, moveTo: () => {}, arcTo: () => {}, closePath: () => {},
     arc: () => {}, fill: () => {}, stroke: () => {}, drawImage: () => {},
@@ -15,7 +17,7 @@ function canvas() {
     fillText: (value: string) => { text.push(value); },
     measureText: (value: string) => ({ width: value.length * 14 }),
   } as unknown as CanvasRenderingContext2D;
-  return { ctx, text, clears: () => clears };
+  return { ctx, text, transforms, clears: () => clears };
 }
 const summary: BoardCanvasText = {
   title: 'JOB BOARD', lines: ['No tasks indexed yet'], footer: 'Income counts only after settlement.', updated: null,
@@ -47,10 +49,12 @@ describe('BrainChain retained board canvases', () => {
     writer.update('owner-a', message('private worker'));
     writer.update(null, message('Sign in to see your workers'));
     expect(c.clears()).toBe(2);
+    expect(c.transforms).toEqual([[2, 0, 0, 2, 0, 0], [2, 0, 0, 2, 0, 0]]);
     expect(c.text).toEqual([]);
     resolve(); await Promise.resolve();
     expect(c.text).toContain('Sign in to see your workers');
     expect(c.text).not.toContain('private worker');
+    expect(c.transforms.at(-1)).toEqual([2, 0, 0, 2, 0, 0]);
   });
   test('clears an already drawn account immediately', async () => {
     const c = canvas();

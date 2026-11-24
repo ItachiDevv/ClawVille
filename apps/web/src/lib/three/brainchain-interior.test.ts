@@ -1,8 +1,41 @@
 import { describe, expect, test } from 'bun:test';
-import { BRAINCHAIN_EXIT, BRAINCHAIN_PLAYER_SPAWN, BRAINCHAIN_ROOM, BRAINCHAIN_STATIONS, BRAINCHAIN_SOLIDS, brainchainHitsSolid, brainchainStationAt, clampBrainchainMovement, placeBrainchainCamera, stepBrainchainExit } from './brainchain/brainchain-room';
+import { BRAINCHAIN_FLOOR_PATHS, brainchainWorldToDecal, BRAINCHAIN_EXIT, BRAINCHAIN_PLAYER_SPAWN, BRAINCHAIN_ROOM, BRAINCHAIN_STATIONS, BRAINCHAIN_SOLIDS, brainchainHitsSolid, brainchainStationAt, clampBrainchainMovement, placeBrainchainCamera, stepBrainchainExit } from './brainchain/brainchain-room';
 import { CORTEX_MODEL, CORTEX_SCALE, CORTEX_MAX_HEIGHT, npcRenderedHeightLimit } from './brainchain-cortex-size';
 
 describe('BrainChain room contracts', () => {
+  test('decal maps world limits and canvas rows without a mirrored Z axis', () => {
+    expect(brainchainWorldToDecal(-2200, -2200)).toEqual({ u: 0, v: 0 });
+    expect(brainchainWorldToDecal(2200, 2200)).toEqual({ u: 1, v: 1 });
+    expect(brainchainWorldToDecal(0, 0)).toEqual({ u: 0.5, v: 0.5 });
+    expect(brainchainWorldToDecal(0, 1600).v).toBeCloseTo(3800 / 4400);
+  });
+  test('guide appends without changing existing indexes and leaves space by the board', () => {
+    expect(BRAINCHAIN_STATIONS.map(s => s.id)).toEqual(['desk', 'pod-1', 'pod-2', 'pod-3', 'pod-4', 'board', 'receipts', 'board-guide']);
+    expect(BRAINCHAIN_SOLIDS).toHaveLength(9);
+    expect(BRAINCHAIN_STATIONS[7]).toMatchObject({ x: 1700, z: 470, tab: 'work' });
+    expect(brainchainHitsSolid(1700, 470)).toBe(true);
+    expect(brainchainHitsSolid(1700, 120)).toBe(false);
+    expect(brainchainStationAt(1700, 120)).toBe(5);
+    expect(brainchainStationAt(1700, 220)).toBe(7);
+    expect(Math.hypot(1820 + 46, 590 + 46)).toBeLessThan(BRAINCHAIN_ROOM.radius);
+  });
+  test('floor curves clear the sculpture and end at the intended station approaches', () => {
+    BRAINCHAIN_FLOOR_PATHS.forEach((path, index) => {
+      let start = BRAINCHAIN_PLAYER_SPAWN;
+      for (const [cx, cz, x, z] of path.segments) {
+        for (let step = 0; step <= 100; step++) {
+          const t = step / 100, a = 1 - t;
+          const px = a * a * start.x + 2 * a * t * cx + t * t * x;
+          const pz = a * a * start.z + 2 * a * t * cz + t * t * z;
+          expect(Math.abs(px) >= 706 || Math.abs(pz) >= 486).toBe(true);
+          expect(brainchainHitsSolid(px, pz)).toBe(false);
+        }
+        start = { x, z };
+      }
+      expect(brainchainHitsSolid(start.x, start.z)).toBe(false);
+      expect(brainchainStationAt(start.x, start.z)).toBe([0, 1, 5, 6][index]!);
+    });
+  });
   test('spawn clears all solids and the exit trigger', () => {
     const p = BRAINCHAIN_PLAYER_SPAWN;
     expect(brainchainHitsSolid(p.x, p.z)).toBe(false);
@@ -20,7 +53,7 @@ describe('BrainChain room contracts', () => {
     expect(out.z).toBeGreaterThanOrEqual(BRAINCHAIN_SOLIDS[0]!.halfZ + BRAINCHAIN_ROOM.playerRadius);
   });
   test('every station has the correct tab and a reachable approach', () => {
-    expect(BRAINCHAIN_STATIONS.map(s => s.tab)).toEqual(['learn', 'setup', 'setup', 'setup', 'setup', 'work', 'earnings']);
+    expect(BRAINCHAIN_STATIONS.map(s => s.tab)).toEqual(['learn', 'setup', 'setup', 'setup', 'setup', 'work', 'earnings', 'work']);
     // Flood fill the actual circular envelope and solid rejection, not an independent collider copy.
     const queue: Array<{ x: number; z: number }> = [{ ...BRAINCHAIN_PLAYER_SPAWN }];
     const visited = new Set(['0,1600']); const reached = new Set<number>();
@@ -35,7 +68,7 @@ describe('BrainChain room contracts', () => {
         if (Math.abs(out.x - x) < 0.001 && Math.abs(out.z - z) < 0.001) queue.push({ x, z });
       }
     }
-    expect([...reached].sort()).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect([...reached].sort()).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
   test('exit fires once for local movement and never on spawn, teleport, or unblock', () => {
     const edge = { initialized: false, inside: false, allowed: false };

@@ -1,6 +1,10 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-11-24 (BrainChain Office beginner boards).**
+**Last Audited: 2026-11-24 (BrainChain Office room follow-up).**
+Drift note: the room gains a dark floor, numbered path decal, second Cortex, sharper boards and higher camera target. Static review only; CI and staging screenshots remain pending.
+PARITY: human path: Office room and window; agent path: existing brainchain actions and updated protocol knowledge; private reads bind to the owner avatar.
+
+Prior - **Last Audited: 2026-11-24 (BrainChain Office beginner boards).**
 Drift note: JOB BOARD and EARNINGS use plain status words and numbered setup steps. Static glow and scanlines remain inside the existing textures. Static review only; visual verification remains pending.
 PARITY: human path: Office window and boards; agent path: existing brainchain actions and updated protocol knowledge; private reads bind to the owner avatar.
 
@@ -42,12 +46,16 @@ The exit and Back to town use the existing outside placement and scene transitio
 | Worker pod 4 | -510, -1740 | Connect your AI |
 | Job board | 1780, -180 | Jobs; JOB BOARD shows one worker card and up to three provisional task rows, with status words and exact bounties |
 | Earnings wall | 540, -1780 | Earnings; EARNINGS shows the prompt for paid records |
+| Board guide Cortex | 1700, 470 | Jobs with Cortex chat focused |
 
-The nearest station within 460 wu supplies the DOM prompt. Recovery sits under Need help in the Office window.
+Station indexes 0 through 6 stay unchanged; the board guide is index 7.
+The nearest station within 460 wu supplies the DOM prompt. The board guide uses E or tap for Talk to Cortex. The desk retains its separate Talk to Cortex button. Recovery sits under Need help in the Office window.
+The first visit opens What is this? before the selected station step; later visits use the selected station.
 The centre sculpture has a 660 x 440 wu collider half-size. The desk half-size is 410 x 195 wu.
-Each pod has a 280 x 280 wu collider half-size. The board and receipts wall have shallow wall colliders.
+Each pod has a 280 x 280 wu collider half-size. The board and receipts wall have shallow wall colliders. The board guide adds a 120 x 120 wu collider half-size at (1700, 470).
+The guide and board station centres are about 655 wu apart; their 460 wu trigger circles use nearest-wins selection. The player can stand between the solids.
 Collision checks include the player radius and split movement into steps of at most 32 wu.
-The initial camera sits at (0, 300, 2120), inside the room. The camera arm shortens before walls and station solids. The room uses a void background and distance fog.
+The initial camera sits at (0, 300, 2120), inside the room. Its look-at height is 250 wu, previously 180 wu. The camera arm shortens before walls and station solids. The room uses a void background and distance fog.
 
 Hero props share fixed anchors and replacement envelopes. Since 2026-11-12 each path points to a Meshy model: `apps/web/public/models/brainchain/brainchain-sculpture-v1-ktx.glb` (0.70 MB), `brainchain-pod-v1-ktx.glb` (0.79 MB, one model drawn at 4 anchors) and `brainchain-desk-v1-ktx.glb` (0.83 MB). `scripts/brainchain/build-office-v3.mjs` built them (budgets 8,000 / 6,000 / 5,000 triangles; base colour plus the pink glow mask as emissive; UASTC KTX2). Meshy models face +Z, so the desk turns 180 degrees to face the room. A null path falls back to the procedural placeholder. Meshy spend for the props: 120 credits (the first desk had a monitor on a long arm behind the counter and was replaced).
 The sculpture envelope is 1300 x 1000 x 860 wu (enlarged on 2026-11-12 after the first staging look: the room read empty). The desk envelope is 820 x 160 x 390 wu.
@@ -56,18 +64,30 @@ The replacement path constant preserves these footprints and anchors. The sculpt
 The receipts plane sits at z=-1900, inside the wall.
 The JOB BOARD shows owner workers and provisional indexed tasks. The EARNINGS wall directs owners to Earnings for paid bounties.
 The DOM layer shares the Office query cache and sends plain text through the interior store. No query runs inside the Canvas.
-The two 1024 x 512 canvases and textures persist.
+The two 2048 x 1024 canvases and textures persist. Each draw and privacy erase starts with setTransform(2, 0, 0, 2, 0, 0), preserving 1024 x 512 layout units.
+Both textures use SRGB, mipmaps, LinearMipmapLinearFilter, Linear magnification and anisotropy 8, clamped by the device.
 Each redraw bakes a soft rose radial glow, 1 px scanlines every 4 px at 2.5% white, and a glowing rose outline into the texture. These static effects add no timers or per-frame work. A changed summary key triggers a redraw and texture upload.
-Account changes clear prior text. Font loading has a timeout before the first data draw. Text has line limits and ellipsis clipping.
-No mesh, draw call, prop size or per-frame allocation is added. Chain earnings remain an explicit Office button read.
+One writer owns each board canvas and redraws only when its JSON key changes. Account changes erase prior text before fonts become ready. Each draw marks its texture for upload. Font loading has a timeout before the first data draw. Text has line limits and ellipsis clipping.
+The board resolution change adds no draw calls or per-frame canvas work. Chain earnings remain an explicit Office button read.
 Canvas textures initialize lazily and tolerate a missing 2D context. Module import does not access the DOM.
 
-The static scene estimate is 23 draw calls, excluding the player avatar. The target remains at most 25 room draw calls.
-The shell uses seven calls; the sculpture and desk use two each. The four pods use eight calls.
-The boards use two calls. The vortex and Cortex use one each. Three lights illuminate the room without shadows.
+The floor uses a #141414 base, roughness 0.6 and the existing repeated orbit pattern in rgba(248,247,244,0.07). Walls, sea band and trims retain their materials.
+One transparent floor decal sits at y=1.5 on a flat radius-2190 circle. Its MeshBasicMaterial disables depth writes and tone mapping and uses polygon offset.
+Its non-repeating 2048 x 2048 texture contains two soft rose rings around the sculpture and four dashed quadratic paths from spawn. The paths avoid the sculpture solid.
+Rose numbered circles mark the desk, pod 1, job board and earnings wall. Ivory labels read 01 WHAT IS THIS?, 02 CONNECT YOUR AI, 03 JOBS and 04 EARNINGS.
+The texture covers x,z from -2200 to 2200. Canvas coordinates use u=(x+2200)/4400 and v=(z+2200)/4400. Circle UVs and CanvasTexture vertical flip preserve station alignment.
+The decal draws once when resources initialize and once after the shared font wait. Fragment Mono supplies numbers; Geist supplies labels, with fallback fonts. Labels span about 60 to 80 world units in height.
+
+The static scene estimate is 25 draw calls, excluding the player avatar, up from 23. The target remains at most 25 room draw calls.
+The shell uses eight calls including the decal; the sculpture and desk use two each. The four pods use eight calls.
+The boards use two calls. The vortex uses one call; the two interior Cortex copies use two calls. Three lights illuminate the room without shadows.
+The follow-up adds one decal draw and one skinned Cortex mesh draw. Static inspection of the Cortex GLB finds one mesh, one primitive, one skinned node and one material. The second Cortex shares the loaded GLB geometry and materials and adds one idle AnimationMixer update per active frame. This is one extra actor animation evaluation; CPU time and FPS remain unmeasured.
+The two board textures use approximately 16 MiB RGBA before mipmaps, or 21.3 MiB with mipmaps, with no per-frame canvas cost. Their previous 1024 x 512 textures used about 5.3 MiB with mipmaps.
+The decal adds 16 MiB RGBA before mipmaps, or 21.3 MiB with mipmaps. Total added texture memory is approximately 37.3 MiB, excluding driver overhead and skeleton storage. The decal uses mipmaps and anisotropy 8.
 These counts come from source inspection. Runtime draw calls, avatar costs and visual appearance require staging measurement.
 The four adjacent worker pods form one cluster, as in the concept. Broad main aisles separate it from the sculpture and other stations.
-Cortex reuses her KTX2 robot and Idle clip. Both copies use the same scale and the Cortex-only 260 wu height limit.
+Cortex reuses her KTX2 robot and Idle clip. The desk copy stays at its existing anchor; the second interior copy stands at (1700, 470), facing the room centre.
+Both interior copies share scale logic and the Cortex-only 260 wu height limit. Each owns its skeleton clone and mixer. Only the first Cortex participates in scene readiness.
 
 The Office window preserves all existing tabs, data paths and test IDs. It freezes movement until the window closes.
 The 2D or unavailable-stage path keeps the full-screen panel. Agents retain their current Office actions and world presence behavior.

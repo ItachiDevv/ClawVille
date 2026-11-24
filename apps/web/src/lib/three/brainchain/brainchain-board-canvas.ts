@@ -178,6 +178,7 @@ export function createBoardCanvasWriter(
   let latest: BoardCanvasText | undefined;
   function draw(): void {
     if (!ctx || !latest) return;
+    ctx.setTransform(2, 0, 0, 2, 0, 0);
     frame(ctx, latest); content(ctx, latest);
     invalidate();
   }
@@ -188,7 +189,7 @@ export function createBoardCanvasWriter(
       if (nextKey === key) return false;
       key = nextKey; latest = text;
       // Privacy takes priority over the font wait. Erase the old owner's pixels now.
-      if (owner !== ownerId && !ready && ctx) { background(ctx); invalidate(); }
+      if (owner !== ownerId && !ready && ctx) { ctx.setTransform(2, 0, 0, 2, 0, 0); background(ctx); invalidate(); }
       owner = ownerId;
       if (ready) draw();
       return true;

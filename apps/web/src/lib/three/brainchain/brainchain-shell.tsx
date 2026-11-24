@@ -7,7 +7,7 @@ import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { useGLTFWithKTX2 } from '../use-gltf-ktx2';
 import { makeObject3DWebGPUSafe } from '../webgpu-geometry';
-import { BRAINCHAIN_PROP_BOUNDS, BRAINCHAIN_STATIONS } from './brainchain-room';
+import { BRAINCHAIN_FLOOR_PATHS, BRAINCHAIN_PLAYER_SPAWN, BRAINCHAIN_PROP_BOUNDS, BRAINCHAIN_STATIONS, brainchainWorldToDecal } from './brainchain-room';
 
 /** Replace each null with a KTX2 GLB URL. Bottom centre and +Z front stay fixed. */
 export const BRAINCHAIN_SCULPTURE_MODEL: string | null = '/models/brainchain/brainchain-sculpture-v1-ktx.glb';
@@ -40,19 +40,71 @@ function box(x: number, y: number, z: number, sx: number, sy: number, sz: number
 function torus(radius: number, tube: number, x: number, y: number, z: number, tilt = Math.PI / 2): THREE.BufferGeometry {
   return new THREE.TorusGeometry(radius, tube, 8, 96).rotateX(tilt).translate(x, y, z);
 }
+/** One non-repeating decal shares the floor datum; canvas +Y is world +Z. */
+function floorDecal(): Part | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 2048;
+  const ctx = canvas.getContext('2d'); if (!ctx) return null;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace; texture.generateMipmaps = true;
+  texture.minFilter = THREE.LinearMipmapLinearFilter; texture.magFilter = THREE.LinearFilter; texture.anisotropy = 8;
+  const point = (x: number, z: number) => {
+    const uv = brainchainWorldToDecal(x, z); return [uv.u * 2048, uv.v * 2048] as const;
+  };
+  const draw = () => {
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, 2048, 2048);
+    ctx.lineCap = 'round';
+    for (const [radius, alpha] of [[760, 0.35], [820, 0.18]]) {
+      ctx.strokeStyle = `rgba(243,134,161,${alpha})`; ctx.lineWidth = 5;
+      ctx.shadowColor = 'rgba(243,134,161,0.35)'; ctx.shadowBlur = 18;
+      ctx.beginPath(); ctx.arc(1024, 1024, radius! * 2048 / 4400, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+    for (const path of BRAINCHAIN_FLOOR_PATHS) {
+      ctx.beginPath(); ctx.moveTo(...point(BRAINCHAIN_PLAYER_SPAWN.x, BRAINCHAIN_PLAYER_SPAWN.z));
+      for (const [cx, cz, x, z] of path.segments) ctx.quadraticCurveTo(...point(cx, cz), ...point(x, z));
+      ctx.setLineDash([]); ctx.lineWidth = 22; ctx.strokeStyle = 'rgba(243,134,161,0.10)'; ctx.stroke();
+      ctx.setLineDash([22, 16]); ctx.lineWidth = 9; ctx.strokeStyle = 'rgba(243,134,161,0.55)'; ctx.stroke();
+      ctx.setLineDash([]);
+      const end = path.segments[path.segments.length - 1]!;
+      const [x, y] = point(end[2], end[3]);
+      ctx.fillStyle = '#f386a1'; ctx.shadowColor = 'rgba(243,134,161,0.35)'; ctx.shadowBlur = 14;
+      ctx.beginPath(); ctx.arc(x, y, 25, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#141414';
+      ctx.font = '26px "Fragment Mono", monospace'; ctx.fillText(path.number, x, y);
+      ctx.fillStyle = '#f8f7f4'; ctx.font = '500 32px Geist, sans-serif'; ctx.textAlign = path.align;
+      // Pod 1 sits beside the sculpture. Its longer label uses the clear north aisle.
+      const labelX = path.number === '02' ? x + 200 * 2048 / 4400 : x + (path.align === 'right' ? -38 : 38);
+      const labelY = path.number === '02' ? y - 270 * 2048 / 4400 : y;
+      ctx.fillText(path.label, labelX, labelY);
+    }
+    texture.needsUpdate = true;
+  };
+  draw(); void waitForBoardFonts().then(draw);
+  const geometry = new THREE.CircleGeometry(2190, 96).rotateX(-Math.PI / 2).translate(0, 1.5, 0);
+  const positions = geometry.getAttribute('position'), uv = geometry.getAttribute('uv');
+  for (let i = 0; i < positions.count; i++) {
+    const mapped = brainchainWorldToDecal(positions.getX(i), positions.getZ(i));
+    // Texture flipY makes the canvas row coordinate the inverse of mesh V.
+    uv.setXY(i, mapped.u, 1 - mapped.v);
+  }
+  return { geometry, material: new THREE.MeshBasicMaterial({ map: texture, transparent: true,
+    depthWrite: false, toneMapped: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }) };
+}
 /** Runtime-authored shell with exact floor datum, merged by material. No network shell or import-time canvas. */
 function resources(): Part[] {
   if (shell) return shell;
   const floorTexture = canvasTexture(ctx => {
-    ctx.fillStyle = '#f8f7f4'; ctx.fillRect(0, 0, 1024, 512);
-    ctx.strokeStyle = 'rgba(182,197,198,0.26)'; ctx.lineWidth = 2;
+    ctx.fillStyle = '#141414'; ctx.fillRect(0, 0, 1024, 512);
+    ctx.strokeStyle = 'rgba(248,247,244,0.07)'; ctx.lineWidth = 2;
     for (let row = -1; row < 10; row++) for (let col = -1; col < 17; col++) {
       ctx.beginPath(); const x = col * 64 + (row % 2) * 32, y = row * 60;
       ctx.ellipse(x, y, 44 + Math.sin(col) * 7, 36, Math.sin(row + col) * 0.4, 0, Math.PI * 2); ctx.stroke();
     }
   });
   if (floorTexture) { floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping; floorTexture.repeat.set(3, 3); }
-  const floor = new THREE.MeshStandardMaterial({ color: '#f8f7f4', map: floorTexture, roughness: 0.55 });
+  const floor = new THREE.MeshStandardMaterial({ color: floorTexture ? '#ffffff' : '#141414', map: floorTexture, roughness: 0.6 });
+  const decal = floorDecal();
   const wall = new THREE.MeshStandardMaterial({ color: '#1d1d1d', side: THREE.BackSide, roughness: 0.8 });
   const seaTexture = canvasTexture(ctx => {
     const g = ctx.createLinearGradient(0, 0, 0, 512); g.addColorStop(0, '#439db3'); g.addColorStop(0.55, '#12617d'); g.addColorStop(1, '#052c43');
@@ -71,6 +123,7 @@ function resources(): Part[] {
     ribs.push(box(Math.sin(a) * 2180, 850, Math.cos(a) * 2180, 34, 460, 34));
   }
   shell = [
+    ...(decal ? [decal] : []),
     { geometry: new THREE.CircleGeometry(2200, 96).rotateX(-Math.PI / 2), material: floor },
     { geometry: merged([new THREE.CylinderGeometry(2200, 2200, 620, 96, 1, true).translate(0, 310, 0), new THREE.CylinderGeometry(2200, 2200, 230, 96, 1, true).translate(0, 1185, 0)]), material: wall },
     { geometry: new THREE.CylinderGeometry(2202, 2202, 450, 96, 1, true).translate(0, 845, 0), material: sea },
@@ -127,8 +180,10 @@ function boardMaterials() {
   if (boards) return boards;
   if (typeof document === 'undefined') return [];
   boards = [0, 1].map(() => {
-    const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 512;
+    const canvas = document.createElement('canvas'); canvas.width = 2048; canvas.height = 1024;
     const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+    texture.generateMipmaps = true; texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter; texture.anisotropy = 8;
     boardWriters.push(createBoardCanvasWriter(canvas.getContext('2d'), () => { texture.needsUpdate = true; }, waitForBoardFonts()));
     return new THREE.MeshBasicMaterial({ map: texture, toneMapped: false });
   });

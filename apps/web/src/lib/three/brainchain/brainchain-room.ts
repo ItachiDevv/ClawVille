@@ -14,6 +14,18 @@ export const BRAINCHAIN_STATIONS = Object.freeze([
   { id: 'pod-4', label: 'Connect your AI', x: -510, z: -1740, tab: 'setup' },
   { id: 'board', label: 'Job board', x: 1780, z: -180, tab: 'work' },
   { id: 'receipts', label: 'Earnings wall', x: 540, z: -1780, tab: 'earnings' },
+  { id: 'board-guide', label: 'Cortex: about this board', x: 1700, z: 470, tab: 'work' },
+] as const);
+/** Canvas coordinates: rotated CircleGeometry + flipY maps world +Z to canvas +Y. */
+export function brainchainWorldToDecal(x: number, z: number): { u: number; v: number } {
+  return { u: (x + 2200) / 4400, v: (z + 2200) / 4400 };
+}
+/** Paths end on each station's clear approach, outside its solid. Quadratic segments use world X/Z. */
+export const BRAINCHAIN_FLOOR_PATHS = Object.freeze([
+  { number: '01', label: '01 WHAT IS THIS?', segments: [[-500, 1550, -1040, 1330]], align: 'right' },
+  { number: '02', label: '02 CONNECT YOUR AI', segments: [[-300, 850, -800, 650], [-1100, 450, -1300, -330]], align: 'left' },
+  { number: '03', label: '03 JOBS', segments: [[700, 1400, 1250, 650], [1250, -180, 1690, -180]], align: 'right' },
+  { number: '04', label: '04 EARNINGS', segments: [[800, 1200, 1050, 650], [1100, -600, 950, -1200], [800, -1450, 540, -1500]], align: 'left' },
 ] as const);
 /** Hero model replacement envelope: bottom-centred origin, front +Z, world-unit fit. */
 export const BRAINCHAIN_PROP_BOUNDS = Object.freeze({
@@ -28,6 +40,7 @@ export const BRAINCHAIN_SOLIDS = Object.freeze([
   ...BRAINCHAIN_STATIONS.slice(1, 5).map(s => ({ x: s.x, z: s.z, halfX: 280, halfZ: 280 })),
   { x: 1990, z: -180, halfX: 100, halfZ: 500 },
   { x: 540, z: -1900, halfX: 500, halfZ: 100 },
+  { x: 1700, z: 470, halfX: 120, halfZ: 120 },
 ]);
 export function brainchainHitsSolid(x: number, z: number): boolean {
   for (let i = 0; i < BRAINCHAIN_SOLIDS.length; i++) {

@@ -44,7 +44,7 @@ function Vortex() {
   return <mesh ref={ref} {...resources} dispose={null} position={[0, 290, BRAINCHAIN_EXIT.z]} scale={290 / OFFICE_VORTEX_MODEL.radius} rotation={[0, Math.PI, 0]} />;
 }
 
-function Cortex() {
+function Cortex({ position, rotationY }: { position: readonly [number, number]; rotationY: number }) {
   const { scene, animations } = useGLTFWithKTX2(CORTEX_MODEL);
   const { object, mixer, offsetY, scale } = useMemo(() => {
     const object = cloneSkeleton(scene); makeObject3DWebGPUSafe(object);
@@ -59,7 +59,7 @@ function Cortex() {
   }, [scene, animations]);
   useSceneFrame((_, delta) => mixer.update(Math.min(delta, 0.1)));
   useEffect(() => () => { mixer.stopAllAction(); mixer.uncacheRoot(object); }, [mixer, object]);
-  return <primitive object={object} scale={scale} position={[-1140, offsetY, 1250]} rotation={[0, Math.PI, 0]} dispose={null} />;
+  return <primitive object={object} scale={scale} position={[position[0], offsetY, position[1]]} rotation={[0, rotationY, 0]} dispose={null} />;
 }
 
 function GLBAvatar({ reg }: { reg: ModelRegistryEntry }) {
@@ -107,7 +107,7 @@ function StationLabel({ index, motion, frozen, onTalk }: { index: number; motion
     <WorldLabel divRef={divRef}>
       <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto', fontFamily: 'var(--font-geist), sans-serif' }}>
         <button type="button" onClick={() => activateBrainchainUse()} style={{ minHeight: 44, minWidth: 44, padding: '10px 16px', background: '#1d1d1d', color: '#f8f7f4', border: '1px solid #f386a1', borderRadius: 12 }}>
-          {station.label}<br /><span style={{ fontSize: 11 }}>Press E / tap</span>
+          {station.id === 'board-guide' ? 'Talk to Cortex' : station.label}<br /><span style={{ fontSize: 11 }}>Press E / tap</span>
         </button>
         {index === 0 && onTalk && <button type="button" onClick={() => {
           if (!frozen && brainchainStationAt(motion.current.x, motion.current.z) === 0) onTalk();
@@ -169,7 +169,10 @@ export default function BrainchainOfficeInterior({ active = true, onReady, onOpe
     if (callbacks.current.frozen || !callbacks.current.active) return false;
     const index = brainchainStationAt(motion.current.x, motion.current.z);
     if (index < 0) return false;
-    callbacks.current.onOpen(BRAINCHAIN_STATIONS[index]!.tab); return true;
+    const station = BRAINCHAIN_STATIONS[index]!;
+    if (station.id === 'board-guide') useBrainchainInteriorStore.getState().talk('work');
+    else callbacks.current.onOpen(station.tab);
+    return true;
   }, []);
   useEffect(() => { if (!active || !sceneActive) return; useAction = activate; return () => { if (useAction === activate) useAction = null; }; }, [active, sceneActive, activate]);
   useEffect(() => { if (active && sceneActive) reset(); }, [active, sceneActive, reset]);
@@ -213,7 +216,7 @@ export default function BrainchainOfficeInterior({ active = true, onReady, onOpe
     if (camera) {
       placeBrainchainCamera(m.x, m.z, yaw.current, pitch.current, cameraPosition.current);
       const c = cameraPosition.current; camera.position.set(c.x, c.y, c.z);
-      camera.lookAt(m.x + Math.sin(yaw.current) * 140, 180, m.z - Math.cos(yaw.current) * 140);
+      camera.lookAt(m.x + Math.sin(yaw.current) * 140, 250, m.z - Math.cos(yaw.current) * 140);
       camera.updateMatrixWorld();
     }
   }, -40);
@@ -225,7 +228,8 @@ export default function BrainchainOfficeInterior({ active = true, onReady, onOpe
     <Vortex />
     <WorldLabelsOverlayMount />
     {BRAINCHAIN_STATIONS.map((s, index) => <StationLabel key={s.id} index={index} motion={motion} frozen={frozen} onTalk={onTalk} />)}
-    <ActorBoundary><Suspense fallback={null}><Cortex /><ActorMounted onMounted={markCortex} /></Suspense></ActorBoundary>
+    <ActorBoundary><Suspense fallback={null}><Cortex position={[-1140, 1250]} rotationY={Math.PI} /><ActorMounted onMounted={markCortex} /></Suspense></ActorBoundary>
+    <ActorBoundary><Suspense fallback={null}><Cortex position={[1700, 470]} rotationY={Math.atan2(-1700, -470)} /></Suspense></ActorBoundary>
     <group ref={group} position={[0, 0, 1600]} rotation={[0, Math.PI, 0]}><ActorBoundary><Suspense fallback={null}><Avatar motion={motion} frozen={frozen} /><ActorMounted onMounted={markAvatar} /></Suspense></ActorBoundary></group>
   </>;
 }

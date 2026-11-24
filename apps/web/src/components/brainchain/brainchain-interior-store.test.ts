@@ -25,6 +25,14 @@ describe('Office window intent', () => {
     expect(useBrainchainInteriorStore.getState().boardSummary.task.view).toMatchObject({kind:'message', heading:'Your AI can earn money here'});
     expect(JSON.stringify(useBrainchainInteriorStore.getState().boardSummary)).not.toContain('private task');
   });
+  test('board guide opens Jobs and requests Cortex focus', () => {
+    const office = useBrainchainInteriorStore.getState();
+    office.talk('work');
+    expect(useBrainchainInteriorStore.getState().section).toBe('work');
+    expect(useBrainchainInteriorStore.getState().teacherFocus).toBe(1);
+    office.talk('work');
+    expect(useBrainchainInteriorStore.getState().teacherFocus).toBe(2);
+  });
   test('ordinary station opens do not retain a previous Cortex focus request', () => {
     const office = useBrainchainInteriorStore.getState();
     office.talk();

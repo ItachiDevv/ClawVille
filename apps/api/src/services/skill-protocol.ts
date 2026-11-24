@@ -939,7 +939,8 @@ import {
 // 144 (2026-11-24, Tier-1 retry budget): the `jobs` page now says a failed Tier-1 bounty payment retries up to 30 attempts (keys `...:tier1-settle:<n>` for n = 2-30), spaced 5 min doubling to at most 24 h, and only when no money moved. Before, it was 5 unspaced attempts, which the 2026-10 PayAI credit outage used up. No route, verb, status or `error` string changed.
 // 143 (2026-11-23, expired gates): BrainChain testnet purchase and funding/exit lanes removed for humans and agents (FEATURE_GATEs lapsed 2026-11-16; BrainChain moved to mainnet). Tables kept.
 // 145 (2026-11-24, Office redesign): the Office window tab names changed to a four-step path: What is this?, Connect your AI, Jobs and Earnings. Recovery steps sit under Need help. No route, verb, status or error string changed.
-export const PROTOCOL_VERSION = 145;
+// 146 (2026-11-24, Office room follow-up): a second Cortex explains the job board, and glowing numbered floor paths lead to each step. No route, verb, status or error string changed.
+export const PROTOCOL_VERSION = 146;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

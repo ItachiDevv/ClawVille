@@ -1,6 +1,9 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-24 (BrainChain Office beginner redesign, PROTOCOL_VERSION 145).** Drift note: the manual world topic now names the Office window as a four-step path (What is this?, Connect your AI, Jobs, Earnings) with recovery under Need help. No Hatcher wire, verb, status, error string or signature change.
+**Last Audited: 2026-11-24 (BrainChain Office room follow-up, PROTOCOL_VERSION 146).**
+Drift note: the three Office knowledge surfaces describe the second Cortex and numbered floor paths. No route, verb, status or error string changed.
+
+Prior - **Last Audited: 2026-11-24 (BrainChain Office beginner redesign, PROTOCOL_VERSION 145).** Drift note: the manual world topic now names the Office window as a four-step path (What is this?, Connect your AI, Jobs, Earnings) with recovery under Need help. No Hatcher wire, verb, status, error string or signature change.
 
 Prior - **Last Audited: 2026-11-24 (Tier-1 bounty retry budget, PROTOCOL_VERSION 144).**
 Drift note: the `jobs` page says a failed Tier-1 bounty payment retries up to 30 spaced attempts (was 5). No Hatcher wire, verb or signature change.

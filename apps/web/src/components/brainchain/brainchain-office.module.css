@@ -40,7 +40,7 @@
 .content p { font-size: 15px; line-height: 1.55; color: var(--muted); overflow-wrap: anywhere; margin: 12px 0; }
 .eyebrow { display: flex; align-items: center; gap: 12px; font: 12px var(--font-fragment-mono, 'Fragment Mono'), monospace; letter-spacing: .16em; color: var(--muted); }
 .eyebrow::before { content: ''; width: 34px; height: 1px; flex-shrink: 0; background: var(--rose); }
-.headline { font-size: clamp(40px, 4.5cqw, 68px); line-height: .98; letter-spacing: -.045em; font-weight: 700; margin: 18px 0 0; overflow-wrap: break-word; }
+.headline { font-size: clamp(40px, 4.5cqw, 68px); line-height: 1.12; letter-spacing: -.045em; font-weight: 700; margin: 18px 0 24px; overflow-wrap: break-word; }
 .headline span { display: block; color: transparent; -webkit-text-stroke: 1.4px var(--ivory); padding-left: clamp(16px, 3.7cqw, 56px); font-weight: 500; }
 .content .lead { font-size: 19px; line-height: 1.5; margin-top: 20px; max-width: 560px; }
 .lead b { color: var(--ivory); font-weight: 500; }
@@ -128,6 +128,8 @@
 .records { margin-top: 14px; }
 .recordCard { margin-top: 14px; }
 .recordCard select, .recordCard input { min-height: 44px; max-width: 100%; padding: 10px; border: 1px solid #716166; border-radius: 6px; background: #0b0b0b; color: var(--ivory); font: inherit; font-size: 16px; }
+.exampleHeader { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 24px; font: 12px var(--font-fragment-mono, 'Fragment Mono'), monospace; }
+.exampleJobs .jobs { opacity: .65; }
 .jobs { margin-top: 14px; border: 1px solid var(--line); border-radius: 14px; background: #141414d9; overflow: hidden; padding: 0; list-style: none; }
 .job { display: grid; grid-template-columns: minmax(50px, .7fr) minmax(100px, 1.5fr) minmax(100px, 1fr) minmax(60px, .7fr); align-items: center; gap: 12px; padding: 16px; border-top: 1px solid #f8f7f41a; }
 .job:first-child { border-top: 0; }
