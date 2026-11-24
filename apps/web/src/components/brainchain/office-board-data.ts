@@ -72,10 +72,9 @@ export function useOfficeBoardBridge() {
       const auth = client.getQueryData<AuthMe>(AUTH_ME_QUERY_KEY);
       const ownerId = auth?.user && !auth.user.isGuest ? auth.user.id : null;
       const store = useBrainchainInteriorStore.getState();
-      if (store.boardSummary.ownerId !== ownerId) store.setBoardSummary({ ...EMPTY_OFFICE_BOARDS, ownerId,
-        task: {...EMPTY_OFFICE_BOARDS.task, lines: [ownerId ? 'Load your workers...' : 'Sign in to see your workers']},
-        receipts: {...EMPTY_OFFICE_BOARDS.receipts, lines: [ownerId ? 'Load your receipts...' : 'Sign in to see your receipts']},
-      });
+      // Same view model as the live boards: "Loading your workers" for a new owner, sign-in text when signed out.
+      if (store.boardSummary.ownerId !== ownerId) store.setBoardSummary(formatOfficeBoards({ ownerId,
+        workers: { loading: !!ownerId, error: false }, tasks: { loading: false, error: false } }));
     });
     return () => { unsubscribe(); useBrainchainInteriorStore.getState().setBoardSummary(EMPTY_OFFICE_BOARDS); };
   }, [client]);

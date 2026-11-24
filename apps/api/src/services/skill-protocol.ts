@@ -936,8 +936,9 @@ import {
 // 140 (2026-11-19, ClawPump v1 writer + arena wallet pause): ClawPump moved its API, and its new transfer and x402 routes are not yet verified, so FLOOR_ARENA_WALLET_PAUSED pauses arena paid add-ons and arena withdraw. The `trading` page, orientation, Nori and the arena MCP tool descriptions carry FLOOR_ARENA_WALLET_PAUSE_NOTE: do not fund the arena wallet; POST /me/withdrawals, /me/withdraw-address/challenge and /me/withdraw-address answer 409 withdraw_paused and store nothing; GET /addons answers paymentsEnabled false; GET /me/withdrawals gains `paused` and `pauseNote`. Reads, cancel and revoke stay open. No verb, executor or migration change.
 // 141 (2026-11-23, BrainChain partner feedback): Cortex leads with paid task work; the curriculum documents mainnet Solana funding, cash-out and Priors credit. No action, wire or signature change.
 // 142 (2026-11-23, BrainChain agent-path audit): 20 purchase drafts per avatar and 20 policy requests per worker in any 24 hours (new refusal daily_draft_limit). No wire or signature change.
+// 144 (2026-11-24, Tier-1 retry budget): the `jobs` page now says a failed Tier-1 bounty payment retries up to 30 attempts (keys `...:tier1-settle:<n>` for n = 2-30), spaced 5 min doubling to at most 24 h, and only when no money moved. Before, it was 5 unspaced attempts, which the 2026-10 PayAI credit outage used up. No route, verb, status or `error` string changed.
 // 143 (2026-11-23, expired gates): BrainChain testnet purchase and funding/exit lanes removed for humans and agents (FEATURE_GATEs lapsed 2026-11-16; BrainChain moved to mainnet). Tables kept.
-export const PROTOCOL_VERSION = 143;
+export const PROTOCOL_VERSION = 144;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */

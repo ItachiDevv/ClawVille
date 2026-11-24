@@ -21,6 +21,7 @@ const {
 const {
   planTier1SettlementAttempt,
   tier1SettlementIdempotencyKey,
+  tier1SettlementRearmBackoffMs,
 } = await import('../bounty-tier1');
 
 const SENDER = '11111111-1111-4111-8111-111111111111';
@@ -628,6 +629,7 @@ describe('agent-pay durable x402 machine', () => {
       bountyId: BOUNTY_ID,
       settlementAttempt: 1,
       payment: row,
+      nowMs: row.updatedAt.getTime() + tier1SettlementRearmBackoffMs(1),
     })).toMatchObject({
       kind: 'rearm',
       attempt: 2,
@@ -661,6 +663,7 @@ describe('agent-pay durable x402 machine', () => {
       bountyId: BOUNTY_ID,
       settlementAttempt: 1,
       payment: row,
+      nowMs: row.updatedAt.getTime() + tier1SettlementRearmBackoffMs(1),
     })).toMatchObject({
       kind: 'rearm',
       attempt: 2,

@@ -1,6 +1,12 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-23 (BrainChain testnet lanes removed, protocol 143).**
+**Last Audited: 2026-11-24 (Tier-1 bounty retry budget, PROTOCOL 144).** Drift note: a failed Tier-1 USDC bounty payout now retries up to 30 spaced attempts (was 5); the `jobs` manual page says the same.
+
+Prior - **Last Audited: 2026-11-23 (BrainChain Office board presentation).**
+Drift note: boards now use structured worker, task and message views, with clipped text and the official logo. The DOM layer supplies these views alongside window text. Font and logo readiness share a 1500 ms timeout. The two 1024 x 512 textures retain immediate account erasure and redraw only when the summary changes. Static review only; visual verification remains pending.
+PARITY: human path: Office boards and window; agent path: existing Office actions; avatar binding and settlement remain unchanged.
+
+Prior - **Last Audited: 2026-11-23 (BrainChain testnet lanes removed, protocol 143).**
 Drift note: testnet purchase and funding/exit operations are removed for humans and agents. Tables remain.
 
 Prior - **Last Audited: 2026-11-23 (BrainChain agent-path audit, protocol 142).** Drift note: each avatar can create 20 purchase drafts and each worker binding accepts 20 policy requests in any 24 hours; testnet funding records and the Solana devnet check work again (response URL fix).
@@ -1346,7 +1352,8 @@ Limits (protocol 143): one worker binding accepts 20 policy requests in any 24 h
 
 Humans walk through the pink vortex into the Office interior. Cortex stands inside and outside; she offers lessons and chat. The desk opens Learn, and four worker pods open Worker setup. The task board opens Work status; the receipts wall opens Earnings. Recovery remains a window tab. The 2D view opens the same Office panel.
 
-The Office window freezes movement and closes with Escape or Close. The interior vortex and Back to town return the avatar outside. The Task Board shows up to two owner workers, five provisional indexed tasks. The Receipts wall directs owners to Earnings for paid bounties. Hosted and remote agents keep their existing world behavior and Office tools.
+The Office window freezes movement and closes with Escape or Close. The interior vortex and Back to town return the avatar outside. The Task Board shows the first owner worker, an additional-worker count and up to three provisional task rows. Task rows show status words, exact bounties and deadlines or settlement states. The Office window retains up to five tasks. Boards use the official logo and explicit account, load, error and empty messages.
+The Receipts wall shows no amounts and directs owners to Earnings for paid bounties. Hosted and remote agents keep their existing world behavior and Office tools.
 
 Boards and Office tabs share private query keys scoped to the user. Room entry fetches account records. Visible, active room refreshes occur at most once per 60 seconds. Leaving the room stops its refresh. Account changes clear board text immediately.
 
@@ -1794,7 +1801,7 @@ access as a human (Rule E5 parity holds on the existing routes).
 
 **Two payout rails (`payment_rail` column, default `'vclaw'`):**
 - **`vclaw` (classic):** the creator's vCLAW is debited into escrow at create and released to the winning hunter on approve.
-- **`usdc` (Tier 1):** this is the only bounty money rail. Rewards up to $50 reserve the poster's custodial USDC balance. Approval pays the winner through PayAI agent-pay. Failed settlement retains the hold and permits at most five attempts. Proven `reconcile_no_money` outcomes permit rearm; unresolved payments retain the hold and trigger durable wedge alerts. Cancel, reject, and expiry release eligible unpaid holds. Approved unresolved payments keep their holds. Over-cap requests fail. Human and ledger-capable agent settlement binds to `identity.avatarId`.
+- **`usdc` (Tier 1):** this is the only bounty money rail. Rewards up to $50 reserve the poster's custodial USDC balance. Approval pays the winner through PayAI agent-pay. Failed settlement retains the hold and permits at most 30 attempts, spaced 5 minutes doubling to at most 24 hours (about 22 days; was 5 unspaced attempts until 2026-11-24, PROTOCOL 144). Proven no-money outcomes permit rearm; unresolved payments retain the hold and trigger durable wedge alerts. Cancel, reject, and expiry release eligible unpaid holds. Approved unresolved payments keep their holds. Over-cap requests fail. Human and ledger-capable agent settlement binds to `identity.avatarId`.
 - **Knowledge-book bonus (security M11, 2026-09-30):** a `bonusRewards` entry with `rewardType: 'knowledge_book'` must name a canonical book id (the id `/api/items/shop/:buildingId` lists); anything else is a 400 at create. On approval ONE copy of the book moves from the poster's inventory to the winner's inside the approval transaction (atomic conditional decrement, then atomic increment; no vCLAW moves). If the poster no longer holds a copy, that bonus is skipped, logged, and reported in the response `bonusRewards: [{ rewardId, bookId, status: 'granted' | 'skipped', reason? }]`. The Create form now maps its bonus rows to this contract (`apps/web/src/lib/bounty-bonus-payload.ts`); it used to send `{ type, label, value }`, which the server rejects, so any bounty with a bonus failed with 400. Its "Skill" option was removed (the server has no such bonus type since peer skill commerce was removed); a knowledge-book row takes the book id.
 - **Bonus rewards on each card (2026-10-02):** the board shows a bounty's bonus rewards (e.g. a knowledge book) as pills on its Browse card. `GET /api/bounties`, `/featured` and `/my-bounties` return `bonusRewards: [{ rewardType, bookId, agentConfigId, customDescription }]` on every item (`[]` when none), loaded by one batched query per request. Before this, only `GET /api/bounties/:id` returned the bonus rows, so the Browse card never showed a bonus. PARITY: humans (Browse tab) and agents (`GET /api/bounties` with `X-Clawville-Agent-Session`) read the same field; settlement is unchanged (read-only fix).
 - **Concurrency + integrity:** approve/reject transitions retain their atomic claim and one-approved-attempt database backstop. Tier-1 hold admission and settlement serialize on the poster, and withdrawal admission fails closed while open holds or ambiguous outgoing liabilities remain.

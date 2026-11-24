@@ -1,18 +1,27 @@
 import { describe, expect, test } from 'bun:test';
-import { clipBoardText, createBoardCanvasWriter } from './brainchain-board-canvas';
+import { clipBoardText, createBoardCanvasWriter, type BoardCanvasText } from './brainchain-board-canvas';
 
 function canvas() {
   const text: string[] = [];
   let clears = 0;
   const ctx = {
-    fillRect: () => { clears++; text.length = 0; },
-    strokeRect: () => {},
+    fillRect: (_x: number, _y: number, width: number) => { if (width === 1024) { clears++; text.length = 0; } },
+    beginPath: () => {}, moveTo: () => {}, arcTo: () => {}, closePath: () => {},
+    arc: () => {}, fill: () => {}, stroke: () => {}, drawImage: () => {},
+    createLinearGradient: () => ({ addColorStop: () => {} }),
+    textAlign: 'left', letterSpacing: '0px',
     fillText: (value: string) => { text.push(value); },
     measureText: (value: string) => ({ width: value.length * 14 }),
   } as unknown as CanvasRenderingContext2D;
   return { ctx, text, clears: () => clears };
 }
-const summary = { title: 'TASK BOARD', lines: ['No tasks indexed yet'], footer: 'Updated 10:00' };
+const summary: BoardCanvasText = {
+  title: 'TASK BOARD', lines: ['No tasks indexed yet'], footer: 'Income counts only after settlement.', updated: null,
+  view: { kind: 'message', heading: 'No tasks indexed yet', body: [], tone: 'neutral' },
+};
+function message(heading: string): BoardCanvasText {
+  return { ...summary, lines: [heading], view: { kind: 'message', heading, body: [], tone: 'neutral' } };
+}
 
 describe('BrainChain retained board canvases', () => {
   test('redraws only when owner or text changes', async () => {
@@ -25,12 +34,16 @@ describe('BrainChain retained board canvases', () => {
     expect(uploads).toBe(previous);
     expect(writer.update('owner-b', summary)).toBe(true);
     expect(uploads).toBe(previous + 1);
+    expect(writer.update('owner-b', { ...summary, updated: '3:41 PM' })).toBe(true);
+    expect(c.text).toContain('LIVE  3:41 PM');
+    expect(writer.update('owner-b', message('New view'))).toBe(true);
+    expect(c.text).toContain('New view');
   });
   test('account change clears private text and the font callback draws only the latest account', async () => {
     const c = canvas(); let resolve!: () => void;
     const writer = createBoardCanvasWriter(c.ctx, () => {}, new Promise<void>(done => { resolve = done; }));
-    writer.update('owner-a', { ...summary, lines: ['private worker'] });
-    writer.update(null, { ...summary, lines: ['Sign in to see your workers'] });
+    writer.update('owner-a', message('private worker'));
+    writer.update(null, message('Sign in to see your workers'));
     expect(c.clears()).toBe(2);
     expect(c.text).toEqual([]);
     resolve(); await Promise.resolve();
@@ -40,21 +53,57 @@ describe('BrainChain retained board canvases', () => {
   test('clears an already drawn account immediately', async () => {
     const c = canvas();
     const writer = createBoardCanvasWriter(c.ctx, () => {}, Promise.resolve());
-    writer.update('owner-a', { ...summary, lines: ['private worker'] });
+    writer.update('owner-a', message('private worker'));
     await Promise.resolve();
-    writer.update(null, { ...summary, lines: ['Sign in to see your workers'] });
+    writer.update(null, message('Sign in to see your workers'));
     expect(c.text).not.toContain('private worker');
     expect(c.text).toContain('Sign in to see your workers');
   });
-  test('bounds line count and clips long text with an ellipsis', async () => {
+  test('bounds message lines and clips long text with an ellipsis', async () => {
     const c = canvas();
     const writer = createBoardCanvasWriter(c.ctx, () => {}, Promise.resolve());
-    writer.update('owner', { ...summary, lines: Array.from({ length: 20 }, (_, i) => `${i}: ${'x'.repeat(100)}`) });
+    writer.update('owner', { ...summary, view: { kind: 'message', heading: 'Heading', tone: 'error',
+      body: Array.from({ length: 20 }, (_, i) => `${i}: ${'x'.repeat(100)}`) } });
     await Promise.resolve();
-    expect(c.text).toHaveLength(14);
-    expect(c.text[1]!.endsWith('…')).toBe(true);
-    expect(c.ctx.measureText(c.text[1]!).width).toBeLessThanOrEqual(914);
+    expect(c.text).toHaveLength(6);
+    expect(c.text[2]!.endsWith('\u2026')).toBe(true);
+    expect(c.ctx.measureText(c.text[2]!).width).toBeLessThanOrEqual(936);
     expect(clipBoardText(c.ctx, 'short')).toBe('short');
+    expect(clipBoardText(c.ctx, 'long', 1)).toBe('');
+    expect(c.ctx.textAlign).toBe('left');
+    expect(c.ctx.letterSpacing).toBe('0px');
+  });
+  test('draws only three task rows with a bounded worker card and no text dump', async () => {
+    const c = canvas();
+    const writer = createBoardCanvasWriter(c.ctx, () => {}, Promise.resolve());
+    writer.update('owner', { ...summary, lines: ['never draw the window text'], view: {
+      kind: 'tasks', worker: { network: 'TESTNET', address: '0x1234\u2026abcd', state: 'Paused',
+        eligibility: 'Eligibility not checked yet', more: 1 },
+      rows: Array.from({ length: 5 }, (_, i) => ({ id: `#${i}`, status: 'HIRED', highlight: true,
+        amount: '4.50', unit: 'tUSDG' as const, detail: 'Due 11/24 3:00 PM' })),
+    } });
+    await Promise.resolve();
+    expect(c.text).toContain('#2'); expect(c.text).not.toContain('#3');
+    expect(c.text).toContain('+1 more worker');
+    expect(c.text).not.toContain('never draw the window text');
+    expect(c.text.some(value => value.startsWith('LIVE'))).toBe(false);
+    expect(c.ctx.letterSpacing).toBe('0px');
+  });
+  test('wraps task empty text to at most three lines without letterSpacing support', async () => {
+    const c = canvas();
+    Reflect.deleteProperty(c.ctx, 'letterSpacing');
+    const writer = createBoardCanvasWriter(c.ctx, () => {}, Promise.resolve());
+    writer.update('owner', { ...summary, view: { kind: 'tasks',
+      worker: { network: 'MAINNET', address: '0x1234\u2026abcd', state: 'Running', eligibility: 'Not eligible yet', more: 0 },
+      rows: [], emptyHeading: 'No tasks yet', emptyBody: 'word '.repeat(100),
+    } });
+    await Promise.resolve();
+    expect(c.text).toContain('No tasks yet');
+    const lines = c.text.filter(value => value.startsWith('word'));
+    expect(lines).toHaveLength(3);
+    expect(lines[2]!.endsWith('\u2026')).toBe(true);
+    expect(lines.every(value => c.ctx.measureText(value).width <= 522)).toBe(true);
+    expect('letterSpacing' in c.ctx).toBe(false);
   });
   test('tolerates a null 2D context', async () => {
     let uploads = 0;

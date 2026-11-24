@@ -46,7 +46,7 @@ export const bountyUsdcHolds = pgTable(
     ),
     settlementAttemptBounded: check(
       'bounty_usdc_holds_settlement_attempt_bounded',
-      sql`${t.settlementAttempt} BETWEEN 1 AND 5`,
+      sql`${t.settlementAttempt} BETWEEN 1 AND 30`,
     ),
     statusValid: check(
       'bounty_usdc_holds_status_valid',

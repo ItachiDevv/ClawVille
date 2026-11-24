@@ -944,6 +944,16 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Agent-pay resume worker failed to start:', err);
   }
 
+  // PayAI credit monitor (2026-11-24): hourly read of the PayAI merchant credit
+  // balance; pages BEFORE credits run out (the 2026-10 outage was only noticed
+  // after settlements failed). Read-only. See services/payai-credit-monitor.ts.
+  try {
+    const { startPayAiCreditMonitor } = await import('./services/payai-credit-monitor');
+    startPayAiCreditMonitor();
+  } catch (err) {
+    console.error('[API] PayAI credit monitor failed to start:', err);
+  }
+
   // Default-off bulk x402 recovery. One shallow destination-history sweep
   // reconciles the oldest bounded row set; verified captures and complete-window
   // no-money outcomes are the only automatic mutations.
@@ -1947,6 +1957,12 @@ async function gracefulShutdown(signal: string) {
       stopAgentPayResumeWorker();
     } catch {
       // If the resume worker module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopPayAiCreditMonitor } = await import('./services/payai-credit-monitor');
+      stopPayAiCreditMonitor();
+    } catch {
+      // If the monitor module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopX402AutoReconcile } = await import(

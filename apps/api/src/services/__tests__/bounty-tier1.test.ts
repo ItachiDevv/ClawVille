@@ -12,6 +12,7 @@ import {
   planTier1SettlementAttempt,
   prepareTier1SettlementAttempt,
   readTier1FrozenSettlements,
+  tier1SettlementRearmBackoffMs,
   resolveTier1WedgeRealertMs,
   type Tier1ResumeCandidate,
   type Tier1SettlementPaymentState,
@@ -372,6 +373,7 @@ describe('Tier-1 bounded definitive settlement retry', () => {
     reconcileTxSignature: null,
     settlePayer: null,
     failureReason: 'recipient_ata_missing',
+    updatedAt: new Date(0),
   };
 
   it('rearms only a proven no-broadcast failure with the next attempt-scoped key', () => {
@@ -395,16 +397,67 @@ describe('Tier-1 bounded definitive settlement retry', () => {
     })).toEqual({ kind: 'frozen', reason: 'ambiguous', paymentId: failedPayment.id });
   });
 
-  it('stops after five total attempts and requires manual action', () => {
-    expect(TIER1_SETTLEMENT_MAX_ATTEMPTS).toBe(5);
+  it('stops after thirty total attempts and requires manual action', () => {
+    expect(TIER1_SETTLEMENT_MAX_ATTEMPTS).toBe(30);
+    expect(tier1SettlementIdempotencyKey(BOUNTY_ID, 30).length).toBeLessThanOrEqual(64);
+    expect(() => tier1SettlementIdempotencyKey(BOUNTY_ID, 31)).toThrow();
     expect(planTier1SettlementAttempt({
       bountyId: BOUNTY_ID,
-      settlementAttempt: 5,
+      settlementAttempt: 30,
       payment: {
         ...failedPayment,
-        idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID, 5),
+        idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID, 30),
       },
-    })).toEqual({ kind: 'exhausted', attempt: 5, paymentId: failedPayment.id });
+    })).toEqual({ kind: 'exhausted', attempt: 30, paymentId: failedPayment.id });
+  });
+
+  it('spaces rearms: 5 min doubling per failed attempt, capped at 24 h', () => {
+    const minute = 60 * 1_000;
+    expect(tier1SettlementRearmBackoffMs(1)).toBe(5 * minute);
+    expect(tier1SettlementRearmBackoffMs(2)).toBe(10 * minute);
+    expect(tier1SettlementRearmBackoffMs(9)).toBe(1_280 * minute);
+    expect(tier1SettlementRearmBackoffMs(10)).toBe(24 * 60 * minute);
+    expect(tier1SettlementRearmBackoffMs(29)).toBe(24 * 60 * minute);
+    let total = 0;
+    for (let attempt = 1; attempt < TIER1_SETTLEMENT_MAX_ATTEMPTS; attempt += 1) {
+      total += tier1SettlementRearmBackoffMs(attempt);
+    }
+    // The whole budget outlasts the 15-day PayAI credit outage of 2026-10.
+    expect(total).toBeGreaterThan(20 * 24 * 60 * minute);
+  });
+
+  it('waits out the backoff before rearming a fresh no-broadcast failure', () => {
+    const failedAt = new Date('2026-11-24T00:00:00.000Z');
+    const fresh = {
+      ...failedPayment,
+      idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID, 3),
+      updatedAt: failedAt,
+    };
+    const retryAtMs = failedAt.getTime() + tier1SettlementRearmBackoffMs(3);
+    expect(planTier1SettlementAttempt({
+      bountyId: BOUNTY_ID, settlementAttempt: 3, payment: fresh, nowMs: retryAtMs - 1,
+    })).toEqual({ kind: 'backoff', attempt: 3, paymentId: failedPayment.id, retryAtMs });
+    expect(planTier1SettlementAttempt({
+      bountyId: BOUNTY_ID, settlementAttempt: 3, payment: fresh, nowMs: retryAtMs,
+    })).toMatchObject({ kind: 'rearm', attempt: 4 });
+  });
+
+  it('resume neither settles nor pages while an attempt waits out its backoff', async () => {
+    let settleCalls = 0;
+    let alertCalls = 0;
+    const settled = await resumeTier1BountySettlements(1, {
+      listCandidates: async () => [{
+        bountyId: BOUNTY_ID, posterAvatarId: POSTER, hunterAvatarId: HUNTER, rewardUsdCents: 2_000,
+        settlementAttempt: 3, lastWedgeAlertAt: null, wedgeAlertCount: 0,
+      }],
+      prepareAttempt: async () => ({ kind: 'backoff', attempt: 3, paymentId: failedPayment.id, retryAtMs: 1 }),
+      settle: async () => { settleCalls += 1; throw new Error('backoff must not settle'); },
+      alert: async () => { alertCalls += 1; },
+      stampAlert: async () => {},
+    });
+    expect(settled).toBe(0);
+    expect(settleCalls).toBe(0);
+    expect(alertCalls).toBe(0);
   });
 
   it('resume drives the prepared retry generation and books a successful retry', async () => {
@@ -485,7 +538,7 @@ describe('Tier-1 bounded definitive settlement retry', () => {
     });
     expect(settleCalls).toBe(0);
     expect(alerts[0]?.message).toContain('frozen (ambiguous)');
-    expect(alerts[1]?.message).toContain('exhausted 5 definitive settlement attempts');
+    expect(alerts[1]?.message).toContain('exhausted 30 definitive settlement attempts');
   });
 });
 
@@ -583,6 +636,7 @@ describe('Tier-1 chain-proven no-money retry and read-only classification', () =
     id: '44444444-4444-4444-8444-444444444444', status: 'failed',
     idempotencyKey: tier1SettlementIdempotencyKey(BOUNTY_ID), capExempt: false,
     txSignature: null, reconcileTxSignature: null, settlePayer: null, failureReason: 'reconcile_no_money',
+    updatedAt: new Date(0),
   };
   function stateFor(value: Tier1SettlementPaymentState) {
     return {
@@ -592,6 +646,7 @@ describe('Tier-1 chain-proven no-money retry and read-only classification', () =
       paymentCapExempt: value.capExempt, paymentTxSignature: value.txSignature,
       paymentReconcileTxSignature: value.reconcileTxSignature, paymentSettlePayer: value.settlePayer,
       paymentFailureReason: value.failureReason,
+      paymentUpdatedAt: value.updatedAt,
     };
   }
   function prepareHarness(value: Tier1SettlementPaymentState, archiveRows = 1, advanceRows = 1) {
@@ -673,11 +728,17 @@ describe('Tier-1 chain-proven no-money retry and read-only classification', () =
       ...input, settlementAttempt: 1, lastWedgeAlertAt: new Date(0), wedgeAlertCount: 2,
     };
     const rows = await readTier1FrozenSettlements({
-      listCandidates: async () => [candidate, { ...candidate, bountyId: 'safe' }, { ...candidate, bountyId: 'exhausted', settlementAttempt: 5 }],
+      listCandidates: async () => [
+        candidate,
+        { ...candidate, bountyId: 'safe' },
+        { ...candidate, bountyId: 'waiting' },
+        { ...candidate, bountyId: 'exhausted', settlementAttempt: 30 },
+      ],
       readStates: async (row) => [{ ...stateFor({ ...payment,
         status: row.bountyId === BOUNTY_ID ? 'reconcile' : 'failed',
-        idempotencyKey: tier1SettlementIdempotencyKey(row.bountyId, row.bountyId === 'exhausted' ? 5 : 1),
-      }), settlementAttempt: row.bountyId === 'exhausted' ? 5 : 1 }],
+        idempotencyKey: tier1SettlementIdempotencyKey(row.bountyId, row.bountyId === 'exhausted' ? 30 : 1),
+        updatedAt: row.bountyId === 'waiting' ? new Date(Date.now() + 60 * 60 * 1_000) : new Date(0),
+      }), settlementAttempt: row.bountyId === 'exhausted' ? 30 : 1 }],
     });
     expect(rows).toHaveLength(2);
     expect(rows[0]).toEqual({ bountyId: BOUNTY_ID, plan: { kind: 'frozen', reason: 'ambiguous' },
