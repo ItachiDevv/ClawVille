@@ -14,7 +14,9 @@
 
 ## CURRENT STAGING / PROD STATE
 
-Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = BrainChain expired testnet lanes removed (PROTOCOL 143, no migration) on top of prod `827034950`. VERIFIED 23:55Z: CI run 45289573246 all jobs success; API + web `da16e0677`; catalog protocolVersion 143; knowledge version 3; `/api/brainchain/purchases` and `/funding-exit` 404, `/workers` 401; onboarding smoke 14 PASS; hosted probe ALL PASS (149) after the staging OpenAI key fix below; headless `/brainchain` renders the room with no Hire help or funding text, 0 console errors. Staging `OPENAI_API_KEY` had no credits (embeddings 429 insufficient_quota, probe step 5 failed 503); set to the founder's org key (same as prod) via the Coolify model setter, API redeployed 23:53Z.**
+Last Audited: 2026-11-24 00:16Z (session brainchain). **PROD API + WEB = `29f1f9207` (promotion #31, PR #343: BrainChain expired testnet lanes removed, PROTOCOL 143, no migration), VERIFIED 00:16Z (DEPLOY LOG). STAGING = same tree. Both boxes use the founder's org `OPENAI_API_KEY`.**
+
+Prior - Last Audited: 2026-11-23 (session brainchain). **STAGING API + WEB = BrainChain expired testnet lanes removed (PROTOCOL 143, no migration) on top of prod `827034950`. VERIFIED 23:55Z: CI run 45289573246 all jobs success; API + web `da16e0677`; catalog protocolVersion 143; knowledge version 3; `/api/brainchain/purchases` and `/funding-exit` 404, `/workers` 401; onboarding smoke 14 PASS; hosted probe ALL PASS (149) after the staging OpenAI key fix below; headless `/brainchain` renders the room with no Hire help or funding text, 0 console errors. Staging `OPENAI_API_KEY` had no credits (embeddings 429 insufficient_quota, probe step 5 failed 503); set to the founder's org key (same as prod) via the Coolify model setter, API redeployed 23:53Z.**
 
 Prior - Last Audited: 2026-11-23 23:10Z (session brainchain). **PROD API + WEB = `827034950` (promotion #30, PR #342, all of staging, PROTOCOL 142, migrations `0101`-`0121c` applied), VERIFIED 23:06Z (see DEPLOY LOG 23:10Z); prod `OPENAI_API_KEY` rotated to the founder's org key. STAGING = same tree (fast-forward to the master merge).**
 
@@ -796,6 +798,11 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 ---
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
+
+### 2026-11-24 00:16Z (session brainchain) - PROMOTION #31 to prod: BrainChain expired testnet lanes removed (PR #343, merge `29f1f9207`, PROTOCOL 143, no migration)
+- **Verify:** prod run 45293996859 all jobs success; both prod containers `29f1f9207` at 00:15:15Z; `/health` commit `29f1f9207`; catalog protocolVersion 143; BrainChain knowledge version 3; `/api/brainchain/purchases` and `/funding-exit` 404, `/workers` 401; arena paymentsEnabled false; prod API `OPENAI_API_KEY` is still the founder org key after the redeploy and a live `/api/i18n/translate` call answered. Headless `/brainchain` on prod: room renders, 0 console errors, only guest 401s, no Hire help or funding text.
+- **What broke on the way:** PR #343 failed once on a flaky signer RPC test (second-boundary timestamp); fixed in `5cde67a7e` (test-only).
+- **SCHEMA:** synced (no migration).
 
 ### 2026-11-24 00:05Z (session brainchain) - flaky signer RPC tests fixed (test-only, no PROTOCOL change)
 - **What broke:** promotion PR #343 failed "BrainChain isolated pure suites" on `signer-rpc-send.test.ts` ("Configured authority anchor changed"); the same suite passed on the staging push. Root cause: the fake RPC built each block timestamp from `Date.now()` per call, so two reads that straddle a second boundary looked like a changed anchor. `signer-rpc.test.ts` has the same pattern. Neither file changed in the lane removal.
