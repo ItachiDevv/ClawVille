@@ -799,6 +799,12 @@ The entries below describe their recorded checkpoints. Earlier pending-release, 
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-11-24 (session brainchain) - BrainChain Office Task Board and Receipts wall redesign (web only, no PROTOCOL change, no migration)
+- **What changed:** founder called the in-room boards "pretty ugly" and approved a redesign mockup with the official BrainChain logo. `office-board-summary.ts` now also returns a structured `view` per board (worker card, up to three task rows with BrainChain status words OPEN/HIRED/SUBMITTED/GRADED/DISPUTED/PAID/REFUNDED/RULED/APPEALED, exact bounties with at least two decimals, and message views for signed out, checking, loading, no worker, no tasks and error). `brainchain-board-canvas.ts` draws it in the brand style (rounded rose outline, Fragment Mono title, Geist hierarchy, LIVE time chip, logo from `apps/web/public/brand/brainchain-mark-dot.svg`). Window text lists use the status words too. Texture size unchanged (1024 x 512), redraw only on change, privacy erase on owner change kept.
+- **Review:** Codex implemented from the approved mockup; Claude reviewed (E3) and fixed amounts ("4.5" -> "4.50"), a clipped GRADED label and the paused-worker dot colour. The real canvas code was rendered in a browser harness for all six states before push.
+- **Who it is for:** players in the BrainChain Office; founder review in FOUNDER-REVIEW.md.
+- **SCHEMA:** synced.
+
 ### 2026-11-24 00:16Z (session brainchain) - PROMOTION #31 to prod: BrainChain expired testnet lanes removed (PR #343, merge `29f1f9207`, PROTOCOL 143, no migration)
 - **Verify:** prod run 45293996859 all jobs success; both prod containers `29f1f9207` at 00:15:15Z; `/health` commit `29f1f9207`; catalog protocolVersion 143; BrainChain knowledge version 3; `/api/brainchain/purchases` and `/funding-exit` 404, `/workers` 401; arena paymentsEnabled false; prod API `OPENAI_API_KEY` is still the founder org key after the redeploy and a live `/api/i18n/translate` call answered. Headless `/brainchain` on prod: room renders, 0 console errors, only guest 401s, no Hire help or funding text.
 - **What broke on the way:** PR #343 failed once on a flaky signer RPC test (second-boundary timestamp); fixed in `5cde67a7e` (test-only).

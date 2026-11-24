@@ -9,7 +9,8 @@
 ### BrainChain Office: "Hire help" tab and testnet funding panel removed (session brainchain, 2026-11-23, STAGING then PRODUCTION)
 - **What:** the two expired testnet lanes are gone for humans and agents (PROTOCOL 143). The Office keeps Learn, Worker setup, Work status, Earnings and Recovery. The Task Board shows workers and tasks; the Receipts wall points to Earnings.
 - **Where:** `https://staging.clawville.world/game`, walk into the BrainChain Office (ring slot 4), open the Office window from the desk or the task board.
-- **Feedback wanted:** does the Office still read complete without "Hire help"? Logo on the Task Board: preview sent 2026-11-23, build after your yes.
+- **Feedback wanted:** does the Office still read complete without "Hire help"?
+- **2026-11-24 board redesign (founder: "we need good design here"):** the Task Board and Receipts wall now use the approved design with the official BrainChain logo, a worker card, task rows with status words (HIRED, SUBMITTED, GRADED, PAID...) and exact bounties, and designed empty, signed-out and error states. Look at both boards in the room, signed in and signed out.
 
 ### Trading Floor terminal: its own window, six tabs, trade history and equity curve (session new-ville, 2026-11-11, STAGING)
 

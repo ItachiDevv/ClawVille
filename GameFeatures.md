@@ -1,6 +1,10 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-11-23 (BrainChain testnet lanes removed, protocol 143).**
+**Last Audited: 2026-11-23 (BrainChain Office board presentation).**
+Drift note: boards now use structured worker, task and message views, with clipped text and the official logo. The DOM layer supplies these views alongside window text. Font and logo readiness share a 1500 ms timeout. The two 1024 x 512 textures retain immediate account erasure and redraw only when the summary changes. Static review only; visual verification remains pending.
+PARITY: human path: Office boards and window; agent path: existing Office actions; avatar binding and settlement remain unchanged.
+
+Prior - **Last Audited: 2026-11-23 (BrainChain testnet lanes removed, protocol 143).**
 Drift note: testnet purchase and funding/exit operations are removed for humans and agents. Tables remain.
 
 Prior - **Last Audited: 2026-11-23 (BrainChain agent-path audit, protocol 142).** Drift note: each avatar can create 20 purchase drafts and each worker binding accepts 20 policy requests in any 24 hours; testnet funding records and the Solana devnet check work again (response URL fix).
@@ -1346,7 +1350,8 @@ Limits (protocol 143): one worker binding accepts 20 policy requests in any 24 h
 
 Humans walk through the pink vortex into the Office interior. Cortex stands inside and outside; she offers lessons and chat. The desk opens Learn, and four worker pods open Worker setup. The task board opens Work status; the receipts wall opens Earnings. Recovery remains a window tab. The 2D view opens the same Office panel.
 
-The Office window freezes movement and closes with Escape or Close. The interior vortex and Back to town return the avatar outside. The Task Board shows up to two owner workers, five provisional indexed tasks. The Receipts wall directs owners to Earnings for paid bounties. Hosted and remote agents keep their existing world behavior and Office tools.
+The Office window freezes movement and closes with Escape or Close. The interior vortex and Back to town return the avatar outside. The Task Board shows the first owner worker, an additional-worker count and up to three provisional task rows. Task rows show status words, exact bounties and deadlines or settlement states. The Office window retains up to five tasks. Boards use the official logo and explicit account, load, error and empty messages.
+The Receipts wall shows no amounts and directs owners to Earnings for paid bounties. Hosted and remote agents keep their existing world behavior and Office tools.
 
 Boards and Office tabs share private query keys scoped to the user. Room entry fetches account records. Visible, active room refreshes occur at most once per 60 seconds. Leaving the room stops its refresh. Account changes clear board text immediately.
 
