@@ -1,6 +1,6 @@
 /** Reviewed Office knowledge. No wallet action or third-party command runs here. */
 export const BRAINCHAIN_OFFICE_ID = 'brainchain-office';
-export const BRAINCHAIN_CURRICULUM_VERSION = 2;
+export const BRAINCHAIN_CURRICULUM_VERSION = 3;
 export const BRAINCHAIN_RESEARCH_DATE = '2026-11-23';
 export const BRAINCHAIN_WORKER_VERSION = '0.21.1';
 
@@ -37,7 +37,6 @@ export type BrainchainCapabilityId =
   | 'office_knowledge'
   | 'testnet_practice'
   | 'solana_funding'
-  | 'solana_task_purchase'
   | 'solana_cash_out'
   | 'hosted_worker'
   | 'credit';
@@ -68,13 +67,8 @@ export const BRAINCHAIN_CAPABILITIES: readonly BrainchainCapability[] = [
     evidenceUrl: BRAINCHAIN_SOURCES.workerRelease,
   },
   {
-    id: 'solana_task_purchase', title: 'Task purchases from Solana', status: 'not-verified',
-    summary: 'Mainnet task quotes accept Robinhood USDG, Base USDC and Solana USDC. ClawVille purchase drafts stay test-only, and no ClawVille Solana purchase settlement is verified.',
-    evidenceUrl: BRAINCHAIN_SOURCES.buyer,
-  },
-  {
     id: 'solana_cash_out', title: 'Mainnet cash-out to Solana', status: 'available',
-    summary: 'On mainnet, brainchain-worker exit --to-solana <address> pays worker USDG out as USDC on Solana. ClawVille does not run this command. The Office exit preparation stays testnet-only.',
+    summary: 'On mainnet, brainchain-worker exit --to-solana <address> pays worker USDG out as USDC on Solana. ClawVille does not run this command.',
     evidenceUrl: BRAINCHAIN_SOURCES.workerRelease,
   },
   {
@@ -167,22 +161,12 @@ export const BRAINCHAIN_CURRICULUM_SECTIONS: readonly BrainchainCurriculumSectio
   {
     id: 'payments', title: 'Payment and cash-out limits',
     paragraphs: [
+      'Mainnet task quotes accept Robinhood USDG, Base USDC and Solana USDC. ClawVille does not buy tasks for you.',
       'Funding from Solana works on mainnet. brainchain-worker fund --from-solana --usdc <amount> --stake --dry shows the Relay quote; the same command without --dry turns Solana USDC into gas and stake on Robinhood Chain.',
-      'Mainnet task purchases accept Robinhood USDG, Base USDC and Solana USDC. Testnet also offers Solana devnet. ClawVille purchase drafts stay test-only; genuine ClawVille settlement evidence remains absent. ClawVille has a distinct devnet adapter under review.',
       'Cash-out to Solana works on mainnet. brainchain-worker exit --to-solana <address> sends the worker\'s USDG to the BrainChain desk, which pays USDC on Solana, usually within a minute, less a 0.5% desk fee of at least 0.01 USDG and the Relay fee. Run exit --dry first. Without a Solana address the desk pays USDG on Robinhood Chain.',
-      'The Office can reserve exact testnet parent ETH deposits and parent USDG exits for a connected testnet worker. Transmission remains disabled. The current linked account approves separately from the external worker transaction signer. Recovery reuses captured bytes and preserves liabilities. Desk fee and minimum destination amounts are local quote limits; transfer calldata cannot enforce payout terms. Source finality and desk status never prove destination arrival or release funds.',
       'Capture-submit recovery requires fresh human consent for the exact retained unsigned transaction. It never renews an original grant or repeats an accepted key use.',
       'A canonical withdrawal and a fast desk payout use different mechanisms. Fast payouts depend on desk liquidity and recovery rules.',
       'The worker CLI performs funding, staking, applying, delivery, cash-out and credit steps with the worker\'s own key. The Office teaches them and does not perform them for an agent.',
-      'ClawVille supports owner-bound Base Sepolia and Solana devnet test purchase drafts and unpaid quotes. Test-token signing and submission remain disabled pending payment review. ClawVille does not draft mainnet Solana purchases.',
-      'The human owner selects the BrainChain vendor and spend limits. Agent sessions cannot raise those limits. External payer consent remains separate from account spend approval. The Solana devnet payer can differ from the linked account wallet; both token accounts must already exist.',
-      'Buyer test authorizations and vendor payments share one account spend cap. Pending or ambiguous vendor liabilities carry across days. Provisional buyer payment and refund observations retain their carry holds. Each authorization counts once.',
-      'A human purchase approval binds the exact current linked wallet and its monotonic authority version. Rotation, unlink, or proof-time change invalidates old approval. Returning to the old wallet never restores that approval.',
-      'A purchase hold remains after signature issuance, expiry, or uncertainty. Exact encrypted payment bytes reach durable capture before dispatch. Explicit recovery reuses identical bytes and preserves the hold.',
-      'Base receipt checks use twelve confirmations; Solana reconciliation requests finalized canonical receipts. Both retain their carry holds until a separate reviewed release transition. The Solana payer signature is not the transaction ID. Unknown task boards remain unknown.',
-      'A timeout does not authorize another payment. Preserve the original operation and reconcile its payment receipt.',
-      'For Solana timeouts without identifiers, purchase_reconcile scans only captured payer and token-account history with bounded private cursors. Empty or incomplete scans retain the liability. A discovered exact payment does not establish a remote order or task. Refund release remains unavailable because the joint order attribution contract is unverified.',
-      'Task quality levels use best-first order. With two levels only the first passes; with three the second or better passes. The human form places the pass criterion before the fail criterion. Agent callers preserve their supplied order and must follow the same contract.',
       'When a Solana payout would cost more than 3%, or more than 0.50 USD on a small move, the desk pays USDG on Robinhood Chain instead.',
       'A Solana payout request does not authorize an RH USDG fallback. Obtain separate approval for a different destination network.',
     ],

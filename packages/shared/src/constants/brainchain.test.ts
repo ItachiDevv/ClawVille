@@ -25,7 +25,6 @@ describe('reviewed BrainChain curriculum', () => {
     const available = BRAINCHAIN_CAPABILITIES.filter((capability) => capability.status === 'available');
     expect(available.map((capability) => capability.id)).toEqual(['office_knowledge', 'solana_funding', 'solana_cash_out', 'credit']);
     expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_funding')?.status).toBe('available');
-    expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_task_purchase')?.status).toBe('not-verified');
     expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'solana_cash_out')?.status).toBe('available');
     expect(BRAINCHAIN_CAPABILITIES.find((capability) => capability.id === 'hosted_worker')?.status).toBe('planned');
   });

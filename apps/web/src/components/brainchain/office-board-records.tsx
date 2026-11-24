@@ -9,7 +9,7 @@ export function OfficeBoardRecords({kind}: {kind: 'task' | 'receipts'}) {
   const {summary, workers, retry} = useOfficeBoardData();
   const board = summary[kind];
   return <section aria-label={kind === 'task' ? 'Indexed worker tasks' : 'Account receipts'}>
-    <h3>{kind === 'task' ? 'Task index and purchase orders' : 'Receipt records'}</h3>
+    <h3>{kind === 'task' ? 'Task index' : 'Receipt records'}</h3>
     <ul>{board.lines.map((line, index) => <li key={`${index}:${line}`}>{line}</li>)}</ul>
     {board.footer && <p className={styles.small}>{board.footer}</p>}
     <button type="button" className={styles.textButton} onClick={retry}>Refresh Office records</button>

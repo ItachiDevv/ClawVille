@@ -19,7 +19,7 @@ test('BrainChain curriculum reaches the full hosted manual and the bound-agent t
   expect(SYSTEM_AGENT_TEMPLATES['brainchain-office']).toBe(apiIntegrations);
   expect(apiIntegrations.name).toBe('Cortex');
   expect(topic).toContain('exit --to-solana <address>');
-  expect(topic).toContain('ClawVille does not draft mainnet Solana purchases.');
+  expect(topic).toContain('ClawVille does not buy tasks for you.');
   const nori = townGuide.knowledge.join('\n');
   expect(nori).toContain('Cortex');
   expect(nori).toContain('on mainnet a worker cashes out to Solana with the worker CLI');

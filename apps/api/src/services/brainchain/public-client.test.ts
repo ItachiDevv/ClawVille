@@ -106,7 +106,6 @@ describe('BrainChain public adapter', () => {
     const service = createBrainChainStatusService(client, () => clock, 100);
     const results = await Promise.all(Array.from({ length: 20 }, () => service.getStatus()));
     expect(calls).toBe(3);
-    expect(results[0]?.executionEnabled).toBe(false);
     await service.getStatus();
     expect(calls).toBe(3);
     clock = 101;

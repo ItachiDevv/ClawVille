@@ -1,3 +1,5 @@
+> Retired 2026-11-23: this lane was removed (expired FEATURE_GATE; BrainChain moved to mainnet). Tables remain; code deleted.
+
 # BrainChain Solana buyer independent audit
 
 Date: 2026-11-09. Reviewer: independent Codex buyer_audit. Host: itachi222.

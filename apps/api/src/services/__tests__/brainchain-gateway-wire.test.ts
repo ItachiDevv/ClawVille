@@ -69,10 +69,10 @@ test('foreign-avatar, expired, and restarted-client observations never reach the
 });
 
 
-test('a private purchase receipt reaches the actual gateway without a payment bearer',async()=>{
+test('a private worker observation reaches the actual gateway without extra fields',async()=>{
  const {selectBrainchainActionResult}=await import('../brainchain-action');
- const order={id:'00000000-0000-4000-8000-000000000001',environment:'testnet',chainId:84532,state:'uncertain',bodyHash:'a'.repeat(64),payer:`0x${'1'.repeat(40)}`,amountAtomic:'1000000',remoteOrder:null,remoteState:null,taskId:null,taskBoard:null,paymentTransaction:null,refundTransaction:null,requiresHumanApproval:false,humanApproved:false,provisional:true,captured:'bearer-must-not-leave'};
- const observation=selectBrainchainActionResult('purchase_get',200,{order});const client=new AgentSubstrateClient(config);
- client.rememberBrainchainResult('fixture-avatar',observation);await client.chat([{role:'user',content:'Inspect the original purchase.'}]);
- expect(JSON.stringify(bodies[0])).toContain('purchase_get');expect(JSON.stringify(bodies[0])).toContain('uncertain');expect(JSON.stringify(bodies[0])).not.toContain('bearer-must-not-leave');
+ const worker={id:'00000000-0000-4000-8000-000000000001',environment:'testnet',chainId:274630,address:`0x${'1'.repeat(40)}`,requestedState:'paused',observedEligibility:'unknown',secret:'must-not-leave'};
+ const observation=selectBrainchainActionResult('workers',200,{workers:[worker]});const client=new AgentSubstrateClient(config);
+ client.rememberBrainchainResult('fixture-avatar',observation);await client.chat([{role:'user',content:'Inspect the worker.'}]);
+ expect(JSON.stringify(bodies[0])).toContain('workers');expect(JSON.stringify(bodies[0])).toContain('paused');expect(JSON.stringify(bodies[0])).not.toContain('must-not-leave');
 });

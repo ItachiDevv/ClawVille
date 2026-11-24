@@ -8,7 +8,6 @@ import { officeAccountRequest, workerRequestDescription, type OfficeWorkerLocalS
 import styles from './brainchain-office.module.css';
 import { workerQueryOptions } from './office-board-data';
 import { OfficeWorkerRecord } from './office-worker-record';
-import {OfficeFundingExit} from './office-funding-exit';
 import {OfficeWorkerRecovery} from './office-worker-recovery';
 import { OfficeWorkerPolicy } from './office-worker-policy';
 import { OfficeWorkerIdentity } from './office-worker-identity';
@@ -122,7 +121,6 @@ function PrivateOfficeAccount({ userId, mode }: { userId: string; mode: 'install
         <p className={styles.address}>{worker.address}</p>
         <OfficeWorkerRecord workerId={worker.id} ownerKey={userId} />
         <OfficeWorkerIdentity workerId={worker.id} ownerKey={userId} />
-        {worker.environment==='testnet'&&<OfficeFundingExit key={`funding:${userId}:${worker.id}`} userId={userId} workerId={worker.id}/>}
         {worker.environment==='testnet'&&<OfficeWorkerRecovery userId={userId} workerId={worker.id}/>}
         {worker.environment==='testnet'&&<OfficeWorkerPolicy key={`${userId}:${worker.id}`} userId={userId} workerId={worker.id}/>}
         <p>{workerRequestDescription(worker.requestedState)} On-chain eligibility: {worker.observedEligibility ?? 'not observed'}.</p>

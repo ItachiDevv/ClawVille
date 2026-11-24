@@ -85,11 +85,6 @@
 .purchaseForm { display: grid; gap: 14px; min-width: 0; }
 .purchaseForm label { display: grid; gap: 8px; font-size: 14px; }
 .purchaseForm input:not([type=checkbox]), .purchaseForm textarea { width: 100%; min-height: 44px; padding: 10px; border: 1px solid #716166; border-radius: 6px; background: #0b0b0b; color: #f8f7f4; font: inherit; font-size: 16px; }
-.purchaseForm .purchaseConsent { display: flex; align-items: center; min-height: 44px; gap: 12px; line-height: 1.5; }
-.purchaseConsent input { width: 44px; height: 44px; flex-shrink: 0; }
-.purchaseActions { display: flex; flex-wrap: wrap; gap: 10px; }
-.purchaseActions button { min-width: 44px; min-height: 44px; cursor: pointer; }
-.purchaseActions button:disabled { opacity: .55; cursor: not-allowed; }
 
 .page[data-windowed="true"] .hero, .page[data-windowed="true"] .footer, .page[data-windowed="true"] .home { display: none; }
 .page[data-windowed="true"] .header { position: sticky; top: 0; z-index: 2; background: #0b0b0b; padding: 10px 20px; }

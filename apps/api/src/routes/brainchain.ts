@@ -10,16 +10,14 @@ import { brainChainStatus } from '../services/brainchain/status';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { mountWorkerPolicyRoutes } from './brainchain-worker-policy';
-import {mountFundingExitRoutes} from './brainchain-funding-exit';
 import {mountExactRecoveryRoutes} from './brainchain-exact-recovery';
-import type { BuyerOwner, BrainchainPurchases } from '../services/brainchain/purchases';
+import type { WorkerPolicyOwner } from '../services/brainchain/worker-owner-policy';
 import type { ActivityAuthContext, ActivityIdentity } from '../middleware/require-auth-or-agent';
 
 /** Public knowledge and bounded observations only. Private operations use a separate bound identity path. */
 export function createBrainChainRoutes(status = brainChainStatus, options: {
   /** Internal hosted-action fence; never populated from an HTTP header or body. Throw to reject. */
   assertIdentity?: (identity: ActivityIdentity) => void | Promise<void>;
-  purchases?: () => Promise<BrainchainPurchases>;
 } = {}) {
   const routes = new Hono<ActivityAuthContext>();
   routes.use('*', async (c, next) => {
@@ -33,7 +31,7 @@ export function createBrainChainRoutes(status = brainChainStatus, options: {
           const part = await reader.read();
           if (part.done) break;
           bytes += part.value.byteLength;
-          if (bytes > (c.req.path.includes('/purchases') ? 70000 : 4096)) {
+          if (bytes > 4096) {
             await reader.cancel();
             return c.json({ error: 'body_too_large' }, 413);
           }
@@ -78,8 +76,7 @@ export function createBrainChainRoutes(status = brainChainStatus, options: {
     });
   });
   // Lazy imports keep public knowledge independent of database/runtime initialization.
-  // Every owner-scoped route needs this chain; /funding-exit was missing until 2026-11-13 (its reads failed as a generic 503).
-  const privatePaths = ['/workers', '/workers/*', '/install', '/purchases', '/purchases/*', '/funding-exit', '/funding-exit/*'];
+  const privatePaths = ['/workers', '/workers/*', '/install'];
   for (const path of privatePaths) routes.use(path, async (c, next) => {
     const { sessionMiddleware } = await import('../middleware/auth');
     const { requireAuthOrAgentSession, requireLedgerCapableIdentity } = await import('../middleware/require-auth-or-agent');
@@ -97,8 +94,7 @@ export function createBrainChainRoutes(status = brainChainStatus, options: {
     c.header('Cache-Control', 'no-store');
     await next();
   });
-  const purchases = options.purchases ?? (async () => (await import('../services/brainchain/purchases')).getBrainchainPurchases());
-  function purchaseOwner(c: Context<ActivityAuthContext>): BuyerOwner {
+  function workerOwner(c: Context<ActivityAuthContext>): WorkerPolicyOwner {
     const identity = c.get('identity');
     const cookie = c.req.header('Cookie') ?? '';
     return { avatarId: identity.avatarId, userId: identity.userId, actor: identity.kind === 'agent' ? 'agent' : 'human',
@@ -117,42 +113,8 @@ export function createBrainChainRoutes(status = brainChainStatus, options: {
         await options.assertIdentity?.(identity);
       } };
   }
-  mountFundingExitRoutes(routes,purchaseOwner,async()=>(await import('../services/brainchain/funding-exit-operations')).getFundingExitOperations());
-  mountWorkerPolicyRoutes(routes,purchaseOwner,async()=>(await import('../services/brainchain/worker-owner-policy')).getWorkerOwnerPolicies());
-  mountExactRecoveryRoutes(routes,c=>({...purchaseOwner(c),humanSessionId:c.get('session')?.id}),async()=>(await import('../services/brainchain/exact-result-recovery-consent')).getExactResultRecoveryConsents());
-  const noBody = async (c: Context<ActivityAuthContext>) => {
-    const body = await c.req.text();
-    if (body.length && body !== '{}') throw new ZodError([{ code:'custom',path:[],message:'Empty body required' }]);
-  };
-  routes.get('/purchases', async c => { const service = await purchases(); return c.json(await service.list(purchaseOwner(c))); });
-  routes.post('/purchases', async c => c.json({order:await (await purchases()).draft(purchaseOwner(c),await c.req.json())},201));
-  routes.get('/purchases/:id', async c => c.json({order:await (await purchases()).get(purchaseOwner(c),z.string().uuid().parse(c.req.param('id')))}));
-  const purchaseOperation=(operation:'quote'|'submit'|'recover'|'reconcile'|'cancel')=>async(c:Context<ActivityAuthContext>)=>{
-    await noBody(c); const service = await purchases(),owner = purchaseOwner(c),id=z.string().uuid().parse(c.req.param('id'));
-    const order = operation === 'submit' || operation === 'recover' ? await service.submit(owner,id,operation==='recover') : await service[operation](owner,id);
-    return c.json({order});
-  };
-  routes.post('/purchases/:id/quote',purchaseOperation('quote'));
-  routes.post('/purchases/:id/submit',purchaseOperation('submit'));
-  routes.post('/purchases/:id/recover',purchaseOperation('recover'));
-  routes.post('/purchases/:id/reconcile',purchaseOperation('reconcile'));
-  routes.post('/purchases/:id/cancel',purchaseOperation('cancel'));
-  routes.post('/purchases/:id/intent',async c => c.json(await (await purchases()).intent(purchaseOwner(c),z.string().uuid().parse(c.req.param('id')),await c.req.json())));
-  // Signed bytes go directly from the external payer to this private endpoint, never through model tools.
-  routes.post('/purchases/:id/capture',async c => c.json({order:await (await purchases()).capture(purchaseOwner(c),z.string().uuid().parse(c.req.param('id')),await c.req.json())}));
-  const purchaseApproval=(operation:'approval-challenge'|'approve')=>async(c:Context<ActivityAuthContext>)=>{
-    const { refuseAgentHeader,requireHumanSessionOrigin } = await import('../middleware/require-human-session');
-    const copy={humanOnlyCode:'human_approval_required',humanOnlyMessage:'The account owner must approve this purchase.',needsLoginCode:'human_approval_required',needsLoginMessage:'Sign in with a human account.'};
-    for (const gate of [refuseAgentHeader(copy),requireHumanSessionOrigin(copy)]) {
-      const response=await (gate as MiddlewareHandler<ActivityAuthContext>)(c,async()=>{}); if(response instanceof Response)return response;
-    }
-    if(c.get('identity').kind!=='user')return c.json({error:'human_approval_required'},403);
-    const service=await purchases(),owner=purchaseOwner(c),id=z.string().uuid().parse(c.req.param('id'));
-    if(operation==='approval-challenge'){await noBody(c);return c.json(await service.humanChallenge(owner,id));}
-    const result=await service.humanApprove(owner,id,await c.req.json());return c.json(result,result.ok?200:400);
-  };
-  routes.post('/purchases/:id/approval-challenge',purchaseApproval('approval-challenge'));
-  routes.post('/purchases/:id/approve',purchaseApproval('approve'));
+  mountWorkerPolicyRoutes(routes,workerOwner,async()=>(await import('../services/brainchain/worker-owner-policy')).getWorkerOwnerPolicies());
+  mountExactRecoveryRoutes(routes,c=>({...workerOwner(c),humanSessionId:c.get('session')?.id}),async()=>(await import('../services/brainchain/exact-result-recovery-consent')).getExactResultRecoveryConsents());
   routes.get('/workers', async (c) => {
     const { listBrainChainWorkers } = await import('../services/brainchain/bindings');
     c.header('Cache-Control', 'no-store');
@@ -213,9 +175,8 @@ export function createBrainChainRoutes(status = brainChainStatus, options: {
       return c.json({ error: error.status === 401 ? 'authentication_required' : 'access_denied' }, error.status as 401 | 403);
     }
     const codes: Record<string, 403 | 400 | 404 | 409 | 429 | 503> = {
-      operation_not_found:404,operation_conflict:409,owner_required:403,approval_required:409,unsupported_route:400,terms_unavailable:503,operation_uncertain:409,
-      exact_result_recovery_refused:409,exact_recovery_owner_required:403,worker_policy_refused:409,owner_policy_proof_required:403,invalid_request:400,purchase_not_found:404,unsupported_payment_lane:400,quote_refused:409,owner_grant_required:409,human_approval_required:409,over_per_call_cap:409,over_daily_cap:409,payer_conflict:409,order_conflict:409,purchase_unavailable:503,execution_disabled:503,payment_uncertain:409,receipt_unavailable:503,associated_token_account_required:409,
-      rate_limited: 429, daily_draft_limit: 429, invalid_proof: 400, binding_conflict: 409, worker_not_found: 404,
+      exact_result_recovery_refused:409,exact_recovery_owner_required:403,worker_policy_refused:409,owner_policy_proof_required:403,invalid_request:400,
+      rate_limited: 429, invalid_proof: 400, binding_conflict: 409, worker_not_found: 404,
       skill_not_found: 503, agent_not_connected: 409, runtime_unavailable: 503,
       chain_read_unavailable: 503, task_state_conflict: 409,
     };

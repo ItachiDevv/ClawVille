@@ -1,6 +1,9 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited: 2026-11-23 (BrainChain draft and policy request limits, PROTOCOL_VERSION 142).** Drift note: the brainchain manual documents 20 purchase drafts per avatar and 20 policy requests per worker in any 24 hours, and the new refusal `daily_draft_limit`. No Hatcher wire, verb or signature change.
+**Last Audited: 2026-11-23 (BrainChain testnet lanes removed, protocol 143).**
+Drift note: testnet purchase and funding/exit operations are removed for humans and agents. Tables remain.
+
+Prior - **Last Audited: 2026-11-23 (BrainChain draft and policy request limits, PROTOCOL_VERSION 142).** Drift note: the brainchain manual documents 20 purchase drafts per avatar and 20 policy requests per worker in any 24 hours, and the new refusal `daily_draft_limit`. No Hatcher wire, verb or signature change.
 
 Prior - **Last Audited: 2026-11-23 (BrainChain Office copy and capability update, PROTOCOL_VERSION 141).** Drift note: Cortex leads with BrainChain work. The manual and orientation document mainnet Solana funding, Solana cash-out, and Priors credit. Office preparation stays test-only. No Hatcher wire, verb or signature change.
 

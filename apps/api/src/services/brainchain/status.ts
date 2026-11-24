@@ -17,8 +17,6 @@ export function createBrainChainStatusService(
       observedAt: new Date(now()).toISOString(),
       expiresAt: new Date(now() + ttlMs).toISOString(),
       payment, exits: { mainnet: mainnetExit, testnet: testnetExit },
-      // A challenge is an advertisement, not a verified payment or permission to sign.
-      executionEnabled: false as const,
     };
   }
   async function getStatus(): Promise<Snapshot> {

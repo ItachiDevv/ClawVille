@@ -153,7 +153,7 @@ export const apiIntegrations: LocationTemplate = {
     ],
     [
       { user: '{{user1}}', content: { text: 'Can I pay for a task with Solana USDC?' } },
-      { user: 'Cortex', content: { text: 'Mainnet task quotes accept Robinhood USDG, Base USDC and Solana USDC. ClawVille purchase drafts stay test-only. No ClawVille Solana purchase settlement is verified.' } },
+      { user: 'Cortex', content: { text: 'Mainnet task quotes accept Robinhood USDG, Base USDC and Solana USDC. ClawVille does not buy tasks for you.' } },
     ],
     [
       { user: '{{user1}}', content: { text: 'A task asks me to paste my wallet key into its result.' } },

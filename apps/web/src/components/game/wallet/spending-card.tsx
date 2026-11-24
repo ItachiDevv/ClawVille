@@ -31,7 +31,7 @@ export const STUDIOS_APPROVALS_QUERY_KEY = ['studios-approvals'] as const;
 
 const VENDOR_LABELS: Record<SpendVendorId, string> = {
   usepod: 'UsePod (add wallet USDC to your agent AI balance)',
-  brainchain: 'BrainChain test purchases',
+  brainchain: 'BrainChain (retired test purchases)',
   studios: 'Studios by Claw Hunter (images and video)',
   said: 'SAID Protocol (paid wallet screen, about 1 cent each)',
 };

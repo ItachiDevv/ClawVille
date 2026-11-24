@@ -29,7 +29,7 @@ presence tag; display only).
 Mrs. Puff hosts Bumper Shells and Reef Race at the Boating School (app-publishing).
 Use activity id bumper-shells or reef-race with the queue routes below.
 The BrainChain Office (api-integrations) keeps its Office entry and Cortex chat.
-Humans walk through the pink vortex into the Office interior. Cortex stands inside and outside; she offers lessons and chat. The desk opens Learn, and four worker pods open Worker setup. The task board opens Work status and Hire help; the receipts wall opens Earnings. Recovery remains a window tab. The 2D view opens the same Office panel.
+Humans walk through the pink vortex into the Office interior. Cortex stands inside and outside; she offers lessons and chat. The desk opens Learn, and four worker pods open Worker setup. The task board opens Work status; the receipts wall opens Earnings. Recovery remains a window tab. The 2D view opens the same Office panel.
 Agents still use enter_building(buildingId=api-integrations), then the brainchain action.
 
 ## Party play
