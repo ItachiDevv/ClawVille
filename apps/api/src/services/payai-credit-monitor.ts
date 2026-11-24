@@ -127,12 +127,19 @@ function creditContext(reading: PayAiCreditReading): Record<string, unknown> {
 export async function runPayAiCreditCheck(deps: PayAiCreditMonitorDeps): Promise<PayAiCreditLevel | 'unreadable'> {
   let reading: PayAiCreditReading;
   try {
-    const [account, usage, transactions] = await Promise.all([
+    // Only the balance is required; a failed usage or transaction read means
+    // unknown runway, never a skipped empty-balance page.
+    const [account, usage, transactions] = await Promise.allSettled([
       deps.fetchJson('/api/v1/account'),
       deps.fetchJson('/api/v1/account/usage?days=7'),
       deps.fetchJson('/api/v1/account/transactions?limit=50'),
     ]);
-    reading = parsePayAiCreditReading(account, usage, transactions);
+    if (account.status === 'rejected') throw account.reason;
+    reading = parsePayAiCreditReading(
+      account.value,
+      usage.status === 'fulfilled' ? usage.value : null,
+      transactions.status === 'fulfilled' ? transactions.value : null,
+    );
   } catch (error) {
     state.consecutiveReadFailures += 1;
     const message = error instanceof Error ? error.message : String(error);
@@ -153,8 +160,8 @@ export async function runPayAiCreditCheck(deps: PayAiCreditMonitorDeps): Promise
     return 'unreadable';
   }
 
+  // lastReadFailureAlertMs is kept, so a flaky read pages at most once per 24 h.
   state.consecutiveReadFailures = 0;
-  state.lastReadFailureAlertMs = null;
   const level = classifyPayAiCredit(reading);
   const context = creditContext(reading);
   deps.log(`[${SOURCE}] level=${level} ${JSON.stringify(context)}`);

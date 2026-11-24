@@ -133,6 +133,36 @@ describe('PayAI credit alerts', () => {
     expect(h.alerts).toHaveLength(1);
   });
 
+  it('keeps the 24 h read-failure limit across one good read in between', async () => {
+    let fail = true;
+    const h = harness(() => (fail ? new Error('PayAI merchant API /api/v1/account returned 503') : [account('8537820000'), usage(299), transactions(950_000)]));
+    for (let i = 0; i < 3; i += 1) await runPayAiCreditCheck(h.deps);
+    expect(h.alerts).toHaveLength(1);
+    fail = false;
+    h.advance(HOUR);
+    await runPayAiCreditCheck(h.deps);
+    fail = true;
+    for (let i = 0; i < 3; i += 1) { h.advance(HOUR); await runPayAiCreditCheck(h.deps); }
+    expect(h.alerts).toHaveLength(1);
+  });
+
+  it('still pages critical at zero credits when the usage and transaction reads fail', async () => {
+    const alerts: AlertErrorParams[] = [];
+    const result = await runPayAiCreditCheck({
+      fetchJson: async (path) => {
+        if (path === '/api/v1/account') return account(0);
+        throw new Error('PayAI merchant API returned 500');
+      },
+      alert: async (params) => { alerts.push(params); },
+      now: () => 0,
+      log: () => {},
+    });
+    expect(result).toBe('empty');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ severity: 'critical' });
+    expect(alerts[0]!.context).toMatchObject({ balanceCredits: 0, dailyBurnCredits: null, runwayDays: null });
+  });
+
   it('never throws when the alert channel fails', async () => {
     const h = harness(() => [account(0), usage(0), transactions(0, 0)]);
     h.deps.alert = async () => { throw new Error('telegram down'); };
